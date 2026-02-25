@@ -11,7 +11,7 @@ from rest_framework.exceptions import ValidationError
 from accounts.permissions import IsEmailVerified
 from enrollments.models import Enrollment
 
-from .models import Quiz, QuizAttempt, SubjectTeacher
+from .models import Quiz, QuizAttempt
 from .serializers import (
     QuizCreateSerializer,
     QuestionCreateSerializer,
