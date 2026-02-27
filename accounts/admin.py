@@ -1,10 +1,8 @@
-from .models import SubjectTeacher
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from django.core.exceptions import ValidationError
 
 from .models import User, Profile, Role, UserRole
-from courses.models import Course, Subject, Chapter
+from courses.models import Course, Subject, Chapter, SubjectTeacher
 from payments.models import Order, Payment
 from enrollments.models import Enrollment
 from assignments.models import Assignment, AssignmentSubmission
@@ -17,9 +15,9 @@ from quizzes.models import (
     StudentAnswer,
 )
 
-# =========================
+# =========================================================
 # USER ADMIN
-# =========================
+# =========================================================
 
 
 @admin.register(User)
@@ -69,10 +67,9 @@ class ProfileAdmin(admin.ModelAdmin):
     search_fields = ("user__email", "full_name")
 
 
-# =========================
-# ROLE ADMIN (HARDENED)
-# =========================
-
+# =========================================================
+# ROLE ADMIN
+# =========================================================
 
 @admin.register(Role)
 class RoleAdmin(admin.ModelAdmin):
@@ -96,14 +93,13 @@ class UserRoleAdmin(admin.ModelAdmin):
     search_fields = ("user__email", "role__name")
 
     def save_model(self, request, obj, form, change):
-        obj.full_clean()  # enforce model validation
+        obj.full_clean()
         super().save_model(request, obj, form, change)
 
 
-# =========================
+# =========================================================
 # COURSE ADMIN
-# =========================
-
+# =========================================================
 
 @admin.register(Course)
 class CourseAdmin(admin.ModelAdmin):
@@ -112,39 +108,57 @@ class CourseAdmin(admin.ModelAdmin):
     list_filter = ("created_at",)
 
 
+class SubjectTeacherInline(admin.TabularInline):
+    model = SubjectTeacher
+    extra = 1
+    autocomplete_fields = ("teacher",)
+    fields = ("teacher", "display_role", "order")
+    ordering = ("order",)
+
+
 @admin.register(Subject)
 class SubjectAdmin(admin.ModelAdmin):
-    list_display = ("name", "course", "order", "get_teachers")
+    list_display = (
+        "name",
+        "course",
+        "order",
+        "teacher_list",
+    )
+
     list_filter = ("course",)
     ordering = ("course", "order")
     search_fields = ("name", "course__title")
-    filter_horizontal = ("teachers",)
 
-    def get_teachers(self, obj):
-        return ", ".join(obj.teachers.values_list("email", flat=True))
+    inlines = [SubjectTeacherInline]
 
-    get_teachers.short_description = "Teachers"
+    def teacher_list(self, obj):
+        teachers = obj.subject_teachers.select_related("teacher")
+        return ", ".join(
+            f"{st.teacher.email} ({st.get_display_role_display()})"
+            for st in teachers
+        ) or "—"
+
+    teacher_list.short_description = "Teachers"
 
 
 @admin.register(Chapter)
 class ChapterAdmin(admin.ModelAdmin):
     list_display = ("title", "subject", "order")
-    list_filter = ("subject",)
+    list_filter = ("subject__course", "subject")
     ordering = ("subject", "order")
 
 
-# =========================
+# =========================================================
 # PAYMENT ADMIN
-# =========================
+# =========================================================
 
 admin.site.register(Order)
 admin.site.register(Payment)
 
 
-# =========================
+# =========================================================
 # ENROLLMENT ADMIN
-# =========================
-
+# =========================================================
 
 @admin.register(Enrollment)
 class EnrollmentAdmin(admin.ModelAdmin):
@@ -153,10 +167,9 @@ class EnrollmentAdmin(admin.ModelAdmin):
     search_fields = ("user__email", "course__title")
 
 
-# =========================
+# =========================================================
 # ASSIGNMENT ADMIN
-# =========================
-
+# =========================================================
 
 class AssignmentSubmissionInline(admin.TabularInline):
     model = AssignmentSubmission
@@ -210,10 +223,9 @@ class AssignmentSubmissionAdmin(admin.ModelAdmin):
     ordering = ("-submitted_at",)
 
 
-# =========================
+# =========================================================
 # QUIZ ADMIN
-# =========================
-
+# =========================================================
 
 class QuestionInline(admin.TabularInline):
     model = Question
@@ -265,30 +277,16 @@ class ChoiceInline(admin.TabularInline):
 
 @admin.register(Question)
 class QuestionAdmin(admin.ModelAdmin):
-    list_display = (
-        "quiz",
-        "order",
-        "marks",
-    )
-
-    list_filter = (
-        "quiz__subject__course",
-        "quiz__subject",
-    )
-
+    list_display = ("quiz", "order", "marks")
+    list_filter = ("quiz__subject__course", "quiz__subject")
     ordering = ("quiz", "order")
-
     inlines = [ChoiceInline]
 
 
 class StudentAnswerInline(admin.TabularInline):
     model = StudentAnswer
     extra = 0
-    readonly_fields = (
-        "question",
-        "selected_choice",
-        "is_correct",
-    )
+    readonly_fields = ("question", "selected_choice", "is_correct")
     can_delete = False
 
 
@@ -302,18 +300,9 @@ class QuizAttemptAdmin(admin.ModelAdmin):
         "submitted_at",
     )
 
-    list_filter = (
-        "status",
-        "quiz__subject__course",
-        "quiz__subject",
-    )
-
-    search_fields = (
-        "student__email",
-        "quiz__title",
-    )
-
-    ordering = ("-submitted_at",)
+    list_filter = ("status", "quiz__subject__course", "quiz__subject")
+    search_fields = ("student__email", "quiz__title")
+    ordering = ("-submitted_at")
 
     readonly_fields = (
         "student",
@@ -336,21 +325,13 @@ class StudentAnswerAdmin(admin.ModelAdmin):
         "is_correct",
     )
 
-    list_filter = (
-        "is_correct",
-        "attempt__quiz__subject__course",
-    )
-
-    search_fields = (
-        "attempt__student__email",
-        "question__text",
-    )
+    list_filter = ("is_correct", "attempt__quiz__subject__course")
+    search_fields = ("attempt__student__email", "question__text")
 
 
-# =========================
+# =========================================================
 # LIVE SESSION ADMIN
-# =========================
-
+# =========================================================
 
 @admin.register(LiveSession)
 class LiveSessionAdmin(admin.ModelAdmin):
@@ -404,16 +385,3 @@ class LiveSessionAttendanceAdmin(admin.ModelAdmin):
         return "—"
 
     duration_display.short_description = "Duration"
-
-
-class SubjectTeacherInline(admin.TabularInline):
-    model = SubjectTeacher
-    extra = 1
-
-
-@admin.register(Subject)
-class SubjectAdmin(admin.ModelAdmin):
-    list_display = ("name", "course", "order")
-    list_filter = ("course",)
-    ordering = ("course", "order")
-    inlines = [SubjectTeacherInline]
