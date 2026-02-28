@@ -136,3 +136,9 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
             <= now
             <= obj.end_time
         )
+
+
+print("Logged in user:", user.email)
+print("User ID:", user.id)
+print("Subject teachers:", list(
+    subject.subject_teachers.values_list("teacher__email", flat=True)))
