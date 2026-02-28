@@ -4,10 +4,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from enrollments.models import Enrollment
 from accounts.permissions import IsTeacher
+from quizzes.models import Quiz
+from assignments.models import Assignment
 from .models import Course
 from .serializers import CourseSerializer
 from .models import Course, Subject
 from .serializers import CourseSerializer, SubjectSerializer
+from django.db.models import Count, Q
 
 # update
 from django.shortcuts import get_object_or_404
@@ -128,3 +131,95 @@ class SubjectDetailView(APIView):
 
         serializer = SubjectSerializer(subject)
         return Response(serializer.data)
+
+
+class SubjectDashboardView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, subject_id):
+        user = request.user
+
+        subject = get_object_or_404(
+            Subject.objects.prefetch_related(
+                "subject_teachers__teacher__teacher_profile"
+            ),
+            id=subject_id
+        )
+
+        # 🔒 Enrollment check
+        if not Enrollment.objects.filter(
+            user=user,
+            course=subject.course,
+            status="ACTIVE"
+        ).exists():
+            return Response(
+                {"detail": "Not enrolled."},
+                status=403
+            )
+
+        # -----------------------------
+        # ASSIGNMENTS
+        # -----------------------------
+        assignments = Assignment.objects.filter(
+            chapter__subject=subject
+        )
+
+        pending_assignments = assignments.filter(
+            due_date__gt=timezone.now()
+        ).exclude(
+            submissions__student=user
+        ).count()
+
+        completed_assignments = assignments.filter(
+            submissions__student=user
+        ).count()
+
+        total_assignments = assignments.count()
+
+        # -----------------------------
+        # QUIZZES
+        # -----------------------------
+        quizzes = Quiz.objects.filter(
+            subject=subject,
+            is_published=True
+        )
+
+        pending_quiz = quizzes.exclude(
+            attempts__student=user,
+            attempts__status="SUBMITTED"
+        ).count()
+
+        completed_quiz = quizzes.filter(
+            attempts__student=user,
+            attempts__status="SUBMITTED"
+        ).count()
+
+        total_quiz = quizzes.count()
+
+        # -----------------------------
+        # RESPONSE
+        # -----------------------------
+        serializer = SubjectSerializer(subject)
+
+        return Response({
+            "id": subject.id,
+            "name": subject.name,
+            "teachers": serializer.data["teachers"],
+
+            "assignments": {
+                "pending": pending_assignments,
+                "completed": completed_assignments,
+                "total": total_assignments,
+            },
+
+            "quizzes": {
+                "pending": pending_quiz,
+                "completed": completed_quiz,
+                "total": total_quiz,
+            },
+
+            # placeholder until you add models
+            "recordingsCount": 0,
+            "studyMaterialsCount": 0,
+            "upcomingSessions": [],
+        })
