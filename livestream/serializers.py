@@ -8,6 +8,16 @@ from .models import LiveSession
 from courses.models import Subject
 
 
+from rest_framework import serializers
+from django.utils import timezone
+from django.db.models import Q
+from datetime import timedelta
+import uuid
+
+from .models import LiveSession
+from courses.models import Subject
+
+
 class LiveSessionCreateSerializer(serializers.ModelSerializer):
     subject_id = serializers.UUIDField(write_only=True)
 
@@ -27,42 +37,44 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         user = request.user
 
-        # 1️⃣ Role Check
-        if not user.has_role("teacher"):
+        # ✅ 1️⃣ Role Check (FIXED TO MATCH YOUR SYSTEM)
+        if not user.has_role("TEACHER"):
             raise serializers.ValidationError(
-                "Only teachers can schedule sessions."
+                {"non_field_errors": ["Only teachers can schedule sessions."]}
             )
 
-        # 2️⃣ Subject Validation
+        # ✅ 2️⃣ Subject Validation
         try:
             subject = Subject.objects.select_related("course").get(
                 id=data["subject_id"]
             )
         except Subject.DoesNotExist:
-            raise serializers.ValidationError("Invalid subject.")
-
-        # 3️⃣ Subject Assignment Check
-        if not subject.subject_teachers.filter(teacher_id=user.id).exists():
             raise serializers.ValidationError(
-                "You are not assigned to this subject."
+                {"subject_id": ["Invalid subject."]}
+            )
+
+        # ✅ 3️⃣ Subject Assignment Check
+        if not subject.subject_teachers.filter(teacher=user).exists():
+            raise serializers.ValidationError(
+                {"non_field_errors": ["You are not assigned to this subject."]}
             )
 
         start_time = data["start_time"]
         end_time = data["end_time"]
         now = timezone.now()
 
-        # 4️⃣ Time Validation
+        # ✅ 4️⃣ Time Validation
         if start_time >= end_time:
             raise serializers.ValidationError(
-                "End time must be after start time."
+                {"end_time": ["End time must be after start time."]}
             )
 
         if start_time <= now:
             raise serializers.ValidationError(
-                "Cannot schedule a session in the past."
+                {"start_time": ["Cannot schedule a session in the past."]}
             )
 
-        # 5️⃣ Overlapping Protection
+        # ✅ 5️⃣ Overlapping Protection
         overlap_exists = LiveSession.objects.filter(
             subject=subject
         ).filter(
@@ -72,12 +84,9 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
 
         if overlap_exists:
             raise serializers.ValidationError(
-                "This session overlaps with an existing session."
+                {"non_field_errors": [
+                    "This session overlaps with an existing session."]}
             )
-        print("Logged in user:", user.email)
-        print("User ID:", user.id)
-        print("Subject teachers:", list(
-            subject.subject_teachers.values_list("teacher__email", flat=True)))
 
         self._validated_subject = subject
         return data
@@ -85,8 +94,9 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         subject = self._validated_subject
         user = self.context["request"].user
-        # Remove subject_id from validated_data
+
         validated_data.pop("subject_id", None)
+
         room_name = f"session_{uuid.uuid4().hex}"
 
         return LiveSession.objects.create(
@@ -135,6 +145,12 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
         if obj.status == LiveSession.STATUS_CANCELLED:
             return False
 
+        # Teacher can always join
+        request = self.context.get("request")
+        if request and request.user.has_role("TEACHER"):
+            return True
+
+        # Students can join 10 minutes before start
         return (
             obj.start_time - timedelta(minutes=10)
             <= now
