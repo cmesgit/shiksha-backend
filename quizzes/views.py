@@ -12,7 +12,9 @@ from rest_framework.exceptions import ValidationError
 
 from accounts.permissions import IsEmailVerified
 from enrollments.models import Enrollment
-from courses.models import SubjectTeacher
+from django.db import models
+from django.db.models import Count, Avg, Max, Min
+from courses.models import Subject, SubjectTeacher
 
 from .models import Quiz, QuizAttempt
 from .serializers import (
