@@ -203,30 +203,24 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
 
 
 class TeacherAssignmentListSerializer(serializers.ModelSerializer):
-    chapter_name = serializers.CharField(
-        source="chapter.title",
-        read_only=True
-    )
-    total_submissions = serializers.IntegerField(
-        read_only=True
-    )
-    is_expired = serializers.BooleanField(
-        source="is_expired",
-        read_only=True
-    )
-    attachment = serializers.FileField(read_only=True)
+
+    chapter_name = serializers.SerializerMethodField()
+    total_submissions = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Assignment
-        fields = (
+        fields = [
             "id",
             "title",
             "chapter_name",
             "due_date",
-            "is_expired",
             "total_submissions",
-            "attachment",
-        )
+        ]
+
+    def get_chapter_name(self, obj):
+        if obj.chapter:
+            return obj.chapter.title
+        return None
 
 
 class TeacherSubmissionListSerializer(serializers.ModelSerializer):
