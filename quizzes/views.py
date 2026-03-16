@@ -234,7 +234,13 @@ class QuizDetailView(APIView):
             is_published=True,
         )
 
-        if not Enrollment.objects.filter(
+        # ✅ Allow teacher who created quiz
+        if request.user.has_role("TEACHER"):
+            if quiz.created_by != request.user:
+                raise PermissionDenied("Not authorized for this quiz.")
+
+        # ✅ Allow enrolled students
+        elif not Enrollment.objects.filter(
             user=request.user,
             course=quiz.subject.course,
             status=Enrollment.STATUS_ACTIVE,
