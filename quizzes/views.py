@@ -389,27 +389,7 @@ class TeacherDeleteQuizView(APIView):
         )
 
 
-class TeacherQuizAttemptsView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = QuizResultSerializer
 
-    def get_queryset(self):
-        if not self.request.user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
-
-        quiz = get_object_or_404(
-            Quiz.objects.prefetch_related(
-                "attempts__student"
-            ),
-            pk=self.kwargs["pk"]
-        )
-
-        if quiz.created_by != self.request.user:
-            raise PermissionDenied("Not authorized.")
-
-        return quiz.attempts.filter(
-            status=QuizAttempt.STATUS_SUBMITTED
-        )
 
 
 class TeacherDeleteQuizView(APIView):
@@ -484,6 +464,7 @@ class TeacherSubjectQuizListView(generics.ListAPIView):
 
 class TeacherQuizAttemptsView(generics.ListAPIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
+    serializer_class = QuizResultSerializer   
 
     def get_queryset(self):
         user = self.request.user
@@ -497,7 +478,7 @@ class TeacherQuizAttemptsView(generics.ListAPIView):
             id=quiz_id
         )
 
-        # ensure teacher owns subject
+
         if not SubjectTeacher.objects.filter(
             subject=quiz.subject,
             teacher=user
@@ -507,6 +488,6 @@ class TeacherQuizAttemptsView(generics.ListAPIView):
         return (
             QuizAttempt.objects
             .filter(quiz=quiz, status=QuizAttempt.STATUS_SUBMITTED)
-            .select_related("student", "student__profile")
+            .select_related("student")
             .order_by("-submitted_at")
         )
