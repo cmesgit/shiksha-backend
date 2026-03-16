@@ -13,14 +13,23 @@ class IsEmailVerified(BasePermission):
 
 class IsStudent(BasePermission):
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.has_role("student")
+        return (
+            request.user.is_authenticated
+            and request.user.has_role("STUDENT")
+        )
 
 
 class IsTeacher(BasePermission):
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.has_role("teacher")
+        return (
+            request.user.is_authenticated
+            and request.user.has_role("TEACHER")
+        )
 
 
 class IsAdmin(BasePermission):
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.is_staff
+        return (
+            request.user.is_authenticated
+            and request.user.is_staff
+        )
