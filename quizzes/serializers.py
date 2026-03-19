@@ -120,7 +120,6 @@ class QuizCreateSerializer(serializers.ModelSerializer):
             **validated_data
         )
 
-
 # =====================================================
 # STUDENT DASHBOARD SERIALIZER
 # =====================================================
@@ -141,9 +140,6 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
     score = serializers.SerializerMethodField()
 
-    # ✅ ONLY ADDITION
-    time_limit_minutes = serializers.IntegerField(read_only=True)
-
     class Meta:
         model = Quiz
         fields = [
@@ -158,7 +154,6 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
             "questions_count", 
             "status",
             "score",
-            "time_limit_minutes",  # ✅ ADDED
         ]
 
     def get_questions_count(self, obj):
@@ -306,6 +301,7 @@ class QuizDetailSerializer(serializers.ModelSerializer):
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
 
+    # 🔥 FIXED
     teacher_name = serializers.CharField(
         source="created_by.email",
         read_only=True
@@ -331,4 +327,110 @@ class QuizDetailSerializer(serializers.ModelSerializer):
     def get_questions(self, obj):
         questions = obj.questions.all().order_by("order")
         return QuestionPublicSerializer(questions, many=True).data
+
+
+# =====================================================
+# QUIZ RESULT SERIALIZERS
+# =====================================================
+
+class QuestionResultSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    text = serializers.CharField()
+    selected_choice = serializers.CharField()
+    correct_choice = serializers.CharField()
+    is_correct = serializers.BooleanField()
+
+
+class QuizResultSerializer(serializers.Serializer):
+    quiz_id = serializers.UUIDField()
+    title = serializers.CharField()
+    subject_name = serializers.CharField()
+    teacher_name = serializers.CharField()
+    total_marks = serializers.IntegerField()
+    score = serializers.IntegerField()
+    submitted_at = serializers.DateTimeField()
+    questions = QuestionResultSerializer(many=True)
+
+
+class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
+    student_id = serializers.UUIDField(source="student.id", read_only=True)
+    student_email = serializers.EmailField(source="student.email", read_only=True)
+    student_name = serializers.CharField(
+        source="student.profile.full_name",
+        read_only=True
+    )
+
+    total_marks = serializers.IntegerField(
+        source="quiz.total_marks",
+        read_only=True
+    )
+
+    class Meta:
+        model = QuizAttempt
+        fields = [
+            "id",
+            "student_id",
+            "student_email",
+            "student_name",
+            "score",
+            "total_marks",  
+            "submitted_at",
+        ]
+
+
+class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
+    subject_name = serializers.CharField(source="subject.name", read_only=True)
+    course_title = serializers.CharField(
+        source="subject.course.title",
+        read_only=True
+    )
+
+    questions_count = serializers.SerializerMethodField()
+
+    total_attempts = serializers.IntegerField(read_only=True)
+    average_score = serializers.FloatField(read_only=True)
+    highest_score = serializers.FloatField(read_only=True)
+    lowest_score = serializers.FloatField(read_only=True)
+
+    submission_rate = serializers.SerializerMethodField()
+    is_expired = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Quiz
+        fields = [
+            "id",
+            "title",
+            "created_at",        
+            "subject_name",
+            "course_title",
+            "due_date",
+            "is_published",
+            "is_expired",
+            "questions_count",  
+            "total_attempts",
+            "submission_rate",
+            "average_score",
+            "highest_score",
+            "lowest_score",
+        ]
+
+    def get_questions_count(self, obj):
+        return obj.questions.count()
+
+    def get_submission_rate(self, obj):
+        total_students = obj.subject.course.enrollments.filter(
+            status="ACTIVE"
+        ).count()
+
+        if total_students == 0:
+            return 0
+
+        return round((obj.total_attempts / total_students) * 100, 2)
+
+    def get_is_expired(self, obj):
+        return obj.due_date <= timezone.now()
     
+
+    from rest_framework import serializers
+from .models import QuizAttempt
+

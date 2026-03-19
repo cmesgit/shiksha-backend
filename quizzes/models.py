@@ -27,9 +27,7 @@ class Quiz(models.Model):
     description = models.TextField(blank=True)
 
     due_date = models.DateTimeField()
-
-    # ✅ ONLY CHANGE HERE (default added)
-    time_limit_minutes = models.PositiveIntegerField(default=5)
+    time_limit_minutes = models.PositiveIntegerField(null=True, blank=True)
 
     total_marks = models.PositiveIntegerField(default=0)
     is_published = models.BooleanField(default=False)
@@ -177,4 +175,3 @@ class StudentAnswer(models.Model):
 
     def __str__(self):
         return f"Answer {self.question.id} - {self.attempt.student.email}"
-    
