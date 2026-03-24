@@ -293,6 +293,7 @@ class QuizResultView(APIView):
                 "selected_choice": answer.selected_choice.text,
                 "correct_choice": correct_choice.text if correct_choice else "",
                 "is_correct": answer.is_correct,
+                "explanation": answer.question.explanation,
             })
 
         data = {

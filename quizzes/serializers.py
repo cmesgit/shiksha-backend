@@ -343,6 +343,7 @@ class QuestionResultSerializer(serializers.Serializer):
     selected_choice = serializers.CharField()
     correct_choice = serializers.CharField()
     is_correct = serializers.BooleanField()
+    explanation = serializers.CharField()
 
 
 class QuizResultSerializer(serializers.Serializer):
