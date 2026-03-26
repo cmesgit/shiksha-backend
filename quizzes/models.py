@@ -144,7 +144,7 @@ class QuizAttempt(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=["student", "quiz"]),
-    ]
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["quiz", "student", "attempt_number"],
