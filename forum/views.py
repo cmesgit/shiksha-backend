@@ -72,7 +72,7 @@ class ListThreadsView(APIView):
         end = start + page_size
         threads = qs[start:end]
 
-        serializer = ForumPostSerializer(threads, many=True)
+        serializer = ForumPostSerializer(threads, many=True, context={"request": request})
         return Response({"results": serializer.data, "count": total})
 
 
@@ -102,7 +102,7 @@ class CreateThreadView(APIView):
         ).select_related("author").prefetch_related("tags").first()
 
         return Response(
-            ForumPostSerializer(post).data,
+            ForumPostSerializer(post, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -118,7 +118,7 @@ class ThreadDetailView(APIView):
             ).select_related("author").prefetch_related("tags"),
             pk=thread_id,
         )
-        return Response(ForumPostSerializer(post).data)
+        return Response(ForumPostSerializer(post, context={"request": request}).data)
 
 
 class DeleteThreadView(APIView):
@@ -159,7 +159,7 @@ class ListCommentsView(APIView):
             qs = qs.order_by("created_at")
 
         total = qs.count()
-        serializer = CommentSerializer(qs, many=True)
+        serializer = CommentSerializer(qs, many=True, context={"request": request})
         return Response({"results": serializer.data, "count": total})
 
 
@@ -189,7 +189,7 @@ class CreateCommentView(APIView):
         ).select_related("author").first()
 
         return Response(
-            CommentSerializer(reply).data,
+            CommentSerializer(reply, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -224,8 +224,8 @@ class TogglePostUpvoteView(APIView):
         )
         if not created:
             upvote.delete()
-            return Response({"upvoted": False, "upvote_count": post.upvote_count})
-        return Response({"upvoted": True, "upvote_count": post.upvote_count})
+            return Response({"upvoted": False, "upvote_count": post.upvotes.count()})
+        return Response({"upvoted": True, "upvote_count": post.upvotes.count()})
 
 
 class ToggleCommentUpvoteView(APIView):
@@ -238,5 +238,5 @@ class ToggleCommentUpvoteView(APIView):
         )
         if not created:
             upvote.delete()
-            return Response({"upvoted": False, "upvote_count": reply.upvote_count})
-        return Response({"upvoted": True, "upvote_count": reply.upvote_count})
+            return Response({"upvoted": False, "upvote_count": reply.upvotes.count()})
+        return Response({"upvoted": True, "upvote_count": reply.upvotes.count()})

@@ -27,14 +27,6 @@ class ForumPost(models.Model):
     def __str__(self):
         return self.title
 
-    @property
-    def upvote_count(self):
-        return self.upvotes.count()
-
-    @property
-    def reply_count(self):
-        return self.replies.count()
-
 
 class PostUpvote(models.Model):
     user = models.ForeignKey(
@@ -84,10 +76,6 @@ class Reply(models.Model):
 
     def __str__(self):
         return f"Reply by {self.author} on {self.post}"
-
-    @property
-    def upvote_count(self):
-        return self.upvotes.count()
 
 
 class ReplyUpvote(models.Model):

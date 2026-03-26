@@ -32,6 +32,7 @@ class ForumPostSerializer(serializers.ModelSerializer):
             "tags",
             "reply_count",
             "upvote_count",
+            "user_has_upvoted",
         )
 
     def get_author_username(self, obj):
@@ -39,6 +40,14 @@ class ForumPostSerializer(serializers.ModelSerializer):
 
     def get_tags(self, obj):
         return list(obj.tags.values_list("name", flat=True))
+
+    user_has_upvoted = serializers.SerializerMethodField()
+
+    def get_user_has_upvoted(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return obj.upvotes.filter(user=request.user).exists()
+        return False
 
 
 class CreateThreadSerializer(serializers.Serializer):
@@ -72,10 +81,19 @@ class CommentSerializer(serializers.ModelSerializer):
             "created_at",
             "reply_to_comment_id",
             "upvote_count",
+            "user_has_upvoted",
         )
 
     def get_author_username(self, obj):
         return obj.author.username
+
+    user_has_upvoted = serializers.SerializerMethodField()
+
+    def get_user_has_upvoted(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return obj.upvotes.filter(user=request.user).exists()
+        return False
 
 
 class CreateCommentSerializer(serializers.Serializer):
