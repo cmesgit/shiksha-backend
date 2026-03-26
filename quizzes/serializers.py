@@ -44,7 +44,7 @@ class QuestionCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Question
-        fields = ["id", "text", "marks", "order", "choices"]
+        fields = ["id", "text", "marks", "order", "choices" , "explanation"]
         read_only_fields = ["id"]
 
     def validate(self, attrs):
@@ -56,6 +56,9 @@ class QuestionCreateSerializer(serializers.ModelSerializer):
         correct_count = sum(1 for c in choices if c.get("is_correct"))
         if correct_count != 1:
             raise ValidationError("Exactly one correct answer required.")
+        
+        if not attrs.get("explanation"):
+            raise ValidationError("Explanation is required.")
 
         return attrs
 
@@ -145,15 +148,16 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "title",
-            "teacher_name",
             "subject_name",
             "course_title",
+            "teacher_name",
             "created_at",     
             "due_date",
             "total_marks",
             "questions_count", 
             "status",
             "score",
+            "is_published",
         ]
 
     def get_questions_count(self, obj):
@@ -211,13 +215,6 @@ class QuizSubmitSerializer(serializers.Serializer):
         if quiz.due_date <= timezone.now():
             raise ValidationError("Quiz expired.")
 
-        if QuizAttempt.objects.filter(
-            quiz=quiz,
-            student=user,
-            status=QuizAttempt.STATUS_SUBMITTED
-        ).exists():
-            raise ValidationError("Quiz already submitted.")
-
         if len(attrs["answers"]) != quiz.questions.count():
             raise ValidationError("All questions must be answered.")
 
@@ -229,13 +226,15 @@ class QuizSubmitSerializer(serializers.Serializer):
         user = self.context["request"].user
         submitted_answers = self.validated_data["answers"]
 
-        attempt, _ = QuizAttempt.objects.select_for_update().get_or_create(
+        # ✅ FIXED: get latest pending attempt
+        attempt = QuizAttempt.objects.select_for_update().filter(
             quiz=quiz,
             student=user,
-        )
+            status=QuizAttempt.STATUS_PENDING,
+        ).order_by("-attempt_number").first()
 
-        if attempt.status == QuizAttempt.STATUS_SUBMITTED:
-            raise ValidationError("Quiz already submitted.")
+        if not attempt:
+            raise ValidationError("No active attempt found.")
 
         score = 0
         attempt.answers.all().delete()
@@ -293,6 +292,7 @@ class QuestionPublicSerializer(serializers.ModelSerializer):
             "marks",
             "order",
             "choices",
+            "explanation",
         ]
 
 
@@ -339,6 +339,7 @@ class QuestionResultSerializer(serializers.Serializer):
     selected_choice = serializers.CharField()
     correct_choice = serializers.CharField()
     is_correct = serializers.BooleanField()
+    explanation = serializers.CharField()
 
 
 class QuizResultSerializer(serializers.Serializer):
@@ -354,10 +355,14 @@ class QuizResultSerializer(serializers.Serializer):
 
 class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
     student_id = serializers.UUIDField(source="student.id", read_only=True)
-    student_email = serializers.EmailField(
-        source="student.email", read_only=True)
+    student_email = serializers.EmailField(source="student.email", read_only=True)
     student_name = serializers.CharField(
         source="student.profile.full_name",
+        read_only=True
+    )
+
+    total_marks = serializers.IntegerField(
+        source="quiz.total_marks",
         read_only=True
     )
 
@@ -369,6 +374,7 @@ class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
             "student_email",
             "student_name",
             "score",
+            "total_marks",  
             "submitted_at",
         ]
 
@@ -379,10 +385,8 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
         source="subject.course.title",
         read_only=True
     )
-    teacher_name = serializers.CharField(
-        source="created_by.email",
-        read_only=True
-    )
+
+    questions_count = serializers.SerializerMethodField()
 
     total_attempts = serializers.IntegerField(read_only=True)
     average_score = serializers.FloatField(read_only=True)
@@ -397,19 +401,22 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "title",
+            "created_at",        
             "subject_name",
-             "teacher_name",
             "course_title",
             "due_date",
-            "created_at",
             "is_published",
             "is_expired",
+            "questions_count",  
             "total_attempts",
             "submission_rate",
             "average_score",
             "highest_score",
             "lowest_score",
         ]
+
+    def get_questions_count(self, obj):
+        return obj.questions.count()
 
     def get_submission_rate(self, obj):
         total_students = obj.subject.course.enrollments.filter(
@@ -423,24 +430,7 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
 
     def get_is_expired(self, obj):
         return obj.due_date <= timezone.now()
-class TeacherQuizListSerializer(serializers.ModelSerializer):
-    teacher_name = serializers.CharField(
-        source="created_by.email",
-        read_only=True
-    )
+    
 
-    questions_count = serializers.SerializerMethodField()
 
-    class Meta:
-        model = Quiz
-        fields = [
-            "id",
-            "title",
-            "teacher_name",
-            "created_at",
-            "questions_count",
-            "is_published",
-        ]
 
-    def get_questions_count(self, obj):
-        return obj.questions.count()

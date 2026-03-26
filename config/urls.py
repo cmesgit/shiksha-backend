@@ -13,7 +13,6 @@ urlpatterns = [
     path("api/dashboard/", include("dashboard.urls")),
     path("api/activity/", include("activity.urls")),
     path("api/materials/", include("materials.urls")),
-    path("api/forum/", include("forum.urls")),
 
 ]
 

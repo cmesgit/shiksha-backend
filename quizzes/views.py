@@ -176,19 +176,30 @@ class StartQuizView(APIView):
 
         if quiz.due_date <= timezone.now():
             raise ValidationError("Quiz expired.")
+        
+        # 🔥 get last attempt
+        last_attempt = QuizAttempt.objects.filter(
+            quiz=quiz,
+            student=request.user
+        ).order_by("-attempt_number").first()
 
-        attempt, _ = QuizAttempt.objects.get_or_create(
+        # 🔥 calculate next attempt number
+        new_attempt_number = 1
+        if last_attempt:
+            new_attempt_number = last_attempt.attempt_number + 1
+
+        # 🔥 create new attempt every time
+        attempt = QuizAttempt.objects.create(
             quiz=quiz,
             student=request.user,
+            attempt_number=new_attempt_number
         )
-
-        if attempt.status == QuizAttempt.STATUS_SUBMITTED:
-            raise ValidationError("Quiz already submitted.")
-
         return Response(
-            {"detail": "Quiz started successfully."},
-            status=status.HTTP_200_OK,
-        )
+    {"detail": "Quiz started successfully."},
+    status=status.HTTP_200_OK,
+)
+
+        
 
 
 class SubmitQuizView(APIView):
@@ -269,16 +280,15 @@ class QuizResultView(APIView):
             pk=pk,
         )
 
-        attempt = get_object_or_404(
-            QuizAttempt.objects.prefetch_related(
-                "answers__question",
-                "answers__selected_choice",
-                "answers__question__choices",
-            ),
+        # ✅ FIXED: properly indented
+        attempt = QuizAttempt.objects.filter(
             quiz=quiz,
             student=request.user,
             status=QuizAttempt.STATUS_SUBMITTED,
-        )
+        ).order_by("-attempt_number").first()
+
+        if not attempt:
+            raise ValidationError("No submitted attempt found.")
 
         result_questions = []
 
@@ -340,8 +350,6 @@ class StudentQuizSubjectsView(APIView):
 
         return Response(list(subjects_map.values()))
 
-
-    from .serializers import TeacherQuizListSerializer
 
 class TeacherSubjectQuizListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]

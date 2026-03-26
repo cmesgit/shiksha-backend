@@ -67,7 +67,7 @@ class Question(models.Model):
     text = models.TextField()
     marks = models.PositiveIntegerField(default=1)
     order = models.PositiveIntegerField(default=0)
-    explanation = models.TextField(blank=True, default="")
+    explanation = models.TextField()
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -142,9 +142,14 @@ class QuizAttempt(models.Model):
     submitted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        
         indexes = [
             models.Index(fields=["student", "quiz"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["quiz", "student", "attempt_number"],
+                name="unique_attempt_per_number"
+            )
         ]
 
     def __str__(self):
