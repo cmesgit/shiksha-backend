@@ -5,7 +5,7 @@ import uuid
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError,PermissionDenied
 
 from courses.models import SubjectTeacher
 from enrollments.models import Enrollment
@@ -169,7 +169,7 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
         attempt = QuizAttempt.objects.filter(
             quiz=obj,
             student=user
-        ).first()
+        ).order_by("-attempt_number").first()
 
         if not attempt:
             return "PENDING"
@@ -183,7 +183,7 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
             quiz=obj,
             student=user,
             status=QuizAttempt.STATUS_SUBMITTED
-        ).first()
+        ).order_by("-attempt_number").first()
 
         return attempt.score if attempt else None
 
@@ -339,7 +339,7 @@ class QuestionResultSerializer(serializers.Serializer):
     selected_choice = serializers.CharField()
     correct_choice = serializers.CharField()
     is_correct = serializers.BooleanField()
-    explanation = serializers.CharField()
+    explanation = serializers.CharField(allow_blank=True, default="No explanation")
 
 
 class QuizResultSerializer(serializers.Serializer):

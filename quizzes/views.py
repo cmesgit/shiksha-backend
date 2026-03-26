@@ -141,7 +141,7 @@ class StudentDashboardView(APIView):
         submitted_ids = QuizAttempt.objects.filter(
             student=request.user,
             status=QuizAttempt.STATUS_SUBMITTED,
-        ).values_list("quiz_id", flat=True)
+        ).values_list("quiz_id", flat=True).distinct()
 
         if status_filter == "completed":
             quizzes = quizzes.filter(id__in=submitted_ids)
