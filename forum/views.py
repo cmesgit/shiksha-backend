@@ -282,8 +282,19 @@ class ListNotificationsView(APIView):
         notifications = Notification.objects.filter(
             recipient=request.user
         ).select_related("sender", "thread")
-        serializer = NotificationSerializer(notifications, many=True)
-        return Response(serializer.data)
+
+        # Pagination
+        page = int(request.query_params.get("page", 1))
+        page_size = int(request.query_params.get("page_size", 8))
+        total = notifications.count()
+        start = (page - 1) * page_size
+        end = start + page_size
+
+        serializer = NotificationSerializer(notifications[start:end], many=True)
+        return Response({
+            "results": serializer.data,
+            "count": total,
+        })
 
 
 class MarkAllNotificationsReadView(APIView):
