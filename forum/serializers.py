@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Tag, ForumPost, Reply, PostUpvote, ReplyUpvote
+from .models import Tag, ForumPost, Reply, PostUpvote, ReplyUpvote, Notification
 
 
 # =====================================================
@@ -99,3 +99,26 @@ class CommentSerializer(serializers.ModelSerializer):
 class CreateCommentSerializer(serializers.Serializer):
     content = serializers.CharField()
     reply_to_comment_id = serializers.IntegerField(required=False, default=None)
+
+
+# =====================================================
+# Notification Serializer
+# =====================================================
+class NotificationSerializer(serializers.ModelSerializer):
+    sender_username = serializers.SerializerMethodField()
+    thread_id = serializers.IntegerField(source="thread.id", read_only=True, default=None)
+
+    class Meta:
+        model = Notification
+        fields = (
+            "id",
+            "notification_type",
+            "message",
+            "thread_id",
+            "sender_username",
+            "is_read",
+            "created_at",
+        )
+
+    def get_sender_username(self, obj):
+        return obj.sender.username

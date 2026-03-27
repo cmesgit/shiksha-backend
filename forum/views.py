@@ -5,14 +5,18 @@ from rest_framework import status
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, Q
 
-from .models import Tag, ForumPost, Reply, PostUpvote, ReplyUpvote
+from .models import Tag, ForumPost, Reply, PostUpvote, ReplyUpvote, Notification
 from .serializers import (
     TagSerializer,
     ForumPostSerializer,
     CreateThreadSerializer,
     CommentSerializer,
     CreateCommentSerializer,
+    NotificationSerializer,
 )
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
 
 
 # =====================================================
@@ -94,6 +98,20 @@ class CreateThreadView(APIView):
         for name in tag_names:
             tag, _ = Tag.objects.get_or_create(name=name.lower().strip())
             post.tags.add(tag)
+
+        # Notify all other users about the new thread
+        other_users = User.objects.exclude(pk=request.user.pk)
+        notifications = [
+            Notification(
+                recipient=user,
+                sender=request.user,
+                notification_type="new_thread",
+                message=f'{request.user.username} posted a new thread: "{post.title}"',
+                thread=post,
+            )
+            for user in other_users
+        ]
+        Notification.objects.bulk_create(notifications)
 
         # Re-fetch with annotations for response
         post = ForumPost.objects.filter(pk=post.pk).annotate(
@@ -183,6 +201,16 @@ class CreateCommentView(APIView):
             reply_to=reply_to,
         )
 
+        # Notify the thread author about the reply
+        if post.author != request.user:
+            Notification.objects.create(
+                recipient=post.author,
+                sender=request.user,
+                notification_type="new_reply",
+                message=f'{request.user.username} replied to your thread: "{post.title}"',
+                thread=post,
+            )
+
         # Re-fetch with annotation
         reply = Reply.objects.filter(pk=reply.pk).annotate(
             upvote_count=Count("upvotes"),
@@ -240,3 +268,39 @@ class ToggleCommentUpvoteView(APIView):
             upvote.delete()
             return Response({"upvoted": False, "upvote_count": reply.upvotes.count()})
         return Response({"upvoted": True, "upvote_count": reply.upvotes.count()})
+
+
+# =====================================================
+# Notification Views
+# =====================================================
+class ListNotificationsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        notifications = Notification.objects.filter(
+            recipient=request.user
+        ).select_related("sender", "thread")
+        serializer = NotificationSerializer(notifications, many=True)
+        return Response(serializer.data)
+
+
+class MarkAllNotificationsReadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        Notification.objects.filter(
+            recipient=request.user, is_read=False
+        ).update(is_read=True)
+        return Response({"detail": "All notifications marked as read."})
+
+
+class MarkNotificationReadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, notification_id):
+        notification = get_object_or_404(
+            Notification, pk=notification_id, recipient=request.user
+        )
+        notification.is_read = True
+        notification.save()
+        return Response({"detail": "Notification marked as read."})

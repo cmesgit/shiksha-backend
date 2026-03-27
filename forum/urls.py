@@ -10,6 +10,9 @@ from .views import (
     DeleteCommentView,
     TogglePostUpvoteView,
     ToggleCommentUpvoteView,
+    ListNotificationsView,
+    MarkAllNotificationsReadView,
+    MarkNotificationReadView,
 )
 
 urlpatterns = [
@@ -30,4 +33,9 @@ urlpatterns = [
     # Upvotes
     path("threads/<int:thread_id>/upvote/", TogglePostUpvoteView.as_view(), name="forum-toggle-post-upvote"),
     path("comments/<int:comment_id>/upvote/", ToggleCommentUpvoteView.as_view(), name="forum-toggle-comment-upvote"),
+
+    # Notifications
+    path("notifications/", ListNotificationsView.as_view(), name="forum-notifications"),
+    path("notifications/read/", MarkAllNotificationsReadView.as_view(), name="forum-mark-all-read"),
+    path("notifications/<int:notification_id>/read/", MarkNotificationReadView.as_view(), name="forum-mark-read"),
 ]

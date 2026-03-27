@@ -96,3 +96,39 @@ class ReplyUpvote(models.Model):
 
     def __str__(self):
         return f"{self.user} upvoted reply on {self.reply.post}"
+
+
+class Notification(models.Model):
+    TYPES = (
+        ("new_thread", "New Thread"),
+        ("new_reply", "New Reply"),
+        ("upvote", "Upvote"),
+    )
+
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="forum_notifications"
+    )
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="sent_notifications"
+    )
+    notification_type = models.CharField(max_length=20, choices=TYPES)
+    message = models.TextField()
+    thread = models.ForeignKey(
+        ForumPost,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="notifications"
+    )
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Notification for {self.recipient}: {self.message}"
