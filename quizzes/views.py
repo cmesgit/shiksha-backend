@@ -474,13 +474,74 @@ class TeacherSubjectQuizListView(generics.ListAPIView):
         )
 
 
-class TeacherQuizAttemptsView(generics.ListAPIView):
+class TeacherQuizAttemptsView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
-    serializer_class = TeacherQuizAttemptSerializer   
+
+    def get(self, request, pk):
+        user = request.user
+
+        if not user.has_role("TEACHER"):
+            raise PermissionDenied("Only teachers allowed.")
+
+        quiz = get_object_or_404(
+            Quiz.objects.select_related("subject"),
+            id=pk
+        )
+
+        if not SubjectTeacher.objects.filter(
+            subject=quiz.subject,
+            teacher=user
+        ).exists():
+            raise PermissionDenied("Not assigned to this subject.")
+
+        attempts = (
+            QuizAttempt.objects
+            .filter(quiz=quiz, status=QuizAttempt.STATUS_SUBMITTED)
+            .select_related("student", "student__profile")
+        )
+
+        # 🔥 GROUPING LOGIC
+        student_map = {}
+
+        for attempt in attempts:
+            student_id = str(attempt.student.id)
+
+            if student_id not in student_map:
+                student_map[student_id] = {
+                    "student_id": attempt.student.id,
+                    "student_name": attempt.student.profile.full_name,
+                    "student_email": attempt.student.email,
+                    "latest_submitted_at": attempt.submitted_at,
+                    "best_score": attempt.score,
+                    "attempts_count": 1,
+                    "total_marks": attempt.quiz.total_marks,
+                }
+            else:
+                student_data = student_map[student_id]
+
+                # update latest submission
+                if attempt.submitted_at > student_data["latest_submitted_at"]:
+                    student_data["latest_submitted_at"] = attempt.submitted_at
+
+                # update best score
+                if attempt.score > student_data["best_score"]:
+                    student_data["best_score"] = attempt.score
+
+                # count attempts
+                student_data["attempts_count"] += 1
+
+        data = list(student_map.values())
+
+        return Response(data)
+    
+class TeacherStudentAttemptsView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+    serializer_class = TeacherQuizAttemptSerializer
 
     def get_queryset(self):
         user = self.request.user
-        quiz_id = self.kwargs["pk"]
+        quiz_id = self.kwargs["quiz_id"]
+        student_id = self.kwargs["student_id"]
 
         if not user.has_role("TEACHER"):
             raise PermissionDenied("Only teachers allowed.")
@@ -490,7 +551,6 @@ class TeacherQuizAttemptsView(generics.ListAPIView):
             id=quiz_id
         )
 
-
         if not SubjectTeacher.objects.filter(
             subject=quiz.subject,
             teacher=user
@@ -499,10 +559,15 @@ class TeacherQuizAttemptsView(generics.ListAPIView):
 
         return (
             QuizAttempt.objects
-            .filter(quiz=quiz, status=QuizAttempt.STATUS_SUBMITTED)
+            .filter(
+                quiz=quiz,
+                student_id=student_id,
+                status=QuizAttempt.STATUS_SUBMITTED
+            )
             .select_related("student", "student__profile")
-            .order_by("-submitted_at")
+            .order_by("attempt_number")  # IMPORTANT
         )
+    
 class TeacherQuizAttemptDetailView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
 

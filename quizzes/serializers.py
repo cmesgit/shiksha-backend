@@ -431,6 +431,14 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
     def get_is_expired(self, obj):
         return obj.due_date <= timezone.now()
     
+class TeacherQuizStudentSummarySerializer(serializers.Serializer):
+    student_id = serializers.UUIDField()
+    student_name = serializers.CharField()
+    student_email = serializers.EmailField()
 
+    latest_submitted_at = serializers.DateTimeField()
+    best_score = serializers.FloatField()
+    total_marks = serializers.IntegerField()
+    attempts_count = serializers.IntegerField()
 
 
