@@ -27,60 +27,99 @@ class DashboardView(APIView):
 
         user = request.user
 
-        # enrolled courses
-        course_ids = Enrollment.objects.filter(
+        # 🔥 DETECT ROLE (simple + safe)
+        is_student = Enrollment.objects.filter(
             user=user,
             status=Enrollment.STATUS_ACTIVE
-        ).values_list("course_id", flat=True)
+        ).exists()
 
-        # subjects
-        subject_ids = Subject.objects.filter(
-            course_id__in=course_ids
-        ).values_list("id", flat=True)
+        # =========================
+        # 👨‍🎓 STUDENT DASHBOARD
+        # =========================
+        if is_student:
 
-        # chapters
-        chapter_ids = Chapter.objects.filter(
-            subject_id__in=subject_ids
-        ).values_list("id", flat=True)
+            course_ids = Enrollment.objects.filter(
+                user=user,
+                status=Enrollment.STATUS_ACTIVE
+            ).values_list("course_id", flat=True)
 
-        # live sessions
-        sessions = (
-            LiveSession.objects
-            .filter(
-                subject_id__in=subject_ids,
-                start_time__gte=timezone.now()
+            subject_ids = Subject.objects.filter(
+                course_id__in=course_ids
+            ).values_list("id", flat=True)
+
+            chapter_ids = Chapter.objects.filter(
+                subject_id__in=subject_ids
+            ).values_list("id", flat=True)
+
+            sessions = (
+                LiveSession.objects
+                .filter(
+                    subject_id__in=subject_ids,
+                    start_time__gte=timezone.now()
+                )
+                .select_related("subject", "created_by")
+                .order_by("start_time")[:6]
             )
-            .select_related("subject", "created_by")
-            .order_by("start_time")[:6]
-        )
 
-        # assignments
-        assignments = (
-            Assignment.objects
-            .filter(chapter_id__in=chapter_ids)
-            .select_related("chapter__subject")
-            .order_by("due_date")[:5]
-        )
-
-        # quizzes
-        quizzes = (
-            Quiz.objects
-            .filter(
-                subject_id__in=subject_ids,
-                is_published=True
+            assignments = (
+                Assignment.objects
+                .filter(chapter_id__in=chapter_ids)
+                .select_related("chapter__subject")
+                .order_by("due_date")[:5]
             )
-            .select_related("created_by")
-            .order_by("due_date")[:5]
-        )
 
-        # notifications from activity
+            quizzes = (
+                Quiz.objects
+                .filter(
+                    subject_id__in=subject_ids,
+                    is_published=True
+                )
+                .select_related("created_by")
+                .order_by("due_date")[:5]
+            )
+
+        # =========================
+        # 👨‍🏫 TEACHER DASHBOARD
+        # =========================
+        else:
+
+            sessions = (
+                LiveSession.objects
+                .filter(
+                    created_by=user,
+                    start_time__gte=timezone.now()
+                )
+                .select_related("subject", "created_by")
+                .order_by("start_time")[:6]
+            )
+
+            assignments = (
+                Assignment.objects
+                .filter(created_by=user)
+                .select_related("chapter__subject")
+                .order_by("due_date")[:5]
+            )
+
+            quizzes = (
+                Quiz.objects
+                .filter(
+                    created_by=user,
+                    is_published=True
+                )
+                .select_related("created_by")
+                .order_by("due_date")[:5]
+            )
+
+        # =========================
+        # 🔔 COMMON (both roles)
+        # =========================
+
         notifications = (
             Activity.objects
             .filter(user=user)
             .order_by("-created_at")[:10]
         )
 
-        # schedule items
         schedule = (
             Activity.objects
             .filter(user=user)
@@ -88,24 +127,9 @@ class DashboardView(APIView):
         )
 
         return Response({
-
-            "sessions": DashboardSessionSerializer(
-                sessions, many=True
-            ).data,
-
-            "assignments": DashboardAssignmentSerializer(
-                assignments, many=True
-            ).data,
-
-            "quizzes": DashboardQuizSerializer(
-                quizzes, many=True
-            ).data,
-
-            "notifications": DashboardActivitySerializer(
-                notifications, many=True
-            ).data,
-
-            "schedule": DashboardActivitySerializer(
-                schedule, many=True
-            ).data
+            "sessions": DashboardSessionSerializer(sessions, many=True).data,
+            "assignments": DashboardAssignmentSerializer(assignments, many=True).data,
+            "quizzes": DashboardQuizSerializer(quizzes, many=True).data,
+            "notifications": DashboardActivitySerializer(notifications, many=True).data,
+            "schedule": DashboardActivitySerializer(schedule, many=True).data
         })
