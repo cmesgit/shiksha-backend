@@ -34,7 +34,11 @@ from accounts.throttles import (
 from .serializers import (
     SignupSerializer,
     UserMeSerializer,
+    StudentFormFillupSerializer,
+    TeacherFormFillupSerializer,
 )
+
+from .models import TeacherProfile
 
 from .permissions import IsEmailVerified
 
@@ -322,6 +326,83 @@ class ApproveTeacherRoleView(APIView):
             {"detail": "Teacher role approved."},
             status=status.HTTP_200_OK,
         )
+
+
+# =====================================================
+# FORM FILLUP
+# =====================================================
+
+class FormFillupView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def _is_teacher(self, user):
+        return "TEACHER" in user.get_active_roles()
+
+    def get(self, request):
+        user = request.user
+        is_teacher = self._is_teacher(user)
+
+        if is_teacher:
+            profile = user.profile
+            tp = getattr(user, "teacher_profile", None)
+
+            data = {
+                "form_type": "teacher",
+                "name": profile.full_name or "",
+                "email": user.email,
+                "phone": profile.phone or "",
+                "gender": tp.gender if tp else "",
+                "date_of_birth": tp.date_of_birth if tp else None,
+                "father_name": tp.father_name if tp else "",
+                "father_phone": tp.father_phone if tp else "",
+                "mother_name": tp.mother_name if tp else "",
+                "mother_phone": tp.mother_phone if tp else "",
+                "current_address": tp.current_address if tp else "",
+                "permanent_address": tp.permanent_address if tp else "",
+                "same_as_current": tp.same_as_current if tp else False,
+                "highest_qualification": tp.highest_qualification if tp else "",
+                "other_qualification": tp.other_qualification if tp else "",
+                "subject_specialization": tp.subject_specialization if tp else "",
+                "teaching_experience_years": tp.teaching_experience_years if tp else 0,
+                "previous_institution": tp.previous_institution if tp else "",
+            }
+        else:
+            profile = user.profile
+            data = {
+                "form_type": "student",
+                "name": profile.full_name or "",
+                "email": user.email,
+                "phone": profile.phone or "",
+                "date_of_birth": profile.date_of_birth,
+                "father_name": profile.father_name or "",
+                "father_phone": profile.father_phone or "",
+                "mother_name": profile.mother_name or "",
+                "guardian": profile.guardian or "",
+                "guardian_phone": profile.guardian_phone or "",
+                "current_address": profile.current_address or "",
+                "permanent_address": profile.permanent_address or "",
+                "same_as_current": profile.same_as_current,
+            }
+
+        return Response(data)
+
+    def put(self, request):
+        user = request.user
+        is_teacher = self._is_teacher(user)
+
+        if is_teacher:
+            serializer = TeacherFormFillupSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.update(user, serializer.validated_data)
+        else:
+            profile = user.profile
+            serializer = StudentFormFillupSerializer(
+                profile, data=request.data, partial=False
+            )
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+
+        return Response({"detail": "Profile updated successfully."})
 
 
 # =====================================================

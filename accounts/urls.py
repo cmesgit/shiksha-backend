@@ -7,6 +7,7 @@ from .views import (
     VerifyEmailView,
     ResendVerificationEmailView,
     RefreshView,
+    FormFillupView,
 )
 
 urlpatterns = [
@@ -17,4 +18,5 @@ urlpatterns = [
     path("verify-email/", VerifyEmailView.as_view()),
     path("resend-verification/", ResendVerificationEmailView.as_view()),
     path("refresh/", RefreshView.as_view()),
+    path("form-fillup/", FormFillupView.as_view()),
 ]

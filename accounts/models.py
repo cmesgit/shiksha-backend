@@ -78,7 +78,23 @@ class Profile(models.Model):
         null=True
     )
 
+    # Form Fillup fields
+    date_of_birth = models.DateField(null=True, blank=True)
+    father_name = models.CharField(max_length=150, blank=True)
+    father_phone = models.CharField(max_length=15, blank=True)
+    mother_name = models.CharField(max_length=150, blank=True)
+    guardian = models.CharField(max_length=150, blank=True)
+    guardian_phone = models.CharField(max_length=15, blank=True)
+    current_address = models.TextField(blank=True)
+    permanent_address = models.TextField(blank=True)
+    same_as_current = models.BooleanField(default=False)
+
     updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        if self.same_as_current:
+            self.permanent_address = self.current_address
+        super().save(*args, **kwargs)
 
     def avatar_type(self):
         if self.avatar_image:
@@ -102,8 +118,12 @@ class Profile(models.Model):
         return bool(
             self.full_name
             and self.phone
+            and self.date_of_birth
+            and self.father_name
+            and self.mother_name
+            and self.current_address
+            and (self.permanent_address or self.same_as_current)
             and self.user.is_verified
-            and self.user.enrollments.filter(status="ACTIVE").exists()
         )
 
 
@@ -307,6 +327,24 @@ class TeacherProfile(models.Model):
         (ROLE_ASSISTANT, "Assistant"),
     ]
 
+    GENDER_CHOICES = [
+        ("male", "Male"),
+        ("female", "Female"),
+        ("other", "Other"),
+    ]
+
+    QUALIFICATION_CHOICES = [
+        ("high_school", "High School"),
+        ("intermediate", "Intermediate"),
+        ("bachelors", "Bachelor's Degree"),
+        ("masters", "Master's Degree"),
+        ("phd", "Ph.D."),
+        ("bed", "B.Ed."),
+        ("med", "M.Ed."),
+        ("diploma", "Diploma"),
+        ("other", "Other"),
+    ]
+
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -331,7 +369,47 @@ class TeacherProfile(models.Model):
 
     is_approved = models.BooleanField(default=False)
 
+    # Form Fillup fields
+    gender = models.CharField(max_length=10, choices=GENDER_CHOICES, blank=True)
+    date_of_birth = models.DateField(null=True, blank=True)
+    father_name = models.CharField(max_length=150, blank=True)
+    father_phone = models.CharField(max_length=15, blank=True)
+    mother_name = models.CharField(max_length=150, blank=True)
+    mother_phone = models.CharField(max_length=15, blank=True)
+    current_address = models.TextField(blank=True)
+    permanent_address = models.TextField(blank=True)
+    same_as_current = models.BooleanField(default=False)
+    highest_qualification = models.CharField(
+        max_length=20, choices=QUALIFICATION_CHOICES, blank=True
+    )
+    other_qualification = models.CharField(max_length=150, blank=True)
+    subject_specialization = models.CharField(max_length=200, blank=True)
+    teaching_experience_years = models.PositiveIntegerField(default=0)
+    previous_institution = models.CharField(max_length=200, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if self.same_as_current:
+            self.permanent_address = self.current_address
+        super().save(*args, **kwargs)
+
+    @property
+    def is_complete(self):
+        profile = getattr(self.user, "profile", None)
+        return bool(
+            profile
+            and profile.full_name
+            and profile.phone
+            and self.gender
+            and self.date_of_birth
+            and self.father_name
+            and self.mother_name
+            and self.current_address
+            and (self.permanent_address or self.same_as_current)
+            and self.highest_qualification
+            and self.subject_specialization
+        )
 
     def __str__(self):
         return f"TeacherProfile → {self.user.email}"
