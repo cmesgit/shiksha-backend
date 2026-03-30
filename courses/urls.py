@@ -10,7 +10,8 @@ from .views import (
     DeleteCourseView,
     SubjectDetailView,
     SubjectDashboardView,
-    SubjectChaptersView
+    SubjectChaptersView,
+    SubjectStudentsView,
 )
 
 # recordings
@@ -53,6 +54,15 @@ urlpatterns = [
     path(
         "subjects/<uuid:subject_id>/chapters/",
         SubjectChaptersView.as_view(),
+    ),
+
+    # ============================
+    # STUDENTS
+    # ============================
+
+    path(
+        "subjects/<uuid:subject_id>/students/",
+        SubjectStudentsView.as_view(),
     ),
 
     # ============================

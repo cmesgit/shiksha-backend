@@ -50,7 +50,13 @@ class CustomUserAdmin(UserAdmin):
 
 @admin.register(Profile)
 class ProfileAdmin(admin.ModelAdmin):
-    list_display = ("user",)
+    list_display = ("user", "full_name", "phone", "student_id", "date_of_birth", "is_complete")
+    search_fields = ("user__email", "full_name", "student_id", "phone")
+    list_filter = ("same_as_current",)
+
+    def is_complete(self, obj):
+        return obj.is_complete
+    is_complete.boolean = True
 
 
 @admin.register(Role)
@@ -71,11 +77,17 @@ class UserRoleAdmin(admin.ModelAdmin):
 class TeacherProfileAdmin(admin.ModelAdmin):
     list_display = (
         "user",
-        "qualification",
-        "rating",
+        "gender",
+        "highest_qualification",
+        "subject_specialization",
+        "teaching_experience_years",
         "is_approved",
-        "created_at",
+        "is_complete",
     )
 
-    list_filter = ("is_approved",)
-    search_fields = ("user__email", "qualification")
+    list_filter = ("is_approved", "gender", "highest_qualification")
+    search_fields = ("user__email", "subject_specialization", "father_name")
+
+    def is_complete(self, obj):
+        return obj.is_complete
+    is_complete.boolean = True

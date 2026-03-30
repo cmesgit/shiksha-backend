@@ -242,6 +242,11 @@ class SubjectDashboardView(APIView):
             "recordingsCount": 0,
             "studyMaterialsCount": 0,
             "upcomingSessions": [],
+
+            "studentsCount": Enrollment.objects.filter(
+                course=subject.course,
+                status=Enrollment.STATUS_ACTIVE,
+            ).count(),
         })
 
 
@@ -298,3 +303,65 @@ class SubjectChaptersView(APIView):
         serializer = ChapterSerializer(chapters, many=True)
 
         return Response(serializer.data)
+
+
+# =====================================================
+# TEACHER — STUDENTS LIST FOR A SUBJECT
+# =====================================================
+
+class SubjectStudentsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, subject_id):
+        user = request.user
+
+        if not user.has_role(Role.TEACHER):
+            return Response(
+                {"detail": "Only teachers allowed."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        subject = get_object_or_404(Subject, id=subject_id)
+
+        # Verify teacher is assigned to this subject
+        if not SubjectTeacher.objects.filter(
+            subject=subject, teacher=user
+        ).exists():
+            return Response(
+                {"detail": "You are not assigned to this subject."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        enrollments = (
+            Enrollment.objects.filter(
+                course=subject.course,
+                status=Enrollment.STATUS_ACTIVE,
+            )
+            .select_related("user", "user__profile")
+            .order_by("user__profile__full_name")
+        )
+
+        students = []
+        for enrollment in enrollments:
+            u = enrollment.user
+            profile = getattr(u, "profile", None)
+
+            students.append({
+                "id": str(u.id),
+                "email": u.email,
+                "username": u.username,
+                "full_name": profile.full_name if profile else "",
+                "phone": profile.phone if profile else "",
+                "student_id": profile.student_id if profile else "",
+                "avatar_type": profile.avatar_type() if profile else None,
+                "avatar": profile.avatar_value() if profile else None,
+                "enrolled_at": enrollment.enrolled_at,
+                "batch_code": enrollment.batch_code or "",
+            })
+
+        return Response({
+            "subject_name": subject.name,
+            "course_title": subject.course.title,
+            "total_students": len(students),
+            "students": students,
+        })
