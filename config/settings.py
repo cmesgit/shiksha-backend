@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     "dashboard",
     "activity.apps.ActivityConfig",
     "forum",
+    "sessions_app",
 ]
 
 MIDDLEWARE = [
