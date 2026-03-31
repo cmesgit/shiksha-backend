@@ -1,6 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from datetime import timedelta
 from django.utils import timezone
 
 from enrollments.models import Enrollment
@@ -51,14 +52,18 @@ class DashboardView(APIView):
                 subject_id__in=subject_ids
             ).values_list("id", flat=True)
 
+            today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_end = today_start + timedelta(days=1)
+
             sessions = (
                 LiveSession.objects
                 .filter(
                     subject_id__in=subject_ids,
-                    start_time__gte=timezone.now()
+                    start_time__gte=today_start,
+                    start_time__lt=today_end
                 )
                 .select_related("subject", "created_by")
-                .order_by("start_time")[:6]
+                .order_by("start_time")
             )
 
             assignments = (
@@ -83,15 +88,19 @@ class DashboardView(APIView):
         # =========================
         else:
 
-            # ✅ Live sessions (correct)
+            today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_end = today_start + timedelta(days=1)
+
+            # ✅ Live sessions (today only)
             sessions = (
                 LiveSession.objects
                 .filter(
                     created_by=user,
-                    start_time__gte=timezone.now()
+                    start_time__gte=today_start,
+                    start_time__lt=today_end
                 )
                 .select_related("subject", "created_by")
-                .order_by("start_time")[:6]
+                .order_by("start_time")
             )
 
             # ✅ Assignments (FIXED RELATION)
