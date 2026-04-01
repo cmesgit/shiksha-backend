@@ -62,7 +62,7 @@ class ChapterMaterials(APIView):
 
 
 # ===============================
-# CREATE STUDY MATERIAL (FIXED)
+# CREATE STUDY MATERIAL (UPDATED)
 # ===============================
 
 class UploadStudyMaterial(APIView):
@@ -74,12 +74,7 @@ class UploadStudyMaterial(APIView):
         chapter = get_object_or_404(Chapter, id=chapter_id)
 
         title = request.data.get("title")
-
-        # ✅ FIX: support JSON + FormData
-        file_ids = request.data.get("file_ids", [])
-
-        if not isinstance(file_ids, list):
-            file_ids = request.data.getlist("file_ids")
+        file_ids = request.data.getlist("file_ids")
 
         if not title:
             return Response(
@@ -100,8 +95,11 @@ class UploadStudyMaterial(APIView):
             uploaded_by=request.user
         )
 
-        # ✅ attach files
-        MaterialFile.objects.filter(id__in=file_ids).update(material=material)
+        files = MaterialFile.objects.filter(id__in=file_ids)
+
+        for f in files:
+            f.material = material
+            f.save()
 
         serializer = StudyMaterialSerializer(
             material,
