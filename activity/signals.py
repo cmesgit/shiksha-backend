@@ -36,10 +36,11 @@ def assignment_created(sender, instance, created, **kwargs):
             due_date=instance.due_date
         )
 
-    # 🔥 notify teacher
-    if instance.created_by:
+    # 🔥 notify teacher (FIXED)
+    user = getattr(instance, "created_by", None)
+    if user:
         create_activity(
-            user=instance.created_by,
+            user=user,
             obj=instance,
             type=Activity.TYPE_ASSIGNMENT,
             title=f"You created: {instance.title}",
@@ -53,7 +54,6 @@ def assignment_created(sender, instance, created, **kwargs):
 @receiver(post_save, sender=Quiz)
 def quiz_published(sender, instance, created, **kwargs):
 
-    # only when published
     if not instance.is_published:
         return
 
@@ -74,10 +74,11 @@ def quiz_published(sender, instance, created, **kwargs):
             due_date=instance.due_date
         )
 
-    # 🔥 notify teacher
-    if instance.created_by:
+    # 🔥 notify teacher (FIXED)
+    user = getattr(instance, "created_by", None)
+    if user:
         create_activity(
-            user=instance.created_by,
+            user=user,
             obj=instance,
             type=Activity.TYPE_QUIZ,
             title=f"You published quiz: {instance.title}",
@@ -94,7 +95,7 @@ def session_created(sender, instance, created, **kwargs):
     if not created:
         return
 
-    course = instance.course  # ✅ correct
+    course = instance.course
 
     students = Enrollment.objects.filter(
         course=course,
@@ -111,12 +112,14 @@ def session_created(sender, instance, created, **kwargs):
             due_date=instance.start_time
         )
 
-    # 🔥 notify teacher
-    if instance.created_by:
+    # 🔥 notify teacher (FIXED)
+    user = getattr(instance, "created_by", None)
+    if user:
         create_activity(
-            user=instance.created_by,
+            user=user,
             obj=instance,
             type=Activity.TYPE_SESSION,
             title=f"You scheduled session: {instance.title}",
             due_date=instance.start_time
         )
+        
