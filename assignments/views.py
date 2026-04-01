@@ -207,7 +207,7 @@ class TeacherCreateAssignmentView(APIView):
 
         serializer = TeacherAssignmentCreateSerializer(
             data=request.data,
-            context={"request": request}   # required for serializer validation
+            context={"request": request}
         )
 
         serializer.is_valid(raise_exception=True)
@@ -216,10 +216,49 @@ class TeacherCreateAssignmentView(APIView):
 
         return Response(
             {
-                "message": "Assignment created successfully",
-                "data": TeacherAssignmentListSerializer(assignment).data
+                "message": "Assignment created successfully"
             },
             status=status.HTTP_201_CREATED
+        )
+
+
+class TeacherUpdateAssignmentView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, assignment_id):
+        user = request.user
+
+        if not user.has_role(Role.TEACHER):
+            raise PermissionDenied("Only teachers allowed.")
+
+        assignment = get_object_or_404(
+            Assignment.objects.select_related("chapter__subject"),
+            id=assignment_id
+        )
+
+        subject = assignment.chapter.subject
+
+        if not subject.subject_teachers.filter(teacher=user).exists():
+            raise PermissionDenied("Not assigned to this subject.")
+
+        if assignment.due_date < timezone.now():
+            return Response(
+                {"detail": "Cannot edit expired assignment."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = TeacherAssignmentUpdateSerializer(
+            assignment,
+            data=request.data,
+            partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(
+            {
+                "message": "Assignment updated successfully"
+            }
         )
 
 
