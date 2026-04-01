@@ -32,7 +32,8 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "created_at",
-            "files"
+            "files",
+            "chapter_title"
         ]
 
     def get_files(self, obj):
