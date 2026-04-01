@@ -18,11 +18,6 @@ BLOCKED_EXTENSIONS = [
 
 
 def validate_assignment_file(file):
-    """
-    Allows all file types except dangerous executables/scripts.
-    Suitable for any LMS platform (PC, Android, iPhone).
-    Max file size: 100MB
-    """
     if file is None:
         return file
 
@@ -117,11 +112,11 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
             "description",
             "attachment",
             "due_date",
-            "assigned_on",          
-            "chapter_name",         
+            "assigned_on",
+            "chapter_name",
             "subject_name",
             "course_name",
-            "teacher_name",         
+            "teacher_name",
             "submission_status",
             "submitted_file",
             "submitted_at",
@@ -147,7 +142,6 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
         submission = self.get_submission(obj)
 
         if submission and submission.submitted_file:
-            # ✅ FULL URL FIX
             return request.build_absolute_uri(
                 submission.submitted_file.url
             )
@@ -166,7 +160,7 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
             return teacher.teacher.profile.full_name
 
         return None
-    
+
     def get_submission_status_label(self, obj):
         submission = self.get_submission(obj)
 
@@ -200,17 +194,21 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
             "attachment",
         )
 
+    # ✅ FIXED ONLY THIS PART
     def validate(self, attrs):
-        if attrs["due_date"] < timezone.now():
-            raise serializers.ValidationError(
-                "Due date must be in the future."
-            )
+        due_date = attrs.get("due_date")
+
+        if due_date:
+            if due_date.date() < timezone.now().date():
+                raise serializers.ValidationError(
+                    "Due date must be today or in the future."
+                )
+
         return attrs
 
     def validate_attachment(self, value):
         return validate_assignment_file(value)
 
-    # ✅ corrected validator name
     def validate_chapter(self, chapter):
         user = self.context["request"].user
 
@@ -293,3 +291,4 @@ class TeacherSubmissionListSerializer(serializers.ModelSerializer):
             "submitted_at",
             "submission_status",
         )
+        
