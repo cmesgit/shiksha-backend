@@ -12,30 +12,6 @@ from courses.models import Chapter
 
 
 # ===============================
-# UPLOAD FILE (NEW - STEP 1)
-# ===============================
-
-class UploadMaterialFile(APIView):
-
-    permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
-
-    def post(self, request):
-
-        file = request.FILES.get("file")
-
-        if not file:
-            return Response({"detail": "No file provided"}, status=400)
-
-        material_file = MaterialFile.objects.create(file=file)
-
-        return Response({
-            "id": str(material_file.id),
-            "file_url": material_file.file.url
-        })
-
-
-# ===============================
 # LIST MATERIALS OF A CHAPTER
 # ===============================
 
@@ -62,19 +38,20 @@ class ChapterMaterials(APIView):
 
 
 # ===============================
-# CREATE STUDY MATERIAL (UPDATED)
+# UPLOAD STUDY MATERIAL
 # ===============================
 
 class UploadStudyMaterial(APIView):
 
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, chapter_id):
 
         chapter = get_object_or_404(Chapter, id=chapter_id)
 
         title = request.data.get("title")
-        file_ids = request.data.getlist("file_ids")
+        files = request.FILES.getlist("files")
 
         if not title:
             return Response(
@@ -82,7 +59,7 @@ class UploadStudyMaterial(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if not file_ids:
+        if not files:
             return Response(
                 {"detail": "At least one file is required"},
                 status=status.HTTP_400_BAD_REQUEST
@@ -95,11 +72,11 @@ class UploadStudyMaterial(APIView):
             uploaded_by=request.user
         )
 
-        files = MaterialFile.objects.filter(id__in=file_ids)
-
-        for f in files:
-            f.material = material
-            f.save()
+        for file in files:
+            MaterialFile.objects.create(
+                material=material,
+                file=file
+            )
 
         serializer = StudyMaterialSerializer(
             material,
@@ -183,7 +160,7 @@ class StudentSubjectMaterials(APIView):
 
 
 # ===============================
-# MATERIAL DETAIL
+# MATERIAL DETAIL (NEW)
 # ===============================
 
 class StudyMaterialDetail(APIView):

@@ -40,9 +40,7 @@ class MaterialFile(models.Model):
     material = models.ForeignKey(
         StudyMaterial,
         on_delete=models.CASCADE,
-        related_name="files",
-        null=True,
-        blank=True
+        related_name="files"
     )
 
     file = models.FileField(upload_to="study_materials/")

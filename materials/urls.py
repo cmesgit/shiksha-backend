@@ -5,8 +5,7 @@ from .views import (
     DeleteStudyMaterial, 
     SubjectMaterials, 
     StudentSubjectMaterials,
-    StudyMaterialDetail,
-    UploadMaterialFile
+    StudyMaterialDetail
 )
 urlpatterns = [
 
@@ -40,10 +39,6 @@ urlpatterns = [
     path(
         "student/subjects/<uuid:subject_id>/materials/",
         StudentSubjectMaterials.as_view(),
-    ),
-    path(
-        "materials/upload-file/",
-        UploadMaterialFile.as_view(),
     ),
 
 ]
