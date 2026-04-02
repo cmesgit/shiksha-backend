@@ -46,24 +46,44 @@ class UploadStudyMaterial(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
-    def post(self, request, chapter_id):
+    def post(self, request, chapter_id=None):
 
-        chapter = get_object_or_404(Chapter, id=chapter_id)
+        chapter_id = request.data.get("chapter_id")
+        custom_chapter = request.data.get("custom_chapter")
+
+        if chapter_id:
+            chapter = get_object_or_404(Chapter, id=chapter_id)
+
+        elif custom_chapter:
+            subject_id = request.data.get("subject_id")
+
+            if not subject_id:
+                return Response(
+                    {"detail": "Subject is required for custom chapter"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            subject = get_object_or_404(Subject, id=subject_id)
+
+            chapter = Chapter.objects.create(
+                ubject=subject,
+                title=custom_chapter
+            )
+
+        else:
+            return Response(
+                {"detail": "Chapter or custom chapter required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         title = request.data.get("title")
         files = request.FILES.getlist("files")
 
         if not title:
-            return Response(
-                {"detail": "Title is required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"detail": "Title is required"}, status=400)
 
         if not files:
-            return Response(
-                {"detail": "At least one file is required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"detail": "At least one file required"}, status=400)
 
         material = StudyMaterial.objects.create(
             chapter=chapter,
@@ -73,17 +93,11 @@ class UploadStudyMaterial(APIView):
         )
 
         for file in files:
-            MaterialFile.objects.create(
-                material=material,
-                file=file
-            )
+            MaterialFile.objects.create(material=material, file=file)
 
-        serializer = StudyMaterialSerializer(
-            material,
-            context={"request": request}
-        )
+        serializer = StudyMaterialSerializer(material, context={"request": request})
 
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.data, status=201)
 
 
 # ===============================

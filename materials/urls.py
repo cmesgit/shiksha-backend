@@ -20,10 +20,7 @@ urlpatterns = [
         ChapterMaterials.as_view(),
     ),
 
-    path(
-        "chapters/<uuid:chapter_id>/materials/upload/",
-        UploadStudyMaterial.as_view(),
-    ),
+    path("materials/upload/", UploadStudyMaterial.as_view()),
 
     # ✅ GET → material detail
     path(
