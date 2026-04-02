@@ -97,6 +97,9 @@ class DashboardPrivateSessionSerializer(serializers.ModelSerializer):
 
 class DashboardActivitySerializer(serializers.ModelSerializer):
 
+    subject_id = serializers.SerializerMethodField()
+    object_id = serializers.UUIDField(read_only=True)
+
     class Meta:
         model = Activity
         fields = [
@@ -104,5 +107,20 @@ class DashboardActivitySerializer(serializers.ModelSerializer):
             "type",
             "title",
             "due_date",
-            "created_at"
+            "created_at",
+            "subject_id",
+            "object_id",
         ]
+
+    def get_subject_id(self, obj):
+        try:
+            linked = obj.content_object
+            if obj.type == "ASSIGNMENT" and linked:
+                return linked.chapter.subject.id
+            if obj.type == "QUIZ" and linked:
+                return linked.subject.id
+            if obj.type == "SESSION" and linked:
+                return linked.subject.id
+        except Exception:
+            pass
+        return None
