@@ -85,19 +85,28 @@ class TeacherLiveSessionListView(generics.ListAPIView):
         if not user.has_role("TEACHER"):
             raise PermissionDenied("Only teachers allowed.")
 
-        if not subject_id:
-            return LiveSession.objects.none()
-
-        # 🔐 verify teacher assigned
-        if not user.subject_assignments.filter(subject_id=subject_id).exists():
-            raise PermissionDenied("Not assigned to this subject.")
-
         now = timezone.now()
         cutoff = now - timedelta(hours=24)
 
+        if subject_id:
+            # 🔐 verify teacher assigned
+            if not user.subject_assignments.filter(subject_id=subject_id).exists():
+                raise PermissionDenied("Not assigned to this subject.")
+
+            return (
+                LiveSession.objects
+                .filter(subject_id=subject_id)
+                .filter(end_time__gte=cutoff)
+                .select_related("course", "subject", "created_by")
+                .order_by("start_time")
+            )
+
+        # No subject_id — return all sessions across teacher's subjects
+        assigned_subject_ids = user.subject_assignments.values_list("subject_id", flat=True)
+
         return (
             LiveSession.objects
-            .filter(subject_id=subject_id)
+            .filter(subject_id__in=assigned_subject_ids)
             .filter(end_time__gte=cutoff)
             .select_related("course", "subject", "created_by")
             .order_by("start_time")
