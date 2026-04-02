@@ -50,15 +50,30 @@ def generate_livekit_token(
 
     token.with_ttl(timedelta(minutes=10))
 
-    # Resolve publish permission
-    can_publish = allow_publish if allow_publish is not None else is_teacher
+    # Teachers: full publish (camera, mic, screen share)
+    # Students: microphone only
+    if allow_publish is not None:
+        can_publish = allow_publish
+    else:
+        can_publish = is_teacher
 
-    grants = VideoGrants(
-        room_join=True,
-        room=session.room_name,
-        can_publish=can_publish,
-        can_subscribe=True,
-    )
+    if can_publish:
+        # Teacher — full access
+        grants = VideoGrants(
+            room_join=True,
+            room=session.room_name,
+            can_publish=True,
+            can_subscribe=True,
+        )
+    else:
+        # Student — mic only, no camera/screen share
+        grants = VideoGrants(
+            room_join=True,
+            room=session.room_name,
+            can_publish=True,
+            can_publish_sources=["microphone"],
+            can_subscribe=True,
+        )
 
     token.with_grants(grants)
 
