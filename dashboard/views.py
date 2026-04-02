@@ -91,13 +91,24 @@ class DashboardView(APIView):
             today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
             today_end = today_start + timedelta(days=1)
 
-            # ✅ Live sessions (today only)
+            # ✅ Live sessions (today only — for "Upcoming Live Sessions")
             sessions = (
                 LiveSession.objects
                 .filter(
                     created_by=user,
                     start_time__gte=today_start,
                     start_time__lt=today_end
+                )
+                .select_related("subject", "created_by")
+                .order_by("start_time")
+            )
+
+            # ✅ All upcoming sessions (for calendar & schedule)
+            all_sessions = (
+                LiveSession.objects
+                .filter(
+                    created_by=user,
+                    start_time__gte=today_start
                 )
                 .select_related("subject", "created_by")
                 .order_by("start_time")
@@ -111,7 +122,7 @@ class DashboardView(APIView):
                 )
                 .select_related("chapter__subject")
                 .distinct()
-                .order_by("due_date")[:5]
+                .order_by("due_date")
             )
 
             # ✅ Quizzes (usually has created_by)
@@ -121,8 +132,8 @@ class DashboardView(APIView):
                     created_by=user,
                     is_published=True
                 )
-                .select_related("created_by")
-                .order_by("due_date")[:5]
+                .select_related("created_by", "subject")
+                .order_by("due_date")
             )
 
         # =========================
@@ -143,6 +154,9 @@ class DashboardView(APIView):
 
         return Response({
             "sessions": DashboardSessionSerializer(sessions, many=True).data,
+            "all_sessions": DashboardSessionSerializer(
+                all_sessions if not is_student else sessions, many=True
+            ).data,
             "assignments": DashboardAssignmentSerializer(assignments, many=True).data,
             "quizzes": DashboardQuizSerializer(quizzes, many=True).data,
             "notifications": DashboardActivitySerializer(notifications, many=True).data,

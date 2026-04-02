@@ -8,6 +8,7 @@ from livestream.models import LiveSession
 class DashboardSessionSerializer(serializers.ModelSerializer):
 
     subject = serializers.CharField(source="subject.name")
+    subject_id = serializers.IntegerField(source="subject.id", read_only=True)
     topic = serializers.CharField(source="title")
     teacher = serializers.CharField(source="created_by.email")
     dateTime = serializers.DateTimeField(source="start_time")
@@ -17,6 +18,7 @@ class DashboardSessionSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "subject",
+            "subject_id",
             "topic",
             "teacher",
             "dateTime"
@@ -27,6 +29,8 @@ class DashboardAssignmentSerializer(serializers.ModelSerializer):
 
     teacher = serializers.SerializerMethodField()
     due = serializers.DateTimeField(source="due_date")
+    subject_id = serializers.IntegerField(source="chapter.subject.id", read_only=True)
+    subject_name = serializers.CharField(source="chapter.subject.name", read_only=True)
 
     class Meta:
         model = Assignment
@@ -34,7 +38,9 @@ class DashboardAssignmentSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "teacher",
-            "due"
+            "due",
+            "subject_id",
+            "subject_name",
         ]
 
     def get_teacher(self, obj):
@@ -51,6 +57,8 @@ class DashboardQuizSerializer(serializers.ModelSerializer):
 
     teacher = serializers.CharField(source="created_by.email")
     due = serializers.DateTimeField(source="due_date")
+    subject_id = serializers.IntegerField(source="subject.id", read_only=True)
+    subject_name = serializers.CharField(source="subject.name", read_only=True)
 
     class Meta:
         model = Quiz
@@ -58,7 +66,9 @@ class DashboardQuizSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "teacher",
-            "due"
+            "due",
+            "subject_id",
+            "subject_name",
         ]
 
 
