@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     "activity.apps.ActivityConfig",
     "forum",
     "sessions_app",
+    "channels",
 ]
 
 MIDDLEWARE = [
@@ -264,3 +265,15 @@ BUNNY_EMBED = os.getenv(
     "BUNNY_EMBED",
     "https://iframe.mediadelivery.net/embed"
 )
+
+
+ASGI_APPLICATION = "config.asgi.application"
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("127.0.0.1", 6379)],
+        },
+    },
+}
