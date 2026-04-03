@@ -25,7 +25,7 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
 
     files = serializers.SerializerMethodField()
 
-    # ✅ NEW FIELD
+    # ✅ FIELD
     chapter_title = serializers.SerializerMethodField()
 
     class Meta:
@@ -35,7 +35,7 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "created_at",
-            "chapter_title",  # ✅ added
+            "chapter_title",
             "files"
         ]
 
@@ -47,8 +47,8 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
             context={"request": request}
         ).data
 
-    # ✅ NEW METHOD
+    # ✅ FIXED METHOD
     def get_chapter_title(self, obj):
         if obj.chapter:
             return obj.chapter.title
-        return obj.custom_chapter
+        return obj.custom_chapter or "No chapter"
