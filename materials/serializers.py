@@ -10,7 +10,7 @@ class MaterialFileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = MaterialFile
-        fields = ["id", "file_url", "file_name","file_size"]
+        fields = ["id", "file_url", "file_name", "file_size"]
 
     def get_file_name(self, obj):
         return obj.filename()
@@ -20,15 +20,24 @@ class MaterialFileSerializer(serializers.ModelSerializer):
         if request:
             return request.build_absolute_uri(obj.file.url)
         return obj.file.url
+
     def get_file_size(self, obj):
-        size = obj.file.size  # bytes
+        if not obj.file:
+            return None
+
+        size = obj.file.size
+
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{round(size / 1024, 1)} KB"
+        else:
+            return f"{round(size / (1024 * 1024), 1)} MB"
 
 
 class StudyMaterialSerializer(serializers.ModelSerializer):
 
     files = serializers.SerializerMethodField()
-
-    # ✅ FIELD
     chapter_title = serializers.SerializerMethodField()
 
     class Meta:
@@ -50,7 +59,6 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
             context={"request": request}
         ).data
 
-    # ✅ FIXED METHOD
     def get_chapter_title(self, obj):
         if obj.chapter:
             return obj.chapter.title
