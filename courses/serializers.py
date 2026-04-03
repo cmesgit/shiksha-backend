@@ -63,6 +63,7 @@ class BoardSerializer(serializers.ModelSerializer):
 
 class CourseSerializer(serializers.ModelSerializer):
     board = BoardSerializer(read_only=True)
+    stream_name = serializers.CharField(source="stream.name", read_only=True)
 
     class Meta:
         model = Course
@@ -70,6 +71,7 @@ class CourseSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "description",
+            "stream_name",
             "board",
             "created_at",
             "updated_at",

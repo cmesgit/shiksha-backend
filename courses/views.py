@@ -313,7 +313,7 @@ class TeacherMyClassesView(APIView):
         subjects = (
             Subject.objects
             .filter(subject_teachers__teacher=user)
-            .select_related("course")
+            .select_related("course__stream")
             .distinct()
         )
 
@@ -330,6 +330,7 @@ class TeacherMyClassesView(APIView):
                 "subject_name": subject.name,
                 "course_id": str(subject.course.id),
                 "course_title": subject.course.title,
+                "stream_name": subject.course.stream.name if subject.course.stream else None,
                 "students_count": students_count,
             })
 
@@ -435,7 +436,7 @@ class TeacherAllStudentsView(APIView):
         subjects = (
             Subject.objects
             .filter(subject_teachers__teacher=user)
-            .select_related("course")
+            .select_related("course__stream")
             .distinct()
         )
 

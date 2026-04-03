@@ -10,10 +10,10 @@ from .models import Board
 
 @admin.register(Course)
 class CourseAdmin(admin.ModelAdmin):
-    list_display = ("title", "board", "created_at")
-    search_fields = ("title", "board__name")
-    list_filter = ("created_at", "board")
-    autocomplete_fields = ["board"]
+    list_display = ("title", "board", "created_at", "stream")
+    search_fields = ("title", "board__name", "stream__name")
+    list_filter = ("created_at", "board", "stream")
+    autocomplete_fields = ["board", "stream"]
 
 # =========================
 # SUBJECT TEACHER INLINE
