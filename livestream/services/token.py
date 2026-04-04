@@ -10,7 +10,6 @@ def generate_livekit_token(
     session,
     is_teacher=False,
     display_name=None,
-    allow_publish=None,
 ):
     token = AccessToken(
         settings.LIVEKIT_API_KEY,
@@ -19,7 +18,7 @@ def generate_livekit_token(
 
     token.with_identity(str(user.id))
 
-    # Resolve display name
+    # ✅ display name
     if display_name is None:
         profile = getattr(user, "profile", None)
         if profile and getattr(profile, "full_name", None):
@@ -29,27 +28,27 @@ def generate_livekit_token(
 
     token.with_name(display_name)
 
-    # ✅ safer metadata (future-proof)
+    # ✅ metadata (role info)
     token.with_metadata(json.dumps({
-        "role": "teacher" if is_teacher else "student",
+        "role": "presenter" if is_teacher else "viewer",
+        "user_type": "teacher" if user.has_role("TEACHER") else "student",
         "user_id": str(user.id),
     }, default=str))
 
-    # ✅ FIX: increase TTL (important for reconnections)
+    # ✅ TTL
     token.with_ttl(timedelta(hours=2))
 
-    # ✅ FIX: safe room name fallback
+    # ✅ room
     room_name = getattr(session, "room_name", None)
     if not room_name:
         raise ValueError("Session has no room_name")
 
-    # Teachers: full publish
-    if allow_publish is not None:
-        can_publish = allow_publish
-    else:
-        can_publish = is_teacher
+    # =========================================================
+    # 🔥 FINAL ROLE-BASED PERMISSIONS (NO BUGS)
+    # =========================================================
 
-    if can_publish:
+    if is_teacher:
+        # 🎤 PRESENTER (creator only)
         grants = VideoGrants(
             room_join=True,
             room=room_name,
@@ -57,11 +56,11 @@ def generate_livekit_token(
             can_subscribe=True,
         )
     else:
-        # ✅ FIX: safer for compatibility
+        # 👀 VIEWER (students + other teachers)
         grants = VideoGrants(
             room_join=True,
             room=room_name,
-            can_publish=True,  # still needed for mic
+            can_publish=False,   # ❌ BLOCK MIC/CAMERA
             can_subscribe=True,
         )
 

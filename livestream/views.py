@@ -211,15 +211,16 @@ def join_live_session(request, session_id):
         if not session.subject.subject_teachers.filter(teacher=user).exists():
             return Response({"detail": "Not assigned"}, status=403)
 
-        is_teacher = True
+        # 🔥 ONLY CREATOR IS PRESENTER
+        is_creator = str(session.created_by_id) == str(user.id)
+        is_teacher = is_creator  # presenter only if creator
 
-        # 🔥 REVIVE SESSION
-        if session.teacher_left_at:
-            if now <= session.teacher_left_at + timedelta(minutes=60):
+        # 🔥 REVIVE SESSION (only creator matters)
+        if is_creator and session.teacher_left_at:
+            if now <= session.teacher_left_at + timedelta(minutes=30):
                 session.teacher_left_at = None
                 session.status = LiveSession.STATUS_LIVE
-                session.save(update_fields=[
-                             "teacher_left_at", "status"])  # ✅ FIX
+                session.save(update_fields=["teacher_left_at", "status"])
 
     else:
         return Response({"detail": "Unauthorized"}, status=403)
@@ -237,7 +238,7 @@ def join_live_session(request, session_id):
         "livekit_url": settings.LIVEKIT_URL,
         "token": token,
         "room": session.room_name,
-        "role": "TEACHER" if is_teacher else "STUDENT",
+        "role": "PRESENTER" if is_teacher else "STUDENT",
     })
 
 

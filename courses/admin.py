@@ -1,3 +1,4 @@
+from .models import Stream
 from django.contrib import admin
 from .models import Course, Subject, Chapter, SubjectTeacher
 from .models_recordings import SessionRecording
@@ -10,10 +11,10 @@ from .models import Board
 
 @admin.register(Course)
 class CourseAdmin(admin.ModelAdmin):
-    list_display = ("title", "board", "created_at")
-    search_fields = ("title", "board__name")
-    list_filter = ("created_at", "board")
-    autocomplete_fields = ["board"]
+    list_display = ("title", "board", "created_at", "stream")
+    search_fields = ("title", "board__name", "stream__name")
+    list_filter = ("created_at", "board", "stream")
+    autocomplete_fields = ["board", "stream"]
 
 # =========================
 # SUBJECT TEACHER INLINE
@@ -140,3 +141,8 @@ class BoardAdmin(admin.ModelAdmin):
         return obj.courses.count()
 
     course_count.short_description = "Courses"
+
+
+@admin.register(Stream)
+class StreamAdmin(admin.ModelAdmin):
+    search_fields = ["name"]

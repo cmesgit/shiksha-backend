@@ -4,6 +4,7 @@ from django.conf import settings
 
 
 class Course(models.Model):
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
@@ -18,9 +19,32 @@ class Course(models.Model):
         blank=True,
         related_name="courses"
     )
+    stream = models.ForeignKey(
+        "Stream",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="courses"
+    )
 
     def __str__(self):
-        return f"{self.title} [{self.board.name}]" if self.board else self.title
+        base = self.title
+
+        if self.stream:
+            base += f" - {self.stream.name}"
+
+        if self.board:
+            base += f" [{self.board.name}]"
+
+        return base
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["title", "stream", "board"],
+                name="unique_course_per_stream_board"
+            )
+        ]
 
 
 class Subject(models.Model):
@@ -169,3 +193,17 @@ class Board(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.board_type})"
+
+
+class Stream(models.Model):
+    STREAM_CHOICES = [
+        ("SCIENCE", "Science"),
+        ("COMMERCE", "Commerce"),
+        ("ARTS", "Arts"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=20, choices=STREAM_CHOICES, unique=True)
+
+    def __str__(self):
+        return self.name
