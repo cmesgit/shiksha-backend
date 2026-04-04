@@ -11,12 +11,13 @@ from rest_framework.response import Response
 
 from livestream.services.token import generate_livekit_token
 
-from .models import PrivateSession, SessionParticipant, SessionRescheduleHistory
+from .models import PrivateSession, SessionParticipant, SessionRescheduleHistory, ChatMessage
 from .permissions import IsTeacher, IsStudent
 from .serializers import (
     SessionListSerializer,
     PrivateSessionSerializer,
     SessionRequestSerializer,
+    ChatMessageSerializer,
     get_user_name,
 )
 
@@ -86,8 +87,10 @@ def student_sessions(request):
     ?tab=scheduled  → approved / ongoing / needs_reconfirmation
     ?tab=requests   → pending
     ?tab=history    → completed / cancelled / declined / expired / withdrawn / no_show
+    ?search=keyword → filter by subject, teacher name, or student name
     """
     tab = request.query_params.get("tab", "scheduled")
+    search = request.query_params.get("search", "").strip()
     user = request.user
 
     # Sessions where user is requester OR a participant
@@ -107,6 +110,16 @@ def student_sessions(request):
                 "withdrawn", "teacher_no_show", "student_no_show",
             ]
         )
+
+    # Search filter
+    if search:
+        qs = qs.filter(
+            Q(subject__icontains=search)
+            | Q(teacher__profile__full_name__icontains=search)
+            | Q(teacher__username__icontains=search)
+            | Q(requested_by__profile__full_name__icontains=search)
+            | Q(requested_by__username__icontains=search)
+        ).distinct()
 
     return Response(SessionListSerializer(qs, many=True).data)
 
@@ -186,28 +199,46 @@ def decline_reschedule(request, session_id):
 # ===================================================================
 
 
+def _apply_search(qs, search):
+    """Apply search filter across subject, teacher name, and student name."""
+    if not search:
+        return qs
+    return qs.filter(
+        Q(subject__icontains=search)
+        | Q(teacher__profile__full_name__icontains=search)
+        | Q(teacher__username__icontains=search)
+        | Q(requested_by__profile__full_name__icontains=search)
+        | Q(requested_by__username__icontains=search)
+    ).distinct()
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsTeacher])
 def teacher_sessions(request):
-    """Teacher's approved / ongoing sessions."""
+    """Teacher's approved / ongoing sessions. Supports ?search= query param."""
+    search = request.query_params.get("search", "").strip()
     qs = PrivateSession.objects.filter(
         teacher=request.user, status__in=["approved", "ongoing"]
     )
+    qs = _apply_search(qs, search)
     return Response(SessionListSerializer(qs, many=True).data)
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsTeacher])
 def teacher_requests(request):
-    """Pending requests awaiting teacher action."""
+    """Pending requests awaiting teacher action. Supports ?search= query param."""
+    search = request.query_params.get("search", "").strip()
     qs = PrivateSession.objects.filter(teacher=request.user, status="pending")
+    qs = _apply_search(qs, search)
     return Response(SessionListSerializer(qs, many=True).data)
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsTeacher])
 def teacher_history(request):
-    """Teacher's completed / cancelled / declined sessions."""
+    """Teacher's completed / cancelled / declined sessions. Supports ?search= query param."""
+    search = request.query_params.get("search", "").strip()
     qs = PrivateSession.objects.filter(
         teacher=request.user,
         status__in=[
@@ -215,6 +246,7 @@ def teacher_history(request):
             "withdrawn", "teacher_no_show", "student_no_show",
         ],
     )
+    qs = _apply_search(qs, search)
     return Response(SessionListSerializer(qs, many=True).data)
 
 
@@ -480,3 +512,94 @@ def join_private_session(request, session_id):
         "room": session.room_name,
         "role": "TEACHER" if is_teacher else "STUDENT",
     })
+
+
+# ===================================================================
+# CHAT ENDPOINTS
+# ===================================================================
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def session_chat_messages(request, session_id):
+    """Retrieve all chat messages for a private session."""
+    try:
+        session = PrivateSession.objects.get(pk=session_id)
+    except PrivateSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    user = request.user
+    is_involved = (
+        session.teacher == user
+        or session.requested_by == user
+        or session.participants.filter(user=user).exists()
+    )
+    if not is_involved:
+        return Response({"error": "Not a participant."}, status=status.HTTP_403_FORBIDDEN)
+
+    messages = ChatMessage.objects.filter(session=session).order_by("created_at")
+    return Response(ChatMessageSerializer(messages, many=True).data)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def send_chat_message(request, session_id):
+    """Send a chat message in a private session. Persists to DB and broadcasts via channels."""
+    try:
+        session = PrivateSession.objects.get(pk=session_id)
+    except PrivateSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    user = request.user
+    is_teacher = (session.teacher == user)
+    is_student = (
+        session.requested_by == user
+        or session.participants.filter(user=user).exists()
+    )
+
+    if not is_teacher and not is_student:
+        return Response({"error": "Not a participant."}, status=status.HTTP_403_FORBIDDEN)
+
+    if session.status not in ("ongoing", "approved"):
+        return Response({"error": "Chat is only available for active sessions."}, status=status.HTTP_400_BAD_REQUEST)
+
+    message_text = request.data.get("message", "").strip()
+    if not message_text:
+        return Response({"error": "Message cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+
+    display_name = get_user_name(user)
+    role = "teacher" if is_teacher else "student"
+
+    chat_msg = ChatMessage.objects.create(
+        session=session,
+        sender=user,
+        sender_name=display_name,
+        sender_role=role,
+        message=message_text,
+    )
+
+    # Broadcast via Django Channels if available
+    try:
+        from channels.layers import get_channel_layer
+        from asgiref.sync import async_to_sync
+
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"private_session_chat_{session_id}",
+                {
+                    "type": "chat_message",
+                    "data": {
+                        "id": str(chat_msg.id),
+                        "sender_name": display_name,
+                        "sender_role": role,
+                        "sender_id": str(user.id),
+                        "message": message_text,
+                        "created_at": chat_msg.created_at.isoformat(),
+                    },
+                },
+            )
+    except Exception:
+        logger.warning("Channel layer broadcast failed for chat message", exc_info=True)
+
+    return Response(ChatMessageSerializer(chat_msg).data, status=status.HTTP_201_CREATED)

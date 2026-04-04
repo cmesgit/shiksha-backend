@@ -425,6 +425,34 @@ class SubjectStudentsView(APIView):
 # TEACHER ALL STUDENTS
 # =========================
 
+class SubjectsByCourseTitleView(APIView):
+    """
+    Return subjects filtered by course title (class+stream).
+    GET /courses/subjects-by-course/?course_title=Class 12 Science
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        course_title = request.query_params.get("course_title", "").strip()
+        if not course_title:
+            # Return all subjects grouped by course
+            courses = Course.objects.prefetch_related("subjects").all()
+            data = {}
+            for course in courses:
+                subjects = list(course.subjects.values_list("name", flat=True).order_by("order"))
+                data[course.title] = subjects
+            return Response(data)
+
+        # Filter subjects by course title (case-insensitive partial match)
+        courses = Course.objects.filter(title__icontains=course_title).prefetch_related("subjects")
+        subjects = []
+        for course in courses:
+            for subj in course.subjects.all().order_by("order"):
+                if subj.name not in subjects:
+                    subjects.append(subj.name)
+        return Response({"course_title": course_title, "subjects": subjects})
+
+
 class TeacherAllStudentsView(APIView):
     permission_classes = [IsAuthenticated]
 

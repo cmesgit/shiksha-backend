@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import PrivateSession, SessionParticipant
+from .models import PrivateSession, SessionParticipant, ChatMessage
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +178,13 @@ class PrivateSessionSerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 # Request creation serializer (student submits a new session request)
 # ---------------------------------------------------------------------------
+
+class ChatMessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ChatMessage
+        fields = ["id", "sender_name", "sender_role", "message", "created_at"]
+        read_only_fields = ["id", "sender_name", "sender_role", "created_at"]
+
 
 class SessionRequestSerializer(serializers.Serializer):
     # teacher_id is UUID string to match accounts.User.id

@@ -13,6 +13,7 @@ from .views import (
     SubjectChaptersView,
     SubjectStudentsView,
     TeacherAllStudentsView,
+    SubjectsByCourseTitleView,
 )
 
 # recordings
@@ -33,6 +34,7 @@ urlpatterns = [
 
     path("teacher/my-classes/", TeacherMyClassesView.as_view()),
     path("teacher/all-students/", TeacherAllStudentsView.as_view()),
+    path("subjects-by-course/", SubjectsByCourseTitleView.as_view()),
 
     path("", CreateCourseView.as_view()),
 

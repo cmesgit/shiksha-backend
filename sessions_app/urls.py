@@ -23,4 +23,8 @@ urlpatterns = [
     # --- Shared ---
     path("<uuid:session_id>/", views.session_detail, name="private-session-detail"),
     path("<uuid:session_id>/join/", views.join_private_session, name="private-session-join"),
+
+    # --- Chat ---
+    path("<uuid:session_id>/chat/", views.session_chat_messages, name="private-session-chat"),
+    path("<uuid:session_id>/chat/send/", views.send_chat_message, name="private-session-chat-send"),
 ]

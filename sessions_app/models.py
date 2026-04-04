@@ -138,3 +138,33 @@ class SessionRescheduleHistory(models.Model):
 
     def __str__(self):
         return f"Reschedule for {self.session.id} on {self.created_at}"
+
+
+class ChatMessage(models.Model):
+    """
+    Persistent chat messages for private sessions.
+    Messages persist until the session ends or is cancelled.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        PrivateSession, on_delete=models.CASCADE, related_name="chat_messages"
+    )
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="private_session_messages",
+    )
+    sender_name = models.CharField(max_length=255)
+    sender_role = models.CharField(max_length=20, default="student")  # "teacher" or "student"
+    message = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["session", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"Chat in {self.session.id} by {self.sender_name} at {self.created_at}"
