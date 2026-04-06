@@ -1,3 +1,7 @@
+from courses.models import Subject, SubjectTeacher  # ✅ already using this app
+from courses.models import SubjectTeacher  # 🔥 CHANGE this import
+from django.utils.timezone import make_aware
+from datetime import datetime, timedelta
 import logging
 
 from django.conf import settings
@@ -9,7 +13,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from livestream.services.token import generate_livekit_token
+from sessions_app.services.private_token import generate_private_token
 
 from .models import PrivateSession, SessionParticipant, SessionRescheduleHistory, ChatMessage
 from .permissions import IsTeacher, IsStudent
@@ -33,23 +37,39 @@ logger = logging.getLogger(__name__)
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsStudent])
 def request_session(request):
-    """Student requests a new private session with a teacher."""
     ser = SessionRequestSerializer(data=request.data)
     ser.is_valid(raise_exception=True)
     d = ser.validated_data
 
+    from courses.models import Subject, SubjectTeacher
+
+    # ✅ Validate subject
+    try:
+        subject_obj = Subject.objects.get(id=d["subject_id"])
+    except Subject.DoesNotExist:
+        return Response({"error": "Invalid subject"}, status=400)
+
+    # ✅ Validate teacher teaches subject
+    if not SubjectTeacher.objects.filter(
+        subject=subject_obj,
+        teacher_id=d["teacher_id"]
+    ).exists():
+        return Response(
+            {"error": "Teacher does not teach this subject"},
+            status=400
+        )
+
+    # ✅ Get teacher
     try:
         teacher = User.objects.get(pk=d["teacher_id"])
     except User.DoesNotExist:
-        return Response({"error": "Teacher not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"error": "Teacher not found"}, status=404)
 
-    if not teacher.has_role("TEACHER"):
-        return Response({"error": "Selected user is not a teacher."}, status=status.HTTP_400_BAD_REQUEST)
-
+    # ✅ Create session
     session = PrivateSession.objects.create(
         teacher=teacher,
         requested_by=request.user,
-        subject=d["subject"],
+        subject=subject_obj.name,  # store name
         scheduled_date=d["scheduled_date"],
         scheduled_time=d["scheduled_time"],
         duration_minutes=d["duration_minutes"],
@@ -59,22 +79,17 @@ def request_session(request):
         status="pending",
     )
 
-    # Create participant entry for the requesting student
+    # ✅ Add requester
     SessionParticipant.objects.create(
-        session=session, user=request.user, role="student")
+        session=session,
+        user=request.user,
+        role="student"
+    )
 
-    # If group session, add extra student_ids as participants
-    for sid in d.get("student_ids", []):
-        try:
-            extra = User.objects.get(profile__student_id=sid)
-            if extra != request.user:
-                SessionParticipant.objects.get_or_create(
-                    session=session, user=extra, defaults={"role": "student"}
-                )
-        except User.DoesNotExist:
-            pass  # silently skip invalid student IDs
-
-    return Response(PrivateSessionSerializer(session).data, status=status.HTTP_201_CREATED)
+    return Response(
+        PrivateSessionSerializer(session).data,
+        status=201
+    )
 
 
 @api_view(["GET"])
@@ -387,7 +402,7 @@ def start_session(request, session_id):
 
     room_name = f"private-{session.id}"
     session.status = "ongoing"
-    session.room_name = room_name
+    session.room_name = f"private_{session.id}"
     session.started_at = timezone.now()
     session.save()
     return Response(PrivateSessionSerializer(session).data)
@@ -489,10 +504,9 @@ def join_private_session(request, session_id):
     display_name = get_user_name(user)
 
     try:
-        token = generate_livekit_token(
+        token = generate_private_token(
             user=user,
             session=session,
-            is_teacher=is_teacher,
             display_name=display_name,
         )
     except Exception:
@@ -536,7 +550,9 @@ def session_chat_messages(request, session_id):
     if not is_involved:
         return Response({"error": "Not a participant."}, status=status.HTTP_403_FORBIDDEN)
 
-    messages = ChatMessage.objects.filter(session=session).order_by("created_at")
+    messages = ChatMessage.objects.filter(
+        session=session
+    ).order_by("created_at")[:200]
     return Response(ChatMessageSerializer(messages, many=True).data)
 
 
@@ -559,7 +575,7 @@ def send_chat_message(request, session_id):
     if not is_teacher and not is_student:
         return Response({"error": "Not a participant."}, status=status.HTTP_403_FORBIDDEN)
 
-    if session.status not in ("ongoing", "approved"):
+    if session.status != "ongoing":
         return Response({"error": "Chat is only available for active sessions."}, status=status.HTTP_400_BAD_REQUEST)
 
     message_text = request.data.get("message", "").strip()
@@ -577,28 +593,73 @@ def send_chat_message(request, session_id):
         message=message_text,
     )
 
-    # Broadcast via Django Channels if available
-    try:
-        from channels.layers import get_channel_layer
-        from asgiref.sync import async_to_sync
-
-        channel_layer = get_channel_layer()
-        if channel_layer:
-            async_to_sync(channel_layer.group_send)(
-                f"private_session_chat_{session_id}",
-                {
-                    "type": "chat_message",
-                    "data": {
-                        "id": str(chat_msg.id),
-                        "sender_name": display_name,
-                        "sender_role": role,
-                        "sender_id": str(user.id),
-                        "message": message_text,
-                        "created_at": chat_msg.created_at.isoformat(),
-                    },
-                },
-            )
-    except Exception:
-        logger.warning("Channel layer broadcast failed for chat message", exc_info=True)
-
     return Response(ChatMessageSerializer(chat_msg).data, status=status.HTTP_201_CREATED)
+
+
+# ==========================================================
+# SUBJECT → AVAILABLE TEACHERS
+# ==========================================================
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def subject_teachers(request, subject_id):
+    """
+    Get teachers for a subject.
+    Optional: filters out busy teachers.
+    """
+
+    date = request.query_params.get("date")
+    time = request.query_params.get("time")
+    duration = int(request.query_params.get("duration", 60))
+
+    qs = SubjectTeacher.objects.filter(
+        subject_id=subject_id
+    ).select_related("teacher", "teacher__profile")
+
+    # 🔥 Availability filtering (optional but included)
+    if date and time:
+        try:
+            start = make_aware(datetime.strptime(
+                f"{date} {time}", "%Y-%m-%d %H:%M"))
+            end = start + timedelta(minutes=duration)
+
+            busy_teachers = PrivateSession.objects.filter(
+                status__in=["approved", "ongoing"],
+                scheduled_date=date
+            ).values_list("teacher_id", flat=True)
+
+            qs = qs.exclude(teacher_id__in=busy_teachers)
+
+        except Exception:
+            pass
+
+    data = [
+        {
+            "id": str(st.teacher.id),
+            "name": getattr(st.teacher.profile, "full_name", st.teacher.username),
+        }
+        for st in qs
+    ]
+
+    return Response(data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def subject_teachers(request, subject_id):
+    from courses.models import SubjectTeacher
+
+    teachers = SubjectTeacher.objects.filter(
+        subject_id=subject_id
+    ).select_related("teacher")
+
+    data = [
+        {
+            "id": str(t.teacher.id),
+            "name": get_user_name(t.teacher),
+        }
+        for t in teachers
+    ]
+
+    return Response(data)

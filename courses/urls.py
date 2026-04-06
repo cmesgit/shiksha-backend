@@ -15,7 +15,7 @@ from .views import (
     TeacherAllStudentsView,
     SubjectsByCourseTitleView,
 )
-
+from .views import MySubjectsView
 # recordings
 from .views_recordings import (
     SubjectRecordingsView,
@@ -110,4 +110,9 @@ urlpatterns = [
         "recordings/<uuid:recording_id>/",
         RecordingDetailView.as_view(),
     ),
+    # Add to imports at top
+
+
+    # Add to urlpatterns
+    path("subjects/mine/", MySubjectsView.as_view()),
 ]

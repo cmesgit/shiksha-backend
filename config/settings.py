@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     "forum",
     "sessions_app",
     "channels",
+    "news",
 ]
 
 MIDDLEWARE = [
@@ -281,3 +282,5 @@ CHANNEL_LAYERS = {
         },
     },
 }
+
+GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")

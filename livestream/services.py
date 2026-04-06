@@ -10,6 +10,7 @@ def generate_livekit_token(
     session,
     is_teacher=False,
     display_name=None,
+    allow_publish=None,   # ✅ NEW (IMPORTANT)
 ):
     token = AccessToken(
         settings.LIVEKIT_API_KEY,
@@ -43,24 +44,23 @@ def generate_livekit_token(
     if not room_name:
         raise ValueError("Session has no room_name")
 
-    if is_teacher:
-        # 🎤 PRESENTER (creator only)
-        grants = VideoGrants(
-            room_join=True,
-            room=room_name,
-            can_publish=True,
-            can_publish_data=True,
-            can_subscribe=True,
-        )
+    # =========================================================
+    # 🔥 FIXED PERMISSION LOGIC (PRIVATE + PUBLIC SUPPORT)
+    # =========================================================
+
+    # If explicitly provided (like private session) → use it
+    if allow_publish is not None:
+        can_publish = allow_publish
     else:
-        # 👀 VIEWER (students + other teachers)
-        grants = VideoGrants(
-            room_join=True,
-            room=room_name,
-            can_publish=False,        # ❌ no mic/camera
-            can_publish_data=True,    # ✅ allows raise hand + chat
-            can_subscribe=True,
-        )
+        # fallback → role-based
+        can_publish = True if is_teacher else False
+
+    grants = VideoGrants(
+        room_join=True,
+        room=room_name,
+        can_publish=can_publish,
+        can_subscribe=True,
+    )
 
     token.with_grants(grants)
 

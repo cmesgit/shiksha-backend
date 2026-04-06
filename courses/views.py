@@ -317,7 +317,7 @@ class TeacherMyClassesView(APIView):
         subjects = (
             Subject.objects
             .filter(subject_teachers__teacher=user)
-            .select_related("course__stream")
+            .select_related("course__stream", "course__board")
             .distinct()
         )
 
@@ -335,6 +335,7 @@ class TeacherMyClassesView(APIView):
                 "course_id": str(subject.course.id),
                 "course_title": subject.course.title,
                 "stream_name": subject.course.stream.name if subject.course.stream else None,
+                "board_name": subject.course.board.name if subject.course.board else None,
                 "students_count": students_count,
             })
 
@@ -439,12 +440,14 @@ class SubjectsByCourseTitleView(APIView):
             courses = Course.objects.prefetch_related("subjects").all()
             data = {}
             for course in courses:
-                subjects = list(course.subjects.values_list("name", flat=True).order_by("order"))
+                subjects = list(course.subjects.values_list(
+                    "name", flat=True).order_by("order"))
                 data[course.title] = subjects
             return Response(data)
 
         # Filter subjects by course title (case-insensitive partial match)
-        courses = Course.objects.filter(title__icontains=course_title).prefetch_related("subjects")
+        courses = Course.objects.filter(
+            title__icontains=course_title).prefetch_related("subjects")
         subjects = []
         for course in courses:
             for subj in course.subjects.all().order_by("order"):
@@ -513,3 +516,38 @@ class TeacherAllStudentsView(APIView):
             "total_students": len(students),
             "students": students,
         })
+
+# =========================
+# STUDENT'S OWN SUBJECTS
+# =========================
+
+
+class MySubjectsView(APIView):
+    """
+    Returns subjects for the student's active enrolled course(s).
+    Used by the private session request form subject dropdown.
+    GET /courses/subjects/mine/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # Get all active enrollments for this student
+        course_ids = Enrollment.objects.filter(
+            user=request.user,
+            status=Enrollment.STATUS_ACTIVE,
+        ).values_list("course_id", flat=True)
+
+        if not course_ids:
+            return Response([])
+
+        subjects = (
+            Subject.objects
+            .filter(course_id__in=course_ids)
+            .select_related("course")
+            .order_by("course__title", "order")
+        )
+
+        return Response([
+            {"id": str(s.id), "name": s.name}
+            for s in subjects
+        ])

@@ -137,11 +137,13 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
         if obj.status == LiveSession.STATUS_CANCELLED:
             return "CANCELLED"
 
-        # ✅ FIX: use 60 min window (match backend)
         if obj.teacher_left_at:
-            if now > obj.teacher_left_at + timedelta(minutes=60):
-                return "COMPLETED"
-            return "PAUSED"
+            diff = now - obj.teacher_left_at
+            if diff <= timedelta(minutes=10):
+                return "RECONNECTING"
+            if diff <= timedelta(minutes=60):
+                return "PAUSED"
+            return "COMPLETED"
 
         if obj.status == LiveSession.STATUS_LIVE:
             return "LIVE"
@@ -157,7 +159,6 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
         if obj.status == LiveSession.STATUS_CANCELLED:
             return False
 
-        # ✅ FIX: 60 min rule
         if obj.teacher_left_at:
             if now > obj.teacher_left_at + timedelta(minutes=60):
                 return False
@@ -167,5 +168,4 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
         if request and request.user.has_role("TEACHER"):
             return True
 
-        # ✅ FIX: remove end_time dependency
         return now >= obj.start_time - timedelta(minutes=15)

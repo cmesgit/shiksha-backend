@@ -7,7 +7,8 @@ from .models import Subject, Course, Board
 class SubjectSerializer(serializers.ModelSerializer):
     teachers = serializers.SerializerMethodField()
     chapters = serializers.SerializerMethodField()   # ✅ added
-    stream_name = serializers.CharField(source="course.stream.name", read_only=True)
+    stream_name = serializers.CharField(
+        source="course.stream.name", read_only=True)
     board = serializers.SerializerMethodField()
 
     class Meta:
@@ -16,6 +17,7 @@ class SubjectSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "order",
+            "image",
             "teachers",
             "chapters",   # ✅ added
             "stream_name",

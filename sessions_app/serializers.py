@@ -1,14 +1,15 @@
 from rest_framework import serializers
+from django.utils import timezone
+from datetime import datetime
+
 from .models import PrivateSession, SessionParticipant, ChatMessage
 
 
 # ---------------------------------------------------------------------------
-# Helpers — safely traverse user → profile → field
-# Matches accounts.User (UUID pk, AbstractUser) + accounts.Profile
+# Helpers
 # ---------------------------------------------------------------------------
 
 def get_user_name(user):
-    """Return display name: profile.full_name → get_full_name() → username."""
     if user is None:
         return "Unknown"
     profile = getattr(user, "profile", None)
@@ -21,10 +22,16 @@ def get_user_name(user):
 
 
 def get_student_id(user):
-    """Return profile.student_id or None."""
     profile = getattr(user, "profile", None)
     if profile:
         return getattr(profile, "student_id", None)
+    return None
+
+
+def calculate_duration_minutes(obj):
+    if obj.started_at and obj.ended_at:
+        delta = obj.ended_at - obj.started_at
+        return max(1, round(delta.total_seconds() / 60))
     return None
 
 
@@ -39,7 +46,8 @@ class ParticipantSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SessionParticipant
-        fields = ["id", "user_id", "name", "student_id", "role", "joined_at", "left_at"]
+        fields = ["id", "user_id", "name", "student_id",
+                  "role", "joined_at", "left_at"]
 
     def get_name(self, obj):
         return get_user_name(obj.user)
@@ -52,7 +60,7 @@ class ParticipantSerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# List serializer (lightweight, used in dashboard lists)
+# List serializer
 # ---------------------------------------------------------------------------
 
 class SessionListSerializer(serializers.ModelSerializer):
@@ -95,21 +103,17 @@ class SessionListSerializer(serializers.ModelSerializer):
         return get_student_id(obj.requested_by)
 
     def get_teacher_id(self, obj):
-        return str(obj.teacher_id)
+        return str(obj.teacher_id) if obj.teacher_id else None
 
     def get_requested_by_id(self, obj):
-        return str(obj.requested_by_id)
+        return str(obj.requested_by_id) if obj.requested_by_id else None
 
     def get_actual_duration_minutes(self, obj):
-        """Compute actual duration from started_at / ended_at timestamps."""
-        if obj.started_at and obj.ended_at:
-            delta = obj.ended_at - obj.started_at
-            return max(1, round(delta.total_seconds() / 60))
-        return None
+        return calculate_duration_minutes(obj)
 
 
 # ---------------------------------------------------------------------------
-# Detail serializer (full data, used in session detail views)
+# Detail serializer
 # ---------------------------------------------------------------------------
 
 class PrivateSessionSerializer(serializers.ModelSerializer):
@@ -162,34 +166,37 @@ class PrivateSessionSerializer(serializers.ModelSerializer):
         return get_student_id(obj.requested_by)
 
     def get_teacher_id(self, obj):
-        return str(obj.teacher_id)
+        return str(obj.teacher_id) if obj.teacher_id else None
 
     def get_requested_by_id(self, obj):
-        return str(obj.requested_by_id)
+        return str(obj.requested_by_id) if obj.requested_by_id else None
 
     def get_actual_duration_minutes(self, obj):
-        """Compute actual duration from started_at / ended_at timestamps."""
-        if obj.started_at and obj.ended_at:
-            delta = obj.ended_at - obj.started_at
-            return max(1, round(delta.total_seconds() / 60))
-        return None
+        return calculate_duration_minutes(obj)
 
 
 # ---------------------------------------------------------------------------
-# Request creation serializer (student submits a new session request)
+# Chat serializer
 # ---------------------------------------------------------------------------
 
 class ChatMessageSerializer(serializers.ModelSerializer):
+    sender_id = serializers.CharField(source="sender.id", read_only=True)
+
     class Meta:
         model = ChatMessage
-        fields = ["id", "sender_name", "sender_role", "message", "created_at"]
-        read_only_fields = ["id", "sender_name", "sender_role", "created_at"]
+        fields = ["id", "sender_id", "sender_name",
+                  "sender_role", "message", "created_at"]
+        read_only_fields = ["id", "sender_id",
+                            "sender_name", "sender_role", "created_at"]
 
+
+# ---------------------------------------------------------------------------
+# Request serializer
+# ---------------------------------------------------------------------------
 
 class SessionRequestSerializer(serializers.Serializer):
-    # teacher_id is UUID string to match accounts.User.id
     teacher_id = serializers.UUIDField()
-    subject = serializers.CharField(max_length=255)
+    subject_id = serializers.UUIDField()  # ✅ FIXED
     scheduled_date = serializers.DateField()
     scheduled_time = serializers.TimeField()
     duration_minutes = serializers.IntegerField(default=60)
@@ -201,3 +208,22 @@ class SessionRequestSerializer(serializers.Serializer):
     student_ids = serializers.ListField(
         child=serializers.CharField(), required=False, default=[]
     )
+
+    def validate(self, data):
+        from django.utils import timezone
+        from datetime import datetime
+
+        scheduled_dt = timezone.make_aware(
+            datetime.combine(data["scheduled_date"], data["scheduled_time"])
+        )
+
+        if scheduled_dt < timezone.now():
+            raise serializers.ValidationError("Cannot schedule in the past.")
+
+        if data["duration_minutes"] <= 0:
+            raise serializers.ValidationError("Invalid duration.")
+
+        if data["session_type"] == "group" and data["group_strength"] <= 1:
+            raise serializers.ValidationError("Group must be >1.")
+
+        return data
