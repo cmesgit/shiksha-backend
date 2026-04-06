@@ -283,4 +283,4 @@ CHANNEL_LAYERS = {
     },
 }
 
-GNEWS_API_KEY = "95c7ba11755ab8e91c0ebed1cf3b56bd"
+GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")
