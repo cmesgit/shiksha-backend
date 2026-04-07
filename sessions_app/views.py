@@ -4,6 +4,9 @@ from django.utils.timezone import make_aware
 from datetime import datetime, timedelta
 import logging
 
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db.models import Q
@@ -597,7 +600,18 @@ def send_chat_message(request, session_id):
         message=message_text,
     )
 
-    return Response(ChatMessageSerializer(chat_msg).data, status=status.HTTP_201_CREATED)
+    # Broadcast to all WebSocket clients in this session's chat group
+    serialized = ChatMessageSerializer(chat_msg).data
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        f"private_session_chat_{session_id}",
+        {
+            "type": "chat_message",
+            "data": serialized,
+        },
+    )
+
+    return Response(serialized, status=status.HTTP_201_CREATED)
 
 
 # ==========================================================
