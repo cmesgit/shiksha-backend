@@ -72,6 +72,12 @@ class PrivateSession(models.Model):
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
 
+    # --- Auto-expire tracking ---
+    # Number of active WebSocket connections in this room
+    active_connections = models.IntegerField(default=0)
+    # When the last participant left (null = someone is still connected)
+    all_left_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["-created_at"]
         indexes = [

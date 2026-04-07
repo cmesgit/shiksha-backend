@@ -1,5 +1,3 @@
-from courses.models import Subject, SubjectTeacher  # ✅ already using this app
-from courses.models import SubjectTeacher  # 🔥 CHANGE this import
 from django.utils.timezone import make_aware
 from datetime import datetime, timedelta
 import logging
@@ -403,12 +401,38 @@ def start_session(request, session_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    room_name = f"private-{session.id}"
     session.status = "ongoing"
     session.room_name = f"private_{session.id}"
     session.started_at = timezone.now()
+    session.active_connections = 0
+    session.all_left_at = None
     session.save()
     return Response(PrivateSessionSerializer(session).data)
+
+
+def _end_session_internal(session, reason="ended"):
+    """
+    Shared helper to mark a session as completed and clean up.
+    Called by the teacher's end_session view AND by the auto-expire logic.
+    Returns True if the session was ended, False if it was already completed.
+    """
+    if session.status != "ongoing":
+        return False
+
+    session.status = "completed"
+    session.ended_at = timezone.now()
+    session.save()
+
+    # Clean up chat messages — no longer needed after session ends
+    ChatMessage.objects.filter(session=session).delete()
+
+    logger.info(
+        "Session %s %s (reason: %s)",
+        session.id,
+        "completed",
+        reason,
+    )
+    return True
 
 
 @api_view(["POST"])
@@ -427,12 +451,7 @@ def end_session(request, session_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    session.status = "completed"
-    session.ended_at = timezone.now()
-    session.save()
-
-    # Clean up chat messages — no longer needed after session ends
-    ChatMessage.objects.filter(session=session).delete()
+    _end_session_internal(session, reason="teacher_ended")
 
     return Response(PrivateSessionSerializer(session).data)
 
@@ -626,6 +645,7 @@ def subject_teachers(request, subject_id):
     Get teachers for a subject.
     Optional: filters out busy teachers.
     """
+    from courses.models import SubjectTeacher
 
     date = request.query_params.get("date")
     time = request.query_params.get("time")
@@ -658,26 +678,6 @@ def subject_teachers(request, subject_id):
             "name": getattr(st.teacher.profile, "full_name", st.teacher.username),
         }
         for st in qs
-    ]
-
-    return Response(data)
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def subject_teachers(request, subject_id):
-    from courses.models import SubjectTeacher
-
-    teachers = SubjectTeacher.objects.filter(
-        subject_id=subject_id
-    ).select_related("teacher")
-
-    data = [
-        {
-            "id": str(t.teacher.id),
-            "name": get_user_name(t.teacher),
-        }
-        for t in teachers
     ]
 
     return Response(data)
