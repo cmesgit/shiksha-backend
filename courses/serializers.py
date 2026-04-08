@@ -23,6 +23,11 @@ class SubjectSerializer(serializers.ModelSerializer):
             "stream_name",
             "board",
         )
+    def get_image(self, obj):
+        request = self.context.get('request')
+        if obj.image and request:
+            return request.build_absolute_uri(obj.image.url)
+        return None
 
     def get_teachers(self, obj):
         subject_teachers = (
