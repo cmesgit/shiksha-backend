@@ -8,6 +8,7 @@ from .views import (
     ResendVerificationEmailView,
     RefreshView,
     FormFillupView,
+    TeacherProfileView,
     StatesListView,
     DistrictsListView,
     TeacherListView,
@@ -24,6 +25,7 @@ urlpatterns = [
     path("resend-verification/", ResendVerificationEmailView.as_view()),
     path("refresh/", RefreshView.as_view()),
     path("form-fillup/", FormFillupView.as_view()),
+    path("teacher/profile/", TeacherProfileView.as_view()),
     path("change-password/", ChangePasswordView.as_view()),
 
     # --- Location data ---

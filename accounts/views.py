@@ -486,6 +486,78 @@ class FormFillupView(APIView):
 
 
 # =====================================================
+# TEACHER PROFILE API
+# =====================================================
+
+class TeacherProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        profile = user.profile
+        tp = getattr(user, "teacher_profile", None)
+
+        # Active courses & subjects via SubjectTeacher
+        from courses.models import SubjectTeacher
+        assignments = SubjectTeacher.objects.filter(
+            teacher=user
+        ).select_related("subject__course")
+
+        active_courses = {}
+        subjects = []
+        for a in assignments:
+            course = a.subject.course
+            course_key = str(course.id)
+            if course_key not in active_courses:
+                active_courses[course_key] = {
+                    "id": str(course.id),
+                    "title": str(course),
+                    "subjects": [],
+                }
+            active_courses[course_key]["subjects"].append(a.subject.name)
+
+            subjects.append({
+                "name": a.subject.name,
+                "course": str(course),
+            })
+
+        data = {
+            "name": f"{profile.first_name} {profile.last_name}".strip(),
+            "gender": profile.gender or "",
+            "photo": profile.profile_photo.url if profile.profile_photo else None,
+            "bio": tp.bio if tp else "",
+            "highest_degree": tp.get_highest_degree_display() if tp and tp.highest_degree else "",
+            "field_of_study": tp.field_of_study if tp else "",
+            "teaching_certifications": tp.teaching_certifications if tp else [],
+            "experience_range": tp.get_experience_range_display() if tp and tp.experience_range else "",
+            "employment_status": tp.get_employment_status_display() if tp and tp.employment_status else "",
+            "rating": float(tp.rating) if tp and tp.rating else None,
+            "is_approved": tp.is_approved if tp else False,
+            "active_courses": list(active_courses.values()),
+            "subjects": subjects,
+            "course_applications": [
+                {
+                    "subject": ca.get_subject_display(),
+                    "boards": ca.boards,
+                    "classes": ca.classes,
+                    "streams": ca.streams,
+                }
+                for ca in (tp.course_applications.all() if tp else [])
+            ],
+            "skill_applications": [
+                {
+                    "skill_name": sa.skill_name,
+                    "skill_description": sa.skill_description,
+                    "skill_related_subject": sa.get_skill_related_subject_display(),
+                }
+                for sa in (tp.skill_applications.all() if tp else [])
+            ],
+        }
+
+        return Response(data)
+
+
+# =====================================================
 # STATES & DISTRICTS API
 # =====================================================
 
