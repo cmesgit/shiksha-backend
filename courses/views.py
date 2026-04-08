@@ -162,7 +162,10 @@ class SubjectDetailView(APIView):
             id=subject_id
         )
 
-        serializer = SubjectSerializer(subject)
+        serializer = SubjectSerializer(
+        subject,
+        context={'request': request}
+)
         return Response(serializer.data)
 
 
@@ -236,7 +239,10 @@ class SubjectDashboardView(APIView):
             completed_quizzes = 0
             pending_quizzes = total_quizzes
 
-        serializer = SubjectSerializer(subject)
+        serializer = SubjectSerializer(
+        subject,
+        context={'request': request}
+)
 
         # ── Recordings count ──
         from courses.models_recordings import SessionRecording
