@@ -75,6 +75,8 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
 
         overlap_exists = LiveSession.objects.filter(
             subject=subject
+        ).exclude(
+            status__in=[LiveSession.STATUS_CANCELLED, LiveSession.STATUS_COMPLETED]
         ).filter(
             Q(start_time__lt=end_time) &
             Q(end_time__gt=start_time)
