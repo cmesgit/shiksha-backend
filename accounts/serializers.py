@@ -514,7 +514,7 @@ class TeacherFormFillupSerializer(serializers.Serializer):
             )
             file_key = f"skill_file_{i}"
             if request and file_key in request.FILES:
-                skill.skill_supporting_file = request.FILES[file_key]
+                skill.supporting_file = request.FILES[file_key]
                 skill.save()
 
         return user

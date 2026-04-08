@@ -415,8 +415,8 @@ class FormFillupView(APIView):
                         "skill_description": sa.skill_description,
                         "skill_related_subject": sa.skill_related_subject,
                         "skill_supporting_file": (
-                            sa.skill_supporting_file.url
-                            if sa.skill_supporting_file else None
+                            sa.supporting_file.url
+                            if sa.supporting_file else None
                         ),
                     }
                     for sa in (tp.skill_applications.all() if tp else [])
