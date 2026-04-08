@@ -7,6 +7,7 @@ from .models import Subject, Course, Board
 class SubjectSerializer(serializers.ModelSerializer):
     teachers = serializers.SerializerMethodField()
     chapters = serializers.SerializerMethodField()   # ✅ added
+    serializer = SubjectSerializer(subjects, many=True, context={'request': request})
     stream_name = serializers.CharField(
         source="course.stream.name", read_only=True)
     board = serializers.SerializerMethodField()
@@ -23,6 +24,11 @@ class SubjectSerializer(serializers.ModelSerializer):
             "stream_name",
             "board",
         )
+    def get_image(self, obj):
+        request = self.context.get('request')
+        if obj.image and request:
+            return request.build_absolute_uri(obj.image.url)
+        return None
 
     def get_teachers(self, obj):
         subject_teachers = (

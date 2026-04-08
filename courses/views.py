@@ -33,7 +33,7 @@ class CreateCourseView(APIView):
         serializer.is_valid(raise_exception=True)
 
         course = serializer.save()  # ✅ FIX
-
+        serializer = SubjectSerializer(subjects, many=True, context={'request': request})
         return Response(
             CourseSerializer(course).data,  # ✅ FIX
             status=status.HTTP_201_CREATED,
