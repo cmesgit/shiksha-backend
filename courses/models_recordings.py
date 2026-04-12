@@ -35,6 +35,17 @@ class SessionRecording(models.Model):
 
     bunny_video_id = models.CharField(max_length=255)
 
+    STATUS_CHOICES = [
+        (0, "Created"),
+        (1, "Uploaded"),
+        (2, "Processing"),
+        (3, "Transcoding"),
+        (4, "Finished"),
+        (5, "Error"),
+    ]
+
+    status = models.IntegerField(choices=STATUS_CHOICES, default=0)
+
     thumbnail_url = models.URLField(blank=True)
 
     uploaded_by = models.ForeignKey(

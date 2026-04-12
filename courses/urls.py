@@ -23,7 +23,8 @@ from .views_recordings import (
     DeleteRecordingView,
     CreateVideoSlotView,
     SaveRecordingView,
-    RecordingDetailView
+    RecordingDetailView,
+    CheckVideoStatusView,
 )
 from .views_progress import (
     GetVideoProgressView,
@@ -105,6 +106,10 @@ urlpatterns = [
     path(
         "recordings/<uuid:recording_id>/progress/save/",
         SaveVideoProgressView.as_view(),
+    ),
+    path(
+        "recordings/<uuid:recording_id>/status/",
+        CheckVideoStatusView.as_view(),
     ),
     path(
         "recordings/<uuid:recording_id>/",
