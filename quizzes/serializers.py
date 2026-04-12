@@ -19,10 +19,6 @@ from .models import (
 )
 
 
-# =====================================================
-# CHOICE SERIALIZERS
-# =====================================================
-
 class ChoiceAdminSerializer(serializers.ModelSerializer):
     class Meta:
         model = Choice
@@ -34,10 +30,6 @@ class ChoicePublicSerializer(serializers.ModelSerializer):
         model = Choice
         fields = ["id", "text"]
 
-
-# =====================================================
-# QUESTION CREATION
-# =====================================================
 
 class QuestionCreateSerializer(serializers.ModelSerializer):
     choices = ChoiceAdminSerializer(many=True)
@@ -70,15 +62,10 @@ class QuestionCreateSerializer(serializers.ModelSerializer):
         return question
 
 
-# =====================================================
-# QUIZ CREATION
-# =====================================================
-
 class QuizCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quiz
-        fields = ["id", "subject", "title", "description",
-                  "due_date", "time_limit_minutes"]
+        fields = ["id", "subject", "title", "description", "due_date", "time_limit_minutes"]
         read_only_fields = ["id"]
 
     def validate_subject(self, subject):
@@ -101,62 +88,37 @@ class QuizCreateSerializer(serializers.ModelSerializer):
         )
 
 
-# =====================================================
-# STUDENT DASHBOARD SERIALIZER
-# =====================================================
-
 class QuizDashboardSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="subject.name", read_only=True)
-    course_title = serializers.CharField(
-        source="subject.course.title", read_only=True)
-    teacher_name = serializers.CharField(
-        source="created_by.email", read_only=True)
-
-    # resolved via annotation in the view
+    course_title = serializers.CharField(source="subject.course.title", read_only=True)
+    teacher_name = serializers.CharField(source="created_by.email", read_only=True)
     questions_count = serializers.IntegerField(read_only=True)
-
     status = serializers.SerializerMethodField()
     score = serializers.SerializerMethodField()
 
     class Meta:
         model = Quiz
         fields = [
-            "id",
-            "title",
-            "subject_name",
-            "course_title",
-            "teacher_name",
-            "created_at",
-            "due_date",
-            "total_marks",
-            "questions_count",
-            "status",
-            "score",
-            "is_published",
+            "id", "title", "subject_name", "course_title", "teacher_name",
+            "created_at", "due_date", "total_marks", "questions_count",
+            "status", "score", "is_published",
         ]
 
     def get_status(self, obj):
-        # view prefetches attempts as "user_attempts"
         attempts = getattr(obj, "user_attempts", [])
         if not attempts:
             return "PENDING"
         return attempts[0].status
 
     def get_score(self, obj):
-        # view prefetches submitted attempts as "user_submitted_attempts"
         attempts = getattr(obj, "user_submitted_attempts", [])
         if not attempts:
             return None
         return attempts[0].score
 
 
-# =====================================================
-# QUIZ SUBMISSION
-# =====================================================
-
 class QuizSubmitSerializer(serializers.Serializer):
-    answers = serializers.ListField(
-        child=serializers.DictField(), allow_empty=False)
+    answers = serializers.ListField(child=serializers.DictField(), allow_empty=False)
 
     def validate(self, attrs):
         quiz = self.context["quiz"]
@@ -195,13 +157,11 @@ class QuizSubmitSerializer(serializers.Serializer):
             question_id = item.get("question")
             choice_id = item.get("selected_choice")
 
-            question = Question.objects.filter(
-                id=question_id, quiz=quiz).first()
+            question = Question.objects.filter(id=question_id, quiz=quiz).first()
             if not question:
                 raise ValidationError("Invalid question.")
 
-            choice = Choice.objects.filter(
-                id=choice_id, question=question).first()
+            choice = Choice.objects.filter(id=choice_id, question=question).first()
             if not choice:
                 raise ValidationError("Invalid choice.")
 
@@ -222,10 +182,6 @@ class QuizSubmitSerializer(serializers.Serializer):
         return attempt
 
 
-# =====================================================
-# QUIZ DETAIL (FOR TAKING QUIZ)
-# =====================================================
-
 class QuestionPublicSerializer(serializers.ModelSerializer):
     choices = ChoicePublicSerializer(many=True, read_only=True)
 
@@ -236,10 +192,8 @@ class QuestionPublicSerializer(serializers.ModelSerializer):
 
 class QuizDetailSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="subject.name", read_only=True)
-    course_title = serializers.CharField(
-        source="subject.course.title", read_only=True)
-    teacher_name = serializers.CharField(
-        source="created_by.email", read_only=True)
+    course_title = serializers.CharField(source="subject.course.title", read_only=True)
+    teacher_name = serializers.CharField(source="created_by.email", read_only=True)
     questions = serializers.SerializerMethodField()
 
     class Meta:
@@ -254,18 +208,13 @@ class QuizDetailSerializer(serializers.ModelSerializer):
         return QuestionPublicSerializer(questions, many=True).data
 
 
-# =====================================================
-# QUIZ RESULT SERIALIZERS
-# =====================================================
-
 class QuestionResultSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     text = serializers.CharField()
     selected_choice = serializers.CharField()
     correct_choice = serializers.CharField()
     is_correct = serializers.BooleanField()
-    explanation = serializers.CharField(
-        allow_blank=True, default="No explanation")
+    explanation = serializers.CharField(allow_blank=True, default="No explanation")
 
 
 class QuizResultSerializer(serializers.Serializer):
@@ -281,12 +230,9 @@ class QuizResultSerializer(serializers.Serializer):
 
 class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
     student_id = serializers.UUIDField(source="student.id", read_only=True)
-    student_email = serializers.EmailField(
-        source="student.email", read_only=True)
-    student_name = serializers.CharField(
-        source="student.profile.full_name", read_only=True)
-    total_marks = serializers.IntegerField(
-        source="quiz.total_marks", read_only=True)
+    student_email = serializers.EmailField(source="student.email", read_only=True)
+    student_name = serializers.CharField(source="student.profile.full_name", read_only=True)
+    total_marks = serializers.IntegerField(source="quiz.total_marks", read_only=True)
 
     class Meta:
         model = QuizAttempt
@@ -296,23 +242,15 @@ class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
         ]
 
 
-# =====================================================
-# TEACHER ANALYTICS SERIALIZER
-# =====================================================
-
 class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="subject.name", read_only=True)
-    course_title = serializers.CharField(
-        source="subject.course.title", read_only=True)
-
-    # all resolved via annotations in the view
+    course_title = serializers.CharField(source="subject.course.title", read_only=True)
     questions_count = serializers.IntegerField(read_only=True)
     total_attempts = serializers.IntegerField(read_only=True)
     average_score = serializers.FloatField(read_only=True)
     highest_score = serializers.FloatField(read_only=True)
     lowest_score = serializers.FloatField(read_only=True)
     submission_rate = serializers.FloatField(read_only=True)
-
     is_expired = serializers.SerializerMethodField()
 
     class Meta:
