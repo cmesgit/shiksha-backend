@@ -152,11 +152,11 @@ class UserMeSerializer(serializers.ModelSerializer):
 # SIGNUP SERIALIZER
 # =====================================================
 
-    class SignupSerializer(serializers.ModelSerializer):
-        password = serializers.CharField(write_only=True)
-        role = serializers.ChoiceField(
-            choices=["STUDENT", "TEACHER"],
-            write_only=True,
+class SignupSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True)
+    role = serializers.ChoiceField(
+        choices=["STUDENT", "TEACHER"],
+        write_only=True,
     )
 
     class Meta:
