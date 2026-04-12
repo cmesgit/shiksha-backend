@@ -152,12 +152,17 @@ class UserMeSerializer(serializers.ModelSerializer):
 # SIGNUP SERIALIZER
 # =====================================================
 
-class SignupSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True)
+    class SignupSerializer(serializers.ModelSerializer):
+        password = serializers.CharField(write_only=True)
+        role = serializers.ChoiceField(
+            choices=["STUDENT", "TEACHER"],
+            write_only=True,
+    )
 
     class Meta:
         model = User
-        fields = ("email", "username", "password")
+        fields = ("email", "username", "password", "role")
+
 
     def validate_email(self, value):
         value = value.strip().lower()
@@ -190,17 +195,19 @@ class SignupSerializer(serializers.ModelSerializer):
         user.save(update_fields=["is_verified"])
 
         # IMPORTANT: Roles must be seeded beforehand
+        role_name = self.validated_data.get("role", "STUDENT")
         try:
-            guest_role = Role.objects.get(name=Role.GUEST)
+            selected_role = Role.objects.get(name=role_name)
         except Role.DoesNotExist:
-            raise ValidationError("Default role not configured.")
+            raise ValidationError("Selected role not available.")
 
         UserRole.objects.create(
             user=user,
-            role=guest_role,
+            role=selected_role,
             is_active=True,
             is_primary=True,
         )
+
 
         return user
 
