@@ -179,9 +179,7 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
         if obj.status == LiveSession.STATUS_CANCELLED:
             return False
 
-        # Can't join a manually paused session
-        if obj.status == LiveSession.STATUS_PAUSED and not obj.teacher_left_at:
-            return False
+        # Allow joining paused sessions — student sees paused screen inside
 
         if obj.teacher_left_at:
             if now > obj.teacher_left_at + timedelta(minutes=60):

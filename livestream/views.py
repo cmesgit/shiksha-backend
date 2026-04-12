@@ -187,15 +187,23 @@ def join_live_session(request, session_id):
     now = timezone.now()
 
     if session.status == LiveSession.STATUS_CANCELLED:
-        return Response({"detail": "Session cancelled"}, status=400)
+        return Response({"detail": "Session was cancelled."}, status=400)
+
+    if session.status == LiveSession.STATUS_COMPLETED:
+        return Response({"detail": "Session has ended."}, status=400)
+
+    if now >= session.end_time:
+        session.status = LiveSession.STATUS_COMPLETED
+        session.save(update_fields=["status"])
+        return Response({"detail": "Session has ended."}, status=400)
 
     if session.teacher_left_at:
         diff = now - session.teacher_left_at
         if diff > timedelta(minutes=60):
-            if session.status != LiveSession.STATUS_COMPLETED:
-                session.status = LiveSession.STATUS_COMPLETED
-                session.save(update_fields=["status"])
-            return Response({"detail": "Session permanently ended"}, status=403)
+            session.status = LiveSession.STATUS_COMPLETED
+            session.teacher_left_at = None
+            session.save(update_fields=["status", "teacher_left_at"])
+            return Response({"detail": "Session has ended."}, status=400)
 
     # ── Student ──
     if user.has_role("STUDENT"):
@@ -303,6 +311,35 @@ def cancel_live_session(request, session_id):
     broadcast_course_sessions_update(session)
 
     return Response({"detail": "Session cancelled successfully."})
+
+
+# =========================
+# END SESSION
+# =========================
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def end_live_session(request, session_id):
+    user = request.user
+    session = get_object_or_404(LiveSession, id=session_id)
+
+    if not user.has_role("TEACHER"):
+        return Response({"detail": "Only teachers can end sessions."}, status=403)
+
+    if str(session.created_by_id) != str(user.id):
+        return Response({"detail": "Only the session creator can end it."}, status=403)
+
+    if session.status == LiveSession.STATUS_COMPLETED:
+        return Response({"detail": "Session already completed."}, status=400)
+
+    if session.status == LiveSession.STATUS_CANCELLED:
+        return Response({"detail": "Session is cancelled."}, status=400)
+
+    session.status = LiveSession.STATUS_COMPLETED
+    session.teacher_left_at = None
+    session.save(update_fields=["status", "teacher_left_at"])
+    broadcast_session_update(session)
+    return Response({"detail": "Session ended.", "status": "COMPLETED"})
 
 
 # =========================
@@ -451,8 +488,11 @@ def _handle_participant_left(event):
     session.last_activity_at = timezone.now()
 
     if str(session.created_by_id) == user_id:
-        session.teacher_left_at = timezone.now()
-        session.status = LiveSession.STATUS_RECONNECTING
+        # Only set reconnecting if session was LIVE — don't override manual PAUSED
+        if session.status != LiveSession.STATUS_PAUSED:
+            session.teacher_left_at = timezone.now()
+            session.status = LiveSession.STATUS_RECONNECTING
+        # If manually paused, teacher just left — keep PAUSED, no timer
 
     session.save(update_fields=["teacher_left_at",
                  "status", "last_activity_at"])
@@ -468,8 +508,9 @@ def _handle_room_started(event):
 
 def _handle_room_finished(event):
     for session in LiveSession.objects.filter(room_name=event.room.name):
-        # Don't override if teacher might still reconnect
-        if not session.teacher_left_at:
+        # Complete the session regardless of pause state
+        if session.status != LiveSession.STATUS_CANCELLED:
             session.status = LiveSession.STATUS_COMPLETED
-            session.save(update_fields=["status"])
+            session.teacher_left_at = None
+            session.save(update_fields=["status", "teacher_left_at"])
             broadcast_session_update(session)
