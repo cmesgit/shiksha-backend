@@ -207,10 +207,7 @@ class VerifyEmailView(APIView):
 
     def _get_frontend_base_url(self, request):
         """Return the correct frontend URL based on the current host."""
-        host = request.get_host()
-        if "dev" in host:
-            return "https://dev.shikshacom.com"
-        return "https://shikshacom.com"
+        return os.getenv("FRONTEND_BASE_URL", "https://shikshacom.com")
 
     def get(self, request):
         token_value = request.query_params.get("token")
