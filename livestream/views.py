@@ -306,6 +306,9 @@ def cancel_live_session(request, session_id):
     if session.status == LiveSession.STATUS_COMPLETED:
         return Response({"detail": "Cannot cancel a completed session."}, status=400)
 
+    if timezone.now() >= session.start_time:
+        return Response({"detail": "Cannot cancel a session that has already started. Use End instead."}, status=400)
+
     session.status = LiveSession.STATUS_CANCELLED
     session.save(update_fields=["status"])
     broadcast_course_sessions_update(session)

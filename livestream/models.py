@@ -97,6 +97,10 @@ class LiveSession(models.Model):
         if self.status == self.STATUS_CANCELLED:
             return self.STATUS_CANCELLED
 
+        # Already explicitly completed
+        if self.status == self.STATUS_COMPLETED:
+            return self.STATUS_COMPLETED
+
         # Session end time has passed → completed
         if now >= self.end_time:
             return self.STATUS_COMPLETED

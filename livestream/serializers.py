@@ -149,6 +149,9 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
         if obj.status == LiveSession.STATUS_CANCELLED:
             return "CANCELLED"
 
+        if obj.status == LiveSession.STATUS_COMPLETED:
+            return "COMPLETED"
+
         # Sessions past end_time always show as completed
         if now >= obj.end_time:
             return "COMPLETED"
