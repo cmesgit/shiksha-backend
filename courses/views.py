@@ -1,6 +1,6 @@
 from .serializers import ChapterSerializer
 from .models import Chapter
-from django.db.models import Count
+from django.db.models import Count, Q
 from .models import SubjectTeacher
 from accounts.models import Role
 from rest_framework.views import APIView
@@ -11,11 +11,8 @@ from enrollments.models import Enrollment
 from accounts.permissions import IsTeacher
 from quizzes.models import Quiz
 from assignments.models import Assignment
-from .models import Course
-from .serializers import CourseSerializer
 from .models import Course, Subject
 from .serializers import CourseSerializer, SubjectSerializer
-from django.db.models import Count, Q
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from datetime import timedelta
@@ -31,11 +28,9 @@ class CreateCourseView(APIView):
     def post(self, request):
         serializer = CourseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
-        course = serializer.save()  # ✅ FIX
-
+        course = serializer.save()
         return Response(
-            CourseSerializer(course).data,  # ✅ FIX
+            CourseSerializer(course).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -50,7 +45,7 @@ class MyCoursesView(APIView):
     def get(self, request):
         courses = Course.objects.filter(
             subjects__subject_teachers__teacher=request.user
-        ).select_related("board").distinct()  # ✅ FIX
+        ).select_related("board").distinct()
 
         serializer = CourseSerializer(courses, many=True)
         return Response(serializer.data)
@@ -67,7 +62,7 @@ class UpdateCourseView(APIView):
         course = get_object_or_404(
             Course.objects.filter(
                 subjects__subject_teachers__teacher=request.user
-            ).distinct(),  # ✅ FIX
+            ).distinct(),
             id=course_id,
         )
 
@@ -93,7 +88,7 @@ class DeleteCourseView(APIView):
         course = get_object_or_404(
             Course.objects.filter(
                 subjects__subject_teachers__teacher=request.user
-            ).distinct(),  # ✅ FIX
+            ).distinct(),
             id=course_id,
         )
 
@@ -112,7 +107,7 @@ class MyEnrolledCoursesView(APIView):
         enrollments = (
             Enrollment.objects
             .filter(user=request.user, status="ACTIVE")
-            .select_related("course__board")  # ✅ OPTIMIZED
+            .select_related("course__board")
         )
 
         courses = [enrollment.course for enrollment in enrollments]
@@ -145,8 +140,11 @@ class CourseSubjectsView(APIView):
             .order_by("order")
         )
 
-        serializer = SubjectSerializer(subjects, many=True, context={'request': request})  # ← fixed
+        serializer = SubjectSerializer(
+            subjects, many=True, context={"request": request})
         return Response(serializer.data)
+
+
 # =========================
 # SUBJECT DETAIL
 # =========================
@@ -162,10 +160,7 @@ class SubjectDetailView(APIView):
             id=subject_id
         )
 
-        serializer = SubjectSerializer(
-        subject,
-        context={'request': request}
-)
+        serializer = SubjectSerializer(subject, context={"request": request})
         return Response(serializer.data)
 
 
@@ -187,11 +182,7 @@ class SubjectDashboardView(APIView):
         )
 
         if user.has_role("TEACHER"):
-            is_assigned = subject.subject_teachers.filter(
-                teacher=user
-            ).exists()
-
-            if not is_assigned:
+            if not subject.subject_teachers.filter(teacher=user).exists():
                 return Response(
                     {"detail": "Not assigned to this subject."},
                     status=status.HTTP_403_FORBIDDEN
@@ -207,62 +198,58 @@ class SubjectDashboardView(APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
 
-        assignments = Assignment.objects.filter(
-            chapter__subject=subject
-        ).distinct()
+        is_student = user.has_role("STUDENT")
 
-        total_assignments = assignments.count()
+        # ── Assignments: 1 query ──
+        assignment_qs = Assignment.objects.filter(chapter__subject=subject)
+        assignment_counts = assignment_qs.aggregate(
+            total=Count("id", distinct=True),
+            completed=Count(
+                "id",
+                filter=Q(submissions__student=user),
+                distinct=True
+            ),
+        )
+        total_assignments = assignment_counts["total"] or 0
+        completed_assignments = assignment_counts["completed"] or 0 if is_student else 0
+        pending_assignments = total_assignments - completed_assignments
 
-        if user.has_role("STUDENT"):
-            completed_assignments = assignments.filter(
-                submissions__student=user
-            ).distinct().count()
-            pending_assignments = total_assignments - completed_assignments
-        else:
-            completed_assignments = 0
-            pending_assignments = total_assignments
+        # ── Quizzes: 1 query ──
+        quiz_qs = Quiz.objects.filter(subject=subject, is_published=True)
+        quiz_counts = quiz_qs.aggregate(
+            total=Count("id", distinct=True),
+            completed=Count(
+                "id",
+                filter=Q(
+                    attempts__student=user,
+                    attempts__status="SUBMITTED"
+                ),
+                distinct=True
+            ),
+        )
+        total_quizzes = quiz_counts["total"] or 0
+        completed_quizzes = quiz_counts["completed"] or 0 if is_student else 0
+        pending_quizzes = total_quizzes - completed_quizzes
 
-        quizzes = Quiz.objects.filter(
-            subject=subject,
-            is_published=True
-        ).distinct()
-
-        total_quizzes = quizzes.count()
-
-        if user.has_role("STUDENT"):
-            completed_quizzes = quizzes.filter(
-                attempts__student=user,
-                attempts__status="SUBMITTED"
-            ).distinct().count()
-            pending_quizzes = total_quizzes - completed_quizzes
-        else:
-            completed_quizzes = 0
-            pending_quizzes = total_quizzes
-
-        serializer = SubjectSerializer(
-        subject,
-        context={'request': request}
-)
-
-        # ── Recordings count ──
+        # ── Misc counts: 1 query ──
         from courses.models_recordings import SessionRecording
-        recordings_count = SessionRecording.objects.filter(
-            subject=subject
-        ).count()
-
-        # ── Study Materials count ──
         from materials.models import StudyMaterial
+
+        recordings_count = SessionRecording.objects.filter(
+            subject=subject).count()
         study_materials_count = StudyMaterial.objects.filter(
-            chapter__subject=subject
+            chapter__subject=subject).count()
+        students_count = Enrollment.objects.filter(
+            course=subject.course,
+            status=Enrollment.STATUS_ACTIVE
         ).count()
 
         # ── Upcoming Live Sessions ──
         from livestream.models import LiveSession
-        now = timezone.now()
         upcoming_sessions = list(
             LiveSession.objects.filter(
                 subject=subject,
-                start_time__gte=now,
+                start_time__gte=timezone.now(),
                 status__in=[
                     LiveSession.STATUS_SCHEDULED,
                     LiveSession.STATUS_LIVE,
@@ -272,33 +259,28 @@ class SubjectDashboardView(APIView):
             .values("id", "title", "start_time", "status")
         )
 
+        serializer = SubjectSerializer(subject, context={"request": request})
+
         return Response({
             "id": subject.id,
             "name": subject.name,
             "teachers": serializer.data["teachers"],
-
             "assignments": {
                 "pending": pending_assignments,
                 "completed": completed_assignments,
                 "total": total_assignments,
             },
-
             "quizzes": {
                 "pending": pending_quizzes,
                 "completed": completed_quizzes,
                 "total": total_quizzes,
             },
-
             "recordingsCount": recordings_count,
             "recordings_count": recordings_count,
             "studyMaterialsCount": study_materials_count,
             "study_materials_count": study_materials_count,
             "upcomingSessions": upcoming_sessions,
-
-            "studentsCount": Enrollment.objects.filter(
-                course=subject.course,
-                status=Enrollment.STATUS_ACTIVE,
-            ).count(),
+            "studentsCount": students_count,
         })
 
 
@@ -322,17 +304,20 @@ class TeacherMyClassesView(APIView):
             Subject.objects
             .filter(subject_teachers__teacher=user)
             .select_related("course__stream", "course__board")
+            .annotate(
+                students_count=Count(
+                    "course__enrollments",
+                    filter=Q(
+                        course__enrollments__status=Enrollment.STATUS_ACTIVE),
+                    distinct=True
+                )
+            )
             .distinct()
         )
 
         response_data = []
 
         for subject in subjects:
-            students_count = Enrollment.objects.filter(
-                course=subject.course,
-                status=Enrollment.STATUS_ACTIVE
-            ).count()
-
             response_data.append({
                 "subject_id": str(subject.id),
                 "subject_name": subject.name,
@@ -340,7 +325,7 @@ class TeacherMyClassesView(APIView):
                 "course_title": subject.course.title,
                 "stream_name": subject.course.stream.name if subject.course.stream else None,
                 "board_name": subject.course.board.name if subject.course.board else None,
-                "students_count": students_count,
+                "students_count": subject.students_count,
             })
 
         return Response(response_data)
@@ -351,17 +336,14 @@ class TeacherMyClassesView(APIView):
 # =========================
 
 class SubjectChaptersView(APIView):
-
     permission_classes = [IsAuthenticated]
 
     def get(self, request, subject_id):
-
         chapters = Chapter.objects.filter(
             subject_id=subject_id
         ).order_by("order")
 
         serializer = ChapterSerializer(chapters, many=True)
-
         return Response(serializer.data)
 
 
@@ -427,7 +409,7 @@ class SubjectStudentsView(APIView):
 
 
 # =========================
-# TEACHER ALL STUDENTS
+# SUBJECTS BY COURSE TITLE
 # =========================
 
 class SubjectsByCourseTitleView(APIView):
@@ -440,7 +422,6 @@ class SubjectsByCourseTitleView(APIView):
     def get(self, request):
         course_title = request.query_params.get("course_title", "").strip()
         if not course_title:
-            # Return all subjects grouped by course
             courses = Course.objects.prefetch_related("subjects").all()
             data = {}
             for course in courses:
@@ -449,7 +430,6 @@ class SubjectsByCourseTitleView(APIView):
                 data[course.title] = subjects
             return Response(data)
 
-        # Filter subjects by course title (case-insensitive partial match)
         courses = Course.objects.filter(
             title__icontains=course_title).prefetch_related("subjects")
         subjects = []
@@ -459,6 +439,10 @@ class SubjectsByCourseTitleView(APIView):
                     subjects.append(subj.name)
         return Response({"course_title": course_title, "subjects": subjects})
 
+
+# =========================
+# TEACHER ALL STUDENTS
+# =========================
 
 class TeacherAllStudentsView(APIView):
     permission_classes = [IsAuthenticated]
@@ -521,21 +505,19 @@ class TeacherAllStudentsView(APIView):
             "students": students,
         })
 
+
 # =========================
 # STUDENT'S OWN SUBJECTS
 # =========================
 
-
 class MySubjectsView(APIView):
     """
     Returns subjects for the student's active enrolled course(s).
-    Used by the private session request form subject dropdown.
     GET /courses/subjects/mine/
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # Get all active enrollments for this student
         course_ids = Enrollment.objects.filter(
             user=request.user,
             status=Enrollment.STATUS_ACTIVE,
@@ -555,4 +537,3 @@ class MySubjectsView(APIView):
             {"id": str(s.id), "name": s.name}
             for s in subjects
         ])
-
