@@ -1,403 +1,565 @@
-from .models import Quiz
-
-from django.db.models import Avg, Max, Min, Count
-import uuid
-from django.db import transaction
+from django.db.models import Prefetch
+from rest_framework.exceptions import PermissionDenied
+from rest_framework import generics
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import serializers
-from rest_framework.exceptions import ValidationError, PermissionDenied
 
-from courses.models import SubjectTeacher
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from rest_framework import status
+from rest_framework.exceptions import ValidationError
+
+from accounts.permissions import IsEmailVerified
 from enrollments.models import Enrollment
+from django.db import models
+from django.db.models import Count, Avg, Max, Min
 
-from .models import (
-    Quiz,
-    Question,
-    Choice,
-    QuizAttempt,
-    StudentAnswer,
+from courses.models import Subject, SubjectTeacher
+
+from .models import Quiz, QuizAttempt
+from .serializers import (
+    QuizCreateSerializer,
+    QuestionCreateSerializer,
+    QuizDashboardSerializer,
+    QuizSubmitSerializer,
+    QuizDetailSerializer,
+    QuizResultSerializer,
+    TeacherQuizAnalyticsSerializer,
+    TeacherQuizAttemptSerializer,
 )
 
 
 # =====================================================
-# CHOICE SERIALIZERS
+# TEACHER VIEWS
 # =====================================================
 
-class ChoiceAdminSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Choice
-        fields = ["id", "text", "is_correct"]
+class CreateQuizView(APIView):
+    permission_classes = [IsAuthenticated]
 
+    def post(self, request):
+        if not request.user.has_role("TEACHER"):
+            raise PermissionDenied("Only teachers allowed.")
 
-class ChoicePublicSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Choice
-        fields = ["id", "text"]
+        serializer = QuizCreateSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        quiz = serializer.save()
 
-
-# =====================================================
-# QUESTION CREATION
-# =====================================================
-
-class QuestionCreateSerializer(serializers.ModelSerializer):
-    choices = ChoiceAdminSerializer(many=True)
-
-    class Meta:
-        model = Question
-        fields = ["id", "text", "marks", "order", "choices", "explanation"]
-        read_only_fields = ["id"]
-
-    def validate(self, attrs):
-        choices = attrs.get("choices", [])
-
-        if len(choices) < 2:
-            raise ValidationError("At least two choices required.")
-
-        correct_count = sum(1 for c in choices if c.get("is_correct"))
-        if correct_count != 1:
-            raise ValidationError("Exactly one correct answer required.")
-
-        if not attrs.get("explanation"):
-            raise ValidationError("Explanation is required.")
-
-        return attrs
-
-    @transaction.atomic
-    def create(self, validated_data):
-        choices_data = validated_data.pop("choices")
-        quiz = self.context["quiz"]
-
-        question = Question.objects.create(
-            quiz=quiz,
-            **validated_data
+        return Response(
+            {"id": quiz.id, "detail": "Quiz created successfully."},
+            status=status.HTTP_201_CREATED,
         )
 
-        Choice.objects.bulk_create([
-            Choice(question=question, **choice)
-            for choice in choices_data
-        ])
 
-        return question
+class AddQuestionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if not request.user.has_role("TEACHER"):
+            raise PermissionDenied("Only teachers allowed.")
+
+        quiz = get_object_or_404(Quiz, pk=pk)
+
+        if quiz.created_by != request.user:
+            raise PermissionDenied("Not authorized for this quiz.")
+
+        if quiz.is_published:
+            raise ValidationError("Cannot modify published quiz.")
+
+        serializer = QuestionCreateSerializer(
+            data=request.data,
+            context={"quiz": quiz},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(
+            {"detail": "Question added successfully."},
+            status=status.HTTP_201_CREATED,
+        )
 
 
-# =====================================================
-# QUIZ CREATION
-# =====================================================
+class PublishQuizView(APIView):
+    permission_classes = [IsAuthenticated]
 
-class QuizCreateSerializer(serializers.ModelSerializer):
+    def patch(self, request, pk):
+        if not request.user.has_role("TEACHER"):
+            raise PermissionDenied("Only teachers allowed.")
 
-    class Meta:
-        model = Quiz
-        fields = [
-            "id",
-            "subject",
-            "title",
-            "description",
-            "due_date",
-            "time_limit_minutes",
-        ]
-        read_only_fields = ["id"]
+        quiz = get_object_or_404(Quiz, pk=pk)
 
-    def validate_subject(self, subject):
-        user = self.context["request"].user
+        if quiz.created_by != request.user:
+            raise PermissionDenied("Not authorized.")
+
+        if quiz.is_published:
+            raise ValidationError("Quiz already published.")
+
+        if not quiz.questions.exists():
+            raise ValidationError("Cannot publish empty quiz.")
+
+        total_marks = quiz.questions.aggregate(
+            total=models.Sum("marks")
+        )["total"] or 0
+
+        quiz.total_marks = total_marks
+        quiz.is_published = True
+        quiz.save(update_fields=["total_marks", "is_published"])
+
+        return Response(
+            {"detail": "Quiz published successfully."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class TeacherDeleteQuizView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def delete(self, request, pk):
+        quiz = get_object_or_404(
+            Quiz.objects.select_related("subject"),
+            pk=pk
+        )
+
+        if not request.user.has_role("TEACHER"):
+            raise PermissionDenied("Only teachers allowed.")
+
+        if quiz.created_by != request.user:
+            raise PermissionDenied("You did not create this quiz.")
+
+        if quiz.is_published and quiz.attempts.exists():
+            return Response(
+                {"detail": "Cannot delete quiz with student attempts."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        quiz.delete()
+
+        return Response(
+            {"detail": "Quiz deleted successfully."},
+            status=status.HTTP_204_NO_CONTENT
+        )
+
+
+class TeacherSubjectQuizListView(generics.ListAPIView):
+    serializer_class = TeacherQuizAnalyticsSerializer
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def get_queryset(self):
+        user = self.request.user
+        subject_id = self.kwargs["subject_id"]
 
         if not user.has_role("TEACHER"):
             raise PermissionDenied("Only teachers allowed.")
 
-        if not SubjectTeacher.objects.filter(
-            subject=subject,
-            teacher=user
-        ).exists():
-            raise PermissionDenied("You are not assigned to this subject.")
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"),
+            id=subject_id
+        )
 
-        return subject
+        if not subject.subject_teachers.filter(teacher=user).exists():
+            raise PermissionDenied("Not assigned to this subject.")
 
-    def validate_due_date(self, due_date):
-        if due_date <= timezone.now():
-            raise ValidationError("Due date must be in the future.")
-        return due_date
+        enrolled_count_subquery = (
+            subject.course.enrollments.filter(status="ACTIVE").count()
+        )
 
-    def create(self, validated_data):
-        return Quiz.objects.create(
-            created_by=self.context["request"].user,
-            **validated_data
+        return (
+            Quiz.objects
+            .filter(subject=subject)
+            .select_related("subject", "subject__course")
+            .annotate(
+                total_attempts=Count("attempts", distinct=True),
+                average_score=Avg("attempts__score"),
+                highest_score=Max("attempts__score"),
+                lowest_score=Min("attempts__score"),
+                questions_count=Count("questions", distinct=True),
+                submission_rate=Count(
+                    "attempts", distinct=True) * 100.0 / (enrolled_count_subquery or 1),
+            )
+            .order_by("-created_at")
         )
 
 
 # =====================================================
-# STUDENT QUIZ DASHBOARD SERIALIZER
+# STUDENT VIEWS
 # =====================================================
 
-class QuizDashboardSerializer(serializers.ModelSerializer):
-    subject_name = serializers.CharField(source="subject.name", read_only=True)
-    course_title = serializers.CharField(
-        source="subject.course.title", read_only=True)
-    teacher_name = serializers.CharField(
-        source="created_by.email", read_only=True)
+class StudentDashboardView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
 
-    # resolved via annotation in the view
-    questions_count = serializers.IntegerField(read_only=True)
+    def get(self, request):
+        status_filter = request.query_params.get("status")
+        subject_id = request.query_params.get("subject")
 
-    status = serializers.SerializerMethodField()
-    score = serializers.SerializerMethodField()
+        user = request.user
 
-    class Meta:
-        model = Quiz
-        fields = [
-            "id",
-            "title",
-            "subject_name",
-            "course_title",
-            "teacher_name",
-            "created_at",
-            "due_date",
-            "total_marks",
-            "questions_count",
-            "status",
-            "score",
-            "is_published",
-        ]
+        quizzes = (
+            Quiz.objects
+            .filter(
+                subject__course__enrollments__user=user,
+                subject__course__enrollments__status=Enrollment.STATUS_ACTIVE,
+                is_published=True,
+            )
+            .select_related("subject", "subject__course", "created_by")
+            .annotate(questions_count=Count("questions", distinct=True))
+            .prefetch_related(
+                Prefetch(
+                    "attempts",
+                    queryset=QuizAttempt.objects.filter(
+                        student=user
+                    ).order_by("-attempt_number"),
+                    to_attr="user_attempts",
+                ),
+                Prefetch(
+                    "attempts",
+                    queryset=QuizAttempt.objects.filter(
+                        student=user,
+                        status=QuizAttempt.STATUS_SUBMITTED,
+                    ).order_by("-attempt_number"),
+                    to_attr="user_submitted_attempts",
+                ),
+            )
+            .distinct()
+        )
 
-    def get_status(self, obj):
-        # view prefetches attempts as "user_attempts"
-        attempts = getattr(obj, "user_attempts", [])
-        if not attempts:
-            return "PENDING"
-        return attempts[0].status
+        if subject_id:
+            quizzes = quizzes.filter(subject_id=subject_id)
 
-    def get_score(self, obj):
-        # view prefetches submitted attempts as "user_submitted_attempts"
-        attempts = getattr(obj, "user_submitted_attempts", [])
-        if not attempts:
-            return None
-        return attempts[0].score
+        submitted_ids = QuizAttempt.objects.filter(
+            student=user,
+            status=QuizAttempt.STATUS_SUBMITTED,
+        ).values_list("quiz_id", flat=True).distinct()
+
+        if status_filter == "completed":
+            quizzes = quizzes.filter(id__in=submitted_ids)
+        elif status_filter == "pending":
+            quizzes = quizzes.exclude(id__in=submitted_ids)
+
+        serializer = QuizDashboardSerializer(
+            quizzes,
+            many=True,
+            context={"request": request},
+        )
+
+        return Response(serializer.data)
 
 
-# =====================================================
-# QUIZ SUBMISSION
-# =====================================================
+class StartQuizView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
 
-class QuizSubmitSerializer(serializers.Serializer):
-    answers = serializers.ListField(
-        child=serializers.DictField(),
-        allow_empty=False
-    )
-
-    def validate(self, attrs):
-        quiz = self.context["quiz"]
-        user = self.context["request"].user
+    def post(self, request, pk):
+        quiz = get_object_or_404(
+            Quiz.objects.select_related("subject__course"),
+            pk=pk,
+            is_published=True,
+        )
 
         if not Enrollment.objects.filter(
-            user=user,
+            user=request.user,
             course=quiz.subject.course,
-            status=Enrollment.STATUS_ACTIVE
+            status=Enrollment.STATUS_ACTIVE,
         ).exists():
             raise ValidationError("Not enrolled in this course.")
-
-        if not quiz.is_published:
-            raise ValidationError("Quiz not published.")
 
         if quiz.due_date <= timezone.now():
             raise ValidationError("Quiz expired.")
 
-        if len(attrs["answers"]) != quiz.questions.count():
-            raise ValidationError("All questions must be answered.")
-
-        return attrs
-
-    @transaction.atomic
-    def save(self, **kwargs):
-        quiz = self.context["quiz"]
-        user = self.context["request"].user
-        submitted_answers = self.validated_data["answers"]
-
-        attempt = QuizAttempt.objects.select_for_update().filter(
+        last_attempt = QuizAttempt.objects.filter(
             quiz=quiz,
-            student=user,
-            status=QuizAttempt.STATUS_PENDING,
+            student=request.user
         ).order_by("-attempt_number").first()
 
-        if not attempt:
-            raise ValidationError("No active attempt found.")
+        new_attempt_number = (
+            last_attempt.attempt_number + 1) if last_attempt else 1
 
-        score = 0
-        attempt.answers.all().delete()
+        QuizAttempt.objects.create(
+            quiz=quiz,
+            student=request.user,
+            attempt_number=new_attempt_number
+        )
 
-        for item in submitted_answers:
-            question_id = item.get("question")
-            choice_id = item.get("selected_choice")
+        return Response(
+            {"detail": "Quiz started successfully."},
+            status=status.HTTP_200_OK,
+        )
 
-            question = Question.objects.filter(
-                id=question_id,
-                quiz=quiz
-            ).first()
 
-            if not question:
-                raise ValidationError("Invalid question.")
+class SubmitQuizView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
 
-            choice = Choice.objects.filter(
-                id=choice_id,
-                question=question
-            ).first()
+    def post(self, request, pk):
+        quiz = get_object_or_404(
+            Quiz.objects.select_related("subject__course"),
+            pk=pk,
+            is_published=True,
+        )
 
-            if not choice:
-                raise ValidationError("Invalid choice.")
+        serializer = QuizSubmitSerializer(
+            data=request.data,
+            context={"request": request, "quiz": quiz},
+        )
+        serializer.is_valid(raise_exception=True)
+        attempt = serializer.save()
 
-            if choice.is_correct:
-                score += question.marks
+        return Response(
+            {
+                "detail": "Quiz submitted successfully.",
+                "score": attempt.score,
+                "total_marks": quiz.total_marks,
+            },
+            status=status.HTTP_200_OK,
+        )
 
-            StudentAnswer.objects.create(
-                attempt=attempt,
-                question=question,
-                selected_choice=choice,
-                is_correct=choice.is_correct,
+
+class QuizDetailView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def get(self, request, pk):
+        quiz = get_object_or_404(
+            Quiz.objects
+            .select_related("subject", "subject__course", "created_by")
+            .prefetch_related("questions__choices"),
+            pk=pk,
+            is_published=True,
+        )
+
+        if request.user.has_role("TEACHER"):
+            if quiz.created_by != request.user:
+                raise PermissionDenied("Not authorized for this quiz.")
+        elif not Enrollment.objects.filter(
+            user=request.user,
+            course=quiz.subject.course,
+            status=Enrollment.STATUS_ACTIVE,
+        ).exists():
+            raise ValidationError("Not enrolled in this course.")
+
+        serializer = QuizDetailSerializer(
+            quiz,
+            context={"request": request},
+        )
+
+        return Response(serializer.data)
+
+
+class QuizResultView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def get(self, request, pk):
+        quiz = get_object_or_404(
+            Quiz.objects.select_related(
+                "subject", "subject__course", "created_by"),
+            pk=pk,
+        )
+
+        attempt = (
+            QuizAttempt.objects
+            .filter(
+                quiz=quiz,
+                student=request.user,
+                status=QuizAttempt.STATUS_SUBMITTED,
             )
+            .prefetch_related(
+                "answers__question__choices",
+                "answers__selected_choice",
+            )
+            .order_by("-attempt_number")
+            .first()
+        )
 
-        attempt.score = score
-        attempt.status = QuizAttempt.STATUS_SUBMITTED
-        attempt.submitted_at = timezone.now()
-        attempt.save(update_fields=["score", "status", "submitted_at"])
+        if not attempt:
+            raise ValidationError("No submitted attempt found.")
 
-        return attempt
+        result_questions = []
 
+        for answer in attempt.answers.all():
+            correct_choice = next(
+                (c for c in answer.question.choices.all() if c.is_correct),
+                None
+            )
+            result_questions.append({
+                "id": answer.question.id,
+                "text": answer.question.text,
+                "selected_choice": answer.selected_choice.text,
+                "correct_choice": correct_choice.text if correct_choice else "",
+                "is_correct": answer.is_correct,
+                "explanation": answer.question.explanation,
+            })
 
-# =====================================================
-# QUIZ DETAIL (FOR TAKING QUIZ)
-# =====================================================
+        data = {
+            "quiz_id": quiz.id,
+            "title": quiz.title,
+            "subject_name": quiz.subject.name,
+            "teacher_name": quiz.created_by.email,
+            "total_marks": quiz.total_marks,
+            "score": attempt.score,
+            "submitted_at": attempt.submitted_at,
+            "questions": result_questions,
+        }
 
-class QuestionPublicSerializer(serializers.ModelSerializer):
-    choices = ChoicePublicSerializer(many=True, read_only=True)
+        serializer = QuizResultSerializer(data=data)
+        serializer.is_valid(raise_exception=True)
 
-    class Meta:
-        model = Question
-        fields = [
-            "id",
-            "text",
-            "marks",
-            "order",
-            "choices",
-            "explanation",
-        ]
-
-
-class QuizDetailSerializer(serializers.ModelSerializer):
-    subject_name = serializers.CharField(source="subject.name", read_only=True)
-    course_title = serializers.CharField(
-        source="subject.course.title", read_only=True)
-    teacher_name = serializers.CharField(
-        source="created_by.email", read_only=True)
-    questions = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Quiz
-        fields = [
-            "id",
-            "title",
-            "description",
-            "subject_name",
-            "course_title",
-            "teacher_name",
-            "due_date",
-            "created_at",
-            "time_limit_minutes",
-            "questions",
-        ]
-
-    def get_questions(self, obj):
-        questions = obj.questions.all().order_by("order")
-        return QuestionPublicSerializer(questions, many=True).data
+        return Response(serializer.data)
 
 
-# =====================================================
-# QUIZ RESULT SERIALIZERS
-# =====================================================
+class StudentQuizSubjectsView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
 
-class QuestionResultSerializer(serializers.Serializer):
-    id = serializers.UUIDField()
-    text = serializers.CharField()
-    selected_choice = serializers.CharField()
-    correct_choice = serializers.CharField()
-    is_correct = serializers.BooleanField()
-    explanation = serializers.CharField(
-        allow_blank=True, default="No explanation")
+    def get(self, request):
+        quizzes = (
+            Quiz.objects
+            .filter(
+                is_published=True,
+                subject__course__enrollments__user=request.user,
+                subject__course__enrollments__status=Enrollment.STATUS_ACTIVE,
+            )
+            .select_related("subject", "created_by")
+            .distinct()
+        )
 
+        subjects_map = {}
 
-class QuizResultSerializer(serializers.Serializer):
-    quiz_id = serializers.UUIDField()
-    title = serializers.CharField()
-    subject_name = serializers.CharField()
-    teacher_name = serializers.CharField()
-    total_marks = serializers.IntegerField()
-    score = serializers.IntegerField()
-    submitted_at = serializers.DateTimeField()
-    questions = QuestionResultSerializer(many=True)
+        for quiz in quizzes:
+            subject = quiz.subject
+            if subject.id not in subjects_map:
+                subjects_map[subject.id] = {
+                    "id": subject.id,
+                    "subject": subject.name,
+                    "teacher": quiz.created_by.email,
+                }
 
-
-class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
-    student_id = serializers.UUIDField(source="student.id", read_only=True)
-    student_email = serializers.EmailField(
-        source="student.email", read_only=True)
-    student_name = serializers.CharField(
-        source="student.profile.full_name", read_only=True)
-    total_marks = serializers.IntegerField(
-        source="quiz.total_marks", read_only=True)
-
-    class Meta:
-        model = QuizAttempt
-        fields = [
-            "id",
-            "student_id",
-            "student_email",
-            "student_name",
-            "score",
-            "total_marks",
-            "submitted_at",
-        ]
+        return Response(list(subjects_map.values()))
 
 
-class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
-    subject_name = serializers.CharField(source="subject.name", read_only=True)
-    course_title = serializers.CharField(
-        source="subject.course.title", read_only=True)
+class TeacherQuizAttemptsView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
 
-    # all resolved via annotations in the view
-    questions_count = serializers.IntegerField(read_only=True)
-    total_attempts = serializers.IntegerField(read_only=True)
-    average_score = serializers.FloatField(read_only=True)
-    highest_score = serializers.FloatField(read_only=True)
-    lowest_score = serializers.FloatField(read_only=True)
-    submission_rate = serializers.FloatField(read_only=True)
+    def get(self, request, pk):
+        user = request.user
 
-    is_expired = serializers.SerializerMethodField()
+        if not user.has_role("TEACHER"):
+            raise PermissionDenied("Only teachers allowed.")
 
-    class Meta:
-        model = Quiz
-        fields = [
-            "id",
-            "title",
-            "created_at",
-            "subject_name",
-            "course_title",
-            "due_date",
-            "is_published",
-            "is_expired",
-            "questions_count",
-            "total_attempts",
-            "submission_rate",
-            "average_score",
-            "highest_score",
-            "lowest_score",
-        ]
+        quiz = get_object_or_404(
+            Quiz.objects.select_related("subject"),
+            id=pk
+        )
 
-    def get_is_expired(self, obj):
-        return obj.due_date <= timezone.now()
+        if not SubjectTeacher.objects.filter(
+            subject=quiz.subject,
+            teacher=user
+        ).exists():
+            raise PermissionDenied("Not assigned to this subject.")
+
+        attempts = (
+            QuizAttempt.objects
+            .filter(quiz=quiz, status=QuizAttempt.STATUS_SUBMITTED)
+            .select_related("student", "student__profile", "quiz")
+            .order_by("student_id", "-attempt_number")
+        )
+
+        student_map = {}
+
+        for attempt in attempts:
+            student_id = str(attempt.student.id)
+
+            if student_id not in student_map:
+                student_map[student_id] = {
+                    "student_id": attempt.student.id,
+                    "student_name": attempt.student.profile.full_name,
+                    "student_email": attempt.student.email,
+                    "latest_submitted_at": attempt.submitted_at,
+                    "best_score": attempt.score,
+                    "attempts_count": 1,
+                    "total_marks": attempt.quiz.total_marks,
+                }
+            else:
+                student_data = student_map[student_id]
+                if attempt.submitted_at > student_data["latest_submitted_at"]:
+                    student_data["latest_submitted_at"] = attempt.submitted_at
+                if attempt.score > student_data["best_score"]:
+                    student_data["best_score"] = attempt.score
+                student_data["attempts_count"] += 1
+
+        return Response(list(student_map.values()))
 
 
-class TeacherQuizStudentSummarySerializer(serializers.Serializer):
-    student_id = serializers.UUIDField()
-    student_name = serializers.CharField()
-    student_email = serializers.EmailField()
-    latest_submitted_at = serializers.DateTimeField()
-    best_score = serializers.FloatField()
-    total_marks = serializers.IntegerField()
-    attempts_count = serializers.IntegerField()
+class TeacherStudentAttemptsView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+    serializer_class = TeacherQuizAttemptSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        quiz_id = self.kwargs["quiz_id"]
+        student_id = self.kwargs["student_id"]
+
+        if not user.has_role("TEACHER"):
+            raise PermissionDenied("Only teachers allowed.")
+
+        quiz = get_object_or_404(
+            Quiz.objects.select_related("subject"),
+            id=quiz_id
+        )
+
+        if not SubjectTeacher.objects.filter(
+            subject=quiz.subject,
+            teacher=user
+        ).exists():
+            raise PermissionDenied("Not assigned to this subject.")
+
+        return (
+            QuizAttempt.objects
+            .filter(
+                quiz=quiz,
+                student_id=student_id,
+                status=QuizAttempt.STATUS_SUBMITTED
+            )
+            .select_related("student", "student__profile")
+            .order_by("attempt_number")
+        )
+
+
+class TeacherQuizAttemptDetailView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def get(self, request, pk):
+        attempt = get_object_or_404(
+            QuizAttempt.objects
+            .select_related("student__profile", "quiz")
+            .prefetch_related(
+                "answers__question__choices",
+                "answers__selected_choice",
+            ),
+            id=pk
+        )
+
+        if not SubjectTeacher.objects.filter(
+            subject=attempt.quiz.subject,
+            teacher=request.user
+        ).exists():
+            raise PermissionDenied("Not authorized.")
+
+        result_questions = []
+
+        for answer in attempt.answers.all():
+            correct_choice = next(
+                (c for c in answer.question.choices.all() if c.is_correct),
+                None
+            )
+            result_questions.append({
+                "question": answer.question.text,
+                "options": [c.text for c in answer.question.choices.all()],
+                "selected": answer.selected_choice.text,
+                "correct": correct_choice.text if correct_choice else "",
+            })
+
+        return Response({
+            "student_name": attempt.student.profile.full_name,
+            "score": attempt.score,
+            "total": attempt.quiz.total_marks,
+            "submitted_at": attempt.submitted_at,
+            "questions": result_questions,
+        })
