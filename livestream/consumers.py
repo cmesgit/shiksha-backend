@@ -7,11 +7,16 @@ from django.utils import timezone
 
 from livestream.services.session_state import get_session_state, set_session_state
 from .models import LiveSession
+from enrollments.models import Enrollment
 
 r = redis.Redis(host="127.0.0.1", port=6379, db=0)
 
 
 class LiveSessionConsumer(AsyncWebsocketConsumer):
+    """
+    Handles the in-session WebSocket connection.
+    Serves: chat history, chat messages, session state updates.
+    """
 
     async def connect(self):
         self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
@@ -21,18 +26,18 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
-        # 🔥 SEND CHAT HISTORY
-        chat_history = self.get_chat_history()
+        # Send chat history (wrapped in sync_to_async — Redis is blocking)
+        chat_history = await database_sync_to_async(self.get_chat_history)()
         if chat_history:
             await self.send(text_data=json.dumps({
                 "type": "chat_history",
                 "data": chat_history
             }))
 
-        # 🔥 GET STATE FROM REDIS
+        # Get session state from Redis
         state = await database_sync_to_async(get_session_state)(self.session_id)
 
-        # 🔥 FALLBACK TO DB
+        # Fallback to DB if Redis has no state
         if not state:
             try:
                 session = await database_sync_to_async(
@@ -49,9 +54,10 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
 
                 await database_sync_to_async(set_session_state)(session)
             except LiveSession.DoesNotExist:
-                state = {"status": "UNKNOWN"}
+                await self.close()
+                return
 
-        # 🔥 SEND INITIAL STATE
+        # Send initial state so client knows current status immediately
         await self.send(text_data=json.dumps({
             "type": "initial_state",
             "data": state
@@ -86,10 +92,10 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
             "sender_id": str(user.id),
         }
 
-        # 🔥 SAVE TO REDIS
-        self.save_chat_message(message_data)
+        # Save to Redis (wrapped — blocking call)
+        await database_sync_to_async(self.save_chat_message)(message_data)
 
-        # 🔥 BROADCAST TO GROUP
+        # Broadcast to everyone in the session group
         await self.channel_layer.group_send(
             self.group_name,
             {
@@ -112,7 +118,6 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
             key = f"chat:{self.session_id}"
             r.rpush(key, json.dumps(message))
             r.expire(key, 86400)  # 24 hours
-            print(f"✅ Saved message to Redis key: {key}")
         except Exception as e:
             print(f"save_chat_message error: {e}")
 
@@ -146,5 +151,47 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
     async def chat_message(self, event):
         await self.send(text_data=json.dumps({
             "type": "chat_message",
+            "data": event["data"]
+        }))
+
+
+class CourseSessionConsumer(AsyncWebsocketConsumer):
+    """
+    Handles the session list page WebSocket connection.
+    Students connect here to get real-time session create/cancel/status updates
+    without refreshing LiveSessions.jsx.
+    """
+
+    async def connect(self):
+        self.course_id = self.scope["url_route"]["kwargs"]["course_id"]
+        self.group_name = f"course_sessions_{self.course_id}"
+        self.user = self.scope["user"]
+
+        if self.user.is_anonymous:
+            await self.close()
+            return
+
+        # Verify the user is enrolled in this course
+        is_enrolled = await database_sync_to_async(
+            lambda: Enrollment.objects.filter(
+                user=self.user,
+                course_id=self.course_id,
+                status="ACTIVE"
+            ).exists()
+        )()
+
+        if not is_enrolled:
+            await self.close()
+            return
+
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.accept()
+
+    async def disconnect(self, close_code):
+        await self.channel_layer.group_discard(self.group_name, self.channel_name)
+
+    async def session_list_update(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "session_list_update",
             "data": event["data"]
         }))

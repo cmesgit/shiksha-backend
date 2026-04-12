@@ -12,7 +12,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import generics, status
-from django.db.models import Q  # ✅ kept (unchanged)
+from django.db.models import Q
 from django.db import transaction
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -22,20 +22,27 @@ import logging
 from datetime import timedelta
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from django.contrib.auth import get_user_model  # ✅ ADDED
-
+from django.contrib.auth import get_user_model
 
 from livestream.services.session_state import set_session_state
 
 
+logger = logging.getLogger(__name__)
+
+
+# =========================
+# BROADCAST HELPERS
+# =========================
+
 def broadcast_session_update(session):
+    """Broadcast status change to everyone inside the session room."""
     channel_layer = get_channel_layer()
 
-    # 🔥 NEW: update Redis (safe)
+    # Update Redis state cache (safe — never breaks if Redis is down)
     try:
         set_session_state(session)
     except Exception:
-        pass  # never break system if Redis fails
+        pass
 
     if not channel_layer:
         return
@@ -54,13 +61,41 @@ def broadcast_session_update(session):
         },
     )
 
+    # Also notify the session list page
+    broadcast_course_sessions_update(session)
 
-logger = logging.getLogger(__name__)
+
+def broadcast_course_sessions_update(session):
+    """Broadcast session changes to the session list page (LiveSessions.jsx)."""
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return
+
+    async_to_sync(channel_layer.group_send)(
+        f"course_sessions_{session.course_id}",
+        {
+            "type": "session_list_update",
+            "data": {
+                "id": str(session.id),
+                "title": session.title,
+                "start_time": session.start_time.isoformat(),
+                "end_time": session.end_time.isoformat(),
+                "status": session.status,
+                "teacher_left_at": (
+                    session.teacher_left_at.isoformat()
+                    if session.teacher_left_at else None
+                ),
+                "subject_id": str(session.subject_id),
+                "teacher": session.created_by.email if session.created_by else "",
+            },
+        }
+    )
 
 
 # =========================
 # STUDENT SESSION LIST
 # =========================
+
 class StudentLiveSessionListView(generics.ListAPIView):
     serializer_class = LiveSessionListSerializer
     permission_classes = [IsAuthenticated]
@@ -85,17 +120,14 @@ class StudentLiveSessionListView(generics.ListAPIView):
             .select_related("course", "subject", "created_by")
         )
 
-        # ✅ course filter
         if course_id:
             queryset = queryset.filter(course_id=course_id)
 
-        # ✅ subject filter (FIXED POSITION)
         if subject_id:
             queryset = queryset.filter(subject_id=subject_id)
 
         now = timezone.now()
         cutoff = now - timedelta(hours=24)
-
         queryset = queryset.filter(end_time__gte=cutoff)
 
         return queryset.order_by("start_time")
@@ -104,6 +136,7 @@ class StudentLiveSessionListView(generics.ListAPIView):
 # =========================
 # TEACHER SESSION LIST
 # =========================
+
 class TeacherLiveSessionListView(generics.ListAPIView):
     serializer_class = LiveSessionListSerializer
     permission_classes = [IsAuthenticated]
@@ -119,7 +152,6 @@ class TeacherLiveSessionListView(generics.ListAPIView):
         cutoff = now - timedelta(hours=24)
 
         if subject_id:
-            # 🔐 verify teacher assigned
             if not user.subject_assignments.filter(subject_id=subject_id).exists():
                 raise PermissionDenied("Not assigned to this subject.")
 
@@ -131,7 +163,6 @@ class TeacherLiveSessionListView(generics.ListAPIView):
                 .order_by("start_time")
             )
 
-        # No subject_id — return all sessions across teacher's subjects
         assigned_subject_ids = user.subject_assignments.values_list(
             "subject_id", flat=True)
 
@@ -144,6 +175,10 @@ class TeacherLiveSessionListView(generics.ListAPIView):
         )
 
 
+# =========================
+# JOIN SESSION
+# =========================
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def join_live_session(request, session_id):
@@ -151,33 +186,27 @@ def join_live_session(request, session_id):
     session = get_object_or_404(LiveSession, id=session_id)
     now = timezone.now()
 
-    # 🚫 CANCELLED
     if session.status == LiveSession.STATUS_CANCELLED:
-        return Response({"detail": "Session cancelled"}, status=400)
+        return Response({"detail": "Session was cancelled."}, status=400)
 
-    # ==================================================
-    # 🔥 TEACHER DISCONNECT / EXPIRY LOGIC (CENTRALIZED)
-    # ==================================================
+    if session.status == LiveSession.STATUS_COMPLETED:
+        return Response({"detail": "Session has ended."}, status=400)
+
+    if now >= session.end_time:
+        session.status = LiveSession.STATUS_COMPLETED
+        session.save(update_fields=["status"])
+        return Response({"detail": "Session has ended."}, status=400)
+
     if session.teacher_left_at:
         diff = now - session.teacher_left_at
-
-        # ❌ permanently ended
         if diff > timedelta(minutes=60):
-            if session.status != LiveSession.STATUS_COMPLETED:
-                session.status = LiveSession.STATUS_COMPLETED
-                session.save(update_fields=["status"])  # ✅ FIX
+            session.status = LiveSession.STATUS_COMPLETED
+            session.teacher_left_at = None
+            session.save(update_fields=["status", "teacher_left_at"])
+            return Response({"detail": "Session has ended."}, status=400)
 
-            return Response(
-                {"detail": "Session permanently ended"},
-                status=403
-            )
-
-    # =========================
-    # 👨‍🎓 STUDENT
-    # =========================
+    # ── Student ──
     if user.has_role("STUDENT"):
-
-        # ✅ enrollment check FIRST
         is_enrolled = Enrollment.objects.filter(
             user=user,
             course=session.course,
@@ -187,35 +216,24 @@ def join_live_session(request, session_id):
         if not is_enrolled:
             return Response({"detail": "Not enrolled"}, status=403)
 
-        # 🔥 early join restriction
         if now < session.start_time - timedelta(minutes=15):
             return Response({"detail": "Too early"}, status=403)
 
-        # 🔥 optional: block if teacher gone too long
         if session.teacher_left_at:
-            diff = now - session.teacher_left_at
-
-            if diff > timedelta(minutes=60):
-                return Response(
-                    {"detail": "Session ended"},
-                    status=403
-                )
+            if now - session.teacher_left_at > timedelta(minutes=60):
+                return Response({"detail": "Session ended"}, status=403)
 
         is_teacher = False
 
-    # =========================
-    # 👨‍🏫 TEACHER
-    # =========================
+    # ── Teacher ──
     elif user.has_role("TEACHER"):
-
         if not session.subject.subject_teachers.filter(teacher=user).exists():
             return Response({"detail": "Not assigned"}, status=403)
 
-        # 🔥 ONLY CREATOR IS PRESENTER
         is_creator = str(session.created_by_id) == str(user.id)
-        is_teacher = is_creator  # presenter only if creator
+        is_teacher = is_creator
 
-        # 🔥 REVIVE SESSION (only creator matters)
+        # Revive session if teacher reconnects within 30 min
         if is_creator and session.teacher_left_at:
             if now <= session.teacher_left_at + timedelta(minutes=30):
                 session.teacher_left_at = None
@@ -225,9 +243,6 @@ def join_live_session(request, session_id):
     else:
         return Response({"detail": "Unauthorized"}, status=403)
 
-    # =========================
-    # 🔐 TOKEN
-    # =========================
     token = generate_livekit_token(
         user=user,
         session=session,
@@ -245,6 +260,7 @@ def join_live_session(request, session_id):
 # =========================
 # CREATE SESSION
 # =========================
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_live_session(request):
@@ -255,6 +271,7 @@ def create_live_session(request):
 
     if serializer.is_valid():
         session = serializer.save()
+        broadcast_course_sessions_update(session)
         return Response(
             {
                 "id": session.id,
@@ -270,6 +287,7 @@ def create_live_session(request):
 # =========================
 # CANCEL SESSION
 # =========================
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def cancel_live_session(request, session_id):
@@ -288,15 +306,87 @@ def cancel_live_session(request, session_id):
     if session.status == LiveSession.STATUS_COMPLETED:
         return Response({"detail": "Cannot cancel a completed session."}, status=400)
 
+    if timezone.now() >= session.start_time:
+        return Response({"detail": "Cannot cancel a session that has already started. Use End instead."}, status=400)
+
     session.status = LiveSession.STATUS_CANCELLED
-    session.save(update_fields=["status"])  # ✅ FIX
+    session.save(update_fields=["status"])
+    broadcast_course_sessions_update(session)
 
     return Response({"detail": "Session cancelled successfully."})
 
 
 # =========================
+# END SESSION
+# =========================
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def end_live_session(request, session_id):
+    user = request.user
+    session = get_object_or_404(LiveSession, id=session_id)
+
+    if not user.has_role("TEACHER"):
+        return Response({"detail": "Only teachers can end sessions."}, status=403)
+
+    if str(session.created_by_id) != str(user.id):
+        return Response({"detail": "Only the session creator can end it."}, status=403)
+
+    if session.status == LiveSession.STATUS_COMPLETED:
+        return Response({"detail": "Session already completed."}, status=400)
+
+    if session.status == LiveSession.STATUS_CANCELLED:
+        return Response({"detail": "Session is cancelled."}, status=400)
+
+    session.status = LiveSession.STATUS_COMPLETED
+    session.teacher_left_at = None
+    session.save(update_fields=["status", "teacher_left_at"])
+    broadcast_session_update(session)
+    return Response({"detail": "Session ended.", "status": "COMPLETED"})
+
+
+# =========================
+# PAUSE / RESUME SESSION
+# =========================
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def pause_live_session(request, session_id):
+    user = request.user
+    session = get_object_or_404(LiveSession, id=session_id)
+
+    if not user.has_role("TEACHER"):
+        return Response({"detail": "Only teachers can pause sessions."}, status=403)
+
+    if str(session.created_by_id) != str(user.id):
+        return Response({"detail": "Only the session creator can pause."}, status=403)
+
+    if session.status == LiveSession.STATUS_CANCELLED:
+        return Response({"detail": "Cannot pause a cancelled session."}, status=400)
+
+    if session.status == LiveSession.STATUS_COMPLETED:
+        return Response({"detail": "Cannot pause a completed session."}, status=400)
+
+    if session.status == LiveSession.STATUS_PAUSED and not session.teacher_left_at:
+        # Resume
+        session.status = LiveSession.STATUS_LIVE
+        session.teacher_left_at = None
+        session.save(update_fields=["status", "teacher_left_at"])
+        broadcast_session_update(session)
+        return Response({"detail": "Session resumed.", "status": "LIVE"})
+
+    # Pause — don't set teacher_left_at so the reconnect timer doesn't start
+    session.status = LiveSession.STATUS_PAUSED
+    session.teacher_left_at = None
+    session.save(update_fields=["status", "teacher_left_at"])
+    broadcast_session_update(session)
+    return Response({"detail": "Session paused.", "status": "PAUSED"})
+
+
+# =========================
 # LIVEKIT WEBHOOK
 # =========================
+
 @csrf_exempt
 def livekit_webhook(request):
     if request.method != "POST":
@@ -340,8 +430,7 @@ def _handle_participant_join(event):
         return
 
     user_id = str(event.participant.identity)
-
-    User = get_user_model()  # ✅ FIX
+    User = get_user_model()
     user = User.objects.filter(id=user_id).first()
     if not user:
         return
@@ -354,19 +443,16 @@ def _handle_participant_join(event):
 
     session.last_activity_at = timezone.now()
 
-    # 🔥 TEACHER JOIN
     if str(session.created_by_id) == user_id:
         session.teacher_left_at = None
         session.status = LiveSession.STATUS_LIVE
 
     session.save(update_fields=["teacher_left_at",
                  "status", "last_activity_at"])
-
     broadcast_session_update(session)
 
-    # 🔥 NOTIFY ENROLLED STUDENTS WHEN TEACHER GOES LIVE
+    # Notify enrolled students when teacher goes live
     if str(session.created_by_id) == user_id:
-        from enrollments.models import Enrollment
         from livestream.services.notifications import push_ws_notification
         students = Enrollment.objects.filter(
             course=session.course,
@@ -388,8 +474,7 @@ def _handle_participant_left(event):
         return
 
     user_id = str(event.participant.identity)
-
-    User = get_user_model()  # ✅ FIX
+    User = get_user_model()
     user = User.objects.filter(id=user_id).first()
     if not user:
         return
@@ -405,30 +490,30 @@ def _handle_participant_left(event):
 
     session.last_activity_at = timezone.now()
 
-    # 🔥 TEACHER LEFT (network OR actual)
     if str(session.created_by_id) == user_id:
-        session.teacher_left_at = timezone.now()
-        session.status = LiveSession.STATUS_RECONNECTING
+        # Only set reconnecting if session was LIVE — don't override manual PAUSED
+        if session.status != LiveSession.STATUS_PAUSED:
+            session.teacher_left_at = timezone.now()
+            session.status = LiveSession.STATUS_RECONNECTING
+        # If manually paused, teacher just left — keep PAUSED, no timer
 
     session.save(update_fields=["teacher_left_at",
-                 "status", "last_activity_at"])  # ✅ FIX
-
+                 "status", "last_activity_at"])
     broadcast_session_update(session)
 
 
 def _handle_room_started(event):
-    sessions = LiveSession.objects.filter(room_name=event.room.name)
-
-    for session in sessions:
+    for session in LiveSession.objects.filter(room_name=event.room.name):
         session.status = LiveSession.STATUS_LIVE
-        session.save(update_fields=["status"])  # ✅ FIX
+        session.save(update_fields=["status"])
         broadcast_session_update(session)
 
 
 def _handle_room_finished(event):
-    sessions = LiveSession.objects.filter(room_name=event.room.name)
-
-    for session in sessions:
-        session.status = LiveSession.STATUS_COMPLETED
-        session.save(update_fields=["status"])  # ✅ FIX
-        broadcast_session_update(session)
+    for session in LiveSession.objects.filter(room_name=event.room.name):
+        # Complete the session regardless of pause state
+        if session.status != LiveSession.STATUS_CANCELLED:
+            session.status = LiveSession.STATUS_COMPLETED
+            session.teacher_left_at = None
+            session.save(update_fields=["status", "teacher_left_at"])
+            broadcast_session_update(session)

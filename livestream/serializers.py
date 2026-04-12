@@ -13,7 +13,8 @@ IST = ZoneInfo("Asia/Kolkata")
 
 class LiveSessionCreateSerializer(serializers.ModelSerializer):
     subject_id = serializers.UUIDField(write_only=True)
-    force_live = serializers.BooleanField(write_only=True, required=False, default=False)
+    force_live = serializers.BooleanField(
+        write_only=True, required=False, default=False)
 
     class Meta:
         model = LiveSession
@@ -79,7 +80,8 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
         overlap_exists = LiveSession.objects.filter(
             subject=subject
         ).exclude(
-            status__in=[LiveSession.STATUS_CANCELLED, LiveSession.STATUS_COMPLETED]
+            status__in=[LiveSession.STATUS_CANCELLED,
+                        LiveSession.STATUS_COMPLETED]
         ).filter(
             Q(start_time__lt=end_time) &
             Q(end_time__gt=start_time)
@@ -116,10 +118,13 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
     teacher = serializers.CharField(source="created_by.email", read_only=True)
     can_join = serializers.SerializerMethodField()
     computed_status = serializers.SerializerMethodField()
-
     subject_id = serializers.UUIDField(source="subject.id", read_only=True)
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_name = serializers.CharField(source="course.title", read_only=True)
+    teacher_left_at = serializers.DateTimeField(
+        read_only=True)  # needed by client computeStatus
+    # needed by client computeStatus
+    status = serializers.CharField(read_only=True)
 
     class Meta:
         model = LiveSession
@@ -134,6 +139,8 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
             "subject_id",
             "subject_name",
             "course_name",
+            "teacher_left_at",
+            "status",
         ]
 
     def get_computed_status(self, obj):
@@ -141,6 +148,17 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
 
         if obj.status == LiveSession.STATUS_CANCELLED:
             return "CANCELLED"
+
+        if obj.status == LiveSession.STATUS_COMPLETED:
+            return "COMPLETED"
+
+        # Sessions past end_time always show as completed
+        if now >= obj.end_time:
+            return "COMPLETED"
+
+        # Manual pause takes priority over teacher_left_at timer
+        if obj.status == LiveSession.STATUS_PAUSED and not obj.teacher_left_at:
+            return "PAUSED"
 
         if obj.teacher_left_at:
             diff = now - obj.teacher_left_at
@@ -163,6 +181,8 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
 
         if obj.status == LiveSession.STATUS_CANCELLED:
             return False
+
+        # Allow joining paused sessions — student sees paused screen inside
 
         if obj.teacher_left_at:
             if now > obj.teacher_left_at + timedelta(minutes=60):
