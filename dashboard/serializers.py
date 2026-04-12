@@ -9,7 +9,7 @@ from sessions_app.models import PrivateSession
 class DashboardSessionSerializer(serializers.ModelSerializer):
 
     subject = serializers.CharField(source="subject.name")
-    subject_id = serializers.IntegerField(source="subject.id", read_only=True)
+    subject_id = serializers.UUIDField(source="subject.id", read_only=True)
     topic = serializers.CharField(source="title")
     teacher = serializers.CharField(source="created_by.email")
     dateTime = serializers.DateTimeField(source="start_time")
@@ -30,7 +30,7 @@ class DashboardAssignmentSerializer(serializers.ModelSerializer):
 
     teacher = serializers.SerializerMethodField()
     due = serializers.DateTimeField(source="due_date")
-    subject_id = serializers.IntegerField(source="chapter.subject.id", read_only=True)
+    subject_id = serializers.UUIDField(source="chapter.subject.id", read_only=True)
     subject_name = serializers.CharField(source="chapter.subject.name", read_only=True)
 
     class Meta:
@@ -58,7 +58,7 @@ class DashboardQuizSerializer(serializers.ModelSerializer):
 
     teacher = serializers.CharField(source="created_by.email")
     due = serializers.DateTimeField(source="due_date")
-    subject_id = serializers.IntegerField(source="subject.id", read_only=True)
+    subject_id = serializers.UUIDField(source="subject.id", read_only=True)
     subject_name = serializers.CharField(source="subject.name", read_only=True)
 
     class Meta:

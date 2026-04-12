@@ -4,7 +4,7 @@ from django.utils import timezone
 from django.db.models import Prefetch
 from django.db.models import Count
 from django.db.models import Case, When, Value, CharField
-from courses.models import Subject
+from courses.models import Subject, SubjectTeacher
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -66,7 +66,6 @@ class AssignmentDetailView(generics.RetrieveAPIView):
         subject = instance.chapter.subject
         course = subject.course
 
-        # ✅ FIX 3: Attach user_submission here after get_object() so it's not lost
         instance.user_submission = (
             instance.user_submission_list[0]
             if instance.user_submission_list else None
@@ -90,7 +89,6 @@ class AssignmentDetailView(generics.RetrieveAPIView):
 # ==========================================
 # SUBMIT ASSIGNMENT VIEW
 # ==========================================
-
 
 class SubmitAssignmentView(APIView):
     permission_classes = [IsAuthenticated]
@@ -116,7 +114,6 @@ class SubmitAssignmentView(APIView):
                 {"detail": "Not authorized."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        
 
         file = request.FILES.get("file")
         if not file:
@@ -140,7 +137,6 @@ class SubmitAssignmentView(APIView):
 # ==========================================
 # COURSE ASSIGNMENTS LIST VIEW
 # ==========================================
-
 
 class CourseAssignmentsView(generics.ListAPIView):
     serializer_class = AssignmentListSerializer
@@ -179,9 +175,8 @@ class CourseAssignmentsView(generics.ListAPIView):
 
         return queryset
 
-    # ✅ FIX 3: Attach user_submission after queryset is evaluated, not inside get_queryset
     def list(self, request, *args, **kwargs):
-        queryset = self.get_queryset()
+        queryset = list(self.get_queryset())
 
         for obj in queryset:
             obj.user_submission = (
@@ -192,6 +187,10 @@ class CourseAssignmentsView(generics.ListAPIView):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
+
+# ==========================================
+# TEACHER CREATE ASSIGNMENT VIEW
+# ==========================================
 
 class TeacherCreateAssignmentView(APIView):
     permission_classes = [IsAuthenticated]
@@ -211,56 +210,17 @@ class TeacherCreateAssignmentView(APIView):
         )
 
         serializer.is_valid(raise_exception=True)
-
-        assignment = serializer.save()
+        serializer.save()
 
         return Response(
-            {
-                "message": "Assignment created successfully"
-            },
+            {"message": "Assignment created successfully"},
             status=status.HTTP_201_CREATED
         )
 
 
-class TeacherUpdateAssignmentView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def patch(self, request, assignment_id):
-        user = request.user
-
-        if not user.has_role(Role.TEACHER):
-            raise PermissionDenied("Only teachers allowed.")
-
-        assignment = get_object_or_404(
-            Assignment.objects.select_related("chapter__subject"),
-            id=assignment_id
-        )
-
-        subject = assignment.chapter.subject
-
-        if not subject.subject_teachers.filter(teacher=user).exists():
-            raise PermissionDenied("Not assigned to this subject.")
-
-        if assignment.due_date < timezone.now():
-            return Response(
-                {"detail": "Cannot edit expired assignment."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        serializer = TeacherAssignmentUpdateSerializer(
-            assignment,
-            data=request.data,
-            partial=True
-        )
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-
-        return Response(
-            {
-                "message": "Assignment updated successfully"
-            }
-        )
-
+# ==========================================
+# TEACHER UPDATE ASSIGNMENT VIEW
+# ==========================================
 
 class TeacherUpdateAssignmentView(APIView):
     permission_classes = [IsAuthenticated]
@@ -303,6 +263,10 @@ class TeacherUpdateAssignmentView(APIView):
         )
 
 
+# ==========================================
+# TEACHER DELETE ASSIGNMENT VIEW
+# ==========================================
+
 class TeacherDeleteAssignmentView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -333,6 +297,10 @@ class TeacherDeleteAssignmentView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+# ==========================================
+# TEACHER SUBJECT ASSIGNMENTS VIEW
+# ==========================================
+
 class TeacherSubjectAssignmentsView(generics.ListAPIView):
     serializer_class = TeacherAssignmentListSerializer
     permission_classes = [IsAuthenticated]
@@ -360,6 +328,10 @@ class TeacherSubjectAssignmentsView(generics.ListAPIView):
         )
 
 
+# ==========================================
+# TEACHER ASSIGNMENT SUBMISSIONS VIEW
+# ==========================================
+
 class TeacherAssignmentSubmissionsView(generics.ListAPIView):
     serializer_class = TeacherSubmissionListSerializer
     permission_classes = [IsAuthenticated]
@@ -381,8 +353,6 @@ class TeacherAssignmentSubmissionsView(generics.ListAPIView):
         ).exists():
             raise PermissionDenied("Not assigned to this subject.")
 
-        
-
         return (
             AssignmentSubmission.objects
             .filter(assignment=assignment)
@@ -398,44 +368,70 @@ class TeacherAssignmentSubmissionsView(generics.ListAPIView):
         )
 
 
+# ==========================================
+# SUBJECT ASSIGNMENTS VIEW (STUDENT)
+# ==========================================
+
 class SubjectAssignmentsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, subject_id):
+        user = request.user
 
-        assignments = Assignment.objects.filter(
-            chapter__subject_id=subject_id
+        submission_prefetch = Prefetch(
+            "submissions",
+            queryset=AssignmentSubmission.objects.filter(student=user),
+            to_attr="user_submission_list",
+        )
+
+        teacher_prefetch = Prefetch(
+            "chapter__subject__subject_teachers",
+            queryset=SubjectTeacher.objects.select_related(
+                "teacher__profile"
+            ).order_by("order"),
+            to_attr="prefetched_teachers",
+        )
+
+        assignments = (
+            Assignment.objects
+            .filter(chapter__subject_id=subject_id)
+            .select_related("chapter__subject")
+            .prefetch_related(submission_prefetch, teacher_prefetch)
         )
 
         data = []
 
         for assignment in assignments:
+            submission = (
+                assignment.user_submission_list[0]
+                if assignment.user_submission_list else None
+            )
 
-            submission = AssignmentSubmission.objects.filter(
-                assignment=assignment,
-                student=request.user
-            ).first()
+            sub_status = "SUBMITTED" if submission else "PENDING"
 
-            status = "SUBMITTED" if submission else "PENDING"
+            teachers = assignment.chapter.subject.prefetched_teachers
+            teacher_name = (
+                teachers[0].teacher.profile.full_name
+                if teachers else None
+            )
 
             data.append({
                 "id": assignment.id,
                 "title": assignment.title,
                 "due_date": assignment.due_date,
-                "status": status,
+                "status": sub_status,
                 "subject": assignment.chapter.subject.name,
-
-                # ✅ NEW
                 "chapter": assignment.chapter.title,
-                "teacher": (
-                    assignment.chapter.subject.subject_teachers.first().teacher.profile.full_name
-                    if assignment.chapter.subject.subject_teachers.exists()
-                    else None
-                ),
+                "teacher": teacher_name,
             })
 
         return Response(data)
-    
+
+
+# ==========================================
+# DOWNLOAD ALL SUBMISSIONS VIEW
+# ==========================================
+
 class DownloadAllSubmissionsView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -445,7 +441,10 @@ class DownloadAllSubmissionsView(APIView):
         if not user.has_role(Role.TEACHER):
             raise PermissionDenied("Only teachers allowed.")
 
-        assignment = get_object_or_404(Assignment, id=assignment_id)
+        assignment = get_object_or_404(
+            Assignment.objects.select_related("chapter__subject"),
+            id=assignment_id
+        )
 
         if not assignment.chapter.subject.subject_teachers.filter(
             teacher=user
@@ -454,7 +453,7 @@ class DownloadAllSubmissionsView(APIView):
 
         submissions = AssignmentSubmission.objects.filter(
             assignment=assignment
-        )
+        ).select_related("student__profile")
 
         buffer = BytesIO()
         zip_file = zipfile.ZipFile(buffer, "w")

@@ -3,9 +3,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from datetime import timedelta
 from django.utils import timezone
+from django.db.models import Q, Prefetch
 
 from enrollments.models import Enrollment
-from courses.models import Subject, Chapter
+from courses.models import Subject, Chapter, SubjectTeacher
 
 from livestream.models import LiveSession
 from assignments.models import Assignment
@@ -30,21 +31,26 @@ class DashboardView(APIView):
 
         user = request.user
 
-        # 🔥 detect student
-        is_student = Enrollment.objects.filter(
+        # single query — reuse for course_ids too
+        enrollments = Enrollment.objects.filter(
             user=user,
             status=Enrollment.STATUS_ACTIVE
-        ).exists()
+        ).values_list("course_id", flat=True)
+
+        is_student = len(enrollments) > 0
+
+        teacher_prefetch = Prefetch(
+            "chapter__subject__subject_teachers",
+            queryset=SubjectTeacher.objects.select_related("teacher"),
+            to_attr="prefetched_teachers",
+        )
 
         # =========================
         # 👨‍🎓 STUDENT DASHBOARD
         # =========================
         if is_student:
 
-            course_ids = Enrollment.objects.filter(
-                user=user,
-                status=Enrollment.STATUS_ACTIVE
-            ).values_list("course_id", flat=True)
+            course_ids = list(enrollments)
 
             subject_ids = Subject.objects.filter(
                 course_id__in=course_ids
@@ -68,10 +74,13 @@ class DashboardView(APIView):
                 .order_by("start_time")
             )
 
+            all_sessions = sessions
+
             assignments = (
                 Assignment.objects
                 .filter(chapter_id__in=chapter_ids)
                 .select_related("chapter__subject")
+                .prefetch_related(teacher_prefetch)
                 .order_by("due_date")[:5]
             )
 
@@ -86,14 +95,13 @@ class DashboardView(APIView):
             )
 
         # =========================
-        # 👨‍🏫 TEACHER DASHBOARD (FIXED)
+        # 👨‍🏫 TEACHER DASHBOARD
         # =========================
         else:
 
             today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
             today_end = today_start + timedelta(days=1)
 
-            # ✅ Live sessions (today only — for "Upcoming Live Sessions")
             sessions = (
                 LiveSession.objects
                 .filter(
@@ -105,7 +113,6 @@ class DashboardView(APIView):
                 .order_by("start_time")
             )
 
-            # ✅ All upcoming sessions (for calendar & schedule)
             all_sessions = (
                 LiveSession.objects
                 .filter(
@@ -116,18 +123,17 @@ class DashboardView(APIView):
                 .order_by("start_time")
             )
 
-            # ✅ Assignments (FIXED RELATION)
             assignments = (
                 Assignment.objects
                 .filter(
                     chapter__subject__subject_teachers__teacher=user
                 )
                 .select_related("chapter__subject")
+                .prefetch_related(teacher_prefetch)
                 .distinct()
                 .order_by("due_date")
             )
 
-            # ✅ Quizzes (usually has created_by)
             quizzes = (
                 Quiz.objects
                 .filter(
@@ -142,8 +148,6 @@ class DashboardView(APIView):
         # 🔔 COMMON
         # =========================
 
-        # ✅ Private sessions (upcoming, approved/pending)
-        from django.db.models import Q
         private_sessions = (
             PrivateSession.objects
             .filter(
@@ -169,9 +173,7 @@ class DashboardView(APIView):
 
         return Response({
             "sessions": DashboardSessionSerializer(sessions, many=True).data,
-            "all_sessions": DashboardSessionSerializer(
-                all_sessions if not is_student else sessions, many=True
-            ).data,
+            "all_sessions": DashboardSessionSerializer(all_sessions, many=True).data,
             "assignments": DashboardAssignmentSerializer(assignments, many=True).data,
             "quizzes": DashboardQuizSerializer(quizzes, many=True).data,
             "private_sessions": DashboardPrivateSessionSerializer(private_sessions, many=True).data,
