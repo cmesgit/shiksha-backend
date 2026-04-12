@@ -88,10 +88,7 @@ class SignupView(APIView):
 
     def _get_api_base_url(self, request):
         """Return the correct API base URL based on the current host."""
-        host = request.get_host()
-        if "dev" in host or "localhost" in host or "127.0.0.1" in host:
-            return "https://dev.api.shikshacom.com"
-        return "https://api.shikshacom.com"
+        return os.getenv("API_BASE_URL", "https://api.shikshacom.com")
 
     def post(self, request):
         serializer = SignupSerializer(data=request.data)
@@ -258,10 +255,7 @@ class ResendVerificationEmailView(APIView):
 
     def _get_api_base_url(self, request):
         """Return the correct API base URL based on the current host."""
-        host = request.get_host()
-        if "dev" in host or "localhost" in host or "127.0.0.1" in host:
-            return "https://dev.api.shikshacom.com"
-        return "https://api.shikshacom.com"
+        return os.getenv("API_BASE_URL", "https://api.shikshacom.com")
 
     def post(self, request):
         email = request.data.get("email", "").strip().lower()
