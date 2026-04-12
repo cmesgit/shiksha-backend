@@ -151,6 +151,7 @@ LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 BUNNY_LIBRARY_ID = os.getenv("BUNNY_LIBRARY_ID")
 BUNNY_API_KEY = os.getenv("BUNNY_API_KEY")
+BUNNY_CDN_HOST = os.getenv("BUNNY_CDN_HOST", "")
 BUNNY_STREAM_URL = os.getenv("BUNNY_STREAM_URL", "https://video.bunnycdn.com")
 BUNNY_EMBED = os.getenv("BUNNY_EMBED", "https://iframe.mediadelivery.net/embed")
 ASGI_APPLICATION = "config.asgi.application"

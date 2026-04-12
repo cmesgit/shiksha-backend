@@ -31,7 +31,6 @@ class DashboardView(APIView):
 
         user = request.user
 
-        # single query — reuse for course_ids too
         enrollments = Enrollment.objects.filter(
             user=user,
             status=Enrollment.STATUS_ACTIVE
@@ -44,6 +43,11 @@ class DashboardView(APIView):
             queryset=SubjectTeacher.objects.select_related("teacher"),
             to_attr="prefetched_teachers",
         )
+
+        EXCLUDED_STATUSES = [
+            LiveSession.STATUS_COMPLETED,
+            LiveSession.STATUS_CANCELLED,
+        ]
 
         # =========================
         # 👨‍🎓 STUDENT DASHBOARD
@@ -70,6 +74,7 @@ class DashboardView(APIView):
                     start_time__gte=today_start,
                     start_time__lt=today_end
                 )
+                .exclude(status__in=EXCLUDED_STATUSES)
                 .select_related("subject", "created_by")
                 .order_by("start_time")
             )
@@ -109,6 +114,7 @@ class DashboardView(APIView):
                     start_time__gte=today_start,
                     start_time__lt=today_end
                 )
+                .exclude(status__in=EXCLUDED_STATUSES)
                 .select_related("subject", "created_by")
                 .order_by("start_time")
             )
@@ -119,6 +125,7 @@ class DashboardView(APIView):
                     created_by=user,
                     start_time__gte=today_start
                 )
+                .exclude(status__in=EXCLUDED_STATUSES)
                 .select_related("subject", "created_by")
                 .order_by("start_time")
             )

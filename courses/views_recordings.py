@@ -177,7 +177,12 @@ class CheckVideoStatusView(APIView):
                 recording.status = new_status
 
                 if new_status == 4 and not recording.thumbnail_url:
-                    recording.thumbnail_url = data.get("thumbnailFileName", "")
+                    thumb_file = data.get("thumbnailFileName", "")
+                    cdn_host = getattr(settings, "BUNNY_CDN_HOST", "")
+                    if thumb_file and cdn_host:
+                        recording.thumbnail_url = (
+                            f"https://{cdn_host}/{recording.bunny_video_id}/{thumb_file}"
+                        )
 
                 recording.save(update_fields=["status", "thumbnail_url"])
 
