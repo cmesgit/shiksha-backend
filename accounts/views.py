@@ -172,8 +172,8 @@ class LoginView(APIView):
             status=status.HTTP_200_OK,
         )
 
-        response.delete_cookie("access", domain=".shikshacom.com")
-        response.delete_cookie("refresh", domain=".shikshacom.com")
+        response.delete_cookie("access", domain=settings.COOKIE_DOMAIN)
+        response.delete_cookie("refresh", domain=settings.COOKIE_DOMAIN)
 
         response.set_cookie(
             key="access",
@@ -181,7 +181,7 @@ class LoginView(APIView):
             httponly=True,
             secure=True,
             samesite="None",
-            domain=".shikshacom.com",
+            domain=settings.COOKIE_DOMAIN,
             max_age=6000,
         )
 
@@ -191,7 +191,7 @@ class LoginView(APIView):
             httponly=True,
             secure=True,
             samesite="None",
-            domain=".shikshacom.com",
+            domain=settings.COOKIE_DOMAIN,
             max_age=60 * 60 * 24 * 7,
         )
 
@@ -632,8 +632,8 @@ class LogoutView(APIView):
     def post(self, request):
         response = Response({"detail": "Logged out."})
 
-        response.delete_cookie("access", domain=".shikshacom.com")
-        response.delete_cookie("refresh", domain=".shikshacom.com")
+        response.delete_cookie("access", domain=settings.COOKIE_DOMAIN)
+        response.delete_cookie("refresh", domain=settings.COOKIE_DOMAIN)
 
         return response
 
@@ -676,7 +676,7 @@ class RefreshView(APIView):
                 httponly=True,
                 secure=True,
                 samesite="None",
-                domain=".shikshacom.com",
+                domain=settings.COOKIE_DOMAIN,
                 max_age=600,
             )
 
@@ -686,7 +686,7 @@ class RefreshView(APIView):
                 httponly=True,
                 secure=True,
                 samesite="None",
-                domain=".shikshacom.com",
+                domain=settings.COOKIE_DOMAIN,
                 max_age=60 * 60 * 24 * 7,
             )
 
