@@ -30,6 +30,16 @@ User = get_user_model()
 logger = logging.getLogger(__name__)
 
 
+def _session_qs():
+    """Base queryset with all relations needed by SessionListSerializer."""
+    return PrivateSession.objects.select_related(
+        "teacher",
+        "teacher__profile",
+        "requested_by",
+        "requested_by__profile",
+    )
+
+
 # ===================================================================
 # STUDENT ENDPOINTS
 # ===================================================================
@@ -44,13 +54,11 @@ def request_session(request):
 
     from courses.models import Subject, SubjectTeacher
 
-    # ✅ Validate subject
     try:
         subject_obj = Subject.objects.get(id=d["subject_id"])
     except Subject.DoesNotExist:
         return Response({"error": "Invalid subject"}, status=400)
 
-    # ✅ Validate teacher teaches subject
     if not SubjectTeacher.objects.filter(
         subject=subject_obj,
         teacher_id=d["teacher_id"]
@@ -60,17 +68,15 @@ def request_session(request):
             status=400
         )
 
-    # ✅ Get teacher
     try:
         teacher = User.objects.get(pk=d["teacher_id"])
     except User.DoesNotExist:
         return Response({"error": "Teacher not found"}, status=404)
 
-    # ✅ Create session
     session = PrivateSession.objects.create(
         teacher=teacher,
         requested_by=request.user,
-        subject=subject_obj.name,  # store name
+        subject=subject_obj.name,
         scheduled_date=d["scheduled_date"],
         scheduled_time=d["scheduled_time"],
         duration_minutes=d["duration_minutes"],
@@ -80,7 +86,6 @@ def request_session(request):
         status="pending",
     )
 
-    # ✅ Add requester
     SessionParticipant.objects.create(
         session=session,
         user=request.user,
@@ -98,8 +103,6 @@ def request_session(request):
 def student_sessions(request):
     """
     Return student's sessions filtered by tab query param.
-    Includes sessions where student is requester OR a group participant.
-
     ?tab=scheduled  → approved / ongoing / needs_reconfirmation
     ?tab=requests   → pending
     ?tab=history    → completed / cancelled / declined / expired / withdrawn / no_show
@@ -109,8 +112,7 @@ def student_sessions(request):
     search = request.query_params.get("search", "").strip()
     user = request.user
 
-    # Sessions where user is requester OR a participant
-    qs = PrivateSession.objects.filter(
+    qs = _session_qs().filter(
         Q(requested_by=user) | Q(participants__user=user)
     ).distinct()
 
@@ -127,7 +129,6 @@ def student_sessions(request):
             ]
         )
 
-    # Search filter
     if search:
         qs = qs.filter(
             Q(subject__icontains=search)
@@ -231,9 +232,9 @@ def _apply_search(qs, search):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsTeacher])
 def teacher_sessions(request):
-    """Teacher's approved / ongoing sessions. Supports ?search= query param."""
+    """Teacher's approved / ongoing sessions."""
     search = request.query_params.get("search", "").strip()
-    qs = PrivateSession.objects.filter(
+    qs = _session_qs().filter(
         teacher=request.user, status__in=["approved", "ongoing"]
     )
     qs = _apply_search(qs, search)
@@ -243,9 +244,9 @@ def teacher_sessions(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsTeacher])
 def teacher_requests(request):
-    """Pending requests awaiting teacher action. Supports ?search= query param."""
+    """Pending requests awaiting teacher action."""
     search = request.query_params.get("search", "").strip()
-    qs = PrivateSession.objects.filter(teacher=request.user, status="pending")
+    qs = _session_qs().filter(teacher=request.user, status="pending")
     qs = _apply_search(qs, search)
     return Response(SessionListSerializer(qs, many=True).data)
 
@@ -253,9 +254,9 @@ def teacher_requests(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsTeacher])
 def teacher_history(request):
-    """Teacher's completed / cancelled / declined sessions. Supports ?search= query param."""
+    """Teacher's completed / cancelled / declined sessions."""
     search = request.query_params.get("search", "").strip()
-    qs = PrivateSession.objects.filter(
+    qs = _session_qs().filter(
         teacher=request.user,
         status__in=[
             "completed", "cancelled", "declined", "expired",
@@ -385,10 +386,7 @@ def teacher_cancel_session(request, session_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsTeacher])
 def start_session(request, session_id):
-    """
-    Teacher starts an approved session.
-    Creates a LiveKit room name and marks session as ongoing.
-    """
+    """Teacher starts an approved session."""
     try:
         session = PrivateSession.objects.get(
             pk=session_id, teacher=request.user)
@@ -411,11 +409,7 @@ def start_session(request, session_id):
 
 
 def _end_session_internal(session, reason="ended"):
-    """
-    Shared helper to mark a session as completed and clean up.
-    Called by the teacher's end_session view AND by the auto-expire logic.
-    Returns True if the session was ended, False if it was already completed.
-    """
+    """Mark a session as completed and clean up."""
     if session.status != "ongoing":
         return False
 
@@ -423,15 +417,9 @@ def _end_session_internal(session, reason="ended"):
     session.ended_at = timezone.now()
     session.save()
 
-    # Clean up chat messages — no longer needed after session ends
     ChatMessage.objects.filter(session=session).delete()
 
-    logger.info(
-        "Session %s %s (reason: %s)",
-        session.id,
-        "completed",
-        reason,
-    )
+    logger.info("Session %s %s (reason: %s)", session.id, "completed", reason)
     return True
 
 
@@ -452,7 +440,6 @@ def end_session(request, session_id):
         )
 
     _end_session_internal(session, reason="teacher_ended")
-
     return Response(PrivateSessionSerializer(session).data)
 
 
@@ -491,10 +478,7 @@ def session_detail(request, session_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def join_private_session(request, session_id):
-    """
-    Get a LiveKit token to join a private session.
-    Both teacher and students can publish audio/video in private sessions.
-    """
+    """Get a LiveKit token to join a private session."""
     try:
         session = PrivateSession.objects.get(pk=session_id)
     except PrivateSession.DoesNotExist:
@@ -526,7 +510,6 @@ def join_private_session(request, session_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Use display name from profile (not AbstractUser's first/last)
     display_name = get_user_name(user)
 
     try:
@@ -539,7 +522,6 @@ def join_private_session(request, session_id):
         logger.exception("LiveKit token generation failed for private session")
         return Response({"detail": "LiveKit error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    # Track join time for participants
     participant = session.participants.filter(user=user).first()
     if participant and not participant.joined_at:
         participant.joined_at = timezone.now()
@@ -585,7 +567,7 @@ def session_chat_messages(request, session_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def send_chat_message(request, session_id):
-    """Send a chat message in a private session. Persists to DB and broadcasts via channels."""
+    """Send a chat message in a private session."""
     try:
         session = PrivateSession.objects.get(pk=session_id)
     except PrivateSession.DoesNotExist:
@@ -619,7 +601,6 @@ def send_chat_message(request, session_id):
         message=message_text,
     )
 
-    # Broadcast to all WebSocket clients in this session's chat group
     serialized = ChatMessageSerializer(chat_msg).data
     channel_layer = get_channel_layer()
     async_to_sync(channel_layer.group_send)(
@@ -641,10 +622,7 @@ def send_chat_message(request, session_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def subject_teachers(request, subject_id):
-    """
-    Get teachers for a subject.
-    Optional: filters out busy teachers.
-    """
+    """Get teachers for a subject. Optional: filters out busy teachers."""
     from courses.models import SubjectTeacher
 
     date = request.query_params.get("date")
@@ -655,7 +633,6 @@ def subject_teachers(request, subject_id):
         subject_id=subject_id
     ).select_related("teacher", "teacher__profile")
 
-    # 🔥 Availability filtering (optional but included)
     if date and time:
         try:
             start = make_aware(datetime.strptime(
