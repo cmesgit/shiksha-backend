@@ -14,6 +14,7 @@ from accounts.permissions import IsEmailVerified
 from enrollments.models import Enrollment
 from django.db import models
 from django.db.models import Count, Avg, Max, Min
+
 from courses.models import Subject, SubjectTeacher
 
 from .models import Quiz, QuizAttempt
@@ -26,7 +27,6 @@ from .serializers import (
     QuizResultSerializer,
     TeacherQuizAnalyticsSerializer,
     TeacherQuizAttemptSerializer,
-
 )
 
 
@@ -113,10 +113,79 @@ class PublishQuizView(APIView):
             status=status.HTTP_200_OK,
         )
 
+
+class TeacherDeleteQuizView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def delete(self, request, pk):
+        quiz = get_object_or_404(
+            Quiz.objects.select_related("subject"),
+            pk=pk
+        )
+
+        if not request.user.has_role("TEACHER"):
+            raise PermissionDenied("Only teachers allowed.")
+
+        if quiz.created_by != request.user:
+            raise PermissionDenied("You did not create this quiz.")
+
+        if quiz.is_published and quiz.attempts.exists():
+            return Response(
+                {"detail": "Cannot delete quiz with student attempts."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        quiz.delete()
+
+        return Response(
+            {"detail": "Quiz deleted successfully."},
+            status=status.HTTP_204_NO_CONTENT
+        )
+
+
+class TeacherSubjectQuizListView(generics.ListAPIView):
+    serializer_class = TeacherQuizAnalyticsSerializer
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def get_queryset(self):
+        user = self.request.user
+        subject_id = self.kwargs["subject_id"]
+
+        if not user.has_role("TEACHER"):
+            raise PermissionDenied("Only teachers allowed.")
+
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"),
+            id=subject_id
+        )
+
+        if not subject.subject_teachers.filter(teacher=user).exists():
+            raise PermissionDenied("Not assigned to this subject.")
+
+        enrolled_count_subquery = (
+            subject.course.enrollments.filter(status="ACTIVE").count()
+        )
+
+        return (
+            Quiz.objects
+            .filter(subject=subject)
+            .select_related("subject", "subject__course")
+            .annotate(
+                total_attempts=Count("attempts", distinct=True),
+                average_score=Avg("attempts__score"),
+                highest_score=Max("attempts__score"),
+                lowest_score=Min("attempts__score"),
+                questions_count=Count("questions", distinct=True),
+                submission_rate=Count(
+                    "attempts", distinct=True) * 100.0 / (enrolled_count_subquery or 1),
+            )
+            .order_by("-created_at")
+        )
+
+
 # =====================================================
 # STUDENT VIEWS
 # =====================================================
-
 
 class StudentDashboardView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
@@ -125,21 +194,42 @@ class StudentDashboardView(APIView):
         status_filter = request.query_params.get("status")
         subject_id = request.query_params.get("subject")
 
-        quizzes = Quiz.objects.filter(
-            subject__course__enrollments__user=request.user,
-            subject__course__enrollments__status=Enrollment.STATUS_ACTIVE,
-            is_published=True,
-        ).select_related(
-            "subject",
-            "subject__course",
-            "created_by",
-        ).distinct()
+        user = request.user
+
+        quizzes = (
+            Quiz.objects
+            .filter(
+                subject__course__enrollments__user=user,
+                subject__course__enrollments__status=Enrollment.STATUS_ACTIVE,
+                is_published=True,
+            )
+            .select_related("subject", "subject__course", "created_by")
+            .annotate(questions_count=Count("questions", distinct=True))
+            .prefetch_related(
+                Prefetch(
+                    "attempts",
+                    queryset=QuizAttempt.objects.filter(
+                        student=user
+                    ).order_by("-attempt_number"),
+                    to_attr="user_attempts",
+                ),
+                Prefetch(
+                    "attempts",
+                    queryset=QuizAttempt.objects.filter(
+                        student=user,
+                        status=QuizAttempt.STATUS_SUBMITTED,
+                    ).order_by("-attempt_number"),
+                    to_attr="user_submitted_attempts",
+                ),
+            )
+            .distinct()
+        )
 
         if subject_id:
             quizzes = quizzes.filter(subject_id=subject_id)
 
         submitted_ids = QuizAttempt.objects.filter(
-            student=request.user,
+            student=user,
             status=QuizAttempt.STATUS_SUBMITTED,
         ).values_list("quiz_id", flat=True).distinct()
 
@@ -176,30 +266,25 @@ class StartQuizView(APIView):
 
         if quiz.due_date <= timezone.now():
             raise ValidationError("Quiz expired.")
-        
-        # 🔥 get last attempt
+
         last_attempt = QuizAttempt.objects.filter(
             quiz=quiz,
             student=request.user
         ).order_by("-attempt_number").first()
 
-        # 🔥 calculate next attempt number
-        new_attempt_number = 1
-        if last_attempt:
-            new_attempt_number = last_attempt.attempt_number + 1
+        new_attempt_number = (
+            last_attempt.attempt_number + 1) if last_attempt else 1
 
-        # 🔥 create new attempt every time
-        attempt = QuizAttempt.objects.create(
+        QuizAttempt.objects.create(
             quiz=quiz,
             student=request.user,
             attempt_number=new_attempt_number
         )
-        return Response(
-    {"detail": "Quiz started successfully."},
-    status=status.HTTP_200_OK,
-)
 
-        
+        return Response(
+            {"detail": "Quiz started successfully."},
+            status=status.HTTP_200_OK,
+        )
 
 
 class SubmitQuizView(APIView):
@@ -217,7 +302,6 @@ class SubmitQuizView(APIView):
             context={"request": request, "quiz": quiz},
         )
         serializer.is_valid(raise_exception=True)
-
         attempt = serializer.save()
 
         return Response(
@@ -236,22 +320,15 @@ class QuizDetailView(APIView):
     def get(self, request, pk):
         quiz = get_object_or_404(
             Quiz.objects
-            .select_related(
-                "subject",
-                "subject__course",
-                "created_by",
-            )
+            .select_related("subject", "subject__course", "created_by")
             .prefetch_related("questions__choices"),
             pk=pk,
             is_published=True,
         )
 
-        # ✅ Allow teacher who created quiz
         if request.user.has_role("TEACHER"):
             if quiz.created_by != request.user:
                 raise PermissionDenied("Not authorized for this quiz.")
-
-        # ✅ Allow enrolled students
         elif not Enrollment.objects.filter(
             user=request.user,
             course=quiz.subject.course,
@@ -273,19 +350,24 @@ class QuizResultView(APIView):
     def get(self, request, pk):
         quiz = get_object_or_404(
             Quiz.objects.select_related(
-                "subject",
-                "subject__course",
-                "created_by",
-            ),
+                "subject", "subject__course", "created_by"),
             pk=pk,
         )
 
-        # ✅ FIXED: properly indented
-        attempt = QuizAttempt.objects.filter(
-            quiz=quiz,
-            student=request.user,
-            status=QuizAttempt.STATUS_SUBMITTED,
-        ).order_by("-attempt_number").first()
+        attempt = (
+            QuizAttempt.objects
+            .filter(
+                quiz=quiz,
+                student=request.user,
+                status=QuizAttempt.STATUS_SUBMITTED,
+            )
+            .prefetch_related(
+                "answers__question__choices",
+                "answers__selected_choice",
+            )
+            .order_by("-attempt_number")
+            .first()
+        )
 
         if not attempt:
             raise ValidationError("No submitted attempt found.")
@@ -293,10 +375,10 @@ class QuizResultView(APIView):
         result_questions = []
 
         for answer in attempt.answers.all():
-            correct_choice = answer.question.choices.filter(
-                is_correct=True
-            ).first()
-
+            correct_choice = next(
+                (c for c in answer.question.choices.all() if c.is_correct),
+                None
+            )
             result_questions.append({
                 "id": answer.question.id,
                 "text": answer.question.text,
@@ -327,20 +409,21 @@ class StudentQuizSubjectsView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
 
     def get(self, request):
-        quizzes = Quiz.objects.filter(
-            is_published=True,
-            subject__course__enrollments__user=request.user,
-            subject__course__enrollments__status=Enrollment.STATUS_ACTIVE,
-        ).select_related(
-            "subject",
-            "created_by",
+        quizzes = (
+            Quiz.objects
+            .filter(
+                is_published=True,
+                subject__course__enrollments__user=request.user,
+                subject__course__enrollments__status=Enrollment.STATUS_ACTIVE,
+            )
+            .select_related("subject", "created_by")
+            .distinct()
         )
 
         subjects_map = {}
 
         for quiz in quizzes:
             subject = quiz.subject
-
             if subject.id not in subjects_map:
                 subjects_map[subject.id] = {
                     "id": subject.id,
@@ -349,129 +432,6 @@ class StudentQuizSubjectsView(APIView):
                 }
 
         return Response(list(subjects_map.values()))
-
-
-class TeacherSubjectQuizListView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = QuizDashboardSerializer
-
-    def get_queryset(self):
-        user = self.request.user
-        subject_id = self.kwargs["subject_id"]
-
-        if not user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
-
-        subject = get_object_or_404(Subject, id=subject_id)
-
-        if not SubjectTeacher.objects.filter(
-            subject=subject,
-            teacher=user
-        ).exists():
-            raise PermissionDenied("Not assigned to this subject.")
-
-        return Quiz.objects.filter(
-            subject=subject,
-            is_published=True
-        ).order_by("-created_at")
-
-
-class TeacherDeleteQuizView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def delete(self, request, pk):
-        if not request.user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
-
-        quiz = get_object_or_404(Quiz, pk=pk)
-
-        if quiz.created_by != request.user:
-            raise PermissionDenied("Not authorized.")
-
-        if quiz.attempts.exists():
-            raise ValidationError(
-                "Cannot delete quiz with attempts."
-            )
-
-        quiz.delete()
-
-        return Response(
-            {"detail": "Quiz deleted successfully."},
-            status=status.HTTP_204_NO_CONTENT,
-        )
-
-
-
-
-
-class TeacherDeleteQuizView(APIView):
-    permission_classes = [IsAuthenticated, IsEmailVerified]
-
-    def delete(self, request, pk):
-        quiz = get_object_or_404(
-            Quiz.objects.select_related("subject"),
-            pk=pk
-        )
-
-        # 🔐 Role check
-        if not request.user.has_role("teacher"):
-            raise PermissionDenied("Only teachers allowed.")
-
-        # 🔐 Ownership check
-        if quiz.created_by != request.user:
-            raise PermissionDenied("You did not create this quiz.")
-
-        # 🔐 Prevent deleting published quizzes with attempts
-        if quiz.is_published and quiz.attempts.exists():
-            return Response(
-                {"detail": "Cannot delete quiz with student attempts."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        quiz.delete()
-
-        return Response(
-            {"detail": "Quiz deleted successfully."},
-            status=status.HTTP_204_NO_CONTENT
-        )
-
-
-class TeacherSubjectQuizListView(generics.ListAPIView):
-    serializer_class = TeacherQuizAnalyticsSerializer
-    permission_classes = [IsAuthenticated, IsEmailVerified]
-
-    def get_queryset(self):
-        user = self.request.user
-        subject_id = self.kwargs["subject_id"]
-
-        # 🔐 Role Protection
-        if not user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
-
-        # 🔐 Ensure teacher assigned to subject
-        subject = get_object_or_404(
-            Subject.objects.select_related("course"),
-            id=subject_id
-        )
-
-        if not subject.subject_teachers.filter(
-            teacher=user
-        ).exists():
-            raise PermissionDenied("Not assigned to this subject.")
-
-        # 📊 Annotate analytics
-        return (
-            Quiz.objects
-            .filter(subject=subject)
-            .select_related("subject", "subject__course")
-            .annotate(
-                total_attempts=Count("attempts"),
-                average_score=Avg("attempts__score"),
-                highest_score=Max("attempts__score"),
-                lowest_score=Min("attempts__score"),
-            )
-            .order_by("-created_at")
-        )
 
 
 class TeacherQuizAttemptsView(APIView):
@@ -497,10 +457,10 @@ class TeacherQuizAttemptsView(APIView):
         attempts = (
             QuizAttempt.objects
             .filter(quiz=quiz, status=QuizAttempt.STATUS_SUBMITTED)
-            .select_related("student", "student__profile")
+            .select_related("student", "student__profile", "quiz")
+            .order_by("student_id", "-attempt_number")
         )
 
-        # 🔥 GROUPING LOGIC
         student_map = {}
 
         for attempt in attempts:
@@ -518,22 +478,15 @@ class TeacherQuizAttemptsView(APIView):
                 }
             else:
                 student_data = student_map[student_id]
-
-                # update latest submission
                 if attempt.submitted_at > student_data["latest_submitted_at"]:
                     student_data["latest_submitted_at"] = attempt.submitted_at
-
-                # update best score
                 if attempt.score > student_data["best_score"]:
                     student_data["best_score"] = attempt.score
-
-                # count attempts
                 student_data["attempts_count"] += 1
 
-        data = list(student_map.values())
+        return Response(list(student_map.values()))
 
-        return Response(data)
-    
+
 class TeacherStudentAttemptsView(generics.ListAPIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
     serializer_class = TeacherQuizAttemptSerializer
@@ -565,22 +518,24 @@ class TeacherStudentAttemptsView(generics.ListAPIView):
                 status=QuizAttempt.STATUS_SUBMITTED
             )
             .select_related("student", "student__profile")
-            .order_by("attempt_number")  # IMPORTANT
+            .order_by("attempt_number")
         )
-    
+
+
 class TeacherQuizAttemptDetailView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
 
     def get(self, request, pk):
         attempt = get_object_or_404(
-            QuizAttempt.objects.prefetch_related(
+            QuizAttempt.objects
+            .select_related("student__profile", "quiz")
+            .prefetch_related(
                 "answers__question__choices",
                 "answers__selected_choice",
             ),
             id=pk
         )
 
-        # ensure teacher owns this quiz
         if not SubjectTeacher.objects.filter(
             subject=attempt.quiz.subject,
             teacher=request.user
@@ -590,10 +545,10 @@ class TeacherQuizAttemptDetailView(APIView):
         result_questions = []
 
         for answer in attempt.answers.all():
-            correct_choice = answer.question.choices.filter(
-                is_correct=True
-            ).first()
-
+            correct_choice = next(
+                (c for c in answer.question.choices.all() if c.is_correct),
+                None
+            )
             result_questions.append({
                 "question": answer.question.text,
                 "options": [c.text for c in answer.question.choices.all()],
