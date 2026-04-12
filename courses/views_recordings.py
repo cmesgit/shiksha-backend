@@ -146,7 +146,43 @@ class SaveRecordingView(APIView):
             duration_seconds=duration_seconds,
             bunny_video_id=video_id,
             uploaded_by=request.user,
+            status=1,
         )
+
+        return Response(SessionRecordingSerializer(recording).data)
+
+
+class CheckVideoStatusView(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, recording_id):
+
+        recording = get_object_or_404(SessionRecording, id=recording_id)
+
+        if recording.status == 4:
+            return Response(SessionRecordingSerializer(recording).data)
+
+        url = (
+            f"https://video.bunnycdn.com/library/"
+            f"{settings.BUNNY_LIBRARY_ID}/videos/{recording.bunny_video_id}"
+        )
+        headers = {"AccessKey": settings.BUNNY_API_KEY}
+
+        try:
+            r = requests.get(url, headers=headers)
+            if r.status_code == 200:
+                data = r.json()
+                new_status = data.get("status", 0)
+                recording.status = new_status
+
+                if new_status == 4 and not recording.thumbnail_url:
+                    recording.thumbnail_url = data.get("thumbnailFileName", "")
+
+                recording.save(update_fields=["status", "thumbnail_url"])
+
+        except Exception:
+            pass
 
         return Response(SessionRecordingSerializer(recording).data)
 

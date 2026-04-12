@@ -15,6 +15,7 @@ class SessionRecordingSerializer(serializers.ModelSerializer):
             "session_date",
             "duration_seconds",
             "bunny_video_id",
+            "status",
             "thumbnail_url",
             "created_at",
             "is_published"
