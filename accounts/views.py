@@ -1,3 +1,4 @@
+import logging
 from accounts.email_utils import send_gmail
 from rest_framework import status
 from rest_framework.permissions import BasePermission, IsAuthenticated, AllowAny, IsAdminUser
@@ -7,6 +8,9 @@ from django.core.mail import send_mail
 from django.utils import timezone
 from django.contrib.auth import authenticate
 from django.shortcuts import redirect
+from django.db import transaction
+
+logger = logging.getLogger(__name__)
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -82,18 +86,26 @@ class MeView(APIView):
 class SignupView(APIView):
     permission_classes = [AllowAny]
 
+    def _get_api_base_url(self, request):
+        """Return the correct API base URL based on the current host."""
+        host = request.get_host()
+        if "dev" in host or "localhost" in host or "127.0.0.1" in host:
+            return "https://dev.api.shikshacom.com"
+        return "https://api.shikshacom.com"
+
     def post(self, request):
         serializer = SignupSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        user = serializer.save()
+        with transaction.atomic():
+            user = serializer.save()
 
-        EmailVerificationToken.objects.filter(user=user).delete()
+            EmailVerificationToken.objects.filter(user=user).delete()
+            token = EmailVerificationToken.generate(user)
 
-        token = EmailVerificationToken.generate(user)
-
+        base_url = self._get_api_base_url(request)
         verify_link = (
-            f"https://api.shikshacom.com/api/accounts/verify-email/?token={token.token}"
+            f"{base_url}/api/accounts/verify-email/?token={token.token}"
         )
 
         html = f"""
@@ -104,12 +116,19 @@ class SignupView(APIView):
         </a>
         """
 
-        send_gmail(
-            to=user.email,
-            subject="Verify your email",
-            message_text=f"Click to verify:\n{verify_link}",
-            html=html,
-        )
+        try:
+            send_gmail(
+                to=user.email,
+                subject="Verify your email",
+                message_text=f"Click to verify:\n{verify_link}",
+                html=html,
+            )
+        except Exception as e:
+            logger.error(f"Failed to send verification email to {user.email}: {e}")
+            return Response(
+                {"detail": "Signup successful, but we couldn't send the verification email. Please use 'Resend Verification' to get your email."},
+                status=status.HTTP_201_CREATED,
+            )
 
         return Response(
             {"detail": "Signup successful. Please verify your email."},
@@ -188,11 +207,19 @@ class LoginView(APIView):
 class VerifyEmailView(APIView):
     permission_classes = [AllowAny]
 
+    def _get_frontend_base_url(self, request):
+        """Return the correct frontend URL based on the current host."""
+        host = request.get_host()
+        if "dev" in host:
+            return "https://dev.shikshacom.com"
+        return "https://shikshacom.com"
+
     def get(self, request):
         token_value = request.query_params.get("token")
+        frontend_url = self._get_frontend_base_url(request)
 
         if not token_value:
-            return redirect("https://shikshacom.com/email-verified?status=failed")
+            return redirect(f"{frontend_url}/email-verified?status=failed")
 
         try:
             token = EmailVerificationToken.objects.select_related("user").get(
@@ -201,7 +228,7 @@ class VerifyEmailView(APIView):
             )
         except EmailVerificationToken.DoesNotExist:
             log_auth_event(request, AuthEvent.EVENT_VERIFY_EMAIL_FAILED)
-            return redirect("https://shikshacom.com/email-verified?status=failed")
+            return redirect(f"{frontend_url}/email-verified?status=failed")
 
         user = token.user
 
@@ -218,7 +245,7 @@ class VerifyEmailView(APIView):
             user=user,
         )
 
-        return redirect("https://shikshacom.com/email-verified?status=success")
+        return redirect(f"{frontend_url}/email-verified?status=success")
 
 
 # =====================================================
@@ -228,6 +255,13 @@ class VerifyEmailView(APIView):
 class ResendVerificationEmailView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [ResendVerificationRateThrottle]
+
+    def _get_api_base_url(self, request):
+        """Return the correct API base URL based on the current host."""
+        host = request.get_host()
+        if "dev" in host or "localhost" in host or "127.0.0.1" in host:
+            return "https://dev.api.shikshacom.com"
+        return "https://api.shikshacom.com"
 
     def post(self, request):
         email = request.data.get("email", "").strip().lower()
@@ -243,22 +277,29 @@ class ResendVerificationEmailView(APIView):
 
         token = EmailVerificationToken.generate(user)
 
+        base_url = self._get_api_base_url(request)
         verify_link = (
-            f"https://api.shikshacom.com/api/accounts/verify-email/?token={token.token}"
+            f"{base_url}/api/accounts/verify-email/?token={token.token}"
         )
 
         html = f"""
         <h2>Verify your email</h2>
         <p>Click below:</p>
-        <a href="{verify_link}">Verify Email</a>
+        <a href="{verify_link}" style="padding:10px 15px;background:#2563eb;color:white;text-decoration:none;border-radius:5px;">
+            Verify Email
+        </a>
         """
 
-        send_gmail(
-            to=user.email,
-            subject="Verify your email",
-            message_text=f"Click to verify:\n{verify_link}",
-            html=html,
-        )
+        try:
+            send_gmail(
+                to=user.email,
+                subject="Verify your email",
+                message_text=f"Click to verify:\n{verify_link}",
+                html=html,
+            )
+        except Exception as e:
+            logger.error(f"Failed to resend verification email to {user.email}: {e}")
+            raise ValidationError("Failed to send verification email. Please try again later.")
 
         log_auth_event(
             request,
