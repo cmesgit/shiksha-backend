@@ -424,18 +424,11 @@ class StudentQuizSubjectsView(APIView):
 
         for quiz in quizzes:
             subject = quiz.subject
-
-            if subject.image:
-                image_url = request.build_absolute_uri(subject.image.url)
-            else:
-                image_url = None
-
             if subject.id not in subjects_map:
                 subjects_map[subject.id] = {
                     "id": subject.id,
                     "subject": subject.name,
                     "teacher": quiz.created_by.email,
-                    "image": image_url,
                 }
 
         return Response(list(subjects_map.values()))
