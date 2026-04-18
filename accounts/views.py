@@ -180,7 +180,7 @@ class LoginView(APIView):
             secure=True,
             samesite="None",
             domain=settings.COOKIE_DOMAIN,
-            max_age=6000,
+            max_age=3600,
         )
 
         response.set_cookie(
@@ -669,7 +669,7 @@ class RefreshView(APIView):
                 secure=True,
                 samesite="None",
                 domain=settings.COOKIE_DOMAIN,
-                max_age=600,
+                max_age=3600,
             )
 
             response.set_cookie(
