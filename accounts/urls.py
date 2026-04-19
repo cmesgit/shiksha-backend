@@ -14,6 +14,11 @@ from .views import (
     TeacherListView,
     ValidateStudentIdView,
     ChangePasswordView,
+    AdminStatsView,
+    AdminUserListView,
+    AdminUserDetailView,
+    AdminTeacherApprovalListView,
+    AdminTeacherApprovalActionView,
 )
 
 urlpatterns = [
@@ -35,4 +40,11 @@ urlpatterns = [
     # --- Private session support ---
     path("teachers/", TeacherListView.as_view()),
     path("student/<str:student_id>/validate/", ValidateStudentIdView.as_view()),
+
+    # --- Admin ---
+    path("admin/stats/", AdminStatsView.as_view()),
+    path("admin/users/", AdminUserListView.as_view()),
+    path("admin/users/<uuid:user_id>/", AdminUserDetailView.as_view()),
+    path("admin/teacher-approvals/", AdminTeacherApprovalListView.as_view()),
+    path("admin/teacher-approvals/<int:approval_id>/action/", AdminTeacherApprovalActionView.as_view()),
 ]

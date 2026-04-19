@@ -583,3 +583,71 @@ class ChangePasswordSerializer(serializers.Serializer):
     def validate_new_password(self, value):
         validate_password(value)
         return value
+
+
+# =====================================================
+# ADMIN SERIALIZERS
+# =====================================================
+
+class AdminUserListSerializer(serializers.ModelSerializer):
+    profile = ProfileSerializer(read_only=True)
+    roles = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "email",
+            "username",
+            "profile",
+            "roles",
+            "is_active",
+            "is_verified",
+            "date_joined",
+        )
+
+    def get_roles(self, obj):
+        return list(
+            obj.user_roles
+            .filter(is_active=True)
+            .values_list("role__name", flat=True)
+        )
+
+
+class AdminEnrollmentSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    course_title = serializers.CharField(source="course.title")
+    batch_code = serializers.CharField(allow_null=True)
+    status = serializers.CharField()
+    enrolled_at = serializers.DateTimeField()
+
+
+class AdminUserDetailSerializer(AdminUserListSerializer):
+    enrollments = AdminEnrollmentSerializer(many=True, read_only=True)
+    last_login = serializers.DateTimeField(read_only=True)
+
+    class Meta(AdminUserListSerializer.Meta):
+        fields = AdminUserListSerializer.Meta.fields + ("last_login", "enrollments")
+
+
+class AdminUserUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ("is_active", "is_verified")
+
+
+class TeacherApprovalSerializer(serializers.ModelSerializer):
+    user_id = serializers.UUIDField(source="user.id", read_only=True)
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    user_name = serializers.SerializerMethodField()
+    requested_at = serializers.DateTimeField(source="created_at", read_only=True)
+
+    class Meta:
+        model = UserRole
+        fields = ("id", "user_id", "user_email", "user_name", "requested_at")
+
+    def get_user_name(self, obj):
+        profile = getattr(obj.user, "profile", None)
+        if profile and profile.full_name:
+            return profile.full_name
+        return obj.user.username or obj.user.email

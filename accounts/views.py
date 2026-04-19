@@ -19,6 +19,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 
+from django.db import models
 from django.db.models import Prefetch
 
 from enrollments.models import Enrollment
@@ -44,7 +45,13 @@ from .serializers import (
     TeacherFormFillupSerializer,
     TeacherListSerializer,
     ChangePasswordSerializer,
+    AdminUserListSerializer,
+    AdminUserDetailSerializer,
+    AdminUserUpdateSerializer,
+    TeacherApprovalSerializer,
 )
+
+from .permissions import IsAdmin
 
 from .models import TeacherProfile, Profile , TeacherCourseApplication, TeacherSkillApplication
 
@@ -797,3 +804,181 @@ class ChangePasswordView(APIView):
         user.save()
 
         return Response({"detail": "Password changed successfully."})
+
+
+# =====================================================
+# ADMIN VIEWS
+# =====================================================
+
+class AdminStatsView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        from courses.models import Course
+        from forum.models import ForumThread
+        from payments.models import Order
+
+        total_users = User.objects.count()
+        active_courses = Course.objects.filter(is_active=True).count() if hasattr(Course, "is_active") else Course.objects.count()
+        active_enrollments = Enrollment.objects.filter(status=Enrollment.STATUS_ACTIVE).count()
+        forum_posts = ForumThread.objects.count()
+
+        total_revenue = (
+            Order.objects
+            .filter(status=Order.STATUS_PAID)
+            .aggregate(total=models.Sum("amount"))["total"]
+        ) or 0
+
+        pending_approvals = UserRole.objects.filter(
+            role__name="TEACHER",
+            is_active=False,
+            approved_at__isnull=True,
+        ).count()
+
+        return Response({
+            "total_users": total_users,
+            "active_courses": active_courses,
+            "active_enrollments": active_enrollments,
+            "forum_posts": forum_posts,
+            "total_revenue": total_revenue,
+            "pending_approvals": pending_approvals,
+        })
+
+
+class AdminUserListView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        qs = (
+            User.objects
+            .select_related("profile")
+            .prefetch_related("user_roles__role")
+            .order_by("-date_joined")
+        )
+
+        search = request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                models.Q(email__icontains=search)
+                | models.Q(username__icontains=search)
+                | models.Q(profile__full_name__icontains=search)
+            )
+
+        role = request.query_params.get("role", "").strip().upper()
+        if role:
+            qs = qs.filter(
+                user_roles__role__name=role,
+                user_roles__is_active=True,
+            ).distinct()
+
+        def _bool(val):
+            if val in (None, ""):
+                return None
+            return str(val).lower() in ("true", "1", "yes")
+
+        is_verified = _bool(request.query_params.get("is_verified"))
+        if is_verified is not None:
+            qs = qs.filter(is_verified=is_verified)
+
+        is_active = _bool(request.query_params.get("is_active"))
+        if is_active is not None:
+            qs = qs.filter(is_active=is_active)
+
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = min(100, max(1, int(request.query_params.get("page_size", 25))))
+        except (TypeError, ValueError):
+            page_size = 25
+
+        count = qs.count()
+        start = (page - 1) * page_size
+        results = qs[start:start + page_size]
+
+        return Response({
+            "count": count,
+            "results": AdminUserListSerializer(results, many=True).data,
+        })
+
+
+class AdminUserDetailView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, user_id):
+        user = (
+            User.objects
+            .select_related("profile")
+            .prefetch_related(
+                "user_roles__role",
+                Prefetch("enrollments", queryset=Enrollment.objects.select_related("course")),
+            )
+            .filter(id=user_id)
+            .first()
+        )
+        if not user:
+            return Response({"detail": "User not found."}, status=404)
+        return Response(AdminUserDetailSerializer(user).data)
+
+    def patch(self, request, user_id):
+        user = User.objects.filter(id=user_id).first()
+        if not user:
+            return Response({"detail": "User not found."}, status=404)
+
+        serializer = AdminUserUpdateSerializer(user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        user = (
+            User.objects
+            .select_related("profile")
+            .prefetch_related(
+                "user_roles__role",
+                Prefetch("enrollments", queryset=Enrollment.objects.select_related("course")),
+            )
+            .get(id=user.id)
+        )
+        return Response(AdminUserDetailSerializer(user).data)
+
+
+class AdminTeacherApprovalListView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        qs = (
+            UserRole.objects
+            .filter(
+                role__name="TEACHER",
+                is_active=False,
+                approved_at__isnull=True,
+            )
+            .select_related("user", "user__profile", "role")
+            .order_by("-created_at")
+        )
+        return Response(TeacherApprovalSerializer(qs, many=True).data)
+
+
+class AdminTeacherApprovalActionView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, approval_id):
+        action = request.data.get("action", "").lower()
+        if action not in ("approve", "reject"):
+            raise ValidationError({"action": "Must be 'approve' or 'reject'."})
+
+        role = (
+            UserRole.objects
+            .filter(id=approval_id, role__name="TEACHER", is_active=False)
+            .select_related("user")
+            .first()
+        )
+        if not role:
+            return Response({"detail": "Approval request not found."}, status=404)
+
+        if action == "approve":
+            role.approve(request.user)
+            return Response({"detail": "Teacher approved.", "id": str(role.id)})
+        else:
+            role.delete()
+            return Response({"detail": "Teacher request rejected."})
