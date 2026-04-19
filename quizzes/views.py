@@ -496,29 +496,32 @@ class StudentQuizSubjectsView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
 
     def get(self, request):
-        quizzes = (
-            Quiz.objects
+        # FIX: query all enrolled subjects directly instead of filtering
+        # through quizzes — so subjects without quizzes also appear
+        subjects = (
+            Subject.objects
             .filter(
-                is_published=True,
-                subject__course__enrollments__user=request.user,
-                subject__course__enrollments__status=Enrollment.STATUS_ACTIVE,
+                course__enrollments__user=request.user,
+                course__enrollments__status=Enrollment.STATUS_ACTIVE,
             )
-            .select_related("subject", "created_by")
+            .select_related("course")
+            .prefetch_related("subject_teachers__teacher")
             .distinct()
         )
 
-        subjects_map = {}
+        data = []
+        for subject in subjects:
+            teacher_rel = subject.subject_teachers.first()
+            teacher_name = (
+                teacher_rel.teacher.email if teacher_rel else ""
+            )
+            data.append({
+                "id": subject.id,
+                "subject": subject.name,
+                "teacher": teacher_name,
+            })
 
-        for quiz in quizzes:
-            subject = quiz.subject
-            if subject.id not in subjects_map:
-                subjects_map[subject.id] = {
-                    "id": subject.id,
-                    "subject": subject.name,
-                    "teacher": quiz.created_by.email,
-                }
-
-        return Response(list(subjects_map.values()))
+        return Response(data)
 
 
 class StudentQuizAttemptsView(APIView):
@@ -555,7 +558,7 @@ class StudentQuizAttemptsView(APIView):
                 "submitted_at": a.submitted_at,
                 "score": a.score,
                 "total_marks": quiz.total_marks,
-                "time_taken": None,  # extend model if needed
+                "time_taken": None,
             }
             for a in attempts
         ]
@@ -583,7 +586,6 @@ class TeacherQuizAttemptsView(APIView):
         ).exists():
             raise PermissionDenied("Not assigned to this subject.")
 
-        # ── Use ORM aggregation instead of Python loop ──
         from django.db.models import Max, FloatField, ExpressionWrapper, F
 
         student_summaries = (
