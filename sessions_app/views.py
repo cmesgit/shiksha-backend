@@ -658,3 +658,56 @@ def subject_teachers(request, subject_id):
     ]
 
     return Response(data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def subject_students(request, subject_id):
+    """
+    Return all students enrolled in the course that owns this subject.
+    Excludes the requesting user (they're already the session host).
+    Supports ?q=search for name/student_id filtering.
+    """
+    from courses.models import Subject
+    from enrollments.models import Enrollment
+
+    q = request.query_params.get("q", "").strip()
+
+    try:
+        subject = Subject.objects.select_related("course").get(pk=subject_id)
+    except Subject.DoesNotExist:
+        return Response({"error": "Subject not found"}, status=404)
+
+    enrollments = (
+        Enrollment.objects.filter(
+            course=subject.course,
+            status=Enrollment.STATUS_ACTIVE,   # "ACTIVE"
+        )
+        .select_related("user", "user__profile")
+        .exclude(user=request.user)
+    )
+
+    data = []
+    for enr in enrollments:
+        user = enr.user
+        profile = getattr(user, "profile", None)
+        name = (
+            getattr(profile, "full_name", None)
+            or user.get_full_name()
+            or user.username
+        )
+        student_id = getattr(profile, "student_id", None) or ""
+
+        # Filter by search query if provided
+        if q:
+            qlo = q.lower()
+            if qlo not in name.lower() and qlo not in student_id.lower():
+                continue
+
+        data.append({
+            "user_id": str(user.id),
+            "name": name,
+            "student_id": student_id,
+        })
+
+    return Response(data)
