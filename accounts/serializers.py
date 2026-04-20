@@ -35,7 +35,12 @@ class ProfileSerializer(serializers.ModelSerializer):
         return obj.avatar_type()
 
     def get_avatar(self, obj):
-        return obj.avatar_value()
+        value = obj.avatar_value()
+        if value and obj.avatar_image:
+            request = self.context.get("request")
+            if request is not None:
+                return request.build_absolute_uri(value)
+        return value
 
 
 # =====================================================

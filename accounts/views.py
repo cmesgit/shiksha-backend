@@ -85,7 +85,7 @@ class MeView(APIView):
             .get(id=request.user.id)
         )
 
-        return Response(UserMeSerializer(user).data)
+        return Response(UserMeSerializer(user, context={"request": request}).data)
 
     def patch(self, request):
         user = request.user
