@@ -67,6 +67,7 @@ from .indian_states_data import STATES_WITH_DISTRICTS
 
 class MeView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
         user = (
@@ -85,6 +86,42 @@ class MeView(APIView):
         )
 
         return Response(UserMeSerializer(user).data)
+
+    def patch(self, request):
+        user = request.user
+        profile = user.profile
+        data = request.data
+
+        username = data.get("username")
+        if username:
+            user.username = username
+            user.save(update_fields=["username"])
+
+        profile_data = data.get("profile") or {}
+        full_name = profile_data.get("full_name")
+        if full_name is not None:
+            profile.full_name = full_name
+            parts = full_name.strip().split(None, 1)
+            profile.first_name = parts[0] if parts else ""
+            profile.last_name = parts[1] if len(parts) > 1 else ""
+
+        phone = profile_data.get("phone")
+        if phone is not None:
+            profile.phone = phone
+
+        avatar_emoji = profile_data.get("avatar_emoji")
+        if avatar_emoji is not None:
+            profile.avatar_emoji = avatar_emoji
+            if profile.avatar_image:
+                profile.avatar_image.delete(save=False)
+                profile.avatar_image = None
+
+        if "avatar_image" in request.FILES:
+            profile.avatar_image = request.FILES["avatar_image"]
+            profile.avatar_emoji = ""
+
+        profile.save()
+        return self.get(request)
 
 
 # =====================================================
