@@ -6,11 +6,12 @@ from .models import Subject, Course, Board
 
 class SubjectSerializer(serializers.ModelSerializer):
     teachers = serializers.SerializerMethodField()
-    chapters = serializers.SerializerMethodField() 
-    image = serializers.SerializerMethodField()   # ✅ added
+    chapters = serializers.SerializerMethodField()
+    image = serializers.SerializerMethodField()
     stream_name = serializers.CharField(
         source="course.stream.name", read_only=True)
     board = serializers.SerializerMethodField()
+    recordings_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Subject
@@ -20,19 +21,18 @@ class SubjectSerializer(serializers.ModelSerializer):
             "order",
             "image",
             "teachers",
-            "chapters",   # ✅ added
+            "chapters",
             "stream_name",
             "board",
+            "recordings_count",
         )
-        
+
     def get_image(self, obj):
         request = self.context.get('request')
-
         if obj.image:
             if request:
                 return request.build_absolute_uri(obj.image.url)
             return obj.image.url
-
         return None
 
     def get_teachers(self, obj):
@@ -41,13 +41,10 @@ class SubjectSerializer(serializers.ModelSerializer):
             .select_related("teacher__teacher_profile")
             .order_by("order")
         )
-
         data = []
-
         for st in subject_teachers:
             teacher = st.teacher
             profile = getattr(teacher, "teacher_profile", None)
-
             data.append({
                 "id": teacher.id,
                 "name": getattr(teacher, 'profile', None) and teacher.profile.full_name or teacher.username,
@@ -57,10 +54,8 @@ class SubjectSerializer(serializers.ModelSerializer):
                 "rating": profile.rating if profile else None,
                 "photo": profile.photo.url if profile and profile.photo else None,
             })
-
         return data
 
-    # ✅ NEW METHOD
     def get_chapters(self, obj):
         return [
             {
@@ -79,6 +74,9 @@ class SubjectSerializer(serializers.ModelSerializer):
             "name": obj.course.board.name,
             "board_type": obj.course.board.board_type,
         }
+
+    def get_recordings_count(self, obj):
+        return obj.recordings.filter(is_published=True, status=4).count()
 
 
 class BoardSerializer(serializers.ModelSerializer):
@@ -106,14 +104,12 @@ class CourseSerializer(serializers.ModelSerializer):
 
 
 class ChapterSerializer(serializers.ModelSerializer):
-
     class Meta:
         model = Chapter
         fields = ["id", "title", "order"]
 
 
 class RecordingSerializer(serializers.ModelSerializer):
-
     class Meta:
         model = SessionRecording
         fields = [
