@@ -649,6 +649,82 @@ class TeacherProfileView(APIView):
         return Response(data)
 
 
+class StudentProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    PROFILE_FIELDS = {
+        "first_name", "last_name", "phone", "gender", "date_of_birth",
+        "state", "district", "city_town", "pin_code",
+        "father_name", "father_phone",
+        "mother_name", "mother_phone",
+        "guardian_name", "guardian_phone", "parent_guardian_email",
+        "currently_studying", "current_class", "stream", "board", "board_other",
+        "school_name", "academic_year",
+        "highest_education", "reason_not_studying",
+    }
+
+    def patch(self, request):
+        profile = request.user.profile
+        data = request.data
+
+        for field in self.PROFILE_FIELDS:
+            if field in data:
+                value = data[field]
+                if field == "date_of_birth" and value in ("", None):
+                    continue
+                setattr(profile, field, value)
+
+        if "profile_photo" in request.FILES:
+            profile.profile_photo = request.FILES["profile_photo"]
+
+        profile.save()
+        return self.get(request)
+
+    def get(self, request):
+        user = request.user
+        profile = user.profile
+
+        data = {
+            "name": f"{profile.first_name} {profile.last_name}".strip(),
+            "email": user.email,
+            "username": user.username,
+            "student_id": profile.student_id,
+            "photo": profile.profile_photo.url if profile.profile_photo else None,
+
+            "first_name": profile.first_name or "",
+            "last_name": profile.last_name or "",
+            "phone": profile.phone or "",
+            "gender": profile.gender or "",
+            "date_of_birth": profile.date_of_birth,
+
+            "state": profile.state or "",
+            "district": profile.district or "",
+            "city_town": profile.city_town or "",
+            "pin_code": profile.pin_code or "",
+
+            "father_name": profile.father_name or "",
+            "father_phone": profile.father_phone or "",
+            "mother_name": profile.mother_name or "",
+            "mother_phone": profile.mother_phone or "",
+            "guardian_name": profile.guardian_name or "",
+            "guardian_phone": profile.guardian_phone or "",
+            "parent_guardian_email": profile.parent_guardian_email or "",
+
+            "currently_studying": profile.currently_studying or "",
+            "current_class": profile.current_class or "",
+            "stream": profile.stream or "",
+            "board": profile.board or "",
+            "board_other": profile.board_other or "",
+            "school_name": profile.school_name or "",
+            "academic_year": profile.academic_year or "",
+            "highest_education": profile.highest_education or "",
+            "reason_not_studying": profile.reason_not_studying or "",
+        }
+
+        return Response(data)
+
+
 # =====================================================
 # STATES & DISTRICTS API
 # =====================================================

@@ -9,6 +9,7 @@ from .views import (
     RefreshView,
     FormFillupView,
     TeacherProfileView,
+    StudentProfileView,
     StatesListView,
     DistrictsListView,
     TeacherListView,
@@ -31,6 +32,7 @@ urlpatterns = [
     path("refresh/", RefreshView.as_view()),
     path("form-fillup/", FormFillupView.as_view()),
     path("teacher/profile/", TeacherProfileView.as_view()),
+    path("student/profile/", StudentProfileView.as_view()),
     path("change-password/", ChangePasswordView.as_view()),
 
     # --- Location data ---
