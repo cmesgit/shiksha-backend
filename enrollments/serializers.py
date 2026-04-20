@@ -2,7 +2,6 @@ from rest_framework import serializers
 from django.utils import timezone
 from django.db import transaction
 
-from accounts.models import Profile
 from courses.models import Course
 
 from .models import Enrollment, EnrollmentRequest
@@ -17,12 +16,6 @@ class CourseBriefSerializer(serializers.ModelSerializer):
 # -------- Student-facing --------
 
 class EnrollmentRequestCreateSerializer(serializers.ModelSerializer):
-    # Profile fields pulled in — optional so existing Profile data is used if omitted,
-    # but any value sent here overwrites the Profile (per agreed spec).
-    first_name = serializers.CharField(required=False, allow_blank=True, write_only=True)
-    last_name = serializers.CharField(required=False, allow_blank=True, write_only=True)
-    phone = serializers.CharField(required=False, allow_blank=True, write_only=True)
-
     class Meta:
         model = EnrollmentRequest
         fields = (
@@ -33,10 +26,6 @@ class EnrollmentRequestCreateSerializer(serializers.ModelSerializer):
             "utr_number",
             "payment_date",
             "receipt",
-            # profile writeback
-            "first_name",
-            "last_name",
-            "phone",
         )
         read_only_fields = ("id",)
 
@@ -60,26 +49,7 @@ class EnrollmentRequestCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-
-        profile_fields = {
-            "first_name": validated_data.pop("first_name", None),
-            "last_name": validated_data.pop("last_name", None),
-            "phone": validated_data.pop("phone", None),
-        }
-
-        with transaction.atomic():
-            profile, _ = Profile.objects.get_or_create(user=user)
-            dirty = False
-            for key, val in profile_fields.items():
-                if val is not None and val != "":
-                    setattr(profile, key, val)
-                    dirty = True
-            if dirty:
-                profile.save()
-
-            req = EnrollmentRequest.objects.create(user=user, **validated_data)
-
-        return req
+        return EnrollmentRequest.objects.create(user=user, **validated_data)
 
 
 class MyEnrollmentRequestSerializer(serializers.ModelSerializer):

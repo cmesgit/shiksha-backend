@@ -14,6 +14,7 @@ from .views import (
     SubjectStudentsView,
     TeacherAllStudentsView,
     SubjectsByCourseTitleView,
+    PublicCourseDetailView,
 )
 from .views import MySubjectsView
 # recordings
@@ -42,6 +43,8 @@ urlpatterns = [
     path("mine/", MyCoursesView.as_view()),
 
     path("my/", MyEnrolledCoursesView.as_view()),
+
+    path("<uuid:course_id>/public/", PublicCourseDetailView.as_view()),
 
     path("<uuid:course_id>/", UpdateCourseView.as_view()),
 

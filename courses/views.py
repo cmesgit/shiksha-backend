@@ -22,6 +22,26 @@ from datetime import timedelta
 # CREATE COURSE
 # =========================
 
+class PublicCourseDetailView(APIView):
+    """Lightweight course detail for the enrollment page — any authenticated user can read."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, course_id):
+        course = get_object_or_404(
+            Course.objects.select_related("board", "stream"),
+            id=course_id,
+        )
+        data = {
+            "id": str(course.id),
+            "title": course.title,
+            "description": course.description,
+            "price": course.price,
+            "board": course.board.name if course.board else None,
+            "stream": course.stream.name if course.stream else None,
+        }
+        return Response(data)
+
+
 class CreateCourseView(APIView):
     permission_classes = [IsAuthenticated, IsTeacher]
 
