@@ -665,10 +665,11 @@ def subject_teachers(request, subject_id):
 def subject_students(request, subject_id):
     """
     Return all students enrolled in the course that owns this subject.
-    Excludes the requesting user (they're already the host).
+    Excludes the requesting user (they're already the session host).
     Supports ?q=search for name/student_id filtering.
     """
-    from courses.models import Subject, Enrollment
+    from courses.models import Subject
+    from enrollments.models import Enrollment
 
     q = request.query_params.get("q", "").strip()
 
@@ -678,14 +679,17 @@ def subject_students(request, subject_id):
         return Response({"error": "Subject not found"}, status=404)
 
     enrollments = (
-        Enrollment.objects.filter(course=subject.course, status="active")
-        .select_related("student", "student__profile")
-        .exclude(student=request.user)
+        Enrollment.objects.filter(
+            course=subject.course,
+            status=Enrollment.STATUS_ACTIVE,   # "ACTIVE"
+        )
+        .select_related("user", "user__profile")
+        .exclude(user=request.user)
     )
 
     data = []
     for enr in enrollments:
-        user = enr.student
+        user = enr.user
         profile = getattr(user, "profile", None)
         name = (
             getattr(profile, "full_name", None)
