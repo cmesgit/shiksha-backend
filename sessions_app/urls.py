@@ -1,6 +1,6 @@
 from django.urls import path
 from . import views
-from .views import subject_teachers  # 👈 add this
+from .views import subject_teachers, subject_students  # 👈 add this
 
 urlpatterns = [
     # --- Student ---
@@ -46,4 +46,5 @@ urlpatterns = [
 
     # ✅ ADD THIS HERE (clean)
     path("subjects/<uuid:subject_id>/teachers/", subject_teachers),
+    path("subjects/<uuid:subject_id>/students/", subject_students),
 ]
