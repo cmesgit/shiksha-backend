@@ -531,6 +531,58 @@ class FormFillupView(APIView):
 
 class TeacherProfileView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    PROFILE_FIELDS = {
+        "first_name", "last_name", "phone", "gender", "date_of_birth",
+        "state", "district", "city_town", "pin_code",
+    }
+    TEACHER_FIELDS = {
+        "bio", "highest_degree", "field_of_study", "year_of_completion",
+        "teaching_certifications",
+        "experience_range", "employment_status", "currently_employed",
+        "current_institution", "current_position",
+        "govt_id_type", "id_number",
+    }
+    TEACHER_FILE_FIELDS = {
+        "qualification_certificate", "id_proof_front", "id_proof_back",
+    }
+
+    def patch(self, request):
+        user = request.user
+        profile = user.profile
+        tp, _ = TeacherProfile.objects.get_or_create(user=user)
+
+        data = request.data
+
+        for field in self.PROFILE_FIELDS:
+            if field in data:
+                value = data[field]
+                if field == "date_of_birth" and value in ("", None):
+                    continue
+                setattr(profile, field, value)
+
+        if "profile_photo" in request.FILES:
+            profile.profile_photo = request.FILES["profile_photo"]
+
+        profile.save()
+
+        for field in self.TEACHER_FIELDS:
+            if field in data:
+                value = data[field]
+                if field == "year_of_completion" and value in ("", None):
+                    continue
+                if field == "currently_employed":
+                    value = str(value).lower() in ("true", "1", "yes")
+                setattr(tp, field, value)
+
+        for field in self.TEACHER_FILE_FIELDS:
+            if field in request.FILES:
+                setattr(tp, field, request.FILES[field])
+
+        tp.save()
+
+        return self.get(request)
 
     def get(self, request):
         user = request.user
