@@ -599,10 +599,11 @@ class TeacherProfileView(APIView):
                     continue
                 setattr(profile, field, value)
 
-        if "profile_photo" in request.FILES:
-            profile.profile_photo = request.FILES["profile_photo"]
-        elif "photo" in request.FILES:
-            profile.profile_photo = request.FILES["photo"]
+        photo_file = request.FILES.get("profile_photo") or request.FILES.get("photo")
+        if photo_file:
+            profile.profile_photo = photo_file
+            profile.avatar_image = photo_file
+            profile.avatar_emoji = None
 
         profile.save()
 
