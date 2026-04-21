@@ -898,6 +898,8 @@ class TeacherListView(APIView):
                 name = tp.user.get_full_name() or tp.user.username
 
             avatar = profile.avatar_value() if profile else None
+            if avatar and isinstance(avatar, str) and avatar.startswith("/"):
+                avatar = request.build_absolute_uri(avatar)
 
             data.append({
                 "id": str(tp.user.id),
@@ -979,10 +981,14 @@ class TeacherPublicProfileView(APIView):
             for s in tp.skill_applications.all()
         ]
 
+        avatar = profile.avatar_value() if profile else None
+        if avatar and isinstance(avatar, str) and avatar.startswith("/"):
+            avatar = request.build_absolute_uri(avatar)
+
         data = {
             "id": str(tp.user.id),
             "name": name,
-            "avatar": profile.avatar_value() if profile else None,
+            "avatar": avatar,
             "subject": subject_map.get(tp.subject, tp.subject) or tp.subject_specialization or "",
             "qualification": tp.qualification or "",
             "bio": tp.bio or "",
