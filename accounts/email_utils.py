@@ -1,20 +1,48 @@
+import logging
+
+import requests
 from django.conf import settings
-from django.core.mail import EmailMultiAlternatives
+
+logger = logging.getLogger(__name__)
+
+RESEND_ENDPOINT = "https://api.resend.com/emails"
 
 
 def send_gmail(to, subject, message_text, html=None):
-    """Send an email via the configured SMTP backend.
+    """Send transactional email via the Resend HTTPS API.
 
     Name kept as ``send_gmail`` for backward compatibility with existing
-    callers; actual transport is now Django's standard SMTP email backend
-    (configured via EMAIL_HOST / EMAIL_HOST_USER / EMAIL_HOST_PASSWORD).
+    callers. Transport is the Resend REST API over port 443 (works on
+    hosts where outbound SMTP is blocked, e.g. DigitalOcean droplets).
     """
-    msg = EmailMultiAlternatives(
-        subject=subject,
-        body=message_text,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[to],
-    )
+    api_key = getattr(settings, "RESEND_API_KEY", "") or ""
+    if not api_key:
+        raise RuntimeError(
+            "RESEND_API_KEY is not configured; cannot send email."
+        )
+
+    payload = {
+        "from": settings.DEFAULT_FROM_EMAIL,
+        "to": [to],
+        "subject": subject,
+        "text": message_text,
+    }
     if html:
-        msg.attach_alternative(html, "text/html")
-    msg.send(fail_silently=False)
+        payload["html"] = html
+
+    response = requests.post(
+        RESEND_ENDPOINT,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=10,
+    )
+
+    if not response.ok:
+        logger.error(
+            "Resend API error (%s) sending to %s: %s",
+            response.status_code, to, response.text,
+        )
+        response.raise_for_status()
