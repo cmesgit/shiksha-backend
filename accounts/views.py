@@ -136,6 +136,17 @@ class SignupView(APIView):
         return os.getenv("API_BASE_URL", "https://api.shikshacom.com")
 
     def post(self, request):
+        # Free the email if a previous unverified signup was abandoned.
+        # Matches the 24h token expiry so real duplicates still get rejected.
+        from datetime import timedelta
+        email = (request.data.get("email") or "").strip().lower()
+        if email:
+            User.objects.filter(
+                email__iexact=email,
+                is_verified=False,
+                date_joined__lt=timezone.now() - timedelta(hours=24),
+            ).delete()
+
         serializer = SignupSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
