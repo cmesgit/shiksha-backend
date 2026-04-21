@@ -911,6 +911,104 @@ class TeacherListView(APIView):
 
 
 # =====================================================
+# TEACHER PUBLIC PROFILE DETAIL
+# =====================================================
+
+class TeacherPublicProfileView(APIView):
+    """Public (student-visible) subset of a teacher's profile."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        try:
+            tp = (
+                TeacherProfile.objects
+                .select_related("user", "user__profile")
+                .prefetch_related("course_applications", "skill_applications")
+                .get(
+                    user__id=user_id,
+                    is_approved=True,
+                    user__user_roles__role__name="TEACHER",
+                    user__user_roles__is_active=True,
+                )
+            )
+        except TeacherProfile.DoesNotExist:
+            return Response({"detail": "Teacher not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        profile = getattr(tp.user, "profile", None)
+
+        name = ""
+        if profile:
+            if profile.first_name:
+                name = f"{profile.first_name} {profile.last_name}".strip()
+            elif profile.full_name:
+                name = profile.full_name
+        if not name:
+            name = tp.user.get_full_name() or tp.user.username
+
+        degree_label = dict(TeacherProfile.HIGHEST_DEGREE_CHOICES).get(
+            tp.highest_degree, ""
+        )
+        experience_label = dict(TeacherProfile.EXPERIENCE_CHOICES).get(
+            tp.experience_range, ""
+        )
+        employment_label = dict(TeacherProfile.EMPLOYMENT_STATUS_CHOICES).get(
+            tp.employment_status, ""
+        )
+        subject_map = dict(TeacherProfile.SUBJECT_CHOICES)
+        board_map = dict(TeacherProfile.BOARD_CHOICES)
+        class_map = dict(TeacherProfile.CLASS_CHOICES)
+        stream_map = dict(TeacherProfile.STREAM_CHOICES)
+
+        courses = [
+            {
+                "subject": subject_map.get(c.subject, c.subject),
+                "boards": [board_map.get(b, b) for b in (c.boards or [])],
+                "classes": [class_map.get(cls, cls) for cls in (c.classes or [])],
+                "streams": [stream_map.get(s, s) for s in (c.streams or [])],
+            }
+            for c in tp.course_applications.all()
+        ]
+
+        skills = [
+            {
+                "name": s.skill_name,
+                "description": s.skill_description,
+                "related_subject": subject_map.get(s.skill_related_subject, s.skill_related_subject),
+            }
+            for s in tp.skill_applications.all()
+        ]
+
+        data = {
+            "id": str(tp.user.id),
+            "name": name,
+            "avatar": profile.avatar_value() if profile else None,
+            "subject": subject_map.get(tp.subject, tp.subject) or tp.subject_specialization or "",
+            "qualification": tp.qualification or "",
+            "bio": tp.bio or "",
+            "rating": float(tp.rating) if tp.rating else None,
+
+            "education": {
+                "highest_degree": degree_label,
+                "field_of_study": tp.field_of_study or "",
+                "year_of_completion": tp.year_of_completion,
+                "certifications": tp.teaching_certifications or [],
+            },
+            "experience": {
+                "range": experience_label,
+                "employment_status": employment_label,
+                "currently_employed": tp.currently_employed,
+                "current_institution": tp.current_institution or "",
+                "current_position": tp.current_position or "",
+                "previous_institution": tp.previous_institution or "",
+                "years": tp.teaching_experience_years,
+            },
+            "courses": courses,
+            "skills": skills,
+        }
+        return Response(data)
+
+
+# =====================================================
 # VALIDATE STUDENT ID (for group session form)
 # =====================================================
 
