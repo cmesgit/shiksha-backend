@@ -1,36 +1,20 @@
-import base64
-import os
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-
 from django.conf import settings
-from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
+from django.core.mail import EmailMultiAlternatives
 
 
 def send_gmail(to, subject, message_text, html=None):
-    creds = Credentials.from_authorized_user_file(
-        settings.GMAIL_TOKEN_PATH,
-        ["https://www.googleapis.com/auth/gmail.send"],
+    """Send an email via the configured SMTP backend.
+
+    Name kept as ``send_gmail`` for backward compatibility with existing
+    callers; actual transport is now Django's standard SMTP email backend
+    (configured via EMAIL_HOST / EMAIL_HOST_USER / EMAIL_HOST_PASSWORD).
+    """
+    msg = EmailMultiAlternatives(
+        subject=subject,
+        body=message_text,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[to],
     )
-
-    service = build("gmail", "v1", credentials=creds)
-
-    message = MIMEMultipart("alternative")
-
-    message["to"] = to
-    message["subject"] = subject
-
-    # Plain text
-    message.attach(MIMEText(message_text, "plain"))
-
-    # Optional HTML
     if html:
-        message.attach(MIMEText(html, "html"))
-
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-
-    service.users().messages().send(
-        userId="me",
-        body={"raw": raw},
-    ).execute()
+        msg.attach_alternative(html, "text/html")
+    msg.send(fail_silently=False)
