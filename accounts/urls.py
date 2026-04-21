@@ -13,6 +13,7 @@ from .views import (
     StatesListView,
     DistrictsListView,
     TeacherListView,
+    TeacherPublicProfileView,
     ValidateStudentIdView,
     ChangePasswordView,
     AdminStatsView,
@@ -41,6 +42,7 @@ urlpatterns = [
 
     # --- Private session support ---
     path("teachers/", TeacherListView.as_view()),
+    path("teachers/<uuid:user_id>/", TeacherPublicProfileView.as_view()),
     path("student/<str:student_id>/validate/", ValidateStudentIdView.as_view()),
 
     # --- Admin ---
