@@ -30,31 +30,119 @@ User = get_user_model()
 logger = logging.getLogger(__name__)
 
 
+# Maps session status → (recipient_fn, message_fn)
+# recipient_fn(session) → User object to notify
+# message_fn(session)   → notification title string
+_SESSION_NOTIFICATIONS = {
+    "approved": [
+        lambda s: (
+            s.requested_by, f"✅ Your {s.subject} session was approved by {get_user_name(s.teacher)}"),
+    ],
+    "declined": [
+        lambda s: (s.requested_by, f"❌ Your {s.subject} session was declined"),
+    ],
+    "needs_reconfirmation": [
+        lambda s: (
+            s.requested_by, f"📅 {get_user_name(s.teacher)} rescheduled your {s.subject} session"),
+    ],
+    "cancelled": [
+        lambda s: (
+            s.teacher,       f"❌ Student cancelled the {s.subject} session"),
+        # requester cancelled themselves — no self-notify
+        lambda s: (s.requested_by,  None),
+    ],
+    "ongoing": [
+        lambda s: (s.requested_by,
+                   f"🔴 Your {s.subject} session is now live — join now!"),
+    ],
+    "completed": [
+        lambda s: (s.requested_by, f"✔ Your {s.subject} session has ended"),
+    ],
+    "withdrawn": [
+        lambda s: (
+            s.teacher, f"↩ Student withdrew from the {s.subject} session"),
+    ],
+}
+
+
+def _push_session_bell(session):
+    """
+    Create Activity records and push WS bell notifications for a
+    private session status change. Only notifies the relevant party
+    (not the actor who triggered the change).
+    """
+    try:
+        from activity.models import Activity
+        from django.contrib.contenttypes.models import ContentType
+        from livestream.services.notifications import push_ws_notification
+        import datetime
+
+        rules = _SESSION_NOTIFICATIONS.get(session.status, [])
+        content_type = ContentType.objects.get_for_model(session)
+        scheduled_dt = datetime.datetime.combine(
+            session.scheduled_date,
+            session.scheduled_time,
+        )
+
+        for rule in rules:
+            recipient, title = rule(session)
+            if not recipient or not title:
+                continue
+
+            # get_or_create avoids duplicate bell entries on retries
+            activity, created = Activity.objects.get_or_create(
+                user=recipient,
+                type=Activity.TYPE_SESSION,
+                content_type=content_type,
+                object_id=session.id,
+                title=title,
+                defaults={
+                    "subject_name": session.subject,
+                    "due_date": scheduled_dt,
+                },
+            )
+
+            if created:
+                push_ws_notification(recipient.id, {
+                    "type": "SESSION",
+                    "title": title,
+                    "subject_name": session.subject,
+                    "id": str(session.id),
+                    "is_read": False,
+                    "created_at": activity.created_at.isoformat(),
+                    # frontend uses this to navigate to /private-sessions
+                    "is_private_session": True,
+                })
+    except Exception:
+        pass  # never let bell errors break the main response
+
+
 def _broadcast_session_update(session):
     """
-    Push a session_update event to every participant of this session
-    via their personal user channel group (user_<user_id>).
-    This lets the frontend update session cards in real-time without polling.
+    1. Push real-time session_update to all participants (drives card refresh).
+    2. Push bell notification to the relevant recipient (drives notification bell).
     """
+    # ── 1. Real-time card refresh ──────────────────────────────
     channel_layer = get_channel_layer()
-    if not channel_layer:
-        return
+    if channel_layer:
+        from .serializers import SessionListSerializer
+        data = SessionListSerializer(session).data
 
-    from .serializers import SessionListSerializer
-    data = SessionListSerializer(session).data
+        user_ids = {str(session.teacher_id), str(session.requested_by_id)}
+        for p in session.participants.values_list("user_id", flat=True):
+            user_ids.add(str(p))
 
-    user_ids = {str(session.teacher_id), str(session.requested_by_id)}
-    for p in session.participants.values_list("user_id", flat=True):
-        user_ids.add(str(p))
+        for uid in user_ids:
+            try:
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{uid}",
+                    {"type": "session_update", "data": data},
+                )
+            except Exception:
+                pass
 
-    for uid in user_ids:
-        try:
-            async_to_sync(channel_layer.group_send)(
-                f"user_{uid}",
-                {"type": "session_update", "data": data},
-            )
-        except Exception:
-            pass
+    # ── 2. Notification bell ───────────────────────────────────
+    _push_session_bell(session)
 
 
 def _session_qs():
