@@ -12,6 +12,7 @@ ALLOWED_HOSTS = [
     "api.dev.shikshacom.com",
     "localhost",
     "127.0.0.1",
+    "htttps://dev.api.shikshacom.com",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -19,10 +20,18 @@ CSRF_TRUSTED_ORIGINS = [
     "https://dev.shikshacom.com",
     "https://app.dev.shikshacom.com",
     "https://teacher.dev.shikshacom.com",
+    "https://admin.dev.shikshacom.com",
+    "https://dev.api.shikshacom.com",
 ]
 
 CORS_ALLOWED_ORIGINS = [
     "https://dev.shikshacom.com",
     "https://app.dev.shikshacom.com",
     "https://teacher.dev.shikshacom.com",
+    "https://admin.dev.shikshacom.com",
+    "https://dev.api.shikshacom.com",
 ]
+
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+

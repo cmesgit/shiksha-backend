@@ -12,6 +12,10 @@ app.autodiscover_tasks()
 app.conf.beat_schedule = {
     "notify-session-starting-soon": {
         "task": "activity.tasks.notify_session_starting_soon",
-        "schedule": crontab(minute="*/15"),  # every 15 minutes
+        "schedule": crontab(minute="*/15"),
+    },
+    "auto-complete-expired-sessions": {
+        "task": "livestream.tasks.auto_complete_expired_sessions",
+        "schedule": crontab(minute="*/5"),  # every 5 minutes
     },
 }

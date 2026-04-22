@@ -1,36 +1,48 @@
-import base64
-import os
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import logging
 
+import requests
 from django.conf import settings
-from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
+
+logger = logging.getLogger(__name__)
+
+RESEND_ENDPOINT = "https://api.resend.com/emails"
 
 
 def send_gmail(to, subject, message_text, html=None):
-    creds = Credentials.from_authorized_user_file(
-        settings.GMAIL_TOKEN_PATH,
-        ["https://www.googleapis.com/auth/gmail.send"],
+    """Send transactional email via the Resend HTTPS API.
+
+    Name kept as ``send_gmail`` for backward compatibility with existing
+    callers. Transport is the Resend REST API over port 443 (works on
+    hosts where outbound SMTP is blocked, e.g. DigitalOcean droplets).
+    """
+    api_key = getattr(settings, "RESEND_API_KEY", "") or ""
+    if not api_key:
+        raise RuntimeError(
+            "RESEND_API_KEY is not configured; cannot send email."
+        )
+
+    payload = {
+        "from": settings.DEFAULT_FROM_EMAIL,
+        "to": [to],
+        "subject": subject,
+        "text": message_text,
+    }
+    if html:
+        payload["html"] = html
+
+    response = requests.post(
+        RESEND_ENDPOINT,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=10,
     )
 
-    service = build("gmail", "v1", credentials=creds)
-
-    message = MIMEMultipart("alternative")
-
-    message["to"] = to
-    message["subject"] = subject
-
-    # Plain text
-    message.attach(MIMEText(message_text, "plain"))
-
-    # Optional HTML
-    if html:
-        message.attach(MIMEText(html, "html"))
-
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-
-    service.users().messages().send(
-        userId="me",
-        body={"raw": raw},
-    ).execute()
+    if not response.ok:
+        logger.error(
+            "Resend API error (%s) sending to %s: %s",
+            response.status_code, to, response.text,
+        )
+        response.raise_for_status()

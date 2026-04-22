@@ -49,6 +49,8 @@ class DashboardView(APIView):
             LiveSession.STATUS_CANCELLED,
         ]
 
+        now = timezone.now()
+
         # =========================
         # 👨‍🎓 STUDENT DASHBOARD
         # =========================
@@ -64,22 +66,34 @@ class DashboardView(APIView):
                 subject_id__in=subject_ids
             ).values_list("id", flat=True)
 
-            today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            today_end = today_start + timedelta(days=1)
+            today_start = now.replace(
+                hour=0, minute=0, second=0, microsecond=0)
 
+            # Sessions card — today + next 7 days
             sessions = (
                 LiveSession.objects
                 .filter(
                     subject_id__in=subject_ids,
                     start_time__gte=today_start,
-                    start_time__lt=today_end
+                    start_time__lte=today_start + timedelta(days=7),
                 )
                 .exclude(status__in=EXCLUDED_STATUSES)
                 .select_related("subject", "created_by")
                 .order_by("start_time")
             )
 
-            all_sessions = sessions
+            # FIX 1: all_sessions — from today onwards, not just today
+            # Used for calendar dots and schedule panel
+            all_sessions = (
+                LiveSession.objects
+                .filter(
+                    subject_id__in=subject_ids,
+                    start_time__gte=today_start,
+                )
+                .exclude(status__in=EXCLUDED_STATUSES)
+                .select_related("subject", "created_by")
+                .order_by("start_time")
+            )
 
             assignments = (
                 Assignment.objects
@@ -104,15 +118,16 @@ class DashboardView(APIView):
         # =========================
         else:
 
-            today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            today_end = today_start + timedelta(days=1)
+            today_start = now.replace(
+                hour=0, minute=0, second=0, microsecond=0)
 
+            # Sessions card — today + next 7 days
             sessions = (
                 LiveSession.objects
                 .filter(
                     created_by=user,
                     start_time__gte=today_start,
-                    start_time__lt=today_end
+                    start_time__lte=today_start + timedelta(days=7),
                 )
                 .exclude(status__in=EXCLUDED_STATUSES)
                 .select_related("subject", "created_by")
@@ -159,22 +174,34 @@ class DashboardView(APIView):
             PrivateSession.objects
             .filter(
                 Q(teacher=user) | Q(requested_by=user),
-                scheduled_date__gte=timezone.now().date(),
+                scheduled_date__gte=now.date(),
                 status__in=["pending", "approved", "needs_reconfirmation"]
             )
             .select_related("teacher", "requested_by")
             .order_by("scheduled_date", "scheduled_time")
         )
 
+        # FIX 2: exclude stale past activities from notifications
         notifications = (
             Activity.objects
             .filter(user=user)
+            .exclude(
+                type__in=[
+                    Activity.TYPE_SESSION,
+                    Activity.TYPE_QUIZ,
+                    Activity.TYPE_ASSIGNMENT,
+                ],
+                due_date__lt=now,
+            )
             .order_by("-created_at")[:10]
         )
 
+        # FIX 3: schedule — only future items with actual due dates
         schedule = (
             Activity.objects
             .filter(user=user)
+            .exclude(due_date=None)
+            .exclude(due_date__lt=now)
             .order_by("due_date")[:10]
         )
 

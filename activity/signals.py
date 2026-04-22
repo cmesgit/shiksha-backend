@@ -1,4 +1,8 @@
-from django.db.models.signals import post_save
+# ============================================================
+# BACKEND — activity/signals.py  (FULL REPLACEMENT)
+# ============================================================
+
+from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 from django.contrib.contenttypes.models import ContentType
 
@@ -12,12 +16,13 @@ from livestream.services.notifications import push_ws_notification
 
 
 # =====================================================
-# HELPER
+# HELPERS
 # =====================================================
 
-def _bulk_notify_students(students, obj, activity_type, title, due_date, subject_id, subject_name, ws_payload):
-    """Bulk create Activity records + push WS to each student."""
+def _bulk_notify_students(students, obj, activity_type, title, due_date,
+                          subject_id, subject_name, ws_payload):
     content_type = ContentType.objects.get_for_model(obj)
+    student_list = list(students)   # evaluate once — avoids double DB hit
 
     Activity.objects.bulk_create([
         Activity(
@@ -30,15 +35,15 @@ def _bulk_notify_students(students, obj, activity_type, title, due_date, subject
             content_type=content_type,
             object_id=obj.id,
         )
-        for enrollment in students
+        for enrollment in student_list
     ])
 
-    for enrollment in students:
+    for enrollment in student_list:
         push_ws_notification(enrollment.user.id, ws_payload)
 
 
-def _notify_teacher(teacher, obj, activity_type, title, due_date, subject_id, subject_name, ws_payload):
-    """Create single Activity record + push WS to teacher."""
+def _notify_teacher(teacher, obj, activity_type, title, due_date,
+                    subject_id, subject_name, ws_payload):
     content_type = ContentType.objects.get_for_model(obj)
 
     Activity.objects.create(
@@ -56,7 +61,7 @@ def _notify_teacher(teacher, obj, activity_type, title, due_date, subject_id, su
 
 
 # =====================================================
-# ASSIGNMENT CREATED → notify students only
+# ASSIGNMENT CREATED → notify students
 # =====================================================
 
 @receiver(post_save, sender=Assignment)
@@ -66,8 +71,6 @@ def assignment_created(sender, instance, created, **kwargs):
 
     subject = instance.chapter.subject
     course = subject.course
-    subject_id = subject.id
-    subject_name = subject.name
 
     students = Enrollment.objects.filter(
         course=course,
@@ -80,15 +83,15 @@ def assignment_created(sender, instance, created, **kwargs):
         activity_type=Activity.TYPE_ASSIGNMENT,
         title=f"New assignment: {instance.title}",
         due_date=instance.due_date,
-        subject_id=subject_id,
-        subject_name=subject_name,
+        subject_id=subject.id,
+        subject_name=subject.name,
         ws_payload={
             "type": "assignment",
             "title": f"New assignment: {instance.title}",
-            "subject_name": subject_name,
+            "subject_name": subject.name,
             "due_date": str(instance.due_date) if instance.due_date else None,
             "id": str(instance.id),
-            "subject_id": str(subject_id),
+            "subject_id": str(subject.id),
         }
     )
 
@@ -104,56 +107,58 @@ def assignment_submitted(sender, instance, created, **kwargs):
 
     assignment = instance.assignment
     subject = assignment.chapter.subject
-    subject_id = subject.id
-    subject_name = subject.name
-
     student = instance.student
     student_name = getattr(getattr(student, "profile", None),
                            "full_name", None) or student.email
 
-    teachers = subject.subject_teachers.select_related("teacher").all()
-
-    for st in teachers:
+    for st in subject.subject_teachers.select_related("teacher").all():
         _notify_teacher(
             teacher=st.teacher,
             obj=assignment,
             activity_type=Activity.TYPE_SUBMISSION,
             title=f"{student_name} submitted: {assignment.title}",
             due_date=assignment.due_date,
-            subject_id=subject_id,
-            subject_name=subject_name,
+            subject_id=subject.id,
+            subject_name=subject.name,
             ws_payload={
                 "type": "submission",
                 "title": f"{student_name} submitted: {assignment.title}",
-                "subject_name": subject_name,
-                "subject_id": str(subject_id),
+                "subject_name": subject.name,
+                "subject_id": str(subject.id),
                 "id": str(assignment.id),
             }
         )
 
 
 # =====================================================
-# QUIZ PUBLISHED → notify students only
+# QUIZ — cache old published state before save
+# FIX: post_save was re-querying the already-saved row,
+# so old.is_published was always True and the signal
+# never fired. pre_save caches the real previous value.
 # =====================================================
+
+@receiver(pre_save, sender=Quiz)
+def cache_quiz_published_state(sender, instance, **kwargs):
+    if instance.pk:
+        instance._was_published = (
+            Quiz.objects
+            .filter(pk=instance.pk)
+            .values_list("is_published", flat=True)
+            .first()
+        ) or False
+    else:
+        instance._was_published = False
+
 
 @receiver(post_save, sender=Quiz)
 def quiz_published(sender, instance, created, **kwargs):
-    # Only fire when quiz is first published (is_published flips to True)
-    if not instance.is_published:
+    # Only fire when is_published flips False → True
+    was = getattr(instance, "_was_published", False)
+    if was or not instance.is_published:
         return
-
-    # Avoid duplicate notifications on subsequent saves
-    try:
-        old = Quiz.objects.get(pk=instance.pk)
-        if old.is_published:
-            return
-    except Quiz.DoesNotExist:
-        pass
 
     subject = instance.subject
     course = subject.course
-    subject_id = subject.id
-    subject_name = subject.name
 
     students = Enrollment.objects.filter(
         course=course,
@@ -166,15 +171,15 @@ def quiz_published(sender, instance, created, **kwargs):
         activity_type=Activity.TYPE_QUIZ,
         title=f"Quiz available: {instance.title}",
         due_date=instance.due_date,
-        subject_id=subject_id,
-        subject_name=subject_name,
+        subject_id=subject.id,
+        subject_name=subject.name,
         ws_payload={
             "type": "quiz",
             "title": f"Quiz available: {instance.title}",
-            "subject_name": subject_name,
+            "subject_name": subject.name,
             "due_date": str(instance.due_date) if instance.due_date else None,
             "id": str(instance.id),
-            "subject_id": str(subject_id),
+            "subject_id": str(subject.id),
         }
     )
 
@@ -186,37 +191,27 @@ def quiz_published(sender, instance, created, **kwargs):
 @receiver(post_save, sender=QuizAttempt)
 def quiz_submitted(sender, instance, created, **kwargs):
     from quizzes.models import QuizAttempt as QA
-    if instance.status != QA.STATUS_SUBMITTED:
-        return
-
-    # Only fire once per submission (not on every save)
-    if not instance.submitted_at:
+    if instance.status != QA.STATUS_SUBMITTED or not instance.submitted_at:
         return
 
     quiz = instance.quiz
     subject = quiz.subject
-    subject_id = subject.id
-    subject_name = subject.name
-
     student = instance.student
     student_name = getattr(getattr(student, "profile", None),
                            "full_name", None) or student.email
-
     teacher = quiz.created_by
     if not teacher:
         return
 
-    # Dedup — don't notify if Activity already exists for this attempt
+    # Dedup — don't double-notify
     content_type = ContentType.objects.get_for_model(quiz)
-    already_notified = Activity.objects.filter(
+    if Activity.objects.filter(
         user=teacher,
         type=Activity.TYPE_SUBMISSION,
         content_type=content_type,
         object_id=quiz.id,
         title__startswith=student_name,
-    ).exists()
-
-    if already_notified:
+    ).exists():
         return
 
     _notify_teacher(
@@ -225,20 +220,20 @@ def quiz_submitted(sender, instance, created, **kwargs):
         activity_type=Activity.TYPE_SUBMISSION,
         title=f"{student_name} submitted: {quiz.title}",
         due_date=quiz.due_date,
-        subject_id=subject_id,
-        subject_name=subject_name,
+        subject_id=subject.id,
+        subject_name=subject.name,
         ws_payload={
             "type": "submission",
             "title": f"{student_name} submitted: {quiz.title}",
-            "subject_name": subject_name,
-            "subject_id": str(subject_id),
+            "subject_name": subject.name,
+            "subject_id": str(subject.id),
             "id": str(quiz.id),
         }
     )
 
 
 # =====================================================
-# LIVE SESSION CREATED → notify students only
+# LIVE SESSION CREATED → notify students
 # =====================================================
 
 @receiver(post_save, sender=LiveSession)

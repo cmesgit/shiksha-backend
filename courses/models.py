@@ -11,6 +11,8 @@ class Course(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
 
+    price = models.PositiveIntegerField(default=0, help_text="Price in paise (₹1 = 100 paise)")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

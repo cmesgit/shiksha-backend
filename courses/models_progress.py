@@ -19,11 +19,12 @@ class VideoProgress(models.Model):
         related_name="progress"
     )
 
-    last_position = models.FloatField(default=0)
-
+    last_position = models.FloatField(default=0)       # seconds
     completed = models.BooleanField(default=False)
-
-    updated_at = models.DateTimeField(auto_now=True)
+    last_watched_at = models.DateTimeField(auto_now=True)  # ← added
 
     class Meta:
         unique_together = ("student", "recording")
+
+    def __str__(self):
+        return f"{self.student} – {self.recording} @ {self.last_position}s"

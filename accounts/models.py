@@ -325,6 +325,12 @@ class UserRole(models.Model):
         self.approved_at = timezone.now()
         self.save()
 
+        if self.role.name == "TEACHER":
+            tp = getattr(self.user, "teacher_profile", None)
+            if tp and not tp.is_approved:
+                tp.is_approved = True
+                tp.save(update_fields=["is_approved"])
+
     def __str__(self):
         return f"{self.user.email} -> {self.role.name}"
 

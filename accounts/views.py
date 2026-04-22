@@ -19,6 +19,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 
+from django.db import models
 from django.db.models import Prefetch
 
 from enrollments.models import Enrollment
@@ -44,7 +45,13 @@ from .serializers import (
     TeacherFormFillupSerializer,
     TeacherListSerializer,
     ChangePasswordSerializer,
+    AdminUserListSerializer,
+    AdminUserDetailSerializer,
+    AdminUserUpdateSerializer,
+    TeacherApprovalSerializer,
 )
+
+from .permissions import IsAdmin
 
 from .models import TeacherProfile, Profile , TeacherCourseApplication, TeacherSkillApplication
 
@@ -60,6 +67,7 @@ from .indian_states_data import STATES_WITH_DISTRICTS
 
 class MeView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
         user = (
@@ -77,7 +85,43 @@ class MeView(APIView):
             .get(id=request.user.id)
         )
 
-        return Response(UserMeSerializer(user).data)
+        return Response(UserMeSerializer(user, context={"request": request}).data)
+
+    def patch(self, request):
+        user = request.user
+        profile = user.profile
+        data = request.data
+
+        username = data.get("username")
+        if username:
+            user.username = username
+            user.save(update_fields=["username"])
+
+        profile_data = data.get("profile") or {}
+        full_name = profile_data.get("full_name")
+        if full_name is not None:
+            profile.full_name = full_name
+            parts = full_name.strip().split(None, 1)
+            profile.first_name = parts[0] if parts else ""
+            profile.last_name = parts[1] if len(parts) > 1 else ""
+
+        phone = profile_data.get("phone")
+        if phone is not None:
+            profile.phone = phone
+
+        avatar_emoji = profile_data.get("avatar_emoji")
+        if avatar_emoji is not None:
+            profile.avatar_emoji = avatar_emoji
+            if profile.avatar_image:
+                profile.avatar_image.delete(save=False)
+                profile.avatar_image = None
+
+        if "avatar_image" in request.FILES:
+            profile.avatar_image = request.FILES["avatar_image"]
+            profile.avatar_emoji = ""
+
+        profile.save()
+        return self.get(request)
 
 
 # =====================================================
@@ -92,6 +136,17 @@ class SignupView(APIView):
         return os.getenv("API_BASE_URL", "https://api.shikshacom.com")
 
     def post(self, request):
+        # Free the email if a previous unverified signup was abandoned.
+        # Matches the 24h token expiry so real duplicates still get rejected.
+        from datetime import timedelta
+        email = (request.data.get("email") or "").strip().lower()
+        if email:
+            User.objects.filter(
+                email__iexact=email,
+                is_verified=False,
+                date_joined__lt=timezone.now() - timedelta(hours=24),
+            ).delete()
+
         serializer = SignupSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -180,7 +235,7 @@ class LoginView(APIView):
             secure=True,
             samesite="None",
             domain=settings.COOKIE_DOMAIN,
-            max_age=6000,
+            max_age=3600,
         )
 
         response.set_cookie(
@@ -524,6 +579,61 @@ class FormFillupView(APIView):
 
 class TeacherProfileView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    PROFILE_FIELDS = {
+        "first_name", "last_name", "phone", "gender", "date_of_birth",
+        "state", "district", "city_town", "pin_code",
+    }
+    TEACHER_FIELDS = {
+        "bio", "highest_degree", "field_of_study", "year_of_completion",
+        "teaching_certifications",
+        "experience_range", "employment_status", "currently_employed",
+        "current_institution", "current_position",
+        "govt_id_type", "id_number",
+    }
+    TEACHER_FILE_FIELDS = {
+        "qualification_certificate", "id_proof_front", "id_proof_back",
+    }
+
+    def patch(self, request):
+        user = request.user
+        profile = user.profile
+        tp, _ = TeacherProfile.objects.get_or_create(user=user)
+
+        data = request.data
+
+        for field in self.PROFILE_FIELDS:
+            if field in data:
+                value = data[field]
+                if field == "date_of_birth" and value in ("", None):
+                    continue
+                setattr(profile, field, value)
+
+        photo_file = request.FILES.get("profile_photo") or request.FILES.get("photo")
+        if photo_file:
+            profile.profile_photo = photo_file
+            profile.avatar_image = photo_file
+            profile.avatar_emoji = None
+
+        profile.save()
+
+        for field in self.TEACHER_FIELDS:
+            if field in data:
+                value = data[field]
+                if field == "year_of_completion" and value in ("", None):
+                    continue
+                if field == "currently_employed":
+                    value = str(value).lower() in ("true", "1", "yes")
+                setattr(tp, field, value)
+
+        for field in self.TEACHER_FILE_FIELDS:
+            if field in request.FILES:
+                setattr(tp, field, request.FILES[field])
+
+        tp.save()
+
+        return self.get(request)
 
     def get(self, request):
         user = request.user
@@ -554,10 +664,14 @@ class TeacherProfileView(APIView):
                 "course": str(course),
             })
 
+        photo_url = None
+        if profile.profile_photo:
+            photo_url = request.build_absolute_uri(profile.profile_photo.url)
+
         data = {
             "name": f"{profile.first_name} {profile.last_name}".strip(),
             "gender": profile.gender or "",
-            "photo": profile.profile_photo.url if profile.profile_photo else None,
+            "photo": photo_url,
             "bio": tp.bio if tp else "",
             "highest_degree": tp.get_highest_degree_display() if tp and tp.highest_degree else "",
             "field_of_study": tp.field_of_study if tp else "",
@@ -585,6 +699,82 @@ class TeacherProfileView(APIView):
                 }
                 for sa in (tp.skill_applications.all() if tp else [])
             ],
+        }
+
+        return Response(data)
+
+
+class StudentProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    PROFILE_FIELDS = {
+        "first_name", "last_name", "phone", "gender", "date_of_birth",
+        "state", "district", "city_town", "pin_code",
+        "father_name", "father_phone",
+        "mother_name", "mother_phone",
+        "guardian_name", "guardian_phone", "parent_guardian_email",
+        "currently_studying", "current_class", "stream", "board", "board_other",
+        "school_name", "academic_year",
+        "highest_education", "reason_not_studying",
+    }
+
+    def patch(self, request):
+        profile = request.user.profile
+        data = request.data
+
+        for field in self.PROFILE_FIELDS:
+            if field in data:
+                value = data[field]
+                if field == "date_of_birth" and value in ("", None):
+                    continue
+                setattr(profile, field, value)
+
+        if "profile_photo" in request.FILES:
+            profile.profile_photo = request.FILES["profile_photo"]
+
+        profile.save()
+        return self.get(request)
+
+    def get(self, request):
+        user = request.user
+        profile = user.profile
+
+        data = {
+            "name": f"{profile.first_name} {profile.last_name}".strip(),
+            "email": user.email,
+            "username": user.username,
+            "student_id": profile.student_id,
+            "photo": profile.profile_photo.url if profile.profile_photo else None,
+
+            "first_name": profile.first_name or "",
+            "last_name": profile.last_name or "",
+            "phone": profile.phone or "",
+            "gender": profile.gender or "",
+            "date_of_birth": profile.date_of_birth,
+
+            "state": profile.state or "",
+            "district": profile.district or "",
+            "city_town": profile.city_town or "",
+            "pin_code": profile.pin_code or "",
+
+            "father_name": profile.father_name or "",
+            "father_phone": profile.father_phone or "",
+            "mother_name": profile.mother_name or "",
+            "mother_phone": profile.mother_phone or "",
+            "guardian_name": profile.guardian_name or "",
+            "guardian_phone": profile.guardian_phone or "",
+            "parent_guardian_email": profile.parent_guardian_email or "",
+
+            "currently_studying": profile.currently_studying or "",
+            "current_class": profile.current_class or "",
+            "stream": profile.stream or "",
+            "board": profile.board or "",
+            "board_other": profile.board_other or "",
+            "school_name": profile.school_name or "",
+            "academic_year": profile.academic_year or "",
+            "highest_education": profile.highest_education or "",
+            "reason_not_studying": profile.reason_not_studying or "",
         }
 
         return Response(data)
@@ -669,7 +859,7 @@ class RefreshView(APIView):
                 secure=True,
                 samesite="None",
                 domain=settings.COOKIE_DOMAIN,
-                max_age=600,
+                max_age=3600,
             )
 
             response.set_cookie(
@@ -719,6 +909,8 @@ class TeacherListView(APIView):
                 name = tp.user.get_full_name() or tp.user.username
 
             avatar = profile.avatar_value() if profile else None
+            if avatar and isinstance(avatar, str) and avatar.startswith("/"):
+                avatar = request.build_absolute_uri(avatar)
 
             data.append({
                 "id": str(tp.user.id),
@@ -729,6 +921,108 @@ class TeacherListView(APIView):
                 "avatar": avatar,
             })
 
+        return Response(data)
+
+
+# =====================================================
+# TEACHER PUBLIC PROFILE DETAIL
+# =====================================================
+
+class TeacherPublicProfileView(APIView):
+    """Public (student-visible) subset of a teacher's profile."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        try:
+            tp = (
+                TeacherProfile.objects
+                .select_related("user", "user__profile")
+                .prefetch_related("course_applications", "skill_applications")
+                .get(
+                    user__id=user_id,
+                    is_approved=True,
+                    user__user_roles__role__name="TEACHER",
+                    user__user_roles__is_active=True,
+                )
+            )
+        except TeacherProfile.DoesNotExist:
+            return Response({"detail": "Teacher not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        profile = getattr(tp.user, "profile", None)
+
+        name = ""
+        if profile:
+            if profile.first_name:
+                name = f"{profile.first_name} {profile.last_name}".strip()
+            elif profile.full_name:
+                name = profile.full_name
+        if not name:
+            name = tp.user.get_full_name() or tp.user.username
+
+        degree_label = dict(TeacherProfile.HIGHEST_DEGREE_CHOICES).get(
+            tp.highest_degree, ""
+        )
+        experience_label = dict(TeacherProfile.EXPERIENCE_CHOICES).get(
+            tp.experience_range, ""
+        )
+        employment_label = dict(TeacherProfile.EMPLOYMENT_STATUS_CHOICES).get(
+            tp.employment_status, ""
+        )
+        subject_map = dict(TeacherProfile.SUBJECT_CHOICES)
+        board_map = dict(TeacherProfile.BOARD_CHOICES)
+        class_map = dict(TeacherProfile.CLASS_CHOICES)
+        stream_map = dict(TeacherProfile.STREAM_CHOICES)
+
+        courses = [
+            {
+                "subject": subject_map.get(c.subject, c.subject),
+                "boards": [board_map.get(b, b) for b in (c.boards or [])],
+                "classes": [class_map.get(cls, cls) for cls in (c.classes or [])],
+                "streams": [stream_map.get(s, s) for s in (c.streams or [])],
+            }
+            for c in tp.course_applications.all()
+        ]
+
+        skills = [
+            {
+                "name": s.skill_name,
+                "description": s.skill_description,
+                "related_subject": subject_map.get(s.skill_related_subject, s.skill_related_subject),
+            }
+            for s in tp.skill_applications.all()
+        ]
+
+        avatar = profile.avatar_value() if profile else None
+        if avatar and isinstance(avatar, str) and avatar.startswith("/"):
+            avatar = request.build_absolute_uri(avatar)
+
+        data = {
+            "id": str(tp.user.id),
+            "name": name,
+            "avatar": avatar,
+            "subject": subject_map.get(tp.subject, tp.subject) or tp.subject_specialization or "",
+            "qualification": tp.qualification or "",
+            "bio": tp.bio or "",
+            "rating": float(tp.rating) if tp.rating else None,
+
+            "education": {
+                "highest_degree": degree_label,
+                "field_of_study": tp.field_of_study or "",
+                "year_of_completion": tp.year_of_completion,
+                "certifications": tp.teaching_certifications or [],
+            },
+            "experience": {
+                "range": experience_label,
+                "employment_status": employment_label,
+                "currently_employed": tp.currently_employed,
+                "current_institution": tp.current_institution or "",
+                "current_position": tp.current_position or "",
+                "previous_institution": tp.previous_institution or "",
+                "years": tp.teaching_experience_years,
+            },
+            "courses": courses,
+            "skills": skills,
+        }
         return Response(data)
 
 
@@ -797,3 +1091,181 @@ class ChangePasswordView(APIView):
         user.save()
 
         return Response({"detail": "Password changed successfully."})
+
+
+# =====================================================
+# ADMIN VIEWS
+# =====================================================
+
+class AdminStatsView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        from courses.models import Course
+        from forum.models import ForumPost
+        from payments.models import Order
+
+        total_users = User.objects.count()
+        active_courses = Course.objects.filter(is_active=True).count() if hasattr(Course, "is_active") else Course.objects.count()
+        active_enrollments = Enrollment.objects.filter(status=Enrollment.STATUS_ACTIVE).count()
+        forum_posts = ForumPost.objects.count()
+
+        total_revenue = (
+            Order.objects
+            .filter(status=Order.STATUS_PAID)
+            .aggregate(total=models.Sum("amount"))["total"]
+        ) or 0
+
+        pending_approvals = UserRole.objects.filter(
+            role__name="TEACHER",
+            is_active=False,
+            approved_at__isnull=True,
+        ).count()
+
+        return Response({
+            "total_users": total_users,
+            "active_courses": active_courses,
+            "active_enrollments": active_enrollments,
+            "forum_posts": forum_posts,
+            "total_revenue": total_revenue,
+            "pending_approvals": pending_approvals,
+        })
+
+
+class AdminUserListView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        qs = (
+            User.objects
+            .select_related("profile")
+            .prefetch_related("user_roles__role")
+            .order_by("-date_joined")
+        )
+
+        search = request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                models.Q(email__icontains=search)
+                | models.Q(username__icontains=search)
+                | models.Q(profile__full_name__icontains=search)
+            )
+
+        role = request.query_params.get("role", "").strip().upper()
+        if role:
+            qs = qs.filter(
+                user_roles__role__name=role,
+                user_roles__is_active=True,
+            ).distinct()
+
+        def _bool(val):
+            if val in (None, ""):
+                return None
+            return str(val).lower() in ("true", "1", "yes")
+
+        is_verified = _bool(request.query_params.get("is_verified"))
+        if is_verified is not None:
+            qs = qs.filter(is_verified=is_verified)
+
+        is_active = _bool(request.query_params.get("is_active"))
+        if is_active is not None:
+            qs = qs.filter(is_active=is_active)
+
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = min(100, max(1, int(request.query_params.get("page_size", 25))))
+        except (TypeError, ValueError):
+            page_size = 25
+
+        count = qs.count()
+        start = (page - 1) * page_size
+        results = qs[start:start + page_size]
+
+        return Response({
+            "count": count,
+            "results": AdminUserListSerializer(results, many=True).data,
+        })
+
+
+class AdminUserDetailView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, user_id):
+        user = (
+            User.objects
+            .select_related("profile")
+            .prefetch_related(
+                "user_roles__role",
+                Prefetch("enrollments", queryset=Enrollment.objects.select_related("course")),
+            )
+            .filter(id=user_id)
+            .first()
+        )
+        if not user:
+            return Response({"detail": "User not found."}, status=404)
+        return Response(AdminUserDetailSerializer(user).data)
+
+    def patch(self, request, user_id):
+        user = User.objects.filter(id=user_id).first()
+        if not user:
+            return Response({"detail": "User not found."}, status=404)
+
+        serializer = AdminUserUpdateSerializer(user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        user = (
+            User.objects
+            .select_related("profile")
+            .prefetch_related(
+                "user_roles__role",
+                Prefetch("enrollments", queryset=Enrollment.objects.select_related("course")),
+            )
+            .get(id=user.id)
+        )
+        return Response(AdminUserDetailSerializer(user).data)
+
+
+class AdminTeacherApprovalListView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        qs = (
+            UserRole.objects
+            .filter(
+                role__name="TEACHER",
+                is_active=False,
+                approved_at__isnull=True,
+            )
+            .select_related("user", "user__profile", "role")
+            .order_by("-created_at")
+        )
+        return Response(TeacherApprovalSerializer(qs, many=True).data)
+
+
+class AdminTeacherApprovalActionView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, approval_id):
+        action = request.data.get("action", "").lower()
+        if action not in ("approve", "reject"):
+            raise ValidationError({"action": "Must be 'approve' or 'reject'."})
+
+        role = (
+            UserRole.objects
+            .filter(id=approval_id, role__name="TEACHER", is_active=False)
+            .select_related("user")
+            .first()
+        )
+        if not role:
+            return Response({"detail": "Approval request not found."}, status=404)
+
+        if action == "approve":
+            role.approve(request.user)
+            return Response({"detail": "Teacher approved.", "id": str(role.id)})
+        else:
+            role.delete()
+            return Response({"detail": "Teacher request rejected."})

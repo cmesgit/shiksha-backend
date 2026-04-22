@@ -26,7 +26,7 @@ class Quiz(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
 
-    due_date = models.DateTimeField()
+    due_date = models.DateTimeField(null=True, blank=True)
     time_limit_minutes = models.PositiveIntegerField(null=True, blank=True)
 
     total_marks = models.PositiveIntegerField(default=0)
@@ -40,15 +40,10 @@ class Quiz(models.Model):
         indexes = [
             models.Index(fields=["subject"]),
             models.Index(fields=["is_published"]),
-            models.Index(fields=["due_date"]),
         ]
 
     def __str__(self):
         return f"{self.title} ({self.subject.name})"
-
-    @property
-    def is_expired(self):
-        return timezone.now() > self.due_date
 
 
 # -------------------------------------------------------

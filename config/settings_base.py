@@ -143,8 +143,10 @@ LOGGING = {
     "root": {"handlers": ["console"], "level": "ERROR"},
 }
 
-GMAIL_TOKEN_PATH = os.path.join(BASE_DIR, "token.json")
-DEFAULT_FROM_EMAIL = "Shiksha <noreply@shikshacom.com>"
+# --- Email (Resend HTTPS API) ---
+# Uses port 443, so it works on hosts where outbound SMTP is blocked.
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "Shiksha <onboarding@resend.dev>")
 
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")

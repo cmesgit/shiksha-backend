@@ -180,3 +180,39 @@ class PrivateSessionChatConsumer(AsyncWebsocketConsumer):
         # Use the shared helper from views
         from .views import _end_session_internal
         return _end_session_internal(session, reason="auto_expired_all_left")
+
+
+class UserNotificationConsumer(AsyncWebsocketConsumer):
+    """
+    Per-user WebSocket consumer.
+    Each authenticated user connects to ws/private-session/notify/
+    and joins their personal group user_<user_id>.
+
+    Receives session_update events broadcast by views whenever a session
+    status changes, and forwards them to the connected client.
+    """
+
+    async def connect(self):
+        user = self.scope.get("user")
+        if not user or not user.is_authenticated:
+            await self.close()
+            return
+
+        self.user_id = str(user.id)
+        self.group_name = f"user_{self.user_id}"
+
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.accept()
+        logger.info(
+            "UserNotificationConsumer connected for user %s", self.user_id)
+
+    async def disconnect(self, close_code):
+        if hasattr(self, "group_name"):
+            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+
+    async def session_update(self, event):
+        """Receives broadcast from _broadcast_session_update in views.py."""
+        await self.send(text_data=json.dumps({
+            "type": "session_update",
+            "data": event["data"],
+        }))

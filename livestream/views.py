@@ -6,7 +6,7 @@ from .serializers import (
 from .services.token import generate_livekit_token
 from .models import LiveSession, LiveSessionAttendance
 from enrollments.models import Enrollment
-from livekit.api import WebhookReceiver
+from livekit.api import WebhookReceiver, TokenVerifier
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
@@ -149,7 +149,7 @@ class TeacherLiveSessionListView(generics.ListAPIView):
             raise PermissionDenied("Only teachers allowed.")
 
         now = timezone.now()
-        cutoff = now - timedelta(hours=24)
+        cutoff = now - timedelta(days=90)
 
         if subject_id:
             if not user.subject_assignments.filter(subject_id=subject_id).exists():
@@ -166,6 +166,7 @@ class TeacherLiveSessionListView(generics.ListAPIView):
         assigned_subject_ids = user.subject_assignments.values_list(
             "subject_id", flat=True)
 
+        cutoff = now - timedelta(days=90)
         return (
             LiveSession.objects
             .filter(subject_id__in=assigned_subject_ids)
@@ -179,8 +180,12 @@ class TeacherLiveSessionListView(generics.ListAPIView):
 # JOIN SESSION
 # =========================
 
+from django_ratelimit.decorators import ratelimit
+from django.utils.decorators import method_decorator
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@ratelimit(key="user", rate="10/m", method="POST", block=True)
 def join_live_session(request, session_id):
     user = request.user
     session = get_object_or_404(LiveSession, id=session_id)
@@ -214,7 +219,17 @@ def join_live_session(request, session_id):
         ).exists()
 
         if not is_enrolled:
-            return Response({"detail": "Not enrolled"}, status=403)
+            return Response({"detail": "You are not enrolled in this course."}, status=403)
+
+        # Recheck enrollment hasn't been revoked mid-session
+        if session.status in [LiveSession.STATUS_LIVE, LiveSession.STATUS_PAUSED]:
+            still_enrolled = Enrollment.objects.filter(
+                user=user,
+                course=session.course,
+                status=Enrollment.STATUS_ACTIVE,
+            ).exists()
+            if not still_enrolled:
+                return Response({"detail": "Your enrollment has been revoked."}, status=403)
 
         if now < session.start_time - timedelta(minutes=15):
             return Response({"detail": "Too early"}, status=403)
@@ -384,6 +399,39 @@ def pause_live_session(request, session_id):
 
 
 # =========================
+# SESSION DETAIL
+# =========================
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def live_session_detail(request, session_id):
+    session = get_object_or_404(LiveSession, id=session_id)
+    user = request.user
+
+    if not user.has_role("TEACHER"):
+        return Response({"detail": "Only teachers allowed."}, status=403)
+
+    if not session.subject.subject_teachers.filter(teacher=user).exists():
+        return Response({"detail": "Not assigned to this subject."}, status=403)
+
+    from livestream.serializers import LiveSessionListSerializer
+    session_data = LiveSessionListSerializer(session, context={"request": request}).data
+
+    attendance = LiveSessionAttendance.objects.filter(session=session).select_related("user")
+    attendance_data = [
+        {
+            "user_name": a.user.get_full_name() if hasattr(a.user, "get_full_name") else "",
+            "user_email": a.user.email,
+            "joined_at": a.joined_at.isoformat() if a.joined_at else None,
+            "left_at": a.left_at.isoformat() if a.left_at else None,
+        }
+        for a in attendance
+    ]
+
+    return Response({"session": session_data, "attendance": attendance_data})
+
+
+# =========================
 # LIVEKIT WEBHOOK
 # =========================
 
@@ -393,13 +441,12 @@ def livekit_webhook(request):
         return HttpResponse(status=405)
 
     receiver = WebhookReceiver(
-        settings.LIVEKIT_API_KEY,
-        settings.LIVEKIT_API_SECRET,
+        TokenVerifier(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
     )
 
     try:
         event = receiver.receive(
-            request.body,
+            request.body.decode("utf-8"),
             request.headers.get("Authorization"),
         )
 

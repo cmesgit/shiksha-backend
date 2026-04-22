@@ -132,6 +132,30 @@ class LiveSession(models.Model):
         return self.STATUS_WAITING
 
 
+class LiveSessionChatMessage(models.Model):
+    session = models.ForeignKey(
+        LiveSession,
+        on_delete=models.CASCADE,
+        related_name="chat_messages",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+    )
+    sender_name = models.CharField(max_length=200)
+    text = models.TextField()
+    is_teacher = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [models.Index(fields=["session", "created_at"])]
+
+    def __str__(self):
+        return f"{self.sender_name}: {self.text[:50]}"
+
+
 class LiveSessionAttendance(models.Model):
     session = models.ForeignKey(
         LiveSession,
