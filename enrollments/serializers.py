@@ -1,10 +1,75 @@
+import logging
+import os
+
 from rest_framework import serializers
 from django.utils import timezone
 from django.db import transaction
 
+from accounts.email_utils import send_gmail
 from courses.models import Course
 
 from .models import Enrollment, EnrollmentRequest
+
+logger = logging.getLogger(__name__)
+
+
+def _send_enrollment_decision_email(request_obj):
+    """Notify the student that their enrollment request was approved or rejected.
+
+    Swallows errors so a mail outage cannot roll back the admin's decision.
+    """
+    user = request_obj.user
+    course_title = request_obj.course.title
+    status_value = request_obj.status
+    student_app_url = os.getenv("STUDENT_APP_URL", "https://app.shikshacom.com")
+
+    if status_value == EnrollmentRequest.STATUS_APPROVED:
+        subject = f"Enrollment approved — {course_title}"
+        text = (
+            f"Hi,\n\n"
+            f"Your enrollment for \"{course_title}\" has been approved. "
+            f"You can now access your course on the student dashboard.\n\n"
+            f"{student_app_url}\n\n"
+            f"— Shiksha Team"
+        )
+        html = f"""
+        <h2>Enrollment approved</h2>
+        <p>Your enrollment for <strong>{course_title}</strong> has been approved.</p>
+        <p>You can now access your course on the student dashboard.</p>
+        <a href="{student_app_url}" style="padding:10px 15px;background:#2563eb;color:white;text-decoration:none;border-radius:5px;">
+            Go to Dashboard
+        </a>
+        """
+    elif status_value == EnrollmentRequest.STATUS_REJECTED:
+        subject = f"Enrollment request declined — {course_title}"
+        note = request_obj.admin_note.strip() if request_obj.admin_note else ""
+        note_line = f"Reason from our team:\n{note}\n\n" if note else ""
+        note_html = (
+            f"<p><strong>Reason from our team:</strong><br>{note}</p>" if note else ""
+        )
+        text = (
+            f"Hi,\n\n"
+            f"Unfortunately your enrollment request for \"{course_title}\" was not approved.\n\n"
+            f"{note_line}"
+            f"If you believe this is a mistake, please contact support.\n\n"
+            f"— Shiksha Team"
+        )
+        html = f"""
+        <h2>Enrollment request declined</h2>
+        <p>Unfortunately your enrollment request for <strong>{course_title}</strong> was not approved.</p>
+        {note_html}
+        <p>If you believe this is a mistake, please contact support.</p>
+        """
+    else:
+        return
+
+    try:
+        send_gmail(to=user.email, subject=subject, message_text=text, html=html)
+    except Exception as e:
+        logger.error(
+            "Failed to send enrollment %s email to %s: %s",
+            status_value, user.email, e,
+        )
 
 
 class CourseBriefSerializer(serializers.ModelSerializer):
@@ -140,5 +205,7 @@ class AdminActionSerializer(serializers.Serializer):
                 request_obj.status = EnrollmentRequest.STATUS_REJECTED
 
             request_obj.save()
+
+        _send_enrollment_decision_email(request_obj)
 
         return request_obj
