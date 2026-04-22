@@ -1102,13 +1102,13 @@ class AdminStatsView(APIView):
 
     def get(self, request):
         from courses.models import Course
-        from forum.models import ForumThread
+        from forum.models import ForumPost
         from payments.models import Order
 
         total_users = User.objects.count()
         active_courses = Course.objects.filter(is_active=True).count() if hasattr(Course, "is_active") else Course.objects.count()
         active_enrollments = Enrollment.objects.filter(status=Enrollment.STATUS_ACTIVE).count()
-        forum_posts = ForumThread.objects.count()
+        forum_posts = ForumPost.objects.count()
 
         total_revenue = (
             Order.objects
