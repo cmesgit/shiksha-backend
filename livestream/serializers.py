@@ -121,16 +121,16 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
     subject_id = serializers.UUIDField(source="subject.id", read_only=True)
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_name = serializers.CharField(source="course.title", read_only=True)
-    teacher_left_at = serializers.DateTimeField(
-        read_only=True)  # needed by client computeStatus
-    # needed by client computeStatus
+    teacher_left_at = serializers.DateTimeField(read_only=True)
     status = serializers.CharField(read_only=True)
+    description = serializers.CharField(read_only=True)
 
     class Meta:
         model = LiveSession
         fields = [
             "id",
             "title",
+            "description",
             "start_time",
             "end_time",
             "computed_status",

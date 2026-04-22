@@ -180,8 +180,12 @@ class TeacherLiveSessionListView(generics.ListAPIView):
 # JOIN SESSION
 # =========================
 
+from django_ratelimit.decorators import ratelimit
+from django.utils.decorators import method_decorator
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@ratelimit(key="user", rate="10/m", method="POST", block=True)
 def join_live_session(request, session_id):
     user = request.user
     session = get_object_or_404(LiveSession, id=session_id)
@@ -215,7 +219,17 @@ def join_live_session(request, session_id):
         ).exists()
 
         if not is_enrolled:
-            return Response({"detail": "Not enrolled"}, status=403)
+            return Response({"detail": "You are not enrolled in this course."}, status=403)
+
+        # Recheck enrollment hasn't been revoked mid-session
+        if session.status in [LiveSession.STATUS_LIVE, LiveSession.STATUS_PAUSED]:
+            still_enrolled = Enrollment.objects.filter(
+                user=user,
+                course=session.course,
+                status=Enrollment.STATUS_ACTIVE,
+            ).exists()
+            if not still_enrolled:
+                return Response({"detail": "Your enrollment has been revoked."}, status=403)
 
         if now < session.start_time - timedelta(minutes=15):
             return Response({"detail": "Too early"}, status=403)

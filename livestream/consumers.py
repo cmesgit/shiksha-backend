@@ -114,12 +114,29 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
             return []
 
     def save_chat_message(self, message):
+        # Save to Redis (fast, for active sessions)
         try:
             key = f"chat:{self.session_id}"
             r.rpush(key, json.dumps(message))
-            r.expire(key, 86400)  # 24 hours
+            r.expire(key, 86400)
         except Exception as e:
-            print(f"save_chat_message error: {e}")
+            print(f"save_chat_message redis error: {e}")
+        # Also save to DB (persistent)
+        try:
+            from livestream.models import LiveSession, LiveSessionChatMessage
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            session = LiveSession.objects.get(id=self.session_id)
+            user = User.objects.filter(id=message.get("sender_id")).first()
+            LiveSessionChatMessage.objects.create(
+                session=session,
+                user=user,
+                sender_name=message.get("sender", ""),
+                text=message.get("text", ""),
+                is_teacher=message.get("isTeacher", False),
+            )
+        except Exception as e:
+            print(f"save_chat_message db error: {e}")
 
     @database_sync_to_async
     def get_user_name(self, user):

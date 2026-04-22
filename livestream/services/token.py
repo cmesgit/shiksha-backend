@@ -54,12 +54,14 @@ def generate_livekit_token(
         )
     else:
         # 👀 VIEWER (students + other teachers)
+        # can_publish=True so mic works, but frontend starts muted by default
         grants = VideoGrants(
             room_join=True,
             room=room_name,
-            can_publish=False,        # ❌ no mic/camera
+            can_publish=True,         # ✅ mic allowed (starts muted via frontend)
             can_publish_data=True,    # ✅ allows raise hand + chat
             can_subscribe=True,
+            can_publish_sources=["microphone"],  # 🎤 mic only, no camera/screen
         )
 
     token.with_grants(grants)
