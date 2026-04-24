@@ -68,6 +68,10 @@ urlpatterns = [
          name="study-group-accept"),
     path("study-groups/<uuid:session_id>/decline/", sg_views.decline_invite,
          name="study-group-decline"),
+    # Un-accept — accepted invitee flips back to 'pending' before the
+    # room opens (keeps their decline counter intact).
+    path("study-groups/<uuid:session_id>/unaccept/", sg_views.unaccept_invite,
+         name="study-group-unaccept"),
     path("study-groups/<uuid:session_id>/cancel/", sg_views.cancel_study_group,
          name="study-group-cancel"),
     path("study-groups/<uuid:session_id>/join/", sg_views.join_study_group,

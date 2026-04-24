@@ -1,37 +1,34 @@
 from .settings_base import *
-
-LOGGING = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "handlers": {"console": {"class": "logging.StreamHandler"}},
-    "root": {"handlers": ["console"], "level": "WARNING"},
-}
+import os
 
 ALLOWED_HOSTS = [
-    "134.209.154.122",
-    "api.dev.shikshacom.com",
+    "api.shikshacom.com",
+    "admin.shikshacom.com",
+    "68.183.81.236",
     "localhost",
     "127.0.0.1",
-    "htttps://dev.api.shikshacom.com",
-]
-
-CSRF_TRUSTED_ORIGINS = [
-    "https://api.dev.shikshacom.com",
-    "https://dev.shikshacom.com",
-    "https://app.dev.shikshacom.com",
-    "https://teacher.dev.shikshacom.com",
-    "https://admin.dev.shikshacom.com",
-    "https://dev.api.shikshacom.com",
 ]
 
 CORS_ALLOWED_ORIGINS = [
-    "https://dev.shikshacom.com",
-    "https://app.dev.shikshacom.com",
-    "https://teacher.dev.shikshacom.com",
-    "https://admin.dev.shikshacom.com",
-    "https://dev.api.shikshacom.com",
+    "https://shikshacom.com",
+    "https://admin.shikshacom.com",
+    "https://www.shikshacom.com",
+    "https://app.shikshacom.com",
+    "https://admin.shikshacom.com",
+    "https://teacher.shikshacom.com",
+]
+
+CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://shikshacom.com",
+    "https://admin.shikshacom.com",
+    "https://www.shikshacom.com",
+    "https://app.shikshacom.com",
+    "https://admin.shikshacom.com",
+    "https://teacher.shikshacom.com",
+    "https://api.shikshacom.com",
 ]
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
-

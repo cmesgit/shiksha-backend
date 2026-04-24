@@ -12,7 +12,7 @@ Run via cron every few minutes on the server, e.g.:
     */3 * * * * cd /path/to/project && python manage.py cleanup_expired_sessions
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.core.management.base import BaseCommand
 from django.utils import timezone
@@ -25,13 +25,19 @@ from sessions_app.views import _end_session_internal
 GRACE_PERIOD = timedelta(minutes=5)
 # Must match STUDY_GROUP_AUTO_EXPIRE_DELAY in consumers.py
 STUDY_GROUP_GRACE_PERIOD = timedelta(minutes=7)
+# How long a scheduled-but-never-opened study group lingers on the
+# Invitations tab before being marked "Not attended" and moved to
+# History. Measured from scheduled_date + scheduled_time.
+STUDY_GROUP_UNATTENDED_GRACE = timedelta(hours=6)
 
 
 class Command(BaseCommand):
     help = (
         "Auto-end private sessions where all participants left 5+ minutes "
         "ago, and study groups where all participants left 7+ minutes ago. "
-        "Also hard-expires study groups whose selected duration has elapsed."
+        "Also hard-expires study groups whose selected duration has elapsed, "
+        "and flags scheduled study groups that nobody attended within 6h "
+        "of their start time."
     )
 
     def handle(self, *args, **options):
@@ -93,12 +99,49 @@ class Command(BaseCommand):
                         )
                     )
 
-        total_sg = sg_count + sg_hard
+        # ── Study groups: unattended grace window ────────────────────
+        # A study group that was scheduled but never opened (nobody
+        # joined) lingers in the Invitations / Upcoming tabs for up to
+        # STUDY_GROUP_UNATTENDED_GRACE after its scheduled start. After
+        # that we flag it "expired" and leave `cancel_reason` empty so
+        # the frontend can show "Not attended" (the distinguishing
+        # marker is status == 'expired' AND room_started_at is NULL).
+        scheduled_groups = StudyGroupSession.objects.filter(
+            status="scheduled", room_started_at__isnull=True,
+        )
+        sg_unattended = 0
+        for session in scheduled_groups:
+            try:
+                scheduled_dt = timezone.make_aware(
+                    datetime.combine(session.scheduled_date, session.scheduled_time)
+                )
+            except Exception:
+                # Data glitch: if we can't compute, skip and log.
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"  Skipped {session.id}: bad scheduled_date/time."
+                    )
+                )
+                continue
+
+            if now >= scheduled_dt + STUDY_GROUP_UNATTENDED_GRACE:
+                session.status = "expired"
+                session.ended_at = now
+                session.save(update_fields=["status", "ended_at", "updated_at"])
+                sg_unattended += 1
+                self.stdout.write(
+                    self.style.SUCCESS(
+                        f"  Marked study group {session.id} as Not attended"
+                    )
+                )
+
+        total_sg = sg_count + sg_hard + sg_unattended
         if total_sg:
             self.stdout.write(
                 self.style.SUCCESS(
                     f"Cleaned up {total_sg} study group(s) "
-                    f"({sg_count} idle, {sg_hard} duration)."
+                    f"({sg_count} idle, {sg_hard} duration, "
+                    f"{sg_unattended} not attended)."
                 )
             )
         else:

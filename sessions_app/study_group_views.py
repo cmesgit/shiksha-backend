@@ -70,6 +70,46 @@ def _can_view(session, user):
     return session.invites.filter(user=user).exists()
 
 
+def _scheduled_aware_dt(session):
+    """Return the tz-aware scheduled start datetime for a study group.
+
+    The model stores scheduled_date (Date) + scheduled_time (Time); we
+    combine them and interpret the result in the project's default
+    timezone (Asia/Kolkata per settings_base.py).
+    """
+    from datetime import datetime
+    return timezone.make_aware(
+        datetime.combine(session.scheduled_date, session.scheduled_time)
+    )
+
+
+def _response_window_open(session):
+    """
+    A pending invite can only be accepted / declined / re-invited while
+    the group is still in its *response window*:
+        session.status == 'scheduled'  AND  scheduled_at >= now
+    Once the scheduled time has passed, the UI must show the card as
+    "Not attended" and both parties can no longer change their state.
+    """
+    if session.status != "scheduled":
+        return False
+    return _scheduled_aware_dt(session) > timezone.now()
+
+
+def _before_room_started(session):
+    """True if the session is still in the pre-launch phase.
+
+    Used to gate:
+      * host cancelling the group
+      * accepted invitees un-accepting their response
+    Once the first participant joins and status flips to 'live', neither
+    action is allowed — the room must be ended instead.
+    """
+    if session.status != "scheduled":
+        return False
+    return session.room_started_at is None
+
+
 def _notify_user(user, title, session):
     """Create an Activity row + push a bell notification to ``user``.
 
@@ -408,6 +448,15 @@ def accept_invite(request, session_id):
             status=400,
         )
 
+    # If the scheduled time has passed, the invite is stale — no one can
+    # accept or decline any more. The card will be auto-moved to history
+    # by the cleanup command 6 hours later.
+    if session.status == "scheduled" and _scheduled_aware_dt(session) <= timezone.now():
+        return Response(
+            {"error": "This study group's start time has passed; you can no longer respond."},
+            status=400,
+        )
+
     invite.status = "accepted"
     invite.responded_at = timezone.now()
     invite.save(update_fields=["status", "responded_at"])
@@ -433,6 +482,15 @@ def decline_invite(request, session_id):
 
     if invite.decline_count >= 2:
         return Response({"error": "Already declined twice."}, status=400)
+
+    session = invite.session
+    # Block late decline once the scheduled time has passed — this mirrors
+    # the accept_invite window so neither side can thrash a stale card.
+    if session.status == "scheduled" and _scheduled_aware_dt(session) <= timezone.now():
+        return Response(
+            {"error": "This study group's start time has passed; you can no longer respond."},
+            status=400,
+        )
 
     invite.status = "declined"
     invite.decline_count = invite.decline_count + 1
@@ -463,6 +521,13 @@ def reinvite(request, session_id):
     if session.status != "scheduled":
         return Response(
             {"error": "Can only re-invite while scheduled."}, status=400
+        )
+
+    # After the start time has passed, the card is read-only on both sides.
+    if _scheduled_aware_dt(session) <= timezone.now():
+        return Response(
+            {"error": "This study group's start time has passed; you can no longer re-invite."},
+            status=400,
         )
 
     user_id = request.data.get("user_id")
@@ -502,6 +567,60 @@ def reinvite(request, session_id):
 
 
 # ---------------------------------------------------------------------------
+# Un-accept — invitee takes back an "accepted" response
+# ---------------------------------------------------------------------------
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def unaccept_invite(request, session_id):
+    """
+    Let an accepted invitee flip their status back to 'pending' any time
+    before the room has actually opened (room_started_at is null).
+
+    This is distinct from ``decline_invite`` — it doesn't increment the
+    decline counter, doesn't burn the single re-invite, and leaves the
+    host with the option of expecting the user again should they re-accept.
+    """
+    invite = _get_invite_for_user(session_id, request.user)
+    if not invite:
+        return Response({"error": "Invite not found."}, status=404)
+
+    if invite.status != "accepted":
+        return Response(
+            {"error": "You can only cancel an attendance you previously accepted."},
+            status=400,
+        )
+
+    session = invite.session
+    if not _before_room_started(session):
+        return Response(
+            {"error": "The room has already started; you can't cancel attendance now."},
+            status=400,
+        )
+    if _scheduled_aware_dt(session) <= timezone.now():
+        return Response(
+            {"error": "This study group's start time has passed; you can no longer change your response."},
+            status=400,
+        )
+
+    invite.status = "pending"
+    invite.responded_at = timezone.now()
+    invite.save(update_fields=["status", "responded_at"])
+
+    # Let the host know someone just stepped back.
+    _notify_user(
+        session.host,
+        f"↩ {get_user_name(request.user)} is no longer attending your {session.subject_name} study group",
+        session,
+    )
+    _broadcast(session)
+
+    full = _sg_qs().get(pk=session.pk)
+    return Response(StudyGroupDetailSerializer(full).data)
+
+
+# ---------------------------------------------------------------------------
 # Cancel / listing / detail
 # ---------------------------------------------------------------------------
 
@@ -514,11 +633,14 @@ def cancel_study_group(request, session_id):
     except StudyGroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
 
-    if session.status not in ("scheduled", "live"):
-        return Response(
-            {"error": f"Cannot cancel a group that is {session.status}."},
-            status=400,
-        )
+    # Only the pre-launch window allows cancellation. Once the room has
+    # started (status='live') it must be ended normally instead.
+    if not _before_room_started(session):
+        if session.status == "live":
+            msg = "The room has already started; you can't cancel it any more."
+        else:
+            msg = f"Cannot cancel a group that is {session.status}."
+        return Response({"error": msg}, status=400)
 
     session.status = "cancelled"
     session.cancel_reason = request.data.get("reason", "")
