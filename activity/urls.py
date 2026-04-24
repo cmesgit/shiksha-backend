@@ -1,7 +1,3 @@
-# ============================================================
-# BACKEND — activity/urls.py  (FULL REPLACEMENT)
-# ============================================================
-
 from django.urls import path
 from .views import ActivityFeedView, MarkActivityReadView, MarkAllReadView
 
