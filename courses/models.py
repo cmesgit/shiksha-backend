@@ -13,6 +13,11 @@ class Course(models.Model):
 
     price = models.PositiveIntegerField(default=0, help_text="Price in paise (₹1 = 100 paise)")
 
+    subscription_duration_days = models.PositiveIntegerField(
+        default=30,
+        help_text="How many days of access a single approved enrollment grants (default = 1 month)",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

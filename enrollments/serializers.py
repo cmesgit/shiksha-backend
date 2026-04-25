@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import timedelta
 
 from rest_framework import serializers
 from django.utils import timezone
@@ -8,7 +9,7 @@ from django.db import transaction
 from accounts.email_utils import send_gmail
 from courses.models import Course
 
-from .models import Enrollment, EnrollmentRequest
+from .models import Enrollment, EnrollmentRequest, Subscription
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,45 @@ def _send_enrollment_decision_email(request_obj):
             "Failed to send enrollment %s email to %s: %s",
             status_value, user.email, e,
         )
+
+
+def _grant_subscription(request_obj):
+    """Create a new Subscription for an approved request, or extend the active one.
+
+    If the user already has an active, non-expired subscription for this course,
+    extend its expires_at by the course's subscription_duration_days. Otherwise
+    start a fresh subscription from now.
+    """
+    course = request_obj.course
+    days = course.subscription_duration_days or 30
+    now = timezone.now()
+
+    active = (
+        Subscription.objects
+        .select_for_update()
+        .filter(
+            user=request_obj.user,
+            course=course,
+            status=Subscription.STATUS_ACTIVE,
+            expires_at__gt=now,
+        )
+        .order_by("-expires_at")
+        .first()
+    )
+
+    if active:
+        active.expires_at = active.expires_at + timedelta(days=days)
+        active.save(update_fields=["expires_at", "updated_at"])
+        return active
+
+    return Subscription.objects.create(
+        user=request_obj.user,
+        course=course,
+        starts_at=now,
+        expires_at=now + timedelta(days=days),
+        status=Subscription.STATUS_ACTIVE,
+        source_request=request_obj,
+    )
 
 
 class CourseBriefSerializer(serializers.ModelSerializer):
@@ -201,6 +241,7 @@ class AdminActionSerializer(serializers.Serializer):
                     course=request_obj.course,
                     defaults={"status": Enrollment.STATUS_ACTIVE},
                 )
+                _grant_subscription(request_obj)
             else:
                 request_obj.status = EnrollmentRequest.STATUS_REJECTED
 
