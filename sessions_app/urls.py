@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from . import study_group_views as sg_views
 from .views import subject_teachers, subject_students  # 👈 add this
 
 urlpatterns = [
@@ -47,4 +48,32 @@ urlpatterns = [
     # ✅ ADD THIS HERE (clean)
     path("subjects/<uuid:subject_id>/teachers/", subject_teachers),
     path("subjects/<uuid:subject_id>/students/", subject_students),
+
+    # =========================================================
+    # Study Groups (separate namespace from private sessions)
+    # =========================================================
+    path("study-groups/my-subjects/", sg_views.my_course_subjects,
+         name="study-group-my-subjects"),
+    path("study-groups/create/", sg_views.create_study_group,
+         name="study-group-create"),
+    path("study-groups/mine/", sg_views.my_study_groups,
+         name="study-group-mine"),
+    path("study-groups/<uuid:session_id>/", sg_views.study_group_detail,
+         name="study-group-detail"),
+    path("study-groups/<uuid:session_id>/invite/", sg_views.invite_more,
+         name="study-group-invite-more"),
+    path("study-groups/<uuid:session_id>/reinvite/", sg_views.reinvite,
+         name="study-group-reinvite"),
+    path("study-groups/<uuid:session_id>/accept/", sg_views.accept_invite,
+         name="study-group-accept"),
+    path("study-groups/<uuid:session_id>/decline/", sg_views.decline_invite,
+         name="study-group-decline"),
+    # Un-accept — accepted invitee flips back to 'pending' before the
+    # room opens (keeps their decline counter intact).
+    path("study-groups/<uuid:session_id>/unaccept/", sg_views.unaccept_invite,
+         name="study-group-unaccept"),
+    path("study-groups/<uuid:session_id>/cancel/", sg_views.cancel_study_group,
+         name="study-group-cancel"),
+    path("study-groups/<uuid:session_id>/join/", sg_views.join_study_group,
+         name="study-group-join"),
 ]

@@ -174,3 +174,179 @@ class ChatMessage(models.Model):
 
     def __str__(self):
         return f"Chat in {self.session.id} by {self.sender_name} at {self.created_at}"
+
+
+# ===========================================================================
+# STUDY GROUPS
+# ===========================================================================
+# Completely separate tables from PrivateSession so the existing
+# private-session flow remains untouched and every query on this feature is
+# explicit.  Patterns (UUID PK, LiveKit room_name, active_connections /
+# all_left_at auto-expire) mirror PrivateSession so the consumer and
+# cleanup-command logic can be reused.
+
+
+class StudyGroupSession(models.Model):
+    """
+    A student-initiated study group room.
+
+    Lifecycle:
+        scheduled  → live  → completed
+                   ↘ cancelled (terminal, settable from scheduled)
+
+    The room becomes joinable inside a window around ``scheduled_time``
+    once at least one invitee has accepted.  Duration is enforced
+    server-side from the first join (``room_started_at``).
+    """
+
+    STATUS_CHOICES = [
+        ("scheduled", "Scheduled"),
+        ("live", "Live"),
+        ("completed", "Completed"),
+        ("cancelled", "Cancelled"),
+        ("expired", "Expired"),
+    ]
+
+    DURATION_CHOICES = [
+        (30, "30 minutes"),
+        (45, "45 minutes"),
+        (60, "1 hour"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # --- Parties ---
+    host = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="hosted_study_groups",
+    )
+    # Optional teacher link; if the host invited a teacher, this is the
+    # target.  Acceptance is tracked in the StudyGroupInvite row.
+    invited_teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invited_study_groups",
+    )
+
+    # --- Academic scope (mirror how PrivateSession stores subject) ---
+    # We keep a FK to the actual Subject so student/teacher pools can be
+    # resolved at join-time *and* store the denormalised name for history.
+    subject = models.ForeignKey(
+        "courses.Subject",
+        on_delete=models.PROTECT,
+        related_name="study_groups",
+    )
+    subject_name = models.CharField(max_length=255)
+    course_title = models.CharField(max_length=255, blank=True, default="")
+
+    topic = models.CharField(max_length=255, blank=True, default="")
+
+    # --- Scheduling ---
+    scheduled_date = models.DateField()
+    scheduled_time = models.TimeField()
+    duration_minutes = models.PositiveIntegerField(
+        choices=DURATION_CHOICES, default=45
+    )
+
+    # --- Capacity (host + invitees) ---
+    # Max invitees is 20.  Minimum 1 invitee must accept before the room
+    # will open.
+    max_invitees = models.PositiveIntegerField(default=20)
+
+    # --- Lifecycle ---
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default="scheduled"
+    )
+    cancel_reason = models.TextField(blank=True, default="")
+
+    # --- LiveKit ---
+    room_name = models.CharField(max_length=255, blank=True, default="")
+
+    # --- Timestamps ---
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    # Set on first participant join — the hard-duration cutoff is measured
+    # from this instant.
+    room_started_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    # --- Idle-expire tracking (identical to PrivateSession's fields) ---
+    active_connections = models.IntegerField(default=0)
+    all_left_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["host", "status"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["scheduled_date"]),
+        ]
+
+    def __str__(self):
+        return f"StudyGroup {self.id} — {self.subject_name} ({self.status})"
+
+    # ---- convenience ----
+    @property
+    def scheduled_at(self):
+        """Combined aware datetime (naive until view-layer makes it aware)."""
+        from datetime import datetime
+        return datetime.combine(self.scheduled_date, self.scheduled_time)
+
+
+class StudyGroupInvite(models.Model):
+    """
+    One row per invited user (student or optional teacher).
+
+    The host is *not* stored here (they're implicit via
+    ``StudyGroupSession.host``).  Invitees may be re-invited exactly once
+    after declining, enforced by ``decline_count <= 1`` and
+    ``reinvited_at``.
+    """
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("accepted", "Accepted"),
+        ("declined", "Declined"),
+    ]
+
+    INVITE_ROLE_CHOICES = [
+        ("student", "Student"),
+        ("teacher", "Teacher"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        StudyGroupSession,
+        on_delete=models.CASCADE,
+        related_name="invites",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="study_group_invites",
+    )
+    invite_role = models.CharField(
+        max_length=10, choices=INVITE_ROLE_CHOICES, default="student"
+    )
+    status = models.CharField(
+        max_length=10, choices=STATUS_CHOICES, default="pending"
+    )
+    decline_count = models.PositiveSmallIntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+    reinvited_at = models.DateTimeField(null=True, blank=True)
+    joined_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ("session", "user")
+        indexes = [
+            models.Index(fields=["user", "status"]),
+            models.Index(fields=["session", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user} → {self.session.id} [{self.status}]"

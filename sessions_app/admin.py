@@ -1,5 +1,11 @@
 from django.contrib import admin
-from .models import PrivateSession, SessionParticipant, ChatMessage
+from .models import (
+    PrivateSession,
+    SessionParticipant,
+    ChatMessage,
+    StudyGroupSession,
+    StudyGroupInvite,
+)
 
 
 # ---------------------------------------------------------
@@ -121,3 +127,51 @@ class ChatMessageAdmin(admin.ModelAdmin):
         return obj.message[:50]
 
     message_preview.short_description = "Message"
+
+
+# ---------------------------------------------------------
+# Study Group admin
+# ---------------------------------------------------------
+class StudyGroupInviteInline(admin.TabularInline):
+    model = StudyGroupInvite
+    extra = 0
+    readonly_fields = (
+        "user", "invite_role", "status", "decline_count",
+        "responded_at", "reinvited_at", "joined_at", "created_at",
+    )
+    can_delete = False
+
+
+@admin.register(StudyGroupSession)
+class StudyGroupSessionAdmin(admin.ModelAdmin):
+    list_display = (
+        "id", "subject_name", "host", "status",
+        "scheduled_date", "scheduled_time", "duration_minutes",
+        "room_started_at", "ended_at",
+    )
+    list_filter = ("status", "duration_minutes", "scheduled_date")
+    search_fields = (
+        "subject_name", "course_title", "topic",
+        "host__username", "host__email",
+    )
+    readonly_fields = (
+        "id", "created_at", "updated_at", "room_started_at", "ended_at",
+        "active_connections", "all_left_at", "room_name",
+    )
+    ordering = ("-created_at",)
+    inlines = [StudyGroupInviteInline]
+
+
+@admin.register(StudyGroupInvite)
+class StudyGroupInviteAdmin(admin.ModelAdmin):
+    list_display = (
+        "id", "session", "user", "invite_role", "status",
+        "decline_count", "responded_at",
+    )
+    list_filter = ("status", "invite_role")
+    search_fields = (
+        "user__username", "user__email", "session__id",
+    )
+    readonly_fields = (
+        "created_at", "responded_at", "reinvited_at", "joined_at",
+    )

@@ -182,6 +182,128 @@ class PrivateSessionChatConsumer(AsyncWebsocketConsumer):
         return _end_session_internal(session, reason="auto_expired_all_left")
 
 
+# ===========================================================================
+# Study Group consumer — mirrors PrivateSessionChatConsumer but writes to
+# a different table and uses a 7-minute idle grace window.
+# ===========================================================================
+
+STUDY_GROUP_AUTO_EXPIRE_DELAY = 7 * 60  # 7 minutes
+_sg_expire_tasks: dict[str, asyncio.Task] = {}
+
+
+class StudyGroupPresenceConsumer(AsyncWebsocketConsumer):
+    """
+    Tracks active connections for a StudyGroupSession room so the room
+    can auto-expire after 7 minutes of emptiness.  Also relays simple
+    presence events to other participants (so clients can refresh
+    participant counts without polling).
+    """
+
+    async def connect(self):
+        self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
+        self.group_name = f"study_group_presence_{self.session_id}"
+
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.accept()
+
+        await self._increment_connections()
+
+        task = _sg_expire_tasks.pop(self.session_id, None)
+        if task and not task.done():
+            task.cancel()
+            logger.info(
+                "Study-group auto-expire timer cancelled for %s (rejoin)",
+                self.session_id,
+            )
+
+    async def disconnect(self, close_code):
+        await self.channel_layer.group_discard(self.group_name, self.channel_name)
+
+        remaining = await self._decrement_connections()
+        if remaining <= 0:
+            await self._mark_all_left()
+            logger.info(
+                "All participants left study group %s — starting %ds timer",
+                self.session_id, STUDY_GROUP_AUTO_EXPIRE_DELAY,
+            )
+            task = asyncio.ensure_future(
+                self._auto_expire_after_delay(self.session_id)
+            )
+            _sg_expire_tasks[self.session_id] = task
+
+    # ── DB helpers ───────────────────────────────────────────────────
+    @database_sync_to_async
+    def _increment_connections(self):
+        from .models import StudyGroupSession
+        StudyGroupSession.objects.filter(
+            pk=self.session_id, status="live"
+        ).update(
+            active_connections=F("active_connections") + 1,
+            all_left_at=None,
+        )
+
+    @database_sync_to_async
+    def _decrement_connections(self) -> int:
+        from .models import StudyGroupSession
+        StudyGroupSession.objects.filter(
+            pk=self.session_id, status="live"
+        ).update(
+            active_connections=F("active_connections") - 1,
+        )
+        try:
+            session = StudyGroupSession.objects.get(pk=self.session_id)
+            count = max(session.active_connections, 0)
+            if session.active_connections < 0:
+                session.active_connections = 0
+                session.save(update_fields=["active_connections"])
+            return count
+        except StudyGroupSession.DoesNotExist:
+            return 0
+
+    @database_sync_to_async
+    def _mark_all_left(self):
+        from .models import StudyGroupSession
+        StudyGroupSession.objects.filter(
+            pk=self.session_id, status="live"
+        ).update(
+            all_left_at=timezone.now(),
+            active_connections=0,
+        )
+
+    # ── Auto-expire ──────────────────────────────────────────────────
+    @staticmethod
+    async def _auto_expire_after_delay(session_id: str):
+        try:
+            await asyncio.sleep(STUDY_GROUP_AUTO_EXPIRE_DELAY)
+        except asyncio.CancelledError:
+            return
+
+        _sg_expire_tasks.pop(session_id, None)
+        ended = await StudyGroupPresenceConsumer._try_auto_end(session_id)
+        if ended:
+            logger.info(
+                "Study group %s auto-expired after %ds with no participants",
+                session_id, STUDY_GROUP_AUTO_EXPIRE_DELAY,
+            )
+
+    @staticmethod
+    @database_sync_to_async
+    def _try_auto_end(session_id: str) -> bool:
+        from .models import StudyGroupSession
+        try:
+            session = StudyGroupSession.objects.get(pk=session_id)
+        except StudyGroupSession.DoesNotExist:
+            return False
+        if session.status != "live":
+            return False
+        if session.all_left_at is None:
+            return False
+        if session.active_connections > 0:
+            return False
+        from .study_group_views import _end_study_group_internal
+        return _end_study_group_internal(session, reason="auto_expired_all_left")
+
+
 class UserNotificationConsumer(AsyncWebsocketConsumer):
     """
     Per-user WebSocket consumer.

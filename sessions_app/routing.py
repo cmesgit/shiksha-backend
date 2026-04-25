@@ -1,5 +1,9 @@
 from django.urls import re_path
-from .consumers import PrivateSessionChatConsumer, UserNotificationConsumer
+from .consumers import (
+    PrivateSessionChatConsumer,
+    StudyGroupPresenceConsumer,
+    UserNotificationConsumer,
+)
 
 websocket_urlpatterns = [
     # Per-session chat + connection tracking
@@ -11,5 +15,10 @@ websocket_urlpatterns = [
     re_path(
         r"ws/private-session/notify/$",
         UserNotificationConsumer.as_asgi(),
+    ),
+    # Study-group presence + idle-expire tracking
+    re_path(
+        r"ws/study-group/(?P<session_id>[^/]+)/presence/$",
+        StudyGroupPresenceConsumer.as_asgi(),
     ),
 ]
