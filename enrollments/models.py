@@ -123,3 +123,64 @@ class Enrollment(models.Model):
 
     def __str__(self):
         return f"{self.user.email} → {self.course.title}"
+
+
+class Subscription(models.Model):
+    STATUS_ACTIVE = "ACTIVE"
+    STATUS_EXPIRED = "EXPIRED"
+    STATUS_CANCELLED = "CANCELLED"
+
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_EXPIRED, "Expired"),
+        (STATUS_CANCELLED, "Cancelled"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="subscriptions",
+    )
+
+    course = models.ForeignKey(
+        "courses.Course",
+        on_delete=models.CASCADE,
+        related_name="subscriptions",
+    )
+
+    starts_at = models.DateTimeField()
+    expires_at = models.DateTimeField()
+
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_ACTIVE,
+    )
+
+    source_request = models.ForeignKey(
+        EnrollmentRequest,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="subscriptions",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-expires_at"]
+        indexes = [
+            models.Index(fields=["user", "course", "status"]),
+            models.Index(fields=["expires_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user.email} → {self.course.title} [{self.status} until {self.expires_at:%Y-%m-%d}]"
+
+    @property
+    def is_currently_active(self):
+        from django.utils import timezone
+        return self.status == self.STATUS_ACTIVE and self.expires_at > timezone.now()
