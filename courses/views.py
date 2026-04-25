@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
-from enrollments.models import Enrollment
+from enrollments.models import Enrollment, Subscription
 from accounts.permissions import IsTeacher
 from quizzes.models import Quiz
 from assignments.models import Assignment
@@ -131,9 +131,37 @@ class MyEnrolledCoursesView(APIView):
         )
 
         courses = [enrollment.course for enrollment in enrollments]
+        course_ids = [c.id for c in courses]
 
-        serializer = CourseSerializer(courses, many=True)
-        return Response(serializer.data)
+        now = timezone.now()
+        latest_sub_by_course = {}
+        for sub in (
+            Subscription.objects
+            .filter(user=request.user, course_id__in=course_ids)
+            .order_by("course_id", "-expires_at")
+        ):
+            latest_sub_by_course.setdefault(sub.course_id, sub)
+
+        serialized = CourseSerializer(courses, many=True).data
+        for course_data, course in zip(serialized, courses):
+            sub = latest_sub_by_course.get(course.id)
+            if sub is None:
+                course_data["subscription"] = None
+            else:
+                is_active = (
+                    sub.status == Subscription.STATUS_ACTIVE
+                    and sub.expires_at > now
+                )
+                days_remaining = max(0, (sub.expires_at - now).days)
+                course_data["subscription"] = {
+                    "starts_at": sub.starts_at,
+                    "expires_at": sub.expires_at,
+                    "status": sub.status,
+                    "is_active": is_active,
+                    "days_remaining": days_remaining,
+                }
+
+        return Response(serialized)
 
 
 # =========================
