@@ -18,4 +18,8 @@ app.conf.beat_schedule = {
         "task": "livestream.tasks.auto_complete_expired_sessions",
         "schedule": crontab(minute="*/5"),  # every 5 minutes
     },
+    "expire-subscriptions": {
+        "task": "enrollments.tasks.expire_subscriptions",
+        "schedule": crontab(hour=2, minute=15),  # daily at 02:15 UTC
+    },
 }
