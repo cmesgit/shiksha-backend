@@ -461,12 +461,21 @@ def accept_invite(request, session_id):
     invite.responded_at = timezone.now()
     invite.save(update_fields=["status", "responded_at"])
 
-    # Notify the host
-    _notify_user(
-        session.host,
-        f"✅ {get_user_name(request.user)} accepted your {session.subject_name} study group",
-        session,
-    )
+    # Notify the host (the user who initiated the study group request).
+    # Use a slightly different copy when a TEACHER accepts, so the host
+    # knows the room can already be opened on their authority.
+    responder_label = "Teacher" if invite.invite_role == "teacher" else ""
+    actor_name = get_user_name(request.user)
+    if responder_label:
+        title = (
+            f"✅ {responder_label} {actor_name} accepted your "
+            f"{session.subject_name} study group"
+        )
+    else:
+        title = (
+            f"✅ {actor_name} accepted your {session.subject_name} study group"
+        )
+    _notify_user(session.host, title, session)
     _broadcast(session)
 
     full = _sg_qs().get(pk=session.pk)
@@ -498,11 +507,18 @@ def decline_invite(request, session_id):
     invite.save(update_fields=["status", "decline_count", "responded_at"])
 
     session = invite.session
-    _notify_user(
-        session.host,
-        f"↩ {get_user_name(request.user)} declined your {session.subject_name} study group",
-        session,
-    )
+    responder_label = "Teacher" if invite.invite_role == "teacher" else ""
+    actor_name = get_user_name(request.user)
+    if responder_label:
+        title = (
+            f"↩ {responder_label} {actor_name} declined your "
+            f"{session.subject_name} study group"
+        )
+    else:
+        title = (
+            f"↩ {actor_name} declined your {session.subject_name} study group"
+        )
+    _notify_user(session.host, title, session)
     _broadcast(session)
 
     full = _sg_qs().get(pk=session.pk)
@@ -666,24 +682,50 @@ def my_study_groups(request):
     """
     Tabs:
       ?tab=upcoming    → scheduled + live groups I host or am accepted into
-      ?tab=invites     → groups where I have a pending invite
-      ?tab=history     → completed / cancelled / expired I was part of
+                         (excluding past-time groups whose room never opened —
+                          those land in History straight away, no waiting on
+                          the 6h cleanup cron).
+      ?tab=invites     → groups where I have a pending invite (response window
+                         still open: scheduled status AND start time in the future).
+      ?tab=history     → completed / cancelled / expired I was part of, PLUS
+                         scheduled-but-orphan groups whose start time has passed
+                         (the cleanup cron will flip these to ``expired`` later;
+                         we surface them here immediately so the UI doesn't
+                         mislead the user).
     """
     tab = request.query_params.get("tab", "upcoming")
     user = request.user
 
     base = _sg_qs()
 
+    # Compute "past-time orphan" Q: a scheduled group whose start instant has
+    # already elapsed but the room was never opened. Built from local date+time
+    # since the model stores naive Date + Time fields (interpreted as project
+    # default tz, Asia/Kolkata).
+    now_local = timezone.localtime(timezone.now())
+    today = now_local.date()
+    now_t = now_local.time()
+    past_orphan_q = (
+        Q(status="scheduled") & Q(room_started_at__isnull=True) & (
+            Q(scheduled_date__lt=today)
+            | Q(scheduled_date=today, scheduled_time__lte=now_t)
+        )
+    )
+
     if tab == "invites":
+        # Pending invitations are only actionable while the response window
+        # is still open (scheduled + future start time).
         qs = base.filter(
             invites__user=user,
             invites__status="pending",
             status="scheduled",
-        )
+        ).exclude(past_orphan_q)
     elif tab == "history":
         qs = base.filter(
             Q(host=user) | Q(invites__user=user) | Q(invited_teacher=user),
-            status__in=["completed", "cancelled", "expired"],
+        ).filter(
+            Q(status__in=["completed", "cancelled", "expired"])
+            | past_orphan_q
         )
     else:  # upcoming (default)
         qs = base.filter(
@@ -691,7 +733,7 @@ def my_study_groups(request):
             | Q(invites__user=user, invites__status="accepted")
             | Q(invited_teacher=user, invites__user=user, invites__status="accepted"),
             status__in=["scheduled", "live"],
-        )
+        ).exclude(past_orphan_q)
 
     qs = qs.distinct().order_by("scheduled_date", "scheduled_time")
     return Response(StudyGroupListSerializer(qs, many=True).data)
@@ -757,25 +799,17 @@ def join_study_group(request, session_id):
             {"error": f"Group is {session.status}."}, status=400
         )
 
-    # Open window: scheduled → live if at least 1 invitee has accepted
-    # (host can still join their own scheduled room only once an invitee is in)
+    # Open window: the room becomes joinable the moment any one invitee
+    # (student or teacher) has accepted. There is no "join early" gate any
+    # more — the scheduled date/time is treated as a soft reminder rather
+    # than a hard cutoff. The duration timer doesn't start until the first
+    # person actually enters the room (room_started_at is set below).
     now = timezone.now()
     if session.status == "scheduled":
         accepted_count = session.invites.filter(status="accepted").count()
         if accepted_count < 1:
             return Response(
                 {"error": "At least 1 invitee must accept before the room opens."},
-                status=400,
-            )
-
-        # Open the room on the first user to join.
-        scheduled_dt = timezone.make_aware(
-            datetime.combine(session.scheduled_date, session.scheduled_time)
-        )
-        # Allow joining from 10 min before scheduled_time onwards.
-        if now < scheduled_dt - timedelta(minutes=10):
-            return Response(
-                {"error": "The room isn't open yet. Please join closer to start time."},
                 status=400,
             )
 
