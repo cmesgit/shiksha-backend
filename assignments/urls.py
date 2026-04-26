@@ -6,13 +6,15 @@ from .views import (
     TeacherCreateAssignmentView,
     TeacherUpdateAssignmentView,
     TeacherDeleteAssignmentView,
+    TeacherDeleteAssignmentFileView,
     TeacherSubjectAssignmentsView,
     TeacherAssignmentSubmissionsView,
     SubjectAssignmentsView,
-    DownloadAllSubmissionsView
+    DownloadAllSubmissionsView,
 )
 
 urlpatterns = [
+    # ── Student ────────────────────────────────────────────────────────
     path(
         "courses/<uuid:course_id>/",
         CourseAssignmentsView.as_view(),
@@ -26,6 +28,12 @@ urlpatterns = [
         SubmitAssignmentView.as_view(),
     ),
     path(
+        "subject/<uuid:subject_id>/",
+        SubjectAssignmentsView.as_view(),
+    ),
+
+    # ── Teacher — assignment CRUD ──────────────────────────────────────
+    path(
         "teacher/create/",
         TeacherCreateAssignmentView.as_view(),
     ),
@@ -37,6 +45,15 @@ urlpatterns = [
         "teacher/<uuid:assignment_id>/delete/",
         TeacherDeleteAssignmentView.as_view(),
     ),
+
+    # ── Teacher — file management ──────────────────────────────────────
+    # DELETE a single attached file (by AssignmentFile UUID)
+    path(
+        "teacher/<uuid:assignment_id>/files/<uuid:file_id>/",
+        TeacherDeleteAssignmentFileView.as_view(),
+    ),
+
+    # ── Teacher — list & submissions ──────────────────────────────────
     path(
         "teacher/subject/<uuid:subject_id>/",
         TeacherSubjectAssignmentsView.as_view(),
@@ -46,11 +63,7 @@ urlpatterns = [
         TeacherAssignmentSubmissionsView.as_view(),
     ),
     path(
-        "subject/<uuid:subject_id>/",
-        SubjectAssignmentsView.as_view(),
-    ),
-    path(
         "teacher/<uuid:assignment_id>/download-all/",
         DownloadAllSubmissionsView.as_view(),
-    )
+    ),
 ]
