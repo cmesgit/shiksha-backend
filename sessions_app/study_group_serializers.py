@@ -60,6 +60,8 @@ class StudyGroupListSerializer(serializers.ModelSerializer):
 
     host_name = serializers.SerializerMethodField()
     host_id = serializers.SerializerMethodField()
+    subject_id = serializers.SerializerMethodField()
+    course_id = serializers.SerializerMethodField()
     invited_teacher_name = serializers.SerializerMethodField()
     invited_teacher_id = serializers.SerializerMethodField()
     accepted_count = serializers.SerializerMethodField()
@@ -70,7 +72,9 @@ class StudyGroupListSerializer(serializers.ModelSerializer):
         model = StudyGroupSession
         fields = [
             "id",
+            "subject_id",
             "subject_name",
+            "course_id",
             "course_title",
             "topic",
             "status",
@@ -96,6 +100,17 @@ class StudyGroupListSerializer(serializers.ModelSerializer):
 
     def get_host_id(self, obj):
         return str(obj.host_id) if obj.host_id else None
+
+    def get_subject_id(self, obj):
+        return str(obj.subject_id) if obj.subject_id else None
+
+    def get_course_id(self, obj):
+        # Course is reachable via the subject FK; falling back to None keeps
+        # this safe even if a legacy row has a null subject.
+        try:
+            return str(obj.subject.course_id) if obj.subject_id else None
+        except Exception:
+            return None
 
     def get_invited_teacher_name(self, obj):
         if obj.invited_teacher_id:

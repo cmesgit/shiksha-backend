@@ -125,6 +125,13 @@ def _notify_user(user, title, session):
             session.scheduled_date, session.scheduled_time
         )
 
+        # Make sure the saved due_date is timezone-aware. ``datetime.combine``
+        # returns a naive datetime; saving naive datetimes when USE_TZ=True
+        # emits warnings and (depending on Django version) can blow up
+        # downstream comparisons. Force-aware in the project tz.
+        if timezone.is_naive(scheduled_dt):
+            scheduled_dt = timezone.make_aware(scheduled_dt)
+
         activity, created = Activity.objects.get_or_create(
             user=user,
             type=Activity.TYPE_SESSION,
@@ -132,6 +139,11 @@ def _notify_user(user, title, session):
             object_id=session.id,
             title=title,
             defaults={
+                # Match the shape used by other notification producers
+                # (assignments, quizzes, live sessions) so the dashboard
+                # serializer never sees a NULL subject_id from one feature
+                # and a UUID from another.
+                "subject_id": session.subject_id,
                 "subject_name": session.subject_name,
                 "due_date": scheduled_dt,
             },
@@ -461,12 +473,21 @@ def accept_invite(request, session_id):
     invite.responded_at = timezone.now()
     invite.save(update_fields=["status", "responded_at"])
 
-    # Notify the host
-    _notify_user(
-        session.host,
-        f"✅ {get_user_name(request.user)} accepted your {session.subject_name} study group",
-        session,
-    )
+    # Notify the host (the user who initiated the study group request).
+    # Use a slightly different copy when a TEACHER accepts, so the host
+    # knows the room can already be opened on their authority.
+    responder_label = "Teacher" if invite.invite_role == "teacher" else ""
+    actor_name = get_user_name(request.user)
+    if responder_label:
+        title = (
+            f"✅ {responder_label} {actor_name} accepted your "
+            f"{session.subject_name} study group"
+        )
+    else:
+        title = (
+            f"✅ {actor_name} accepted your {session.subject_name} study group"
+        )
+    _notify_user(session.host, title, session)
     _broadcast(session)
 
     full = _sg_qs().get(pk=session.pk)
@@ -498,11 +519,18 @@ def decline_invite(request, session_id):
     invite.save(update_fields=["status", "decline_count", "responded_at"])
 
     session = invite.session
-    _notify_user(
-        session.host,
-        f"↩ {get_user_name(request.user)} declined your {session.subject_name} study group",
-        session,
-    )
+    responder_label = "Teacher" if invite.invite_role == "teacher" else ""
+    actor_name = get_user_name(request.user)
+    if responder_label:
+        title = (
+            f"↩ {responder_label} {actor_name} declined your "
+            f"{session.subject_name} study group"
+        )
+    else:
+        title = (
+            f"↩ {actor_name} declined your {session.subject_name} study group"
+        )
+    _notify_user(session.host, title, session)
     _broadcast(session)
 
     full = _sg_qs().get(pk=session.pk)
@@ -666,24 +694,50 @@ def my_study_groups(request):
     """
     Tabs:
       ?tab=upcoming    → scheduled + live groups I host or am accepted into
-      ?tab=invites     → groups where I have a pending invite
-      ?tab=history     → completed / cancelled / expired I was part of
+                         (excluding past-time groups whose room never opened —
+                          those land in History straight away, no waiting on
+                          the 6h cleanup cron).
+      ?tab=invites     → groups where I have a pending invite (response window
+                         still open: scheduled status AND start time in the future).
+      ?tab=history     → completed / cancelled / expired I was part of, PLUS
+                         scheduled-but-orphan groups whose start time has passed
+                         (the cleanup cron will flip these to ``expired`` later;
+                         we surface them here immediately so the UI doesn't
+                         mislead the user).
     """
     tab = request.query_params.get("tab", "upcoming")
     user = request.user
 
     base = _sg_qs()
 
+    # Compute "past-time orphan" Q: a scheduled group whose start instant has
+    # already elapsed but the room was never opened. Built from local date+time
+    # since the model stores naive Date + Time fields (interpreted as project
+    # default tz, Asia/Kolkata).
+    now_local = timezone.localtime(timezone.now())
+    today = now_local.date()
+    now_t = now_local.time()
+    past_orphan_q = (
+        Q(status="scheduled") & Q(room_started_at__isnull=True) & (
+            Q(scheduled_date__lt=today)
+            | Q(scheduled_date=today, scheduled_time__lte=now_t)
+        )
+    )
+
     if tab == "invites":
+        # Pending invitations are only actionable while the response window
+        # is still open (scheduled + future start time).
         qs = base.filter(
             invites__user=user,
             invites__status="pending",
             status="scheduled",
-        )
+        ).exclude(past_orphan_q)
     elif tab == "history":
         qs = base.filter(
             Q(host=user) | Q(invites__user=user) | Q(invited_teacher=user),
-            status__in=["completed", "cancelled", "expired"],
+        ).filter(
+            Q(status__in=["completed", "cancelled", "expired"])
+            | past_orphan_q
         )
     else:  # upcoming (default)
         qs = base.filter(
@@ -691,7 +745,7 @@ def my_study_groups(request):
             | Q(invites__user=user, invites__status="accepted")
             | Q(invited_teacher=user, invites__user=user, invites__status="accepted"),
             status__in=["scheduled", "live"],
-        )
+        ).exclude(past_orphan_q)
 
     qs = qs.distinct().order_by("scheduled_date", "scheduled_time")
     return Response(StudyGroupListSerializer(qs, many=True).data)
@@ -736,18 +790,39 @@ def join_study_group(request, session_id):
 
     user = request.user
 
-    # Auth check
+    # Auth check.
+    #
+    # Roles in a study group:
+    #   * Host:  the student who created the group. Implicitly accepted —
+    #            no invite row exists for them. Only the host may flip the
+    #            status from scheduled → live (start the room).
+    #   * Invited teacher / invited student: must explicitly accept their
+    #            own invite before they may join. They cannot start the
+    #            room; they wait until the host opens it.
     is_host = (session.host_id == user.id)
     invite = session.invites.filter(user=user).first()
-    is_invited_teacher = (
+    is_accepted_invitee = bool(invite and invite.status == "accepted")
+    is_invited_teacher = bool(
         session.invited_teacher_id and session.invited_teacher_id == user.id
-        and invite and invite.status == "accepted"
+        and is_accepted_invitee
     )
-    is_accepted_invitee = (invite and invite.status == "accepted")
 
-    if not (is_host or is_accepted_invitee or is_invited_teacher):
+    if is_host:
+        # Implicit accept; no further gate.
+        pass
+    elif invite is None:
         return Response(
             {"error": "You are not a participant in this study group."},
+            status=403,
+        )
+    elif invite.status == "declined":
+        return Response(
+            {"error": "You declined this invite, so you can't join the room."},
+            status=403,
+        )
+    elif invite.status != "accepted":
+        return Response(
+            {"error": "You must accept the invite before you can join the room."},
             status=403,
         )
 
@@ -757,25 +832,26 @@ def join_study_group(request, session_id):
             {"error": f"Group is {session.status}."}, status=400
         )
 
-    # Open window: scheduled → live if at least 1 invitee has accepted
-    # (host can still join their own scheduled room only once an invitee is in)
+    # Open window: the host opens the room once at least one non-host
+    # invitee has accepted. There is no "join early" gate — the scheduled
+    # date/time is a soft reminder. The duration timer starts on the
+    # first physical join (which sets ``room_started_at`` below).
+    #
+    # Non-host invitees cannot start the room. They get a clear error
+    # asking them to wait for the host until the host has opened it.
     now = timezone.now()
     if session.status == "scheduled":
+        if not is_host:
+            return Response(
+                {"error": "Only the host can start this study group. "
+                          "Please wait until the host opens the room."},
+                status=400,
+            )
+
         accepted_count = session.invites.filter(status="accepted").count()
         if accepted_count < 1:
             return Response(
                 {"error": "At least 1 invitee must accept before the room opens."},
-                status=400,
-            )
-
-        # Open the room on the first user to join.
-        scheduled_dt = timezone.make_aware(
-            datetime.combine(session.scheduled_date, session.scheduled_time)
-        )
-        # Allow joining from 10 min before scheduled_time onwards.
-        if now < scheduled_dt - timedelta(minutes=10):
-            return Response(
-                {"error": "The room isn't open yet. Please join closer to start time."},
                 status=400,
             )
 
