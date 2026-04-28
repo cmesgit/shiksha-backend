@@ -36,6 +36,7 @@ from accounts.models import (
 from accounts.throttles import (
     LoginRateThrottle,
     ResendVerificationRateThrottle,
+    SignupRateThrottle,
 )
 
 from .serializers import (
@@ -130,6 +131,7 @@ class MeView(APIView):
 
 class SignupView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [SignupRateThrottle]
 
     def _get_api_base_url(self, request):
         """Return the correct API base URL based on the current host."""
