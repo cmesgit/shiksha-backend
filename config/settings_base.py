@@ -107,14 +107,9 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
-    "DEFAULT_THROTTLE_CLASSES": [
-        "rest_framework.throttling.UserRateThrottle",
-        "rest_framework.throttling.AnonRateThrottle",
-    ],
     "DEFAULT_THROTTLE_RATES": {
-        "anon": "100/day",
-        "user": "1000/day",
         "login": "20/min",
+        "signup": "10/hour",
         "resend_verification": "3/hour",
     },
 }
