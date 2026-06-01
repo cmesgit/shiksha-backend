@@ -149,6 +149,16 @@ class Subscription(models.Model):
         (STATUS_CANCELLED, "Cancelled"),
     ]
 
+    KIND_TRIAL = "TRIAL"
+    KIND_PAID = "PAID"
+
+    KIND_CHOICES = [
+        (KIND_TRIAL, "Trial"),
+        (KIND_PAID, "Paid"),
+    ]
+
+    TRIAL_DURATION_DAYS = 30
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     user = models.ForeignKey(
@@ -161,6 +171,13 @@ class Subscription(models.Model):
         "courses.Course",
         on_delete=models.CASCADE,
         related_name="subscriptions",
+    )
+
+    kind = models.CharField(
+        max_length=10,
+        choices=KIND_CHOICES,
+        default=KIND_PAID,
+        help_text="TRIAL = free 30-day trial; PAID = approved enrollment.",
     )
 
     starts_at = models.DateTimeField()
@@ -180,6 +197,11 @@ class Subscription(models.Model):
         related_name="subscriptions",
     )
 
+    # --- Trial lifecycle nudge tracking (idempotent email sends) ---
+    trial_reminder_7d_sent_at = models.DateTimeField(null=True, blank=True)
+    trial_reminder_2d_sent_at = models.DateTimeField(null=True, blank=True)
+    trial_ended_email_sent_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -188,12 +210,31 @@ class Subscription(models.Model):
         indexes = [
             models.Index(fields=["user", "course", "status"]),
             models.Index(fields=["expires_at"]),
+            models.Index(fields=["kind", "status", "expires_at"]),
+        ]
+        constraints = [
+            # A user gets exactly one trial per course, ever.
+            models.UniqueConstraint(
+                fields=["user", "course"],
+                condition=models.Q(kind="TRIAL"),
+                name="unique_trial_per_user_course",
+            ),
         ]
 
     def __str__(self):
-        return f"{self.user.email} → {self.course.title} [{self.status} until {self.expires_at:%Y-%m-%d}]"
+        return f"{self.user.email} → {self.course.title} [{self.kind}/{self.status} until {self.expires_at:%Y-%m-%d}]"
 
     @property
     def is_currently_active(self):
         from django.utils import timezone
         return self.status == self.STATUS_ACTIVE and self.expires_at > timezone.now()
+
+    @property
+    def is_trial(self):
+        return self.kind == self.KIND_TRIAL
+
+    @property
+    def days_remaining(self):
+        from django.utils import timezone
+        delta = self.expires_at - timezone.now()
+        return max(0, delta.days)

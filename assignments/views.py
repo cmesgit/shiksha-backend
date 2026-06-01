@@ -79,10 +79,13 @@ class AssignmentDetailView(generics.RetrieveAPIView):
         if user.has_role(Role.TEACHER):
             _assert_teacher_owns_assignment(user, instance)
         else:
-            if not Enrollment.objects.filter(
-                user=user, course=course, status=Enrollment.STATUS_ACTIVE
-            ).exists():
-                raise PermissionDenied("Not authorized.")
+            from enrollments.services import has_active_subscription, lock_payload
+
+            if not has_active_subscription(user=user, course=course):
+                return Response(
+                    lock_payload(user=user, course=course),
+                    status=402,
+                )
 
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
@@ -107,12 +110,14 @@ class SubmitAssignmentView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if not Enrollment.objects.filter(
-            user=request.user,
-            course=assignment.chapter.subject.course,
-            status=Enrollment.STATUS_ACTIVE,
-        ).exists():
-            return Response({"detail": "Not authorized."}, status=status.HTTP_403_FORBIDDEN)
+        from enrollments.services import has_active_subscription, lock_payload
+
+        course = assignment.chapter.subject.course
+        if not has_active_subscription(user=request.user, course=course):
+            return Response(
+                lock_payload(user=request.user, course=course),
+                status=402,
+            )
 
         file = request.FILES.get("file")
         if not file:
@@ -151,10 +156,15 @@ class CourseAssignmentsView(generics.ListAPIView):
                 chapter__subject__subject_teachers__teacher=user,
             )
         else:
-            if not Enrollment.objects.filter(
-                user=user, course_id=course_id, status=Enrollment.STATUS_ACTIVE
-            ).exists():
-                raise PermissionDenied("Not enrolled.")
+            from courses.models import Course
+            from enrollments.services import has_active_subscription
+
+            try:
+                course_obj = Course.objects.get(pk=course_id)
+            except Course.DoesNotExist:
+                raise PermissionDenied("Course not found.")
+            if not has_active_subscription(user=user, course=course_obj):
+                raise PermissionDenied("Your subscription for this course has expired.")
             queryset = Assignment.objects.filter(
                 chapter__subject__course__id=course_id)
 

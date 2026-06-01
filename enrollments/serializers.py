@@ -10,6 +10,7 @@ from accounts.email_utils import send_gmail
 from courses.models import Course, Batch
 
 from .models import Enrollment, EnrollmentRequest, Subscription
+from .services import grant_paid_subscription
 
 logger = logging.getLogger(__name__)
 
@@ -73,43 +74,8 @@ def _send_enrollment_decision_email(request_obj):
         )
 
 
-def _grant_subscription(request_obj):
-    """Create a new Subscription for an approved request, or extend the active one.
-
-    If the user already has an active, non-expired subscription for this course,
-    extend its expires_at by the course's subscription_duration_days. Otherwise
-    start a fresh subscription from now.
-    """
-    course = request_obj.course
-    days = course.subscription_duration_days or 30
-    now = timezone.now()
-
-    active = (
-        Subscription.objects
-        .select_for_update()
-        .filter(
-            user=request_obj.user,
-            course=course,
-            status=Subscription.STATUS_ACTIVE,
-            expires_at__gt=now,
-        )
-        .order_by("-expires_at")
-        .first()
-    )
-
-    if active:
-        active.expires_at = active.expires_at + timedelta(days=days)
-        active.save(update_fields=["expires_at", "updated_at"])
-        return active
-
-    return Subscription.objects.create(
-        user=request_obj.user,
-        course=course,
-        starts_at=now,
-        expires_at=now + timedelta(days=days),
-        status=Subscription.STATUS_ACTIVE,
-        source_request=request_obj,
-    )
+# Subscription grant moved to enrollments.services.grant_paid_subscription
+# (handles trial→paid conversion correctly).
 
 
 class CourseBriefSerializer(serializers.ModelSerializer):
@@ -316,7 +282,7 @@ class AdminActionSerializer(serializers.Serializer):
                 if not created and fields_to_update:
                     enrollment.save(update_fields=fields_to_update)
 
-                _grant_subscription(request_obj)
+                grant_paid_subscription(request_obj=request_obj)
             else:
                 request_obj.status = EnrollmentRequest.STATUS_REJECTED
 

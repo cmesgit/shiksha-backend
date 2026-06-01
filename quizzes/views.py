@@ -207,13 +207,18 @@ class StudentDashboardView(APIView):
 
         user = request.user
 
+        from django.utils import timezone as _tz
+        from enrollments.models import Subscription as _Sub
+
         quizzes = (
             Quiz.objects
             .filter(
-                subject__course__enrollments__user=user,
-                subject__course__enrollments__status=Enrollment.STATUS_ACTIVE,
+                subject__course__subscriptions__user=user,
+                subject__course__subscriptions__status=_Sub.STATUS_ACTIVE,
+                subject__course__subscriptions__expires_at__gt=_tz.now(),
                 is_published=True,
             )
+            .distinct()
             .select_related("subject", "subject__course", "created_by")
             .annotate(questions_count=Count("questions", distinct=True))
             .prefetch_related(
@@ -280,12 +285,13 @@ class StartQuizView(APIView):
             is_published=True,
         )
 
-        if not Enrollment.objects.filter(
-            user=request.user,
-            course=quiz.subject.course,
-            status=Enrollment.STATUS_ACTIVE,
-        ).exists():
-            raise ValidationError("Not enrolled in this course.")
+        from enrollments.services import has_active_subscription, lock_payload
+
+        if not has_active_subscription(user=request.user, course=quiz.subject.course):
+            return Response(
+                lock_payload(user=request.user, course=quiz.subject.course),
+                status=402,
+            )
 
         # ── Key fix: reuse an existing PENDING attempt instead of creating a new one ──
         existing_pending = QuizAttempt.objects.filter(
@@ -365,12 +371,14 @@ class QuizDetailView(APIView):
         if request.user.has_role("TEACHER"):
             if quiz.created_by != request.user:
                 raise PermissionDenied("Not authorized for this quiz.")
-        elif not Enrollment.objects.filter(
-            user=request.user,
-            course=quiz.subject.course,
-            status=Enrollment.STATUS_ACTIVE,
-        ).exists():
-            raise ValidationError("Not enrolled in this course.")
+        else:
+            from enrollments.services import has_active_subscription, lock_payload
+
+            if not has_active_subscription(user=request.user, course=quiz.subject.course):
+                return Response(
+                    lock_payload(user=request.user, course=quiz.subject.course),
+                    status=402,
+                )
 
         serializer = QuizDetailSerializer(
             quiz,
@@ -498,11 +506,15 @@ class StudentQuizSubjectsView(APIView):
     def get(self, request):
         # FIX: query all enrolled subjects directly instead of filtering
         # through quizzes — so subjects without quizzes also appear
+        from django.utils import timezone as _tz
+        from enrollments.models import Subscription as _Sub
+
         subjects = (
             Subject.objects
             .filter(
-                course__enrollments__user=request.user,
-                course__enrollments__status=Enrollment.STATUS_ACTIVE,
+                course__subscriptions__user=request.user,
+                course__subscriptions__status=_Sub.STATUS_ACTIVE,
+                course__subscriptions__expires_at__gt=_tz.now(),
             )
             .select_related("course")
             .prefetch_related("subject_teachers__teacher")
