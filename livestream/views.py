@@ -212,24 +212,15 @@ def join_live_session(request, session_id):
 
     # ── Student ──
     if user.has_role("STUDENT"):
-        is_enrolled = Enrollment.objects.filter(
-            user=user,
-            course=session.course,
-            status=Enrollment.STATUS_ACTIVE,
-        ).exists()
+        from enrollments.services import has_active_subscription, lock_payload
 
-        if not is_enrolled:
-            return Response({"detail": "You are not enrolled in this course."}, status=403)
+        if not has_active_subscription(user=user, course=session.course):
+            return Response(lock_payload(user=user, course=session.course), status=402)
 
-        # Recheck enrollment hasn't been revoked mid-session
+        # Recheck subscription hasn't expired or been revoked mid-session
         if session.status in [LiveSession.STATUS_LIVE, LiveSession.STATUS_PAUSED]:
-            still_enrolled = Enrollment.objects.filter(
-                user=user,
-                course=session.course,
-                status=Enrollment.STATUS_ACTIVE,
-            ).exists()
-            if not still_enrolled:
-                return Response({"detail": "Your enrollment has been revoked."}, status=403)
+            if not has_active_subscription(user=user, course=session.course):
+                return Response(lock_payload(user=user, course=session.course), status=402)
 
         if now < session.start_time - timedelta(minutes=15):
             return Response({"detail": "Too early"}, status=403)

@@ -178,6 +178,8 @@ class MyEnrolledCoursesView(APIView):
                     "status": sub.status,
                     "is_active": is_active,
                     "days_remaining": days_remaining,
+                    "kind": sub.kind,
+                    "is_trial": sub.kind == Subscription.KIND_TRIAL,
                 }
                 course_data["payment_history"] = payment_history
 

@@ -1,6 +1,6 @@
 from rest_framework.permissions import BasePermission
 from django.utils import timezone
-from enrollments.models import Enrollment
+from enrollments.models import Enrollment, Subscription
 from .models import SubjectTeacher, Quiz, QuizAttempt
 
 
@@ -59,15 +59,19 @@ class IsQuizCreator(BasePermission):
 
 class IsEnrolledStudent(BasePermission):
     """
-    Allows access only if student is actively enrolled
-    in the course related to the quiz.
+    Allows access only if the student has an ACTIVE, non-expired subscription
+    for the course related to the quiz. Renamed-in-spirit but kept under the
+    original class name so existing imports keep working.
     """
 
+    message = "Your subscription for this course has expired."
+
     def has_object_permission(self, request, view, obj: Quiz):
-        return Enrollment.objects.filter(
+        return Subscription.objects.filter(
             user=request.user,
             course=obj.subject.course,
-            status=Enrollment.STATUS_ACTIVE
+            status=Subscription.STATUS_ACTIVE,
+            expires_at__gt=timezone.now(),
         ).exists()
 
 
