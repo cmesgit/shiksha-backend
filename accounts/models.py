@@ -15,13 +15,13 @@ from django.db import models
 class User(AbstractUser):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
-    email = models.EmailField(unique=True)
+    email = models.EmailField()  # was unique=True — email is contact info now, not identity
 
     is_verified = models.BooleanField(default=False)
     verified_at = models.DateTimeField(null=True, blank=True)
 
-    USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = ["username"]
+    USERNAME_FIELD = "username"   # was "email"
+    REQUIRED_FIELDS = ["email"]   # was ["username"]
 
     class Meta:
         indexes = [
@@ -29,7 +29,7 @@ class User(AbstractUser):
         ]
 
     def __str__(self):
-        return self.email
+        return f"{self.username} <{self.email}>"
 
     # Safe role checker (ONLY use Role constants)
     def has_role(self, role_name):
