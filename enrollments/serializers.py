@@ -150,6 +150,14 @@ class EnrollmentRequestCreateSerializer(serializers.ModelSerializer):
                 "You already have a pending request for this course."
             )
 
+        # Trial-first policy: a user cannot pay for a course they've never tried.
+        # They must use their free trial before submitting a paid enrollment request.
+        if not Subscription.objects.filter(user=user, course=course).exists():
+            raise serializers.ValidationError(
+                "Please start your free trial before enrolling. "
+                "You can pay to extend access once your trial begins or ends."
+            )
+
         return attrs
 
     def create(self, validated_data):
