@@ -19,6 +19,12 @@ def _allocate_student_id():
             return candidate
     return f"STU-{_uuid.uuid4().hex.upper()}"
 
+
+# Max accounts allowed to share one email. Only VERIFIED accounts count
+# toward this (see SignupSerializer.validate_email); unverified-row flooding is
+# bounded by SignupRateThrottle + the 24h abandoned-signup cleanup.
+MAX_ACCOUNTS_PER_EMAIL = 5
+
 from .models import User, Profile, Role, UserRole, TeacherProfile, TeacherCourseApplication, TeacherSkillApplication
 
 
@@ -196,11 +202,18 @@ class SignupSerializer(serializers.ModelSerializer):
 
 
     def validate_email(self, value):
+        # Email is contact info, not identity — intentionally NOT unique.
+        # Multiple accounts (e.g. a parent's children) may share one email,
+        # capped as an anti-abuse measure. Only VERIFIED accounts count, so
+        # abandoned/unverified signup attempts don't lock a family out.
         value = value.strip().lower()
-
-        if User.objects.filter(email__iexact=value).exists():
-            raise ValidationError("Email is already registered.")
-
+        if User.objects.filter(
+            email__iexact=value, is_verified=True
+        ).count() >= MAX_ACCOUNTS_PER_EMAIL:
+            raise ValidationError(
+                f"This email already has the maximum of {MAX_ACCOUNTS_PER_EMAIL} "
+                f"accounts. Please use a different email."
+            )
         return value
 
     def validate_username(self, value):
