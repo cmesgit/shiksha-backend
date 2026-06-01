@@ -44,7 +44,7 @@ class CustomUserAdmin(UserAdmin):
         ("Important dates", {"fields": ("last_login", "date_joined")}),
     )
 
-    ordering = ("email",)
+    ordering = ("username",)
     search_fields = ("email", "username")
 
 
@@ -64,6 +64,7 @@ class ProfileAdmin(admin.ModelAdmin):
     )
     search_fields = (
         "user__email",
+        "user__username",
         "first_name",
         "last_name",
         "full_name",
@@ -133,6 +134,8 @@ class RoleAdmin(admin.ModelAdmin):
 @admin.register(UserRole)
 class UserRoleAdmin(admin.ModelAdmin):
     list_display = ("user", "role", "is_active", "approved_by", "approved_at")
+    search_fields = ("user__email", "user__username", "role__name")
+    list_filter = ("role", "is_active")
 
 
 # =========================
@@ -169,6 +172,7 @@ class TeacherProfileAdmin(admin.ModelAdmin):
     )
     search_fields = (
         "user__email",
+        "user__username",
         "field_of_study",
         "id_number",
         "skill_name",
