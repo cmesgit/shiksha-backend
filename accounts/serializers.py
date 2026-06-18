@@ -1,23 +1,10 @@
 import json
-import uuid
 
 from datetime import date
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from rest_framework.exceptions import ValidationError
-from django.db import transaction, IntegrityError
-
-
-def _allocate_student_id():
-    """Generate a collision-checked student_id. ~48 bits + an existence probe;
-    far past collision risk at LMS scale."""
-    import uuid as _uuid
-    from .models import Profile as _Profile
-    for _ in range(5):
-        candidate = f"STU-{_uuid.uuid4().hex[:12].upper()}"
-        if not _Profile.objects.filter(student_id=candidate).exists():
-            return candidate
-    return f"STU-{_uuid.uuid4().hex.upper()}"
+from django.db import transaction
 
 from .models import User, Profile, Role, UserRole, TeacherProfile, TeacherCourseApplication, TeacherSkillApplication
 
@@ -83,19 +70,6 @@ class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ("username", "profile")
-
-    def validate_username(self, value):
-        value = value.strip()
-        if not value:
-            raise ValidationError("Username cannot be blank.")
-        if "@" in value:
-            raise ValidationError("Username can't be an email address.")
-        qs = User.objects.filter(username__iexact=value)
-        if self.instance:
-            qs = qs.exclude(pk=self.instance.pk)
-        if qs.exists():
-            raise ValidationError("Username is already taken.")
-        return value
 
     def update(self, instance, validated_data):
         profile_data = validated_data.pop("profile", None)
@@ -204,9 +178,6 @@ class SignupSerializer(serializers.ModelSerializer):
         return value
 
     def validate_username(self, value):
-        value = value.strip()
-        if "@" in value:
-            raise ValidationError("Username can't be an email address.")
         if User.objects.filter(username__iexact=value).exists():
             raise ValidationError("Username is already taken.")
 
@@ -354,22 +325,7 @@ class StudentFormFillupSerializer(serializers.Serializer):
         if photo:
             profile.profile_photo = photo
 
-        # Lazily assign a student_id the first time a student fills the form.
-        # Idempotent; teachers never reach this serializer so they stay null.
-        if not profile.student_id:
-            for _ in range(5):
-                profile.student_id = _allocate_student_id()
-                try:
-                    with transaction.atomic():
-                        profile.save()
-                    break
-                except IntegrityError:
-                    profile.student_id = None
-            else:
-                profile.save()
-        else:
-            profile.save()
-
+        profile.save()
         return profile
 
 

@@ -76,9 +76,6 @@ class MeView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
-    # Username is the login identity; locked by default. Flip to allow edits.
-    ALLOW_USERNAME_CHANGE = False
-
     def get(self, request):
         user = (
             User.objects
@@ -103,18 +100,9 @@ class MeView(APIView):
         data = request.data
 
         username = data.get("username")
-        if username is not None:
-            username = username.strip()
-            if self.ALLOW_USERNAME_CHANGE:
-                if not username:
-                    raise ValidationError({"username": "Username cannot be blank."})
-                if username.lower() != user.username.lower():
-                    if User.objects.filter(username__iexact=username).exclude(pk=user.pk).exists():
-                        raise ValidationError({"username": "Username is already taken."})
-                    user.username = username
-                    user.save(update_fields=["username"])
-            elif username.lower() != user.username.lower():
-                raise ValidationError({"username": "Username can't be changed."})
+        if username:
+            user.username = username
+            user.save(update_fields=["username"])
 
         profile_data = data.get("profile") or {}
         full_name = profile_data.get("full_name")
@@ -159,10 +147,10 @@ class SignupView(APIView):
         # Free the email if a previous unverified signup was abandoned.
         # Matches the 24h token expiry so real duplicates still get rejected.
         from datetime import timedelta
-        username = (request.data.get("username") or "").strip()
-        if username:
+        email = (request.data.get("email") or "").strip().lower()
+        if email:
             User.objects.filter(
-                username__iexact=username,
+                email__iexact=email,
                 is_verified=False,
                 date_joined__lt=timezone.now() - timedelta(hours=24),
             ).delete()
@@ -213,70 +201,22 @@ class SignupView(APIView):
 # LOGIN — JWT ISSUED ONLY IF VERIFIED
 # =====================================================
 
-def _dashboard_for_role(role_name):
-    """Map a role to its dashboard URL (auth contract §3). Env-overridable."""
-    mapping = {
-        "STUDENT": os.getenv("STUDENT_APP_URL", "https://app.shikshacom.com"),
-        "TEACHER": os.getenv("TEACHER_APP_URL", "https://teacher.shikshacom.com"),
-        "ADMIN": os.getenv("ADMIN_APP_URL", "https://admin.shikshacom.com"),
-    }
-    return mapping.get(role_name)
-
-
-def _resolve_login(identifier, password):
-    """Resolve identifier + password to one user. (user, None) on success;
-    (None, code) on failure where code in {invalid_credentials, ambiguous_email}.
-    Username tried first; email accepted only if the password singles out one
-    of the accounts sharing it."""
-    from django.contrib.auth.hashers import check_password
-    by_username = list(User.objects.filter(username__iexact=identifier)[:2])
-    if len(by_username) == 1:
-        u = by_username[0]
-        return (u, None) if u.check_password(password) else (None, "invalid_credentials")
-    candidates = list(User.objects.filter(email__iexact=identifier))
-    if not candidates:
-        return None, "invalid_credentials"
-    matched = [u for u in candidates if check_password(password, u.password)]
-    if len(matched) == 1:
-        return matched[0], None
-    if len(matched) == 0:
-        return None, "invalid_credentials"
-    return None, "ambiguous_email"
-
-
 class LoginView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [LoginRateThrottle]
 
     def post(self, request):
-        identifier = (
-            request.data.get("identifier")
-            or request.data.get("username")
-            or request.data.get("email")
-            or ""
-        ).strip()
+        email = request.data.get("email", "").strip().lower()
         password = request.data.get("password")
 
-        if not identifier or not password:
-            raise ValidationError("Username (or email) and password are required.")
+        if not email or not password:
+            raise ValidationError("Email and password are required.")
 
-        user, code = _resolve_login(identifier, password)
-
-        if code == "ambiguous_email":
-            log_auth_event(request, AuthEvent.EVENT_LOGIN_FAILED)
-            return Response(
-                {"detail": "This email is linked to multiple accounts. "
-                           "Please sign in with your username.",
-                 "code": "ambiguous_email"},
-                status=status.HTTP_409_CONFLICT,
-            )
+        user = authenticate(request, email=email, password=password)
 
         if not user:
             log_auth_event(request, AuthEvent.EVENT_LOGIN_FAILED)
-            return Response(
-                {"detail": "Invalid credentials.", "code": "invalid_credentials"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            raise ValidationError("Invalid credentials.")
 
         if not user.is_verified:
             log_auth_event(
@@ -284,21 +224,12 @@ class LoginView(APIView):
                 AuthEvent.EVENT_LOGIN_BLOCKED_UNVERIFIED,
                 user=user,
             )
-            return Response(
-                {"detail": "Email not verified.", "code": "email_not_verified"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            raise ValidationError("Email not verified.")
 
         refresh = RefreshToken.for_user(user)
 
-        roles = user.get_active_roles()
-        role = roles[0] if roles else None
-
         response = Response(
-            {
-                "user": UserMeSerializer(user).data,
-                "redirect": {"role": role, "dashboard_url": _dashboard_for_role(role)},
-            },
+            {"user": UserMeSerializer(user).data},
             status=status.HTTP_200_OK,
         )
 
@@ -390,37 +321,48 @@ class ResendVerificationEmailView(APIView):
     def post(self, request):
         email = request.data.get("email", "").strip().lower()
 
-        # Send-to-all: resend a labelled verification link to EVERY unverified
-        # account on this email. Generic response — existence not revealed.
-        users = list(User.objects.filter(email__iexact=email, is_verified=False))
+        user = User.objects.filter(email=email).first()
+        if not user:
+            raise ValidationError("User not found.")
+
+        if user.is_verified:
+            raise ValidationError("Email already verified.")
+
+        EmailVerificationToken.objects.filter(user=user).delete()
+
+        token = EmailVerificationToken.generate(user)
+
         base_url = self._get_api_base_url(request)
-
-        for user in users:
-            EmailVerificationToken.objects.filter(user=user).delete()
-            token = EmailVerificationToken.generate(user)
-            verify_link = f"{base_url}/api/accounts/verify-email/?token={token.token}"
-            html = f"""
-            <h2>Verify your email</h2>
-            <p>This link verifies your account <strong>{user.username}</strong>.</p>
-            <a href="{verify_link}" style="padding:10px 15px;background:#2563eb;color:white;text-decoration:none;border-radius:5px;">
-                Verify Email
-            </a>
-            """
-            try:
-                send_gmail(
-                    to=user.email,
-                    subject=f"Verify your email — {user.username}",
-                    message_text=f"Verify your account {user.username}:\n{verify_link}",
-                    html=html,
-                )
-                log_auth_event(request, AuthEvent.EVENT_RESEND_VERIFICATION, user=user)
-            except Exception as e:
-                logger.error("Failed to resend verification to %s (%s): %s", user.email, user.username, e)
-
-        return Response(
-            {"detail": "If there are unverified accounts for that email, "
-                       "we've sent a verification link for each."}
+        verify_link = (
+            f"{base_url}/api/accounts/verify-email/?token={token.token}"
         )
+
+        html = f"""
+        <h2>Verify your email</h2>
+        <p>Click below:</p>
+        <a href="{verify_link}" style="padding:10px 15px;background:#2563eb;color:white;text-decoration:none;border-radius:5px;">
+            Verify Email
+        </a>
+        """
+
+        try:
+            send_gmail(
+                to=user.email,
+                subject="Verify your email",
+                message_text=f"Click to verify:\n{verify_link}",
+                html=html,
+            )
+        except Exception as e:
+            logger.error(f"Failed to resend verification email to {user.email}: {e}")
+            raise ValidationError("Failed to send verification email. Please try again later.")
+
+        log_auth_event(
+            request,
+            AuthEvent.EVENT_RESEND_VERIFICATION,
+            user=user,
+        )
+
+        return Response({"detail": "Verification email resent."})
 
 
 # =====================================================
@@ -1354,35 +1296,34 @@ class PasswordResetRequestView(APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"].strip().lower()
 
-        # Send-to-all: a separate OTP per active account on this email, each
-        # labelled with its username. The code is the account selector at verify
-        # time, so a sibling's password can't be reset via the shared email.
-        users = User.objects.filter(email__iexact=email, is_active=True)
+        user = User.objects.filter(email__iexact=email).first()
+        if not user or not user.is_active:
+            return Response(self.GENERIC_OK)
 
-        for user in users:
-            PasswordResetToken.objects.filter(user=user, used_at__isnull=True).delete()
-            token, code = PasswordResetToken.generate(user)
-            html = f"""
-            <h2>Reset your password</h2>
-            <p>Verification code for your account <strong>{user.username}</strong>.
-            It expires in {PasswordResetToken.OTP_TTL_MINUTES} minutes.</p>
-            <p style="font-size:28px;letter-spacing:6px;font-weight:bold;padding:12px 18px;background:#f1f5f9;display:inline-block;border-radius:6px;">{code}</p>
-            <p>If you did not request a password reset, you can ignore this email.</p>
-            """
-            text = (
-                f"Password reset code for your account {user.username}: {code}\n"
-                f"It expires in {PasswordResetToken.OTP_TTL_MINUTES} minutes.\n"
-                f"If you did not request a password reset, you can ignore this email."
+        PasswordResetToken.objects.filter(user=user, used_at__isnull=True).delete()
+        token, code = PasswordResetToken.generate(user)
+
+        html = f"""
+        <h2>Reset your password</h2>
+        <p>Use the verification code below to reset your password. It expires in {PasswordResetToken.OTP_TTL_MINUTES} minutes.</p>
+        <p style="font-size:28px;letter-spacing:6px;font-weight:bold;padding:12px 18px;background:#f1f5f9;display:inline-block;border-radius:6px;">{code}</p>
+        <p>If you did not request a password reset, you can ignore this email.</p>
+        """
+        text = (
+            f"Your password reset code is: {code}\n"
+            f"It expires in {PasswordResetToken.OTP_TTL_MINUTES} minutes.\n"
+            f"If you did not request a password reset, you can ignore this email."
+        )
+
+        try:
+            send_gmail(
+                to=user.email,
+                subject="Your password reset code",
+                message_text=text,
+                html=html,
             )
-            try:
-                send_gmail(
-                    to=user.email,
-                    subject=f"Your password reset code — {user.username}",
-                    message_text=text,
-                    html=html,
-                )
-            except Exception as e:
-                logger.error("Failed to send reset code to %s (%s): %s", user.email, user.username, e)
+        except Exception as e:
+            logger.error(f"Failed to send password reset code to {user.email}: {e}")
 
         return Response(self.GENERIC_OK)
 
@@ -1401,33 +1342,29 @@ class PasswordResetVerifyView(APIView):
         email = serializer.validated_data["email"].strip().lower()
         code = serializer.validated_data["code"].strip()
 
-        # The code is the account selector: check it against the active tokens
-        # of every account sharing this email; the match identifies the account.
-        candidates = list(
+        user = User.objects.filter(email__iexact=email).first()
+        if not user:
+            raise ValidationError({"detail": "Invalid or expired code."})
+
+        token = (
             PasswordResetToken.objects
-            .filter(user__email__iexact=email, used_at__isnull=True)
-            .select_related("user")
+            .filter(user=user, used_at__isnull=True)
             .order_by("-created_at")
+            .first()
         )
-        live = [t for t in candidates if not t.is_expired()]
-        if not live:
+
+        if not token or token.is_expired():
             raise ValidationError({"detail": "Invalid or expired code."})
 
-        matched = None
-        for token in live:
-            if token.attempts >= PasswordResetToken.MAX_ATTEMPTS:
-                continue
-            if token.code_is_valid(code):
-                matched = token
-                break
+        if token.attempts >= PasswordResetToken.MAX_ATTEMPTS:
+            raise ValidationError({"detail": "Too many invalid attempts. Please request a new code."})
 
-        if not matched:
-            for token in live:
-                token.attempts += 1
-            PasswordResetToken.objects.bulk_update(live, ["attempts"])
+        if not token.code_is_valid(code):
+            token.attempts += 1
+            token.save(update_fields=["attempts"])
             raise ValidationError({"detail": "Invalid or expired code."})
 
-        ticket = matched.issue_ticket()
+        ticket = token.issue_ticket()
         return Response({
             "ticket": str(ticket),
             "expires_in_minutes": PasswordResetToken.TICKET_TTL_MINUTES,
@@ -1449,20 +1386,18 @@ class PasswordResetConfirmView(APIView):
         ticket = serializer.validated_data["ticket"]
         new_password = serializer.validated_data["new_password"]
 
-        # The ticket is unique and unguessable, so it identifies the account on
-        # its own; email is matched only as defense in depth.
+        user = User.objects.filter(email__iexact=email).first()
+        if not user:
+            raise ValidationError({"detail": "Invalid or expired reset session."})
+
         token = (
             PasswordResetToken.objects
-            .filter(ticket=ticket, used_at__isnull=True)
-            .select_related("user")
+            .filter(user=user, used_at__isnull=True)
+            .order_by("-created_at")
             .first()
         )
 
         if not token or not token.ticket_is_valid(ticket):
-            raise ValidationError({"detail": "Invalid or expired reset session."})
-
-        user = token.user
-        if user.email.lower() != email:
             raise ValidationError({"detail": "Invalid or expired reset session."})
 
         with transaction.atomic():
