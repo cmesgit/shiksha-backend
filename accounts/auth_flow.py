@@ -444,3 +444,44 @@ class ProfileDetailView(APIView):
         profile.save(update_fields=["is_active", "is_default"])
 
         return Response({"detail": "Profile removed."}, status=status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Email-first profile lookup (unauthenticated — display names only)
+# ---------------------------------------------------------------------------
+
+class ProfileEmailLookupView(APIView):
+    """
+    POST { email } → { profiles: [{display_name, relationship}], has_teacher }
+
+    Lets the frontend show a profile-picker BEFORE the password is entered
+    (matching the design's li-s-profiles step).  Returns 200 with empty
+    profiles for unknown emails to avoid leaking registration status.
+    Only display names are returned — no IDs or sensitive fields.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from .models import User
+        email = (request.data.get("email") or "").strip().lower()
+        if not email:
+            return Response({"profiles": [], "has_teacher": False})
+
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            return Response({"profiles": [], "has_teacher": False})
+
+        profiles = list(
+            user.learner_profiles
+            .filter(is_active=True)
+            .order_by("-is_default", "created_at")
+        )
+        teacher = getattr(user, "teacher_profile", None)
+        return Response({
+            "profiles": [
+                {"display_name": p.display_name, "relationship": p.relationship}
+                for p in profiles
+            ],
+            "has_teacher": bool(teacher and teacher.is_approved),
+        })

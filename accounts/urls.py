@@ -9,6 +9,7 @@ from .auth_flow import (
     ProfilePinView,
     ProfileListCreateView,
     ProfileDetailView,
+    ProfileEmailLookupView,
 )
 
 # Everything else stays in views.py
@@ -42,6 +43,7 @@ urlpatterns = [
 
     # --- Multi-profile login (step 2 + switching) ---
     path("profiles/select/", ProfileSelectView.as_view()),
+    path("profiles/lookup/", ProfileEmailLookupView.as_view()),  # email-first picker
     path("profiles/", ProfileListCreateView.as_view()),
     path("profiles/<uuid:profile_id>/", ProfileDetailView.as_view()),
     path("context/teacher/", TeacherContextView.as_view()),
