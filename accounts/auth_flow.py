@@ -305,3 +305,142 @@ class MeView(APIView):
             "profile": _legacy_profile_dict(active),
             "profile_complete": active.is_complete if active else False,
         })
+# ---------------------------------------------------------------------------
+# Learner Profile CRUD  (append to auth_flow.py)
+# ---------------------------------------------------------------------------
+# GET    /api/accounts/profiles/          — list all active profiles
+# POST   /api/accounts/profiles/          — create a new profile
+# PATCH  /api/accounts/profiles/<id>/     — update a profile
+# DELETE /api/accounts/profiles/<id>/     — deactivate a profile
+
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+
+
+class ProfileListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request):
+        profiles = request.user.learner_profiles.filter(is_active=True)
+        return Response([serialize_profile_card(p) for p in profiles])
+
+    def post(self, request):
+        data = request.data
+
+        display_name = (data.get("display_name") or "").strip()
+        if not display_name:
+            raise ValidationError({"display_name": "Display name is required."})
+        if len(display_name) > 100:
+            raise ValidationError({"display_name": "Max 100 characters."})
+
+        relationship = data.get("relationship", LearnerProfile.RELATIONSHIP_DEPENDENT)
+        if relationship not in (LearnerProfile.RELATIONSHIP_SELF, LearnerProfile.RELATIONSHIP_DEPENDENT):
+            raise ValidationError({"relationship": "Must be SELF or DEPENDENT."})
+
+        # Only one SELF profile per account
+        if relationship == LearnerProfile.RELATIONSHIP_SELF:
+            if request.user.learner_profiles.filter(
+                relationship=LearnerProfile.RELATIONSHIP_SELF, is_active=True
+            ).exists():
+                raise ValidationError({"relationship": "An account can only have one SELF profile."})
+
+        # Cap at 5 active profiles
+        if request.user.learner_profiles.filter(is_active=True).count() >= 5:
+            raise ValidationError("Maximum of 5 profiles per account.")
+
+        pin = data.get("pin", "")
+        if pin and (not str(pin).isdigit() or not (4 <= len(str(pin)) <= 6)):
+            raise ValidationError({"pin": "PIN must be 4-6 digits."})
+
+        profile = LearnerProfile(
+            account=request.user,
+            display_name=display_name,
+            relationship=relationship,
+            is_default=not request.user.learner_profiles.filter(is_active=True).exists(),
+            first_name=data.get("first_name", ""),
+            last_name=data.get("last_name", ""),
+        )
+        if pin:
+            profile.set_pin(str(pin))
+
+        if "avatar_emoji" in data:
+            profile.avatar_emoji = data["avatar_emoji"]
+        if "avatar_image" in request.FILES:
+            profile.avatar_image = request.FILES["avatar_image"]
+
+        profile.save()
+        return Response(serialize_profile_card(profile), status=status.HTTP_201_CREATED)
+
+
+class ProfileDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def _get_profile(self, request, profile_id):
+        profile = (
+            LearnerProfile.objects
+            .filter(id=profile_id, account=request.user, is_active=True)
+            .first()
+        )
+        if not profile:
+            raise ValidationError("Profile not found.")
+        return profile
+
+    def patch(self, request, profile_id):
+        profile = self._get_profile(request, profile_id)
+        data = request.data
+
+        if "display_name" in data:
+            display_name = data["display_name"].strip()
+            if not display_name:
+                raise ValidationError({"display_name": "Display name cannot be empty."})
+            profile.display_name = display_name
+
+        if "first_name" in data:
+            profile.first_name = data["first_name"]
+        if "last_name" in data:
+            profile.last_name = data["last_name"]
+
+        if "pin" in data:
+            new_pin = data["pin"]
+            if new_pin and (not str(new_pin).isdigit() or not (4 <= len(str(new_pin)) <= 6)):
+                raise ValidationError({"pin": "PIN must be 4-6 digits."})
+            profile.set_pin(str(new_pin) if new_pin else "")
+
+        if "avatar_emoji" in data:
+            profile.avatar_emoji = data["avatar_emoji"]
+            profile.avatar_image = None  # clear image if emoji set
+
+        if "avatar_image" in request.FILES:
+            profile.avatar_image = request.FILES["avatar_image"]
+            profile.avatar_emoji = ""   # clear emoji if image set
+
+        profile.save()
+        return Response(serialize_profile_card(profile))
+
+    def delete(self, request, profile_id):
+        profile = self._get_profile(request, profile_id)
+
+        # Must keep at least one profile
+        active_count = request.user.learner_profiles.filter(is_active=True).count()
+        if active_count <= 1:
+            raise ValidationError("Cannot delete the only profile on this account.")
+
+        # If deleting the default, promote the next oldest
+        if profile.is_default:
+            next_profile = (
+                request.user.learner_profiles
+                .filter(is_active=True)
+                .exclude(id=profile.id)
+                .order_by("created_at")
+                .first()
+            )
+            if next_profile:
+                next_profile.is_default = True
+                next_profile.save(update_fields=["is_default"])
+
+        profile.is_active = False
+        profile.is_default = False
+        profile.save(update_fields=["is_active", "is_default"])
+
+        return Response({"detail": "Profile removed."}, status=status.HTTP_200_OK)

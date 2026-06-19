@@ -1,12 +1,14 @@
 from django.urls import path
 
-# Auth-flow views (two-step login, profile select, teacher context, PIN, me)
+# Auth-flow views
 from .auth_flow import (
     LoginView,
     MeView,
     ProfileSelectView,
     TeacherContextView,
     ProfilePinView,
+    ProfileListCreateView,
+    ProfileDetailView,
 )
 
 # Everything else stays in views.py
@@ -40,6 +42,8 @@ urlpatterns = [
 
     # --- Multi-profile login (step 2 + switching) ---
     path("profiles/select/", ProfileSelectView.as_view()),
+    path("profiles/", ProfileListCreateView.as_view()),
+    path("profiles/<uuid:profile_id>/", ProfileDetailView.as_view()),
     path("context/teacher/", TeacherContextView.as_view()),
     path("profiles/pin/", ProfilePinView.as_view()),
 
