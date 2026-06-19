@@ -29,7 +29,6 @@ from accounts.models import (
     AuthEvent,
     User,
     EmailVerificationToken,
-    PasswordResetToken,
     Role,
     UserRole,
 )
@@ -38,8 +37,6 @@ from accounts.throttles import (
     LoginRateThrottle,
     ResendVerificationRateThrottle,
     SignupRateThrottle,
-    PasswordResetRequestRateThrottle,
-    PasswordResetVerifyRateThrottle,
 )
 
 from .serializers import (
@@ -49,9 +46,6 @@ from .serializers import (
     TeacherFormFillupSerializer,
     TeacherListSerializer,
     ChangePasswordSerializer,
-    PasswordResetRequestSerializer,
-    PasswordResetVerifySerializer,
-    PasswordResetConfirmSerializer,
     AdminUserListSerializer,
     AdminUserDetailSerializer,
     AdminUserUpdateSerializer,
@@ -60,75 +54,38 @@ from .serializers import (
 
 from .permissions import IsAdmin
 
-from .models import TeacherProfile, Profile , TeacherCourseApplication, TeacherSkillApplication
+from .models import TeacherProfile, Profile, LearnerProfile, TeacherCourseApplication, TeacherSkillApplication
 
 from .permissions import IsEmailVerified
+
+# Active-profile resolver (lives with the new login flow)
+from .auth_flow import get_active_profile
 
 # Indian states and districts data
 from .indian_states_data import STATES_WITH_DISTRICTS
 
 
+def _profile_target(request):
+    """Personal/academic data now lives on the ACTIVE LearnerProfile.
+
+    Returns the learner profile selected in the JWT; falls back to the
+    legacy single Profile for accounts that haven't been switched over yet.
+    LearnerProfile mirrors Profile's field names, so the views below read
+    and write the same attributes either way.
+    """
+    learner = get_active_profile(request)
+    if learner is not None:
+        return learner
+    return getattr(request.user, "profile", None)
+
+
 # =====================================================
 # VERIFIED USERS ONLY
 # =====================================================
-
-class MeView(APIView):
-    permission_classes = [IsAuthenticated, IsEmailVerified]
-    parser_classes = [MultiPartParser, FormParser, JSONParser]
-
-    def get(self, request):
-        user = (
-            User.objects
-            .select_related("profile")
-            .prefetch_related(
-                Prefetch(
-                    "enrollments",
-                    queryset=Enrollment.objects
-                    .filter(status="ACTIVE")
-                    .select_related("course")
-                ),
-                "user_roles__role"
-            )
-            .get(id=request.user.id)
-        )
-
-        return Response(UserMeSerializer(user, context={"request": request}).data)
-
-    def patch(self, request):
-        user = request.user
-        profile = user.profile
-        data = request.data
-
-        username = data.get("username")
-        if username:
-            user.username = username
-            user.save(update_fields=["username"])
-
-        profile_data = data.get("profile") or {}
-        full_name = profile_data.get("full_name")
-        if full_name is not None:
-            profile.full_name = full_name
-            parts = full_name.strip().split(None, 1)
-            profile.first_name = parts[0] if parts else ""
-            profile.last_name = parts[1] if len(parts) > 1 else ""
-
-        phone = profile_data.get("phone")
-        if phone is not None:
-            profile.phone = phone
-
-        avatar_emoji = profile_data.get("avatar_emoji")
-        if avatar_emoji is not None:
-            profile.avatar_emoji = avatar_emoji
-            if profile.avatar_image:
-                profile.avatar_image.delete(save=False)
-                profile.avatar_image = None
-
-        if "avatar_image" in request.FILES:
-            profile.avatar_image = request.FILES["avatar_image"]
-            profile.avatar_emoji = ""
-
-        profile.save()
-        return self.get(request)
+#
+# MeView now lives in accounts/auth_flow.py (context-aware: it echoes the
+# active profile + context from the JWT). Import it from there in urls.py.
+# Profile/avatar edits go through StudentProfileView / TeacherProfileView.
 
 
 # =====================================================
@@ -198,67 +155,12 @@ class SignupView(APIView):
 
 
 # =====================================================
-# LOGIN — JWT ISSUED ONLY IF VERIFIED
+# LOGIN
 # =====================================================
-
-class LoginView(APIView):
-    permission_classes = [AllowAny]
-    throttle_classes = [LoginRateThrottle]
-
-    def post(self, request):
-        email = request.data.get("email", "").strip().lower()
-        password = request.data.get("password")
-
-        if not email or not password:
-            raise ValidationError("Email and password are required.")
-
-        user = authenticate(request, email=email, password=password)
-
-        if not user:
-            log_auth_event(request, AuthEvent.EVENT_LOGIN_FAILED)
-            raise ValidationError("Invalid credentials.")
-
-        if not user.is_verified:
-            log_auth_event(
-                request,
-                AuthEvent.EVENT_LOGIN_BLOCKED_UNVERIFIED,
-                user=user,
-            )
-            raise ValidationError("Email not verified.")
-
-        refresh = RefreshToken.for_user(user)
-
-        response = Response(
-            {"user": UserMeSerializer(user).data},
-            status=status.HTTP_200_OK,
-        )
-
-        response.delete_cookie("access", domain=settings.COOKIE_DOMAIN)
-        response.delete_cookie("refresh", domain=settings.COOKIE_DOMAIN)
-
-        response.set_cookie(
-            key="access",
-            value=str(refresh.access_token),
-            httponly=True,
-            secure=True,
-            samesite="None",
-            domain=settings.COOKIE_DOMAIN,
-            max_age=3600,
-        )
-
-        response.set_cookie(
-            key="refresh",
-            value=str(refresh),
-            httponly=True,
-            secure=True,
-            samesite="None",
-            domain=settings.COOKIE_DOMAIN,
-            max_age=60 * 60 * 24 * 7,
-        )
-
-        log_auth_event(request, AuthEvent.EVENT_LOGIN_SUCCESS, user=user)
-
-        return response
+#
+# LoginView (step 1: account auth -> returns profiles) and the profile
+# selection / teacher-context / PIN views all live in accounts/auth_flow.py.
+# Import them in urls.py. RefreshView below is unchanged.
 
 
 # =====================================================
@@ -440,7 +342,7 @@ class FormFillupView(APIView):
     def get(self, request):
         user = request.user
         is_teacher = self._is_teacher(user)
-        profile = user.profile
+        profile = _profile_target(request)
 
         if is_teacher:
             tp = getattr(user, "teacher_profile", None)
@@ -573,7 +475,7 @@ class FormFillupView(APIView):
             serializer.is_valid(raise_exception=True)
             serializer.update(user, serializer.validated_data)
         else:
-            profile = user.profile
+            profile = _profile_target(request)
             serializer = StudentFormFillupSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             serializer.update(profile, serializer.validated_data)
@@ -606,7 +508,7 @@ class TeacherProfileView(APIView):
 
     def patch(self, request):
         user = request.user
-        profile = user.profile
+        profile = _profile_target(request)
         tp, _ = TeacherProfile.objects.get_or_create(user=user)
 
         data = request.data
@@ -645,7 +547,7 @@ class TeacherProfileView(APIView):
 
     def get(self, request):
         user = request.user
-        profile = user.profile
+        profile = _profile_target(request)
         tp = getattr(user, "teacher_profile", None)
 
         # Active courses & subjects via SubjectTeacher
@@ -728,7 +630,7 @@ class StudentProfileView(APIView):
     }
 
     def patch(self, request):
-        profile = request.user.profile
+        profile = _profile_target(request)
         data = request.data
 
         for field in self.PROFILE_FIELDS:
@@ -746,7 +648,7 @@ class StudentProfileView(APIView):
 
     def get(self, request):
         user = request.user
-        profile = user.profile
+        profile = _profile_target(request)
 
         data = {
             "name": f"{profile.first_name} {profile.last_name}".strip(),
@@ -836,7 +738,8 @@ class IsProfileComplete(BasePermission):
     def has_permission(self, request, view):
         if not request.user.is_authenticated:
             return False
-        return hasattr(request.user, "profile") and request.user.profile.is_complete
+        target = _profile_target(request)
+        return bool(target and getattr(target, "is_complete", False))
 
 
 # =====================================================
@@ -1042,38 +945,30 @@ class ValidateStudentIdView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, student_id):
-        try:
-            profile = Profile.objects.select_related("user").get(
-                student_id=student_id
-            )
-        except Profile.DoesNotExist:
-            return Response({
-                "valid": False,
-                "name": None,
-                "user_id": None,
-                "student_id": student_id,
-            })
+        not_found = {
+            "valid": False,
+            "name": None,
+            "user_id": None,
+            "profile_id": None,
+            "student_id": student_id,
+        }
 
-        if not profile.user.has_role("STUDENT"):
-            return Response({
-                "valid": False,
-                "name": None,
-                "user_id": None,
-                "student_id": student_id,
-            })
+        learner = (
+            LearnerProfile.objects
+            .select_related("account")
+            .filter(student_id=student_id, is_active=True)
+            .first()
+        )
+        if not learner:
+            return Response(not_found)
 
-        name = ""
-        if profile.first_name:
-            name = f"{profile.first_name} {profile.last_name}".strip()
-        elif profile.full_name:
-            name = profile.full_name
-        else:
-            name = profile.user.username
+        name = f"{learner.first_name} {learner.last_name}".strip() or learner.display_name
 
         return Response({
             "valid": True,
             "name": name,
-            "user_id": str(profile.user.id),
+            "user_id": str(learner.account_id),   # the owning account
+            "profile_id": str(learner.id),         # the specific learner
             "student_id": student_id,
         })
 
@@ -1277,148 +1172,3 @@ class AdminTeacherApprovalActionView(APIView):
         else:
             role.delete()
             return Response({"detail": "Teacher request rejected."})
-
-
-# =====================================================
-# FORGOT PASSWORD — REQUEST OTP
-# =====================================================
-
-class PasswordResetRequestView(APIView):
-    permission_classes = [AllowAny]
-    throttle_classes = [PasswordResetRequestRateThrottle]
-
-    GENERIC_OK = {
-        "detail": "If an account with that email exists, a verification code has been sent."
-    }
-
-    def post(self, request):
-        serializer = PasswordResetRequestSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data["email"].strip().lower()
-
-        user = User.objects.filter(email__iexact=email).first()
-        if not user or not user.is_active:
-            return Response(self.GENERIC_OK)
-
-        PasswordResetToken.objects.filter(user=user, used_at__isnull=True).delete()
-        token, code = PasswordResetToken.generate(user)
-
-        html = f"""
-        <h2>Reset your password</h2>
-        <p>Use the verification code below to reset your password. It expires in {PasswordResetToken.OTP_TTL_MINUTES} minutes.</p>
-        <p style="font-size:28px;letter-spacing:6px;font-weight:bold;padding:12px 18px;background:#f1f5f9;display:inline-block;border-radius:6px;">{code}</p>
-        <p>If you did not request a password reset, you can ignore this email.</p>
-        """
-        text = (
-            f"Your password reset code is: {code}\n"
-            f"It expires in {PasswordResetToken.OTP_TTL_MINUTES} minutes.\n"
-            f"If you did not request a password reset, you can ignore this email."
-        )
-
-        try:
-            send_gmail(
-                to=user.email,
-                subject="Your password reset code",
-                message_text=text,
-                html=html,
-            )
-        except Exception as e:
-            logger.error(f"Failed to send password reset code to {user.email}: {e}")
-
-        return Response(self.GENERIC_OK)
-
-
-# =====================================================
-# FORGOT PASSWORD — VERIFY OTP
-# =====================================================
-
-class PasswordResetVerifyView(APIView):
-    permission_classes = [AllowAny]
-    throttle_classes = [PasswordResetVerifyRateThrottle]
-
-    def post(self, request):
-        serializer = PasswordResetVerifySerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data["email"].strip().lower()
-        code = serializer.validated_data["code"].strip()
-
-        user = User.objects.filter(email__iexact=email).first()
-        if not user:
-            raise ValidationError({"detail": "Invalid or expired code."})
-
-        token = (
-            PasswordResetToken.objects
-            .filter(user=user, used_at__isnull=True)
-            .order_by("-created_at")
-            .first()
-        )
-
-        if not token or token.is_expired():
-            raise ValidationError({"detail": "Invalid or expired code."})
-
-        if token.attempts >= PasswordResetToken.MAX_ATTEMPTS:
-            raise ValidationError({"detail": "Too many invalid attempts. Please request a new code."})
-
-        if not token.code_is_valid(code):
-            token.attempts += 1
-            token.save(update_fields=["attempts"])
-            raise ValidationError({"detail": "Invalid or expired code."})
-
-        ticket = token.issue_ticket()
-        return Response({
-            "ticket": str(ticket),
-            "expires_in_minutes": PasswordResetToken.TICKET_TTL_MINUTES,
-        })
-
-
-# =====================================================
-# FORGOT PASSWORD — CONFIRM (SET NEW PASSWORD)
-# =====================================================
-
-class PasswordResetConfirmView(APIView):
-    permission_classes = [AllowAny]
-    throttle_classes = [PasswordResetVerifyRateThrottle]
-
-    def post(self, request):
-        serializer = PasswordResetConfirmSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data["email"].strip().lower()
-        ticket = serializer.validated_data["ticket"]
-        new_password = serializer.validated_data["new_password"]
-
-        user = User.objects.filter(email__iexact=email).first()
-        if not user:
-            raise ValidationError({"detail": "Invalid or expired reset session."})
-
-        token = (
-            PasswordResetToken.objects
-            .filter(user=user, used_at__isnull=True)
-            .order_by("-created_at")
-            .first()
-        )
-
-        if not token or not token.ticket_is_valid(ticket):
-            raise ValidationError({"detail": "Invalid or expired reset session."})
-
-        with transaction.atomic():
-            user.set_password(new_password)
-            user.save(update_fields=["password"])
-            token.used_at = timezone.now()
-            token.save(update_fields=["used_at"])
-            PasswordResetToken.objects.filter(user=user, used_at__isnull=True).delete()
-
-        html = """
-        <h2>Your password has been changed</h2>
-        <p>Your Shiksha account password was just changed. If this wasn't you, please reset your password again immediately and contact support.</p>
-        """
-        try:
-            send_gmail(
-                to=user.email,
-                subject="Your password has been changed",
-                message_text="Your Shiksha account password was just changed. If this wasn't you, please reset it again immediately and contact support.",
-                html=html,
-            )
-        except Exception as e:
-            logger.error(f"Failed to send password change notification to {user.email}: {e}")
-
-        return Response({"detail": "Your password has been changed."})

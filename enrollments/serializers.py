@@ -7,10 +7,10 @@ from django.utils import timezone
 from django.db import transaction
 
 from accounts.email_utils import send_gmail
-from courses.models import Course, Batch
+from accounts.auth_flow import get_active_profile
+from courses.models import Course
 
 from .models import Enrollment, EnrollmentRequest, Subscription
-from .services import grant_paid_subscription
 
 logger = logging.getLogger(__name__)
 
@@ -74,53 +74,52 @@ def _send_enrollment_decision_email(request_obj):
         )
 
 
-# Subscription grant moved to enrollments.services.grant_paid_subscription
-# (handles trial→paid conversion correctly).
+def _grant_subscription(request_obj):
+    """Create a new Subscription for an approved request, or extend the active one.
+
+    If the user already has an active, non-expired subscription for this course,
+    extend its expires_at by the course's subscription_duration_days. Otherwise
+    start a fresh subscription from now.
+    """
+    course = request_obj.course
+    days = course.subscription_duration_days or 30
+    now = timezone.now()
+
+    learner = request_obj.learner_profile
+
+    active = (
+        Subscription.objects
+        .select_for_update()
+        .filter(
+            learner_profile=learner,
+            course=course,
+            status=Subscription.STATUS_ACTIVE,
+            expires_at__gt=now,
+        )
+        .order_by("-expires_at")
+        .first()
+    )
+
+    if active:
+        active.expires_at = active.expires_at + timedelta(days=days)
+        active.save(update_fields=["expires_at", "updated_at"])
+        return active
+
+    return Subscription.objects.create(
+        user=request_obj.user,
+        learner_profile=learner,
+        course=course,
+        starts_at=now,
+        expires_at=now + timedelta(days=days),
+        status=Subscription.STATUS_ACTIVE,
+        source_request=request_obj,
+    )
 
 
 class CourseBriefSerializer(serializers.ModelSerializer):
     class Meta:
         model = Course
         fields = ("id", "title", "price")
-
-
-class BatchBriefSerializer(serializers.ModelSerializer):
-    seats_taken = serializers.IntegerField(read_only=True)
-    is_full = serializers.BooleanField(read_only=True)
-
-    class Meta:
-        model = Batch
-        fields = ("id", "name", "code", "year", "capacity", "seats_taken", "is_full")
-
-
-class BatchStudentSerializer(serializers.ModelSerializer):
-    """One row per enrolled student, for the admin batch-roster view."""
-    user_email = serializers.EmailField(source="user.email", read_only=True)
-    user_name = serializers.SerializerMethodField()
-    course_title = serializers.CharField(source="course.title", read_only=True)
-    batch = BatchBriefSerializer(read_only=True)
-
-    class Meta:
-        model = Enrollment
-        fields = (
-            "id",
-            "user_email",
-            "user_name",
-            "course_title",
-            "batch",
-            "status",
-            "enrolled_at",
-        )
-
-    def get_user_name(self, obj):
-        profile = getattr(obj.user, "profile", None)
-        if profile:
-            full = f"{profile.first_name} {profile.last_name}".strip()
-            if full:
-                return full
-            if getattr(profile, "full_name", ""):
-                return profile.full_name
-        return obj.user.username or obj.user.email
 
 
 # -------- Student-facing --------
@@ -140,29 +139,33 @@ class EnrollmentRequestCreateSerializer(serializers.ModelSerializer):
         read_only_fields = ("id",)
 
     def validate(self, attrs):
-        user = self.context["request"].user
+        request = self.context["request"]
+        learner = get_active_profile(request)
+        if learner is None:
+            raise serializers.ValidationError(
+                "Select a learner profile before enrolling."
+            )
         course = attrs["course"]
 
         if EnrollmentRequest.objects.filter(
-            user=user, course=course, status=EnrollmentRequest.STATUS_PENDING
+            learner_profile=learner, course=course,
+            status=EnrollmentRequest.STATUS_PENDING,
         ).exists():
             raise serializers.ValidationError(
-                "You already have a pending request for this course."
+                "This learner already has a pending request for this course."
             )
 
-        # Trial-first policy: a user cannot pay for a course they've never tried.
-        # They must use their free trial before submitting a paid enrollment request.
-        if not Subscription.objects.filter(user=user, course=course).exists():
-            raise serializers.ValidationError(
-                "Please start your free trial before enrolling. "
-                "You can pay to extend access once your trial begins or ends."
-            )
-
+        attrs["_learner"] = learner
         return attrs
 
     def create(self, validated_data):
-        user = self.context["request"].user
-        return EnrollmentRequest.objects.create(user=user, **validated_data)
+        request = self.context["request"]
+        learner = validated_data.pop("_learner")
+        return EnrollmentRequest.objects.create(
+            user=request.user,
+            learner_profile=learner,
+            **validated_data,
+        )
 
 
 class MyEnrollmentRequestSerializer(serializers.ModelSerializer):
@@ -191,6 +194,7 @@ class MyEnrollmentRequestSerializer(serializers.ModelSerializer):
 class AdminEnrollmentRequestListSerializer(serializers.ModelSerializer):
     user_email = serializers.EmailField(source="user.email", read_only=True)
     user_name = serializers.SerializerMethodField()
+    learner_name = serializers.SerializerMethodField()
     course_title = serializers.CharField(source="course.title", read_only=True)
     course_price = serializers.IntegerField(source="course.price", read_only=True)
 
@@ -200,6 +204,7 @@ class AdminEnrollmentRequestListSerializer(serializers.ModelSerializer):
             "id",
             "user_email",
             "user_name",
+            "learner_name",
             "course_title",
             "course_price",
             "amount_paid",
@@ -223,40 +228,23 @@ class AdminEnrollmentRequestListSerializer(serializers.ModelSerializer):
                 return profile.full_name
         return obj.user.username or obj.user.email
 
+    def get_learner_name(self, obj):
+        lp = obj.learner_profile
+        if not lp:
+            return None
+        name = f"{lp.first_name} {lp.last_name}".strip()
+        return name or lp.display_name
+
 
 class AdminActionSerializer(serializers.Serializer):
     ACTION_CHOICES = [("approve", "approve"), ("reject", "reject")]
 
     action = serializers.ChoiceField(choices=ACTION_CHOICES)
     admin_note = serializers.CharField(required=False, allow_blank=True)
-    # Optional: assign the student to a batch at approval time.
-    batch = serializers.PrimaryKeyRelatedField(
-        queryset=Batch.objects.all(),
-        required=False,
-        allow_null=True,
-    )
-
-    def validate(self, attrs):
-        # Cross-field checks that need the target request object.
-        request_obj = self.context.get("request_obj")
-        action = attrs.get("action")
-        batch = attrs.get("batch")
-
-        if action == "approve" and batch is not None and request_obj is not None:
-            if batch.course_id != request_obj.course_id:
-                raise serializers.ValidationError(
-                    {"batch": "This batch does not belong to the requested course."}
-                )
-            if batch.is_full:
-                raise serializers.ValidationError(
-                    {"batch": "The selected batch is full."}
-                )
-        return attrs
 
     def save(self, *, request_obj, reviewer):
         action = self.validated_data["action"]
         note = self.validated_data.get("admin_note", "")
-        batch = self.validated_data.get("batch")
 
         if request_obj.status != EnrollmentRequest.STATUS_PENDING:
             raise serializers.ValidationError("This request has already been reviewed.")
@@ -268,29 +256,15 @@ class AdminActionSerializer(serializers.Serializer):
 
             if action == "approve":
                 request_obj.status = EnrollmentRequest.STATUS_APPROVED
-
-                enrollment, created = Enrollment.objects.get_or_create(
-                    user=request_obj.user,
+                Enrollment.objects.get_or_create(
+                    learner_profile=request_obj.learner_profile,
                     course=request_obj.course,
                     defaults={
+                        "user": request_obj.user,
                         "status": Enrollment.STATUS_ACTIVE,
-                        "batch": batch,
                     },
                 )
-
-                # Re-approval / re-activation path: make sure status is ACTIVE
-                # and apply the batch if the admin chose one.
-                fields_to_update = []
-                if enrollment.status != Enrollment.STATUS_ACTIVE:
-                    enrollment.status = Enrollment.STATUS_ACTIVE
-                    fields_to_update.append("status")
-                if batch is not None and enrollment.batch_id != batch.id:
-                    enrollment.batch = batch
-                    fields_to_update.append("batch")
-                if not created and fields_to_update:
-                    enrollment.save(update_fields=fields_to_update)
-
-                grant_paid_subscription(request_obj=request_obj)
+                _grant_subscription(request_obj)
             else:
                 request_obj.status = EnrollmentRequest.STATUS_REJECTED
 

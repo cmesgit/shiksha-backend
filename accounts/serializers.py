@@ -5,7 +5,7 @@ from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
-
+from .signup_serializer import SignupSerializer
 from .models import User, Profile, Role, UserRole, TeacherProfile, TeacherCourseApplication, TeacherSkillApplication
 
 
@@ -157,66 +157,7 @@ class UserMeSerializer(serializers.ModelSerializer):
 # SIGNUP SERIALIZER
 # =====================================================
 
-class SignupSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True)
-    role = serializers.ChoiceField(
-        choices=["STUDENT", "TEACHER"],
-        write_only=True,
-    )
-
-    class Meta:
-        model = User
-        fields = ("email", "username", "password", "role")
-
-
-    def validate_email(self, value):
-        value = value.strip().lower()
-
-        if User.objects.filter(email__iexact=value).exists():
-            raise ValidationError("Email is already registered.")
-
-        return value
-
-    def validate_username(self, value):
-        if User.objects.filter(username__iexact=value).exists():
-            raise ValidationError("Username is already taken.")
-
-        return value
-
-    def validate_password(self, value):
-        validate_password(value)
-        return value
-
-    @transaction.atomic
-    def create(self, validated_data):
-        user = User.objects.create_user(
-            email=validated_data["email"],
-            username=validated_data["username"],
-            password=validated_data["password"],
-        )
-
-        # Ensure unverified by default
-        user.is_verified = False
-        user.save(update_fields=["is_verified"])
-
-        # IMPORTANT: Roles must be seeded beforehand
-        role_name = self.validated_data.get("role", "STUDENT")
-        try:
-            selected_role = Role.objects.get(name=role_name)
-        except Role.DoesNotExist:
-            raise ValidationError("Selected role not available.")
-
-        UserRole.objects.create(
-            user=user,
-            role=selected_role,
-            is_active=True,
-            is_primary=True,
-        )
-
-
-        return user
-
-
+#removed
 # =====================================================
 # STUDENT FORM FILLUP SERIALIZER (REVAMPED)
 # =====================================================

@@ -1,9 +1,18 @@
 from django.urls import path
+
+# Auth-flow views (two-step login, profile select, teacher context, PIN, me)
+from .auth_flow import (
+    LoginView,
+    MeView,
+    ProfileSelectView,
+    TeacherContextView,
+    ProfilePinView,
+)
+
+# Everything else stays in views.py
 from .views import (
     SignupView,
-    LoginView,
     LogoutView,
-    MeView,
     VerifyEmailView,
     ResendVerificationEmailView,
     RefreshView,
@@ -16,9 +25,6 @@ from .views import (
     TeacherPublicProfileView,
     ValidateStudentIdView,
     ChangePasswordView,
-    PasswordResetRequestView,
-    PasswordResetVerifyView,
-    PasswordResetConfirmView,
     AdminStatsView,
     AdminUserListView,
     AdminUserDetailView,
@@ -31,6 +37,12 @@ urlpatterns = [
     path("login/", LoginView.as_view()),
     path("logout/", LogoutView.as_view()),
     path("me/", MeView.as_view()),
+
+    # --- Multi-profile login (step 2 + switching) ---
+    path("profiles/select/", ProfileSelectView.as_view()),
+    path("context/teacher/", TeacherContextView.as_view()),
+    path("profiles/pin/", ProfilePinView.as_view()),
+
     path("verify-email/", VerifyEmailView.as_view()),
     path("resend-verification/", ResendVerificationEmailView.as_view()),
     path("refresh/", RefreshView.as_view()),
@@ -38,11 +50,6 @@ urlpatterns = [
     path("teacher/profile/", TeacherProfileView.as_view()),
     path("student/profile/", StudentProfileView.as_view()),
     path("change-password/", ChangePasswordView.as_view()),
-
-    # --- Forgot password (OTP flow) ---
-    path("password-reset/request/", PasswordResetRequestView.as_view()),
-    path("password-reset/verify/", PasswordResetVerifyView.as_view()),
-    path("password-reset/confirm/", PasswordResetConfirmView.as_view()),
 
     # --- Location data ---
     path("states/", StatesListView.as_view()),
