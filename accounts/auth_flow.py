@@ -108,6 +108,33 @@ def serialize_profile_card(p):
     }
 
 
+def _ensure_default_profile(user):
+    """
+    Auto-create a SELF LearnerProfile for accounts that don't have one yet.
+    Runs inside LoginView so every user who logs in gets at least one profile
+    to pick from. Safe to call multiple times — only creates if missing.
+    """
+    profiles = list(user.learner_profiles.filter(is_active=True))
+    if profiles:
+        return profiles
+
+    # Derive a sensible display name from the legacy Profile if it exists.
+    display_name = ""
+    legacy = getattr(user, "profile", None)
+    if legacy and legacy.first_name:
+        display_name = legacy.first_name.strip()
+    if not display_name:
+        display_name = user.email.split("@")[0]
+
+    lp = LearnerProfile.objects.create(
+        account=user,
+        display_name=display_name,
+        relationship=LearnerProfile.RELATIONSHIP_SELF,
+        is_default=True,
+    )
+    return [lp]
+
+
 # ---------------------------------------------------------------------------
 # Step 1 — account login
 # ---------------------------------------------------------------------------
@@ -127,9 +154,9 @@ class LoginView(APIView):
         if not user.is_verified:
             raise ValidationError("Email not verified.")
 
-        profiles = list(
-            user.learner_profiles.filter(is_active=True)
-        )
+        # Auto-create a default SELF profile if the account has none yet.
+        profiles = _ensure_default_profile(user)
+
         teacher = getattr(user, "teacher_profile", None)
         has_teacher = bool(teacher and teacher.is_approved)
 
