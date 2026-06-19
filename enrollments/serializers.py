@@ -273,3 +273,41 @@ class AdminActionSerializer(serializers.Serializer):
         _send_enrollment_decision_email(request_obj)
 
         return request_obj
+
+
+# -------- Batch roster (admin) --------
+
+class BatchStudentSerializer(serializers.ModelSerializer):
+    """Serializes an Enrollment for the admin batch roster view.
+
+    Covers the fields used in AdminBatchRosterView:
+      select_related("user", "user__profile", "course", "batch")
+    """
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    user_name = serializers.SerializerMethodField()
+    course_title = serializers.CharField(source="course.title", read_only=True)
+    batch_code = serializers.CharField(source="batch.code", read_only=True, default=None)
+    batch_id = serializers.UUIDField(source="batch.id", read_only=True, default=None)
+
+    class Meta:
+        model = Enrollment
+        fields = (
+            "id",
+            "user_email",
+            "user_name",
+            "course_title",
+            "batch_id",
+            "batch_code",
+            "status",
+            "enrolled_at",
+        )
+
+    def get_user_name(self, obj):
+        profile = getattr(obj.user, "profile", None)
+        if profile:
+            full = f"{profile.first_name} {profile.last_name}".strip()
+            if full:
+                return full
+            if getattr(profile, "full_name", None):
+                return profile.full_name
+        return obj.user.username or obj.user.email
