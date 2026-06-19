@@ -286,8 +286,7 @@ class BatchStudentSerializer(serializers.ModelSerializer):
     user_email = serializers.EmailField(source="user.email", read_only=True)
     user_name = serializers.SerializerMethodField()
     course_title = serializers.CharField(source="course.title", read_only=True)
-    batch_code = serializers.CharField(source="batch.code", read_only=True, default=None)
-    batch_id = serializers.UUIDField(source="batch.id", read_only=True, default=None)
+    batch_code = serializers.CharField(read_only=True, default=None)
 
     class Meta:
         model = Enrollment
@@ -296,7 +295,6 @@ class BatchStudentSerializer(serializers.ModelSerializer):
             "user_email",
             "user_name",
             "course_title",
-            "batch_id",
             "batch_code",
             "status",
             "enrolled_at",
