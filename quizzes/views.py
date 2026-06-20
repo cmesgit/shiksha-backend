@@ -564,7 +564,7 @@ class StudentQuizAttemptsView(APIView):
                 "id": a.id,
                 "attempt_number": a.attempt_number,
                 "student_name": (
-                    a.student.profile.full_name
+                    (lambda p: p.full_name if p else a.student.username)(a.student.default_learner_profile())
                     if hasattr(a.student, "profile") else a.student.email
                 ),
                 "submitted_at": a.submitted_at,
@@ -700,7 +700,7 @@ class TeacherQuizAttemptDetailView(APIView):
             })
 
         return Response({
-            "student_name": attempt.student.profile.full_name,
+            "student_name": (lambda p: p.full_name if p else attempt.student.username)(attempt.student.default_learner_profile()),
             "score": attempt.score,
             "total": attempt.quiz.total_marks,
             "submitted_at": attempt.submitted_at,

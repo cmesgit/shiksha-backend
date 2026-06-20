@@ -417,7 +417,7 @@ class TeacherFormFillupSerializer(serializers.Serializer):
 
     def update(self, user, validated_data):
         # --- Update Profile (personal + address) ---
-        profile = user.profile
+        profile = user.default_learner_profile()
 
         profile_fields = [
             "first_name", "last_name", "phone", "gender",

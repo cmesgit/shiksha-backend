@@ -474,7 +474,7 @@ class SubjectAssignmentsView(APIView):
 
             teachers = assignment.chapter.subject.prefetched_teachers
             teacher_name = (
-                teachers[0].teacher.profile.full_name if teachers else None
+                (lambda p: p.full_name if p else None)(teachers[0].teacher.default_learner_profile()) if teachers else None if teachers else None
             )
 
             data.append({

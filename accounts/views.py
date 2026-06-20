@@ -1166,7 +1166,7 @@ class AdminUserListView(APIView):
     def get(self, request):
         qs = (
             User.objects
-            .select_related("profile")
+            .select_related()
             .prefetch_related("user_roles__role")
             .order_by("-date_joined")
         )
@@ -1224,7 +1224,7 @@ class AdminUserDetailView(APIView):
     def get(self, request, user_id):
         user = (
             User.objects
-            .select_related("profile")
+            .select_related()
             .prefetch_related(
                 "user_roles__role",
                 Prefetch("enrollments", queryset=Enrollment.objects.select_related("course")),
@@ -1247,7 +1247,7 @@ class AdminUserDetailView(APIView):
 
         user = (
             User.objects
-            .select_related("profile")
+            .select_related()
             .prefetch_related(
                 "user_roles__role",
                 Prefetch("enrollments", queryset=Enrollment.objects.select_related("course")),

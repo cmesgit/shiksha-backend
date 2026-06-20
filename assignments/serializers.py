@@ -156,8 +156,8 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
     def get_teacher_name(self, obj):
         subject = obj.chapter.subject
         teacher = subject.subject_teachers.first()
-        if teacher and teacher.teacher.profile:
-            return teacher.teacher.profile.full_name
+        if teacher and teacher.teacher.default_learner_profile():
+            return teacher.teacher.default_learner_profile().full_name
         return None
 
     def get_submission_status_label(self, obj):
@@ -309,7 +309,7 @@ class TeacherSubmissionListSerializer(serializers.ModelSerializer):
     student_email = serializers.EmailField(
         source="student.email",            read_only=True)
     student_name = serializers.CharField(
-        source="student.profile.full_name", read_only=True)
+        source="student.username", read_only=True)
     submission_status = serializers.CharField(read_only=True)
 
     class Meta:

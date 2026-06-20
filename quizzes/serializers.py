@@ -295,7 +295,7 @@ class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
     student_email = serializers.EmailField(
         source="student.email", read_only=True)
     student_name = serializers.CharField(
-        source="student.profile.full_name", read_only=True)
+        source="student.username", read_only=True)
     total_marks = serializers.IntegerField(
         source="quiz.total_marks", read_only=True)
 

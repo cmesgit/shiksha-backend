@@ -635,7 +635,7 @@ def session_detail(request, session_id):
         session = PrivateSession.objects.select_related(
             "teacher", "teacher__profile",
             "requested_by", "requested_by__profile",
-        ).prefetch_related("participants__user__profile").get(pk=session_id)
+        ).prefetch_related("participants__user").get(pk=session_id)
     except PrivateSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -813,7 +813,7 @@ def subject_teachers(request, subject_id):
 
     qs = SubjectTeacher.objects.filter(
         subject_id=subject_id
-    ).select_related("teacher", "teacher__profile")
+    ).select_related("teacher")
 
     if date and time:
         try:
@@ -834,7 +834,7 @@ def subject_teachers(request, subject_id):
     data = [
         {
             "id": str(st.teacher.id),
-            "name": getattr(st.teacher.profile, "full_name", st.teacher.username),
+            "name": getattr(st.teacher.default_learner_profile(), "full_name", None) or st.teacher.username,
         }
         for st in qs
     ]
@@ -865,7 +865,7 @@ def subject_students(request, subject_id):
             course=subject.course,
             status=Enrollment.STATUS_ACTIVE,   # "ACTIVE"
         )
-        .select_related("user", "user__profile")
+        .select_related("user")
         .exclude(user=request.user)
     )
 
