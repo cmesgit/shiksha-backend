@@ -326,12 +326,17 @@ class SessionRequestView(APIView):
 
 class CreateOrderView(APIView):
     """
-    Create a payment order for a session, then mark it pending payment.
+    Book a session — currently FREE.
 
-    NOTE: this is the integration seam for Razorpay. Wire the actual
-    order-create to your `payments` app here and verify the signature in a
-    separate /payments/verify/ endpoint server-side before confirming the
-    session. Until then this returns a placeholder order id.
+    Payment is intentionally disabled for now: instead of creating a Razorpay
+    order and parking the session in `pending_payment`, we confirm the session
+    immediately and mark it settled (nothing owed). The endpoint name and
+    response shape are unchanged so the existing frontend keeps working.
+
+    To re-enable paid sessions later, restore the Razorpay order-create here,
+    set status=STATUS_PENDING_PAYMENT / payment_status=PAYMENT_UNPAID, and add a
+    server-side /skill/payments/verify/ endpoint that confirms the signature
+    before flipping the session to confirmed/paid.
     """
     permission_classes = [IsAuthenticated]
 
@@ -341,37 +346,31 @@ class CreateOrderView(APIView):
             raise PermissionDenied("Select a learner profile first.")
 
         expert_id = request.data.get("teacherId") or request.data.get("expert")
-        amount = request.data.get("amount")
-        if not expert_id or amount in (None, ""):
-            raise ValidationError("expert/teacherId and amount are required.")
+        if not expert_id:
+            raise ValidationError("expert/teacherId is required.")
 
         expert = ExpertProfile.objects.filter(id=expert_id, is_listed=True).first()
         if not expert:
             raise NotFound("Expert not found.")
 
-        try:
-            amount_paise = int(round(float(amount) * 100))
-        except (TypeError, ValueError):
-            raise ValidationError({"amount": "Invalid amount."})
-
+        # Free sessions: ignore any amount sent by the client, charge nothing.
         session = SkillSession.objects.create(
             learner_profile=learner,
             expert=expert,
             contact_mode=SkillSession.CONTACT_SESSION,
-            status=SkillSession.STATUS_PENDING_PAYMENT,
-            amount=amount_paise,
+            status=SkillSession.STATUS_CONFIRMED,
+            payment_status=SkillSession.PAYMENT_PAID,
+            amount=0,
             note=str(request.data.get("draft") or ""),
         )
 
-        # TODO: replace with a real Razorpay order from the payments app:
-        #   order = razorpay_client.order.create({...}); session.razorpay_order_id = order["id"]
-        placeholder_order = f"order_stub_{session.id.hex[:12]}"
-        session.razorpay_order_id = placeholder_order
-        session.save(update_fields=["razorpay_order_id"])
+        # Human-friendly reference (no payment gateway involved).
+        booking_ref = f"SHK-{session.id.hex[:8].upper()}"
 
         return Response({
             "ok": True,
-            "bookingId": placeholder_order,
+            "bookingId": booking_ref,
             "sessionId": str(session.id),
-            "amount": amount_paise,
-        })
+            "amount": 0,
+            "free": True,
+        }, status=status.HTTP_201_CREATED)
