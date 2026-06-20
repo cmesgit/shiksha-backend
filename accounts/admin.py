@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from .models import User, Profile, Role, UserRole, TeacherProfile, TeacherCourseApplication, TeacherSkillApplication
+from .models import User, LearnerProfile, Role, UserRole, TeacherProfile, TeacherCourseApplication, TeacherSkillApplication
 
 
 # =========================
@@ -48,77 +48,40 @@ class CustomUserAdmin(UserAdmin):
     search_fields = ("email", "username")
 
 
-@admin.register(Profile)
-class ProfileAdmin(admin.ModelAdmin):
+@admin.register(LearnerProfile)
+class LearnerProfileAdmin(admin.ModelAdmin):
     list_display = (
-        "user",
-        "first_name",
-        "last_name",
-        "phone",
+        "account",
+        "display_name",
+        "relationship",
+        "is_default",
+        "is_active",
         "student_id",
-        "state",
         "currently_studying",
         "current_class",
-        "date_of_birth",
         "is_complete",
     )
+    list_filter = (
+        "relationship",
+        "is_default",
+        "is_active",
+        "currently_studying",
+        "current_class",
+        "board",
+        "stream",
+        "gender",
+        "state",
+    )
     search_fields = (
-        "user__email",
+        "account__email",
+        "display_name",
         "first_name",
         "last_name",
         "full_name",
         "student_id",
         "phone",
     )
-    list_filter = (
-        "gender",
-        "state",
-        "currently_studying",
-        "current_class",
-        "board",
-        "stream",
-    )
-
-    fieldsets = (
-        ("Personal Info", {
-            "fields": (
-                "user", "first_name", "last_name", "full_name",
-                "phone", "gender", "date_of_birth", "profile_photo",
-                "student_id",
-            )
-        }),
-        ("Avatar", {
-            "fields": ("avatar_image", "avatar_emoji"),
-            "classes": ("collapse",),
-        }),
-        ("Address", {
-            "fields": ("state", "district", "city_town", "pin_code"),
-        }),
-        ("Parent/Guardian (Student)", {
-            "fields": (
-                "father_name", "father_phone",
-                "mother_name", "mother_phone",
-                "guardian_name", "guardian_phone",
-                "parent_guardian_email",
-            ),
-            "classes": ("collapse",),
-        }),
-        ("Academic Info (Student)", {
-            "fields": (
-                "currently_studying", "current_class", "stream",
-                "board", "board_other", "school_name", "academic_year",
-                "highest_education", "reason_not_studying",
-            ),
-            "classes": ("collapse",),
-        }),
-        ("Legacy Fields", {
-            "fields": (
-                "current_address", "permanent_address", "same_as_current",
-                "guardian",
-            ),
-            "classes": ("collapse",),
-        }),
-    )
+    readonly_fields = ("created_at", "updated_at")
 
     def is_complete(self, obj):
         return obj.is_complete

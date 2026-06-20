@@ -1,5 +1,6 @@
 import os
 import logging
+import uuid
 from accounts.email_utils import send_gmail
 from rest_framework import status
 from rest_framework.permissions import BasePermission, IsAuthenticated, AllowAny, IsAdminUser
@@ -37,15 +38,21 @@ from accounts.throttles import (
     LoginRateThrottle,
     ResendVerificationRateThrottle,
     SignupRateThrottle,
+    PasswordResetRequestRateThrottle,
+    PasswordResetVerifyRateThrottle,
 )
 
 from .serializers import (
+    default_learner,
     SignupSerializer,
     UserMeSerializer,
     StudentFormFillupSerializer,
     TeacherFormFillupSerializer,
     TeacherListSerializer,
     ChangePasswordSerializer,
+    PasswordResetRequestSerializer,
+    PasswordResetVerifySerializer,
+    PasswordResetConfirmSerializer,
     AdminUserListSerializer,
     AdminUserDetailSerializer,
     AdminUserUpdateSerializer,
@@ -54,7 +61,7 @@ from .serializers import (
 
 from .permissions import IsAdmin
 
-from .models import TeacherProfile, Profile, LearnerProfile, TeacherCourseApplication, TeacherSkillApplication
+from .models import TeacherProfile, LearnerProfile, PasswordResetCode, TeacherCourseApplication, TeacherSkillApplication
 
 from .permissions import IsEmailVerified
 
@@ -69,14 +76,12 @@ def _profile_target(request):
     """Personal/academic data now lives on the ACTIVE LearnerProfile.
 
     Returns the learner profile selected in the JWT; falls back to the
-    legacy single Profile for accounts that haven't been switched over yet.
-    LearnerProfile mirrors Profile's field names, so the views below read
-    and write the same attributes either way.
+    account's default LearnerProfile when no profile is active in the token.
     """
     learner = get_active_profile(request)
     if learner is not None:
         return learner
-    return getattr(request.user, "profile", None)
+    return default_learner(request.user)
 
 
 # =====================================================
@@ -816,7 +821,7 @@ class TeacherListView(APIView):
             is_approved=True,
             user__user_roles__role__name="TEACHER",
             user__user_roles__is_active=True,
-        ).select_related("user", "user__profile").distinct()
+        ).select_related("user").distinct()
 
         subject = request.query_params.get("subject", "").strip()
         if subject:
@@ -824,7 +829,7 @@ class TeacherListView(APIView):
 
         data = []
         for tp in qs:
-            profile = getattr(tp.user, "profile", None)
+            profile = default_learner(tp.user)
             name = ""
             if profile:
                 if profile.first_name:
@@ -862,7 +867,7 @@ class TeacherPublicProfileView(APIView):
         try:
             tp = (
                 TeacherProfile.objects
-                .select_related("user", "user__profile")
+                .select_related("user")
                 .prefetch_related("course_applications", "skill_applications")
                 .get(
                     user__id=user_id,
@@ -874,7 +879,7 @@ class TeacherPublicProfileView(APIView):
         except TeacherProfile.DoesNotExist:
             return Response({"detail": "Teacher not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        profile = getattr(tp.user, "profile", None)
+        profile = default_learner(tp.user)
 
         name = ""
         if profile:
@@ -1009,6 +1014,112 @@ class ChangePasswordView(APIView):
         user.save()
 
         return Response({"detail": "Password changed successfully."})
+
+
+# =====================================================
+# PASSWORD RESET (code-based, unauthenticated)
+# =====================================================
+
+class PasswordResetRequestView(APIView):
+    """POST { email } → always 200. Emails a 6-digit code if the account exists."""
+    permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetRequestRateThrottle]
+
+    def post(self, request):
+        serializer = PasswordResetRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+
+        # Never reveal whether the email exists.
+        generic = Response({"detail": "If an account exists for that email, a code has been sent."})
+
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            return generic
+
+        _, raw_code = PasswordResetCode.issue(user)
+        try:
+            send_gmail(
+                to=user.email,
+                subject="Your ShikshaCom password reset code",
+                message_text=(
+                    f"Your password reset code is {raw_code}.\n\n"
+                    "It expires in 15 minutes. If you didn't request this, ignore this email."
+                ),
+            )
+        except Exception:
+            # Don't leak transport errors to the client; the code is already stored.
+            pass
+        return generic
+
+
+class PasswordResetVerifyView(APIView):
+    """POST { email, code } → { ticket }. Validates the code, issues a one-time ticket."""
+    permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetVerifyRateThrottle]
+
+    def post(self, request):
+        serializer = PasswordResetVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+        code = serializer.validated_data["code"].strip()
+
+        invalid = ValidationError({"code": "Invalid or expired code."})
+
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            raise invalid
+
+        rec = (
+            PasswordResetCode.objects
+            .filter(user=user, used=False)
+            .order_by("-created_at")
+            .first()
+        )
+        if rec is None or rec.is_expired():
+            raise invalid
+        if rec.attempts >= PasswordResetCode.MAX_ATTEMPTS:
+            rec.used = True
+            rec.save(update_fields=["used"])
+            raise ValidationError({"code": "Too many attempts. Request a new code."})
+
+        if not rec.check_code(code):
+            rec.attempts += 1
+            rec.save(update_fields=["attempts"])
+            raise invalid
+
+        rec.ticket = uuid.uuid4()
+        rec.save(update_fields=["ticket"])
+        return Response({"ticket": str(rec.ticket)})
+
+
+class PasswordResetConfirmView(APIView):
+    """POST { email, ticket, new_password } → 200. Sets the new password, burns the code."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+        ticket = serializer.validated_data["ticket"]
+        new_password = serializer.validated_data["new_password"]
+
+        try:
+            user = User.objects.get(email__iexact=email)
+            rec = PasswordResetCode.objects.get(user=user, ticket=ticket, used=False)
+        except (User.DoesNotExist, PasswordResetCode.DoesNotExist):
+            raise ValidationError({"detail": "Invalid or expired reset request."})
+
+        if rec.is_expired():
+            raise ValidationError({"detail": "This reset request has expired. Start again."})
+
+        user.set_password(new_password)
+        user.save()
+        rec.used = True
+        rec.save(update_fields=["used"])
+        return Response({"detail": "Password changed successfully. Please log in."})
 
 
 # =====================================================
@@ -1158,7 +1269,7 @@ class AdminTeacherApprovalListView(APIView):
                 is_active=False,
                 approved_at__isnull=True,
             )
-            .select_related("user", "user__profile", "role")
+            .select_related("user", "role")
             .order_by("-created_at")
         )
         return Response(TeacherApprovalSerializer(qs, many=True).data)

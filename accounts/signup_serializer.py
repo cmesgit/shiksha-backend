@@ -127,12 +127,32 @@ class SignupSerializer(serializers.Serializer):
             if role == Role.TEACHER:
                 if not data.get("teacher_type"):
                     raise ValidationError({"teacher_type": "Choose Guest expert or Faculty."})
-            else:  # STUDENT
-                for i, p in enumerate(data.get("profiles", [])):
-                    if not p.get("display_name", "").strip():
-                        raise ValidationError(
-                            {"profiles": f"Profile {i + 1}: a name is required."}
-                        )
+        # ── STUDENT identity guards (apply to BOTH new + add-to-existing) ──
+        if role == Role.STUDENT:
+            submitted = data.get("profiles", []) or []
+
+            # Every explicitly submitted profile needs a name.
+            for i, p in enumerate(submitted):
+                if not (p.get("display_name") or "").strip():
+                    raise ValidationError(
+                        {"profiles": f"Profile {i + 1}: a name is required."}
+                    )
+
+            # Enforce the 5-profiles-per-account cap (existing active + new).
+            existing_count = (
+                existing_user.learner_profiles.filter(is_active=True).count()
+                if existing_user else 0
+            )
+            to_add = len(submitted) if submitted else 1
+            if existing_count + to_add > 5:
+                remaining = max(0, 5 - existing_count)
+                raise ValidationError({
+                    "profiles": (
+                        "An account can hold at most 5 learner profiles. "
+                        + (f"You can add {remaining} more."
+                           if remaining else "This account is already at the limit.")
+                    )
+                })
 
         return data
 
