@@ -8,6 +8,7 @@ import livestream.routing
 import sessions_app.routing
 from forum.routing import websocket_urlpatterns as forum_ws
 from accounts.routing import websocket_urlpatterns as accounts_ws
+from chat.routing import websocket_urlpatterns as chat_ws
 from accounts.middleware import JWTAuthMiddleware
 
 application = ProtocolTypeRouter({
@@ -18,6 +19,7 @@ application = ProtocolTypeRouter({
             + sessions_app.routing.websocket_urlpatterns
             + forum_ws
             + accounts_ws
+            + chat_ws
         )
     ),
 })

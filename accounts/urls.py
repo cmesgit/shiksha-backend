@@ -6,6 +6,7 @@ from .auth_flow import (
     MeView,
     ProfileSelectView,
     TeacherContextView,
+    TeacherPasswordView,
     ProfilePinView,
     ProfileListCreateView,
     ProfileDetailView,
@@ -54,6 +55,7 @@ urlpatterns = [
     path("profiles/", ProfileListCreateView.as_view()),
     path("profiles/<uuid:profile_id>/", ProfileDetailView.as_view()),
     path("context/teacher/", TeacherContextView.as_view()),
+    path("context/teacher/password/", TeacherPasswordView.as_view()),
     path("profiles/pin/", ProfilePinView.as_view()),
 
     path("verify-email/", VerifyEmailView.as_view()),

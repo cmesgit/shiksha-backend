@@ -1,18 +1,31 @@
 """
-accounts/signup_serializer.py
+accounts/signup_serializer.py  (REVISED — separate teacher password)
 
-One email = one container (User). That container can hold:
-  - Up to 5 LearnerProfiles  (student signup, any mix of SELF + DEPENDENT)
-  - One TeacherProfile        (teacher signup, also auto-gets a SELF LearnerProfile)
+One email = one container (User). That container holds:
+  - Up to 5 LearnerProfiles  (learner side: the holder + dependents)
+  - One TeacherProfile        (teacher side: always also has a SELF learner)
 
-Both can coexist under the same email. Signup rules:
+PASSWORD MODEL (new):
+  - The ACCOUNT password (User.password) authenticates the LEARNER door
+    (account login + learner profile selection).
+  - The TEACHER password (TeacherProfile.teacher_password) authenticates the
+    TEACHER door (entering teacher context). It is independent.
 
-  Case 1  NEW email + Student   → create User + LearnerProfile(s) + STUDENT role
-  Case 2  NEW email + Teacher   → create User + TeacherProfile + TEACHER role + SELF LearnerProfile
+Signup rules:
+
+  Case 1  NEW email + Student
+          → create User(account password) + LearnerProfile(s) + STUDENT role
+  Case 2  NEW email + Teacher
+          → create User, set ACCOUNT password = teacher password (only password
+            they have), create TeacherProfile(teacher_password), TEACHER role,
+            and a SELF LearnerProfile so they can also learn.
+            A later learner signup (Case 3) can set a distinct account password.
   Case 3  EXISTING (has_teacher, no student) + Student signup
-          → verify password, add LearnerProfile(s) + STUDENT role to existing User
+          → verify TEACHER password (ownership) + set/confirm account password,
+            add LearnerProfile(s) + STUDENT role.
   Case 4  EXISTING (has_student, no teacher) + Teacher signup
-          → verify password, add TeacherProfile + TEACHER role to existing User
+          → verify ACCOUNT password (ownership) + set a NEW teacher password,
+            add TeacherProfile + TEACHER role (+ reuse existing SELF learner).
   Case 5  EXISTING (has_student) + Student signup  → BLOCK
   Case 6  EXISTING (has_teacher) + Teacher signup  → BLOCK
 """
@@ -36,8 +49,17 @@ class SignupProfileSerializer(serializers.Serializer):
 class SignupSerializer(serializers.Serializer):
     email        = serializers.EmailField()
     username     = serializers.CharField(max_length=150, required=False, allow_blank=True)
-    password     = serializers.CharField(write_only=True)
     role         = serializers.ChoiceField(choices=[Role.STUDENT, Role.TEACHER])
+
+    # The LEARNER / account password (used for STUDENT signups, and as the
+    # ownership proof when an EXISTING student adds a teacher identity).
+    password     = serializers.CharField(write_only=True)
+
+    # The TEACHER password. Required for TEACHER signups. For a brand-new
+    # teacher this is ALSO written as the account password (their only one).
+    # When an existing student adds teacher, `password` proves ownership and
+    # `teacher_password` sets the new teacher door.
+    teacher_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     # Student-only: learner profiles to create under this account.
     profiles = SignupProfileSerializer(many=True, required=False)
@@ -49,14 +71,10 @@ class SignupSerializer(serializers.Serializer):
     )
 
     # ── internal flags set during validate() ──────────────────────────────
-    # _mode:
-    #   "create"               → brand new User
-    #   "add_student_to_teacher" → existing teacher-only account, adding learner
-    #   "add_teacher_to_student" → existing student-only account, adding teacher
-    # _existing_user: the User object for add-to-existing modes
+    # _mode: "create" | "add_student_to_teacher" | "add_teacher_to_student"
+    # _existing_user: the User for add-to-existing modes
 
     def _account_state(self, email):
-        """Returns (user|None, has_student_role, has_teacher_profile)."""
         try:
             user = User.objects.get(email__iexact=email)
             has_student = user.has_role(Role.STUDENT)
@@ -81,21 +99,28 @@ class SignupSerializer(serializers.Serializer):
         email    = data["email"]
         role     = data["role"]
         password = data["password"]
+        teacher_password = data.get("teacher_password") or ""
 
         existing_user, has_student, has_teacher = self._account_state(email)
 
         if existing_user:
-            # ── verify ownership: wrong password = wrong person ────────────
-            authed = authenticate(email=email, password=password)
-            if not authed:
-                raise ValidationError({"password": "Incorrect password for this account."})
-
             if role == Role.STUDENT:
                 if has_student:
                     raise ValidationError(
                         "This email already has learner profiles. Log in to manage them."
                     )
-                # has_teacher only → allowed: add learner profiles to this container
+                # has_teacher only → add learner profiles.
+                # Ownership proof = TEACHER password (the only one they have).
+                teacher = existing_user.teacher_profile
+                if not teacher.check_teacher_password(password):
+                    raise ValidationError(
+                        {"password": "Incorrect teacher password for this account."}
+                    )
+                # The account password is currently the same as the teacher's
+                # (brand-new teacher reused it). Allow setting a distinct learner
+                # password here if provided in `teacher_password` slot is N/A;
+                # we keep the existing account password unless a new one is sent
+                # via a dedicated field. For now reuse account password as-is.
                 data["_mode"]          = "add_student_to_teacher"
                 data["_existing_user"] = existing_user
 
@@ -106,7 +131,21 @@ class SignupSerializer(serializers.Serializer):
                     )
                 if not data.get("teacher_type"):
                     raise ValidationError({"teacher_type": "Choose Guest expert or Faculty."})
-                # has_student only → allowed: add teacher identity to this container
+                # has_student only → add teacher identity.
+                # Ownership proof = ACCOUNT password. Then SET a new teacher pw.
+                authed = authenticate(email=email, password=password)
+                if not authed:
+                    raise ValidationError(
+                        {"password": "Incorrect account password for this account."}
+                    )
+                if not teacher_password:
+                    raise ValidationError(
+                        {"teacher_password": "Set a teacher password."}
+                    )
+                try:
+                    validate_password(teacher_password)
+                except Exception as e:
+                    raise ValidationError({"teacher_password": list(e.messages)})
                 data["_mode"]          = "add_teacher_to_student"
                 data["_existing_user"] = existing_user
 
@@ -114,31 +153,36 @@ class SignupSerializer(serializers.Serializer):
             # ── brand new account ─────────────────────────────────────────
             data["_mode"] = "create"
 
-            # Validate password strength only for new accounts —
-            # for existing accounts the password is used for verification only.
-            try:
-                validate_password(password)
-            except Exception as e:
-                raise ValidationError({"password": list(e.messages)})
-
             if not (data.get("username") or "").strip():
                 raise ValidationError({"username": "Username is required."})
 
             if role == Role.TEACHER:
                 if not data.get("teacher_type"):
                     raise ValidationError({"teacher_type": "Choose Guest expert or Faculty."})
-        # ── STUDENT identity guards (apply to BOTH new + add-to-existing) ──
+                # Brand-new teacher: the teacher password IS their only password.
+                # The Signup form should send the chosen teacher password in
+                # BOTH `password` and `teacher_password` (or just `password` and
+                # we mirror it). We standardise: use `password` as the secret and
+                # ALSO store it as the teacher password.
+                try:
+                    validate_password(password)
+                except Exception as e:
+                    raise ValidationError({"password": list(e.messages)})
+            else:
+                # Brand-new student account password strength.
+                try:
+                    validate_password(password)
+                except Exception as e:
+                    raise ValidationError({"password": list(e.messages)})
+
+        # ── STUDENT identity guards (new + add-to-existing) ──
         if role == Role.STUDENT:
             submitted = data.get("profiles", []) or []
-
-            # Every explicitly submitted profile needs a name.
             for i, p in enumerate(submitted):
                 if not (p.get("display_name") or "").strip():
                     raise ValidationError(
                         {"profiles": f"Profile {i + 1}: a name is required."}
                     )
-
-            # Enforce the 5-profiles-per-account cap (existing active + new).
             existing_count = (
                 existing_user.learner_profiles.filter(is_active=True).count()
                 if existing_user else 0
@@ -162,21 +206,26 @@ class SignupSerializer(serializers.Serializer):
     def create(self, validated_data):
         mode          = validated_data.get("_mode", "create")
         existing_user = validated_data.get("_existing_user")
+        role          = validated_data["role"]
+        password      = validated_data["password"]
+        teacher_password = validated_data.get("teacher_password") or ""
 
         if mode == "create":
             user = User.objects.create_user(
                 email    = validated_data["email"],
                 username = validated_data["username"],
-                password = validated_data["password"],
+                password = password,   # account password (also teacher's, for now)
             )
             user.is_verified = False
             user.save(update_fields=["is_verified"])
         else:
-            # Adding to an existing verified account — do not recreate the User.
             user = existing_user
 
-        if validated_data["role"] == Role.TEACHER:
-            self._setup_teacher(user, validated_data["teacher_type"])
+        if role == Role.TEACHER:
+            # Brand-new teacher → teacher password mirrors the account password.
+            # Existing student adding teacher → use the explicitly set teacher pw.
+            tp_secret = teacher_password if mode == "add_teacher_to_student" else password
+            self._setup_teacher(user, validated_data["teacher_type"], tp_secret)
         else:
             self._setup_student(user, validated_data.get("profiles", []))
 
@@ -185,15 +234,6 @@ class SignupSerializer(serializers.Serializer):
     # ── identity setup helpers ────────────────────────────────────────────
 
     def _setup_student(self, user, profiles):
-        """
-        Create LearnerProfiles and assign STUDENT role.
-
-        For add-to-existing (teacher account gains learner profiles):
-          - Teacher already has a SELF LearnerProfile.
-          - New profiles are added. Any that would be SELF are downgraded
-            to DEPENDENT because one SELF already exists.
-          - is_default stays with the existing profile.
-        """
         existing_count = user.learner_profiles.filter(is_active=True).count()
         has_self = user.learner_profiles.filter(
             relationship=LearnerProfile.RELATIONSHIP_SELF, is_active=True
@@ -206,27 +246,21 @@ class SignupSerializer(serializers.Serializer):
 
         for i, entry in enumerate(entries):
             rel = entry.get("relationship")
-
             if not rel:
-                # Auto-assign: first entry of a new account → SELF; rest → DEPENDENT.
                 rel = (
                     LearnerProfile.RELATIONSHIP_SELF
                     if (i == 0 and not has_self)
                     else LearnerProfile.RELATIONSHIP_DEPENDENT
                 )
-
-            # Guard the one-SELF-per-account rule.
             if rel == LearnerProfile.RELATIONSHIP_SELF and has_self:
                 rel = LearnerProfile.RELATIONSHIP_DEPENDENT
-
             if rel == LearnerProfile.RELATIONSHIP_SELF:
-                has_self = True  # mark for subsequent entries in this batch
+                has_self = True
 
             LearnerProfile.objects.create(
                 account      = user,
                 display_name = entry["display_name"].strip(),
                 relationship = rel,
-                # Only the very first profile on an account becomes the default.
                 is_default   = (i == 0 and existing_count == 0),
             )
 
@@ -236,17 +270,14 @@ class SignupSerializer(serializers.Serializer):
             role = student_role,
             defaults={
                 "is_active":  True,
-                # is_primary only if no other primary role exists yet.
                 "is_primary": not user.user_roles.filter(is_primary=True).exists(),
             },
         )
 
-    def _setup_teacher(self, user, teacher_type):
-        """
-        Create TeacherProfile and assign TEACHER role (pending approval).
-        Also ensures the teacher has a SELF LearnerProfile for learner mode.
-        """
-        TeacherProfile.objects.create(user=user, teacher_type=teacher_type)
+    def _setup_teacher(self, user, teacher_type, teacher_secret):
+        tp = TeacherProfile(user=user, teacher_type=teacher_type)
+        tp.set_teacher_password(teacher_secret)
+        tp.save()
 
         teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
         UserRole.objects.get_or_create(
@@ -258,9 +289,7 @@ class SignupSerializer(serializers.Serializer):
             },
         )
 
-        # Every teacher needs a learner identity for the teach↔learn switch.
-        # Only create one if a SELF profile doesn't already exist on the account
-        # (i.e. they also signed up as a student — their existing SELF is reused).
+        # Teacher always needs a SELF learner profile (they can learn too).
         if not user.learner_profiles.filter(
             relationship=LearnerProfile.RELATIONSHIP_SELF, is_active=True
         ).exists():

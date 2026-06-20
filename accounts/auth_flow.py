@@ -201,12 +201,40 @@ class ProfileSelectView(APIView):
 # ---------------------------------------------------------------------------
 
 class TeacherContextView(APIView):
+    """
+    POST /api/accounts/context/teacher/   { password }
+
+    Enter teacher context (no full logout). Gated by the SEPARATE teacher
+    password on TeacherProfile.  Returns:
+      200  switched
+      409  { code: "no_teacher" }  -> account has no teacher identity; route to signup
+      403  { code: "not_approved" } -> pending admin approval
+      400  { code: "bad_password" } -> wrong teacher password
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         teacher = getattr(request.user, "teacher_profile", None)
-        if not (teacher and teacher.is_approved and request.user.has_role(Role.TEACHER)):
-            raise PermissionDenied("No approved teacher identity on this account.")
+
+        if not teacher:
+            return Response(
+                {"code": "no_teacher",
+                 "detail": "This account has no teacher identity. Sign up as a teacher first."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if not (teacher.is_approved and request.user.has_role(Role.TEACHER)):
+            return Response(
+                {"code": "not_approved", "detail": "Your teacher account is awaiting approval."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        password = request.data.get("password") or ""
+        if not teacher.check_teacher_password(password):
+            return Response(
+                {"code": "bad_password", "password": "Incorrect teacher password."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         refresh = build_tokens(request.user, context=CTX_TEACHER)
         body = {
@@ -214,6 +242,36 @@ class TeacherContextView(APIView):
             "teacher": {"type": teacher.teacher_type, "tier": teacher.tier},
         }
         return set_auth_cookies(Response(body, status=status.HTTP_200_OK), refresh)
+
+
+class TeacherPasswordView(APIView):
+    """
+    POST /api/accounts/context/teacher/password/
+         { current_password, new_password }
+    Set or change the teacher-context password.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.contrib.auth.password_validation import validate_password
+        teacher = getattr(request.user, "teacher_profile", None)
+        if not teacher:
+            raise PermissionDenied("No teacher identity on this account.")
+
+        current = request.data.get("current_password") or ""
+        new_pw = request.data.get("new_password") or ""
+
+        if not teacher.check_teacher_password(current):
+            raise ValidationError({"current_password": "Incorrect current password."})
+
+        try:
+            validate_password(new_pw)
+        except Exception as e:
+            raise ValidationError({"new_password": list(e.messages)})
+
+        teacher.set_teacher_password(new_pw)
+        teacher.save(update_fields=["teacher_password"])
+        return Response({"detail": "Teacher password updated."})
 
 
 # ---------------------------------------------------------------------------

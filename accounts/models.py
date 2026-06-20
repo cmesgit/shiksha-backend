@@ -637,6 +637,9 @@ class TeacherProfile(models.Model):
     rating = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
     is_approved = models.BooleanField(default=False)
 
+    # Separate teacher-context password (independent of account/learner password)
+    teacher_password = models.CharField(max_length=128, blank=True, default="")
+
     # --- Track + tier ---
     teacher_type = models.CharField(
         max_length=10, choices=TEACHER_TYPE_CHOICES, default=TYPE_FACULTY
@@ -725,6 +728,24 @@ class TeacherProfile(models.Model):
     previous_institution = models.CharField(max_length=200, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+    # ── Teacher password helpers ──────────────────────────────────────────
+    def set_teacher_password(self, raw_password):
+        from django.contrib.auth.hashers import make_password as _mp
+        self.teacher_password = _mp(raw_password) if raw_password else ""
+
+    def check_teacher_password(self, raw_password):
+        """Verify teacher-context password.
+        Falls back to account password when teacher_password is blank
+        (brand-new teacher whose teacher pw still mirrors the account pw)."""
+        from django.contrib.auth.hashers import check_password as _cp
+        if self.teacher_password:
+            return _cp(raw_password, self.teacher_password)
+        return self.user.check_password(raw_password or "")
+
+    def has_teacher_password(self):
+        return bool(self.teacher_password)
 
     def save(self, *args, **kwargs):
         if self.same_as_current:

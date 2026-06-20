@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "channels",
     "news",
     "skills",
+    "chat",
 ]
 
 MIDDLEWARE = [
