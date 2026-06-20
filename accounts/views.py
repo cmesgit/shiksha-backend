@@ -103,6 +103,8 @@ class SignupView(APIView):
     def post(self, request):
         # Free the email if a previous unverified signup was abandoned.
         # Matches the 24h token expiry so real duplicates still get rejected.
+        # NOTE: filter includes is_verified=False so verified users are never
+        # deleted — important for the add-to-existing flow.
         from datetime import timedelta
         email = (request.data.get("email") or "").strip().lower()
         if email:
@@ -118,9 +120,22 @@ class SignupView(APIView):
         with transaction.atomic():
             user = serializer.save()
 
-            EmailVerificationToken.objects.filter(user=user).delete()
-            token = EmailVerificationToken.generate(user)
+            # Only generate a verification token for unverified accounts.
+            # Add-to-existing flows operate on a verified account — skip.
+            if not user.is_verified:
+                EmailVerificationToken.objects.filter(user=user).delete()
+                token = EmailVerificationToken.generate(user)
+            else:
+                token = None
 
+        # ── Add-to-existing (verified account): no email, go straight to login ──
+        if token is None:
+            return Response(
+                {"detail": "Identity added successfully. Please log in."},
+                status=status.HTTP_200_OK,
+            )
+
+        # ── New account: send verification email ──────────────────────────
         base_url = self._get_api_base_url(request)
         verify_link = (
             f"{base_url}/api/accounts/verify-email/?token={token.token}"
@@ -967,8 +982,8 @@ class ValidateStudentIdView(APIView):
         return Response({
             "valid": True,
             "name": name,
-            "user_id": str(learner.account_id),   # the owning account
-            "profile_id": str(learner.id),         # the specific learner
+            "user_id": str(learner.account_id),
+            "profile_id": str(learner.id),
             "student_id": student_id,
         })
 

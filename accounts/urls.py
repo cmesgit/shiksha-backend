@@ -9,6 +9,8 @@ from .auth_flow import (
     ProfilePinView,
     ProfileListCreateView,
     ProfileDetailView,
+    ProfileEmailLookupView,
+    EmailCheckView,               # NEW: email state check for signup gate
 )
 
 # Everything else stays in views.py
@@ -40,8 +42,12 @@ urlpatterns = [
     path("logout/", LogoutView.as_view()),
     path("me/", MeView.as_view()),
 
+    # --- Email state check (unauthenticated, for signup) ---
+    path("email/check/", EmailCheckView.as_view()),
+
     # --- Multi-profile login (step 2 + switching) ---
     path("profiles/select/", ProfileSelectView.as_view()),
+    path("profiles/lookup/", ProfileEmailLookupView.as_view()),
     path("profiles/", ProfileListCreateView.as_view()),
     path("profiles/<uuid:profile_id>/", ProfileDetailView.as_view()),
     path("context/teacher/", TeacherContextView.as_view()),
