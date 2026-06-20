@@ -53,9 +53,10 @@ class ExpertCardSerializer(serializers.ModelSerializer):
         if obj.photo:
             url = obj.photo.url
         else:
-            prof = getattr(obj.user, "profile", None)
-            if prof and prof.profile_photo:
-                url = prof.profile_photo.url
+            # user.profile (old model) was removed in 0011; use LearnerProfile.
+            lp = obj.user.default_learner_profile()
+            if lp and lp.profile_photo:
+                url = lp.profile_photo.url
         if url and request is not None:
             return request.build_absolute_uri(url)
         return url
@@ -98,9 +99,12 @@ class ReviewQueueSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "skill", "cat", "exp", "img", "time", "status", "stage"]
 
     def get_name(self, obj):
-        prof = getattr(obj.user, "profile", None)
-        if prof and prof.full_name:
-            return prof.full_name
+        # user.profile (old model) removed in migration 0011.
+        lp = obj.user.default_learner_profile()
+        if lp:
+            name = f"{lp.first_name} {lp.last_name}".strip() or lp.full_name or lp.display_name
+            if name:
+                return name
         return obj.user.username or obj.user.email
 
     def get_cat(self, obj):
@@ -108,9 +112,9 @@ class ReviewQueueSerializer(serializers.ModelSerializer):
 
     def get_img(self, obj):
         request = self.context.get("request")
-        prof = getattr(obj.user, "profile", None)
-        if prof and prof.profile_photo:
-            url = prof.profile_photo.url
+        lp = obj.user.default_learner_profile()
+        if lp and lp.profile_photo:
+            url = lp.profile_photo.url
             return request.build_absolute_uri(url) if request else url
         return None
 

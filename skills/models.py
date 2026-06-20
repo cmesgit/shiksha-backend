@@ -91,13 +91,17 @@ class ExpertProfile(models.Model):
 
     def display_name(self):
         u = self.user
-        prof = getattr(u, "profile", None)
-        if prof:
-            name = f"{prof.first_name} {prof.last_name}".strip()
+        # `user.profile` (old Profile model) was removed in 0011.
+        # Use the SELF LearnerProfile instead.
+        lp = u.default_learner_profile()
+        if lp:
+            name = f"{lp.first_name} {lp.last_name}".strip()
             if name:
                 return name
-            if prof.full_name:
-                return prof.full_name
+            if lp.full_name:
+                return lp.full_name
+            if lp.display_name:
+                return lp.display_name
         return u.username or u.email
 
     def __str__(self):
