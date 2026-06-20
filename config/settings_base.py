@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "sessions_app",
     "channels",
     "news",
+    "skills",
 ]
 
 MIDDLEWARE = [

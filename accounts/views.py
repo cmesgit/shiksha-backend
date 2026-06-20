@@ -767,43 +767,42 @@ class IsProfileComplete(BasePermission):
 # =====================================================
 
 class RefreshView(APIView):
+    """
+    Rotate the refresh token while preserving the JWT context claims
+    (`context` and `active_profile`) that drive the multi-profile login
+    flow. The old implementation used RefreshToken.for_user() which
+    strips all custom claims, causing the frontend to lose learner/teacher
+    context on every token rotation.
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
+        from .auth_flow import build_tokens, set_auth_cookies, CTX_ACCOUNT
+        from accounts.models import LearnerProfile
+
         refresh_token = request.COOKIES.get("refresh")
 
         if not refresh_token:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         try:
-            token = RefreshToken(refresh_token)
-            user = User.objects.get(id=token["user_id"])
+            old_token = RefreshToken(refresh_token)
+            user = User.objects.get(id=old_token["user_id"])
 
-            new_refresh = RefreshToken.for_user(user)
+            # --- Preserve context claims from the expiring token ---
+            context = old_token.get("context") or CTX_ACCOUNT
+            old_profile_id = old_token.get("active_profile")
 
-            response = Response({"detail": "refreshed"})
+            profile = None
+            if old_profile_id:
+                profile = (
+                    LearnerProfile.objects
+                    .filter(id=old_profile_id, account=user, is_active=True)
+                    .first()
+                )
 
-            response.set_cookie(
-                key="access",
-                value=str(new_refresh.access_token),
-                httponly=True,
-                secure=True,
-                samesite="None",
-                domain=settings.COOKIE_DOMAIN,
-                max_age=3600,
-            )
-
-            response.set_cookie(
-                key="refresh",
-                value=str(new_refresh),
-                httponly=True,
-                secure=True,
-                samesite="None",
-                domain=settings.COOKIE_DOMAIN,
-                max_age=60 * 60 * 24 * 7,
-            )
-
-            return response
+            new_refresh = build_tokens(user, context=context, profile=profile)
+            return set_auth_cookies(Response({"detail": "refreshed"}), new_refresh)
 
         except (TokenError, User.DoesNotExist):
             return Response(status=status.HTTP_401_UNAUTHORIZED)
