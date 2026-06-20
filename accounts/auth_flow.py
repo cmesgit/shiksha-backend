@@ -485,3 +485,54 @@ class ProfileEmailLookupView(APIView):
             ],
             "has_teacher": bool(teacher and teacher.is_approved),
         })
+
+
+# ---------------------------------------------------------------------------
+# Email state check (unauthenticated — for signup gate logic)
+# ---------------------------------------------------------------------------
+
+class EmailCheckView(APIView):
+    """
+    POST { email } → { exists, has_student, has_teacher, is_verified }
+
+    Called by Signup.jsx at STEP_BASIC before the user proceeds.
+    Lets the frontend decide:
+      - New email           → normal signup
+      - has_student only    → offer to add teacher identity (verify password inline)
+      - has_teacher only    → offer to add learner profiles (verify password inline)
+      - has_student + teacher → both exist, block and redirect to login
+      - has_student + student signup → block ("already has learner profiles")
+      - has_teacher + teacher signup → block ("already has teacher account")
+
+    Always returns 200 — unknown emails return exists=False.
+    Does NOT expose passwords, tokens, or profile IDs.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from .models import User, Role
+        email = (request.data.get("email") or "").strip().lower()
+        if not email:
+            return Response({
+                "exists": False,
+                "has_student": False,
+                "has_teacher": False,
+                "is_verified": False,
+            })
+
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            return Response({
+                "exists": False,
+                "has_student": False,
+                "has_teacher": False,
+                "is_verified": False,
+            })
+
+        return Response({
+            "exists":      True,
+            "has_student": user.has_role(Role.STUDENT),
+            "has_teacher": hasattr(user, "teacher_profile"),
+            "is_verified": user.is_verified,
+        })
