@@ -7,6 +7,17 @@ LOGGING = {
     "root": {"handlers": ["console"], "level": "WARNING"},
 }
 
+# ── Security overrides for dev ────────────────────────────────────────────
+# settings_base enables these for prod (Nginx on the droplet handles HTTPS).
+# Keeping them True in dev causes SecurityMiddleware to redirect every
+# Gunicorn-bound HTTP request to HTTPS, stripping CORS headers en route.
+SECURE_SSL_REDIRECT = False
+SECURE_HSTS_SECONDS = 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = False
+SESSION_COOKIE_SECURE = False
+CSRF_COOKIE_SECURE = False
+# ─────────────────────────────────────────────────────────────────────────
+
 ALLOWED_HOSTS = [
     "134.209.154.122",
     "api.dev.shikshacom.com",
