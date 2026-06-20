@@ -118,13 +118,8 @@ def _ensure_default_profile(user):
     if profiles:
         return profiles
 
-    # Derive a sensible display name from the legacy Profile if it exists.
-    display_name = ""
-    legacy = getattr(user, "profile", None)
-    if legacy and legacy.first_name:
-        display_name = legacy.first_name.strip()
-    if not display_name:
-        display_name = user.email.split("@")[0]
+    # Derive a sensible default display name from the account email.
+    display_name = user.email.split("@")[0]
 
     lp = LearnerProfile.objects.create(
         account=user,

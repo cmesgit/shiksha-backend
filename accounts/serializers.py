@@ -6,7 +6,19 @@ from django.contrib.auth.password_validation import validate_password
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from .signup_serializer import SignupSerializer
-from .models import User, Profile, Role, UserRole, TeacherProfile, TeacherCourseApplication, TeacherSkillApplication
+from .models import User, LearnerProfile, Role, UserRole, TeacherProfile, TeacherCourseApplication, TeacherSkillApplication
+
+
+def default_learner(user):
+    """Return the account's default LearnerProfile (the SELF holder), or None.
+
+    Replaces the old one-to-one ``user.profile`` lookup now that personal data
+    lives on LearnerProfile. Prefers the default; falls back to the first active
+    SELF profile, then any active profile.
+    """
+    if user is None:
+        return None
+    return user.default_learner_profile()
 
 
 # =====================================================
@@ -14,12 +26,12 @@ from .models import User, Profile, Role, UserRole, TeacherProfile, TeacherCourse
 # =====================================================
 
 class ProfileSerializer(serializers.ModelSerializer):
-    email = serializers.EmailField(source="user.email", read_only=True)
+    email = serializers.EmailField(source="account.email", read_only=True)
     avatar_type = serializers.SerializerMethodField()
     avatar = serializers.SerializerMethodField()
 
     class Meta:
-        model = Profile
+        model = LearnerProfile
         fields = [
             "first_name",
             "last_name",
@@ -49,7 +61,7 @@ class ProfileSerializer(serializers.ModelSerializer):
 
 class ProfileUpdateSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Profile
+        model = LearnerProfile
         fields = [
             "full_name",
             "first_name",
@@ -81,7 +93,8 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
         # Update profile safely
         if profile_data:
-            profile = instance.profile
+            profile = default_learner(instance)
+        if profile_data and profile:
 
             # Only one avatar type allowed
             if profile_data.get("avatar_image"):
@@ -103,7 +116,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 # =====================================================
 
 class UserMeSerializer(serializers.ModelSerializer):
-    profile = ProfileSerializer(read_only=True)
+    profile = serializers.SerializerMethodField()
     roles = serializers.SerializerMethodField()
     enrollments = serializers.SerializerMethodField()
 
@@ -121,12 +134,16 @@ class UserMeSerializer(serializers.ModelSerializer):
             "profile_complete",
         )
 
+    def get_profile(self, obj):
+        lp = default_learner(obj)
+        return ProfileSerializer(lp, context=self.context).data if lp else None
+
     def get_profile_complete(self, obj):
         roles = obj.get_active_roles()
         if "TEACHER" in roles:
             tp = getattr(obj, "teacher_profile", None)
             return tp.is_complete if tp else False
-        profile = getattr(obj, "profile", None)
+        profile = default_learner(obj)
         return profile.is_complete if profile else False
 
     def get_roles(self, obj):
@@ -168,7 +185,7 @@ class StudentFormFillupSerializer(serializers.Serializer):
     last_name = serializers.CharField(max_length=100)
     phone = serializers.CharField(max_length=20)
     gender = serializers.ChoiceField(
-        choices=Profile.GENDER_CHOICES, required=False, allow_blank=True
+        choices=LearnerProfile.GENDER_CHOICES, required=False, allow_blank=True
     )
     date_of_birth = serializers.DateField()
     profile_photo = serializers.ImageField(required=False, allow_null=True)
@@ -189,17 +206,17 @@ class StudentFormFillupSerializer(serializers.Serializer):
     parent_guardian_email = serializers.EmailField(required=False, allow_blank=True)
 
     # --- Academic Info ---
-    currently_studying = serializers.ChoiceField(choices=Profile.CURRENTLY_STUDYING_CHOICES)
+    currently_studying = serializers.ChoiceField(choices=LearnerProfile.CURRENTLY_STUDYING_CHOICES)
 
     # If currently studying = yes
     current_class = serializers.ChoiceField(
-        choices=Profile.CLASS_CHOICES, required=False, allow_blank=True
+        choices=LearnerProfile.CLASS_CHOICES, required=False, allow_blank=True
     )
     stream = serializers.ChoiceField(
-        choices=Profile.STREAM_CHOICES, required=False, allow_blank=True
+        choices=LearnerProfile.STREAM_CHOICES, required=False, allow_blank=True
     )
     board = serializers.ChoiceField(
-        choices=Profile.BOARD_CHOICES, required=False, allow_blank=True
+        choices=LearnerProfile.BOARD_CHOICES, required=False, allow_blank=True
     )
     board_other = serializers.CharField(max_length=150, required=False, allow_blank=True)
     school_name = serializers.CharField(max_length=250, required=False, allow_blank=True)
@@ -207,7 +224,7 @@ class StudentFormFillupSerializer(serializers.Serializer):
 
     # If currently studying = no
     highest_education = serializers.ChoiceField(
-        choices=Profile.HIGHEST_EDUCATION_CHOICES, required=False, allow_blank=True
+        choices=LearnerProfile.HIGHEST_EDUCATION_CHOICES, required=False, allow_blank=True
     )
     reason_not_studying = serializers.CharField(
         max_length=200, required=False, allow_blank=True
@@ -280,7 +297,7 @@ class TeacherFormFillupSerializer(serializers.Serializer):
     last_name = serializers.CharField(max_length=100)
     phone = serializers.CharField(max_length=20)
     gender = serializers.ChoiceField(
-        choices=Profile.GENDER_CHOICES, required=False, allow_blank=True
+        choices=LearnerProfile.GENDER_CHOICES, required=False, allow_blank=True
     )
     date_of_birth = serializers.DateField()
     profile_photo = serializers.ImageField(required=False, allow_null=True)
@@ -348,8 +365,8 @@ class TeacherFormFillupSerializer(serializers.Serializer):
         if not isinstance(data, list):
             raise ValidationError("Course applications must be a list.")
         valid_subjects = [c[0] for c in TeacherProfile.SUBJECT_CHOICES]
-        valid_boards = [c[0] for c in TeacherProfile.BOARD_CHOICES]
-        valid_classes = [c[0] for c in TeacherProfile.CLASS_CHOICES]
+        valid_boards = [c[0] for c in TeacherLearnerProfile.BOARD_CHOICES]
+        valid_classes = [c[0] for c in TeacherLearnerProfile.CLASS_CHOICES]
         for i, entry in enumerate(data):
             if not entry.get("subject"):
                 raise ValidationError(f"Entry {i+1}: Subject is required.")
@@ -491,7 +508,7 @@ class TeacherListSerializer(serializers.Serializer):
     avatar = serializers.SerializerMethodField()
 
     def get_name(self, obj):
-        profile = getattr(obj.user, "profile", None)
+        profile = default_learner(obj.user)
         if profile:
             if profile.first_name:
                 return f"{profile.first_name} {profile.last_name}".strip()
@@ -500,7 +517,7 @@ class TeacherListSerializer(serializers.Serializer):
         return obj.user.get_full_name() or obj.user.username
 
     def get_avatar(self, obj):
-        profile = getattr(obj.user, "profile", None)
+        profile = default_learner(obj.user)
         if profile:
             return profile.avatar_value()
         return None
@@ -559,8 +576,12 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
 # =====================================================
 
 class AdminUserListSerializer(serializers.ModelSerializer):
-    profile = ProfileSerializer(read_only=True)
+    profile = serializers.SerializerMethodField()
     roles = serializers.SerializerMethodField()
+
+    def get_profile(self, obj):
+        lp = default_learner(obj)
+        return ProfileSerializer(lp, context=self.context).data if lp else None
 
     class Meta:
         model = User
@@ -616,7 +637,7 @@ class TeacherApprovalSerializer(serializers.ModelSerializer):
         fields = ("id", "user_id", "user_email", "user_name", "requested_at")
 
     def get_user_name(self, obj):
-        profile = getattr(obj.user, "profile", None)
+        profile = default_learner(obj.user)
         if profile and profile.full_name:
             return profile.full_name
         return obj.user.username or obj.user.email

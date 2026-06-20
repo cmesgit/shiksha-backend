@@ -40,6 +40,19 @@ class User(AbstractUser):
             is_active=True
         ).exists()
 
+    def default_learner_profile(self):
+        """The account's default LearnerProfile (SELF holder), or None.
+
+        Personal/academic data lives on LearnerProfile now; this replaces the
+        old one-to-one ``user.profile`` accessor.
+        """
+        qs = self.learner_profiles.filter(is_active=True)
+        return (
+            qs.filter(is_default=True).first()
+            or qs.filter(relationship="SELF").first()
+            or qs.first()
+        )
+
     def get_active_roles(self):
         return list(
             self.user_roles.filter(is_active=True)
@@ -50,185 +63,6 @@ class User(AbstractUser):
 # =====================================================
 # PROFILE (Common for all users)
 # =====================================================
-
-class Profile(models.Model):
-    GENDER_CHOICES = [
-        ("male", "Male"),
-        ("female", "Female"),
-        ("other", "Other"),
-        ("prefer_not_to_say", "Prefer not to say"),
-    ]
-
-    user = models.OneToOneField(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="profile"
-    )
-
-    # --- Personal Info ---
-    first_name = models.CharField(max_length=100, blank=True)
-    last_name = models.CharField(max_length=100, blank=True)
-    phone = models.CharField(max_length=20, blank=True)
-    gender = models.CharField(max_length=20, choices=GENDER_CHOICES, blank=True)
-    date_of_birth = models.DateField(null=True, blank=True)
-    profile_photo = models.ImageField(upload_to="profiles/photos/", null=True, blank=True)
-
-    # --- Legacy fields (kept for backward compat, will be removed later) ---
-    full_name = models.CharField(max_length=255, null=True, blank=True)
-
-    student_id = models.CharField(
-        max_length=50,
-        unique=True,
-        null=True,
-        blank=True
-    )
-
-    avatar_image = models.ImageField(
-        upload_to="avatar/",
-        null=True,
-        blank=True
-    )
-
-    avatar_emoji = models.CharField(
-        max_length=10,
-        blank=True,
-        null=True
-    )
-
-    # --- Address (structured) ---
-    state = models.CharField(max_length=100, blank=True)
-    district = models.CharField(max_length=100, blank=True)
-    city_town = models.CharField(max_length=150, blank=True)
-    pin_code = models.CharField(max_length=10, blank=True)
-
-    # --- Legacy address fields (kept for backward compat) ---
-    current_address = models.TextField(blank=True)
-    permanent_address = models.TextField(blank=True)
-    same_as_current = models.BooleanField(default=False)
-
-    # --- Student: Parent/Guardian Info ---
-    father_name = models.CharField(max_length=150, blank=True)
-    father_phone = models.CharField(max_length=15, blank=True)
-    mother_name = models.CharField(max_length=150, blank=True)
-    mother_phone = models.CharField(max_length=15, blank=True)
-    guardian_name = models.CharField(max_length=150, blank=True)
-    guardian_phone = models.CharField(max_length=15, blank=True)
-    parent_guardian_email = models.EmailField(blank=True)
-
-    # --- Legacy parent fields ---
-    guardian = models.CharField(max_length=150, blank=True)
-
-    # --- Student: Academic Info ---
-    CURRENTLY_STUDYING_CHOICES = [
-        ("yes", "Yes"),
-        ("no", "No"),
-    ]
-
-    CLASS_CHOICES = [
-        ("8", "Class 8"),
-        ("9", "Class 9"),
-        ("10", "Class 10"),
-        ("11", "Class 11"),
-        ("12", "Class 12"),
-    ]
-
-    STREAM_CHOICES = [
-        ("science", "Science"),
-        ("commerce", "Commerce"),
-        ("arts", "Arts"),
-    ]
-
-    BOARD_CHOICES = [
-        ("cbse", "CBSE"),
-        ("icse", "ICSE"),
-        ("mbse", "Mizoram Board of School Education"),
-        ("nios", "NIOS"),
-        ("other", "Other State Board"),
-    ]
-
-    HIGHEST_EDUCATION_CHOICES = [
-        ("below_8", "Below Class 8"),
-        ("8", "Class 8"),
-        ("9", "Class 9"),
-        ("10", "Class 10"),
-        ("11", "Class 11"),
-        ("12", "Class 12"),
-    ]
-
-    currently_studying = models.CharField(
-        max_length=3, choices=CURRENTLY_STUDYING_CHOICES, blank=True
-    )
-
-    # If currently studying = yes
-    current_class = models.CharField(max_length=5, choices=CLASS_CHOICES, blank=True)
-    stream = models.CharField(max_length=20, choices=STREAM_CHOICES, blank=True)
-    board = models.CharField(max_length=20, choices=BOARD_CHOICES, blank=True)
-    board_other = models.CharField(max_length=150, blank=True)
-    school_name = models.CharField(max_length=250, blank=True)
-    academic_year = models.CharField(max_length=20, blank=True)
-
-    # If currently studying = no
-    highest_education = models.CharField(
-        max_length=10, choices=HIGHEST_EDUCATION_CHOICES, blank=True
-    )
-    reason_not_studying = models.CharField(max_length=200, blank=True)
-
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def save(self, *args, **kwargs):
-        # Keep legacy full_name in sync
-        if self.first_name or self.last_name:
-            self.full_name = f"{self.first_name} {self.last_name}".strip()
-        # Legacy address sync
-        if self.same_as_current:
-            self.permanent_address = self.current_address
-        super().save(*args, **kwargs)
-
-    def avatar_type(self):
-        if self.avatar_image:
-            return "image"
-        if self.avatar_emoji:
-            return "emoji"
-        return None
-
-    def avatar_value(self):
-        if self.avatar_image:
-            return self.avatar_image.url
-        if self.avatar_emoji:
-            return self.avatar_emoji
-        return None
-
-    def __str__(self):
-        return f"{self.user.email} Profile"
-
-    @property
-    def is_complete(self):
-        """Check if student profile form is complete."""
-        has_personal = bool(
-            self.first_name
-            and self.last_name
-            and self.phone
-            and self.date_of_birth
-        )
-        has_address = bool(self.state and self.district and self.city_town)
-
-        # At least one complete parent/guardian contact (name + phone)
-        has_parent_contact = (
-            (bool(self.father_name) and bool(self.father_phone))
-            or (bool(self.mother_name) and bool(self.mother_phone))
-            or (bool(self.guardian_name) and bool(self.guardian_phone))
-        )
-
-        has_academic = bool(self.currently_studying)
-
-        return bool(
-            has_personal
-            and has_address
-            and has_parent_contact
-            and has_academic
-            and self.user.is_verified
-        )
-
 
 # =====================================================
 # LEARNER PROFILE  (one account -> many learners)
@@ -248,6 +82,44 @@ class LearnerProfile(models.Model):
     RELATIONSHIP_CHOICES = [
         (RELATIONSHIP_SELF, "Account holder"),
         (RELATIONSHIP_DEPENDENT, "Dependent / child"),
+    ]
+
+    GENDER_CHOICES = [
+        ("male", "Male"),
+        ("female", "Female"),
+        ("other", "Other"),
+        ("prefer_not_to_say", "Prefer not to say"),
+    ]
+    CURRENTLY_STUDYING_CHOICES = [
+        ("yes", "Yes"),
+        ("no", "No"),
+    ]
+    CLASS_CHOICES = [
+        ("8", "Class 8"),
+        ("9", "Class 9"),
+        ("10", "Class 10"),
+        ("11", "Class 11"),
+        ("12", "Class 12"),
+    ]
+    STREAM_CHOICES = [
+        ("science", "Science"),
+        ("commerce", "Commerce"),
+        ("arts", "Arts"),
+    ]
+    BOARD_CHOICES = [
+        ("cbse", "CBSE"),
+        ("icse", "ICSE"),
+        ("mbse", "Mizoram Board of School Education"),
+        ("nios", "NIOS"),
+        ("other", "Other State Board"),
+    ]
+    HIGHEST_EDUCATION_CHOICES = [
+        ("below_8", "Below Class 8"),
+        ("8", "Class 8"),
+        ("9", "Class 9"),
+        ("10", "Class 10"),
+        ("11", "Class 11"),
+        ("12", "Class 12"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -275,7 +147,7 @@ class LearnerProfile(models.Model):
     last_name = models.CharField(max_length=100, blank=True)
     full_name = models.CharField(max_length=255, blank=True)
     phone = models.CharField(max_length=20, blank=True)
-    gender = models.CharField(max_length=20, choices=Profile.GENDER_CHOICES, blank=True)
+    gender = models.CharField(max_length=20, choices=GENDER_CHOICES, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
     profile_photo = models.ImageField(upload_to="learners/photos/", null=True, blank=True)
     avatar_image = models.ImageField(upload_to="learners/avatar/", null=True, blank=True)
@@ -299,18 +171,18 @@ class LearnerProfile(models.Model):
     guardian_phone = models.CharField(max_length=15, blank=True)
     parent_guardian_email = models.EmailField(blank=True)
 
-    # --- Academic Info (reuses Profile's choice lists) ---
+    # --- Academic Info ---
     currently_studying = models.CharField(
-        max_length=3, choices=Profile.CURRENTLY_STUDYING_CHOICES, blank=True
+        max_length=3, choices=CURRENTLY_STUDYING_CHOICES, blank=True
     )
-    current_class = models.CharField(max_length=5, choices=Profile.CLASS_CHOICES, blank=True)
-    stream = models.CharField(max_length=20, choices=Profile.STREAM_CHOICES, blank=True)
-    board = models.CharField(max_length=20, choices=Profile.BOARD_CHOICES, blank=True)
+    current_class = models.CharField(max_length=5, choices=CLASS_CHOICES, blank=True)
+    stream = models.CharField(max_length=20, choices=STREAM_CHOICES, blank=True)
+    board = models.CharField(max_length=20, choices=BOARD_CHOICES, blank=True)
     board_other = models.CharField(max_length=150, blank=True)
     school_name = models.CharField(max_length=250, blank=True)
     academic_year = models.CharField(max_length=20, blank=True)
     highest_education = models.CharField(
-        max_length=10, choices=Profile.HIGHEST_EDUCATION_CHOICES, blank=True
+        max_length=10, choices=HIGHEST_EDUCATION_CHOICES, blank=True
     )
     reason_not_studying = models.CharField(max_length=200, blank=True)
 
@@ -344,7 +216,7 @@ class LearnerProfile(models.Model):
     def has_pin(self):
         return bool(self.pin)
 
-    # --- Avatar helpers (parity with Profile) ---
+    # --- Avatar helpers ---
     def avatar_type(self):
         if self.avatar_image:
             return "image"
@@ -574,6 +446,69 @@ class EmailVerificationToken(models.Model):
 
 
 # =====================================================
+# PASSWORD RESET CODE
+# =====================================================
+#
+# Code-based reset (no emailed links). Flow:
+#   request → a 6-digit code is hashed + stored, emailed to the user
+#   verify  → the raw code is checked; on success a one-time `ticket`
+#             (UUID) is issued so the final step needs no code re-entry
+#   confirm → the ticket sets the new password and burns the record
+#
+# One email == one User, so there is exactly one active code per account.
+
+class PasswordResetCode(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="password_reset_codes",
+    )
+
+    code_hash = models.CharField(max_length=128)
+    # Issued only after the code is verified; used by the confirm step.
+    ticket = models.UUIDField(null=True, blank=True, unique=True)
+
+    used = models.BooleanField(default=False)
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "used"]),
+            models.Index(fields=["ticket"]),
+            models.Index(fields=["expires_at"]),
+        ]
+
+    CODE_TTL = timedelta(minutes=15)
+    MAX_ATTEMPTS = 5
+
+    @classmethod
+    def issue(cls, user):
+        """Invalidate prior codes and create a new one. Returns (obj, raw_code)."""
+        import secrets
+
+        cls.objects.filter(user=user, used=False).update(used=True)
+        raw_code = f"{secrets.randbelow(1_000_000):06d}"
+        obj = cls.objects.create(
+            user=user,
+            code_hash=make_password(raw_code),
+            expires_at=timezone.now() + cls.CODE_TTL,
+        )
+        return obj, raw_code
+
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+
+    def check_code(self, raw_code):
+        return check_password(raw_code, self.code_hash)
+
+    def __str__(self):
+        return f"ResetCode for {self.user.email}"
+
+
+# =====================================================
 # TEACHER PROFILE
 # =====================================================
 
@@ -799,7 +734,7 @@ class TeacherProfile(models.Model):
     @property
     def is_complete(self):
         """Check if teacher profile form is complete."""
-        profile = getattr(self.user, "profile", None)
+        profile = self.user.default_learner_profile()
         has_personal = bool(
             profile
             and profile.first_name
