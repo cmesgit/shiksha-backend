@@ -30,7 +30,13 @@ Signup cases:
             + TEACHER role (reuses existing SELF learner).
 
   Case 5  EXISTING (has_student) + Student signup  → BLOCK
-  Case 6  EXISTING (has_teacher) + Teacher signup  → BLOCK
+  Case 6  EXISTING (has_teacher=FACULTY) + Teacher/GUEST signup  → BLOCK
+          (already has faculty, can't add guest in the other direction)
+
+  Case 7  EXISTING (has_teacher=GUEST) + Teacher/FACULTY signup  → UPGRADE
+          → verify ACCOUNT password, upgrade teacher_type to BOTH,
+            add a pending FACULTY UserRole so admin can review the faculty
+            application while the GUEST side stays live.
 """
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
@@ -122,9 +128,25 @@ class SignupSerializer(serializers.Serializer):
 
             elif role == Role.TEACHER:
                 if has_teacher:
-                    raise ValidationError(
-                        "This email already has a teacher account. Log in instead."
-                    )
+                    tp = existing_user.teacher_profile
+                    existing_type = tp.teacher_type
+
+                    # Case 7: GUEST → wants to add FACULTY → upgrade to BOTH
+                    if (existing_type == TeacherProfile.TYPE_GUEST
+                            and data.get("teacher_type") == TeacherProfile.TYPE_FACULTY):
+                        authed = authenticate(email=email, password=password)
+                        if not authed:
+                            raise ValidationError(
+                                {"password": "Incorrect password for this account."}
+                            )
+                        data["_mode"]          = "upgrade_guest_to_both"
+                        data["_existing_user"] = existing_user
+                    else:
+                        # FACULTY trying to add GUEST, or same type again → block
+                        raise ValidationError(
+                            "This email already has a teacher account. Log in instead."
+                        )
+                    return data
                 if not data.get("teacher_type"):
                     raise ValidationError({"teacher_type": "Choose Guest expert or Faculty."})
                 # has_student only → add teacher identity.
@@ -204,7 +226,10 @@ class SignupSerializer(serializers.Serializer):
             user = existing_user
 
         if role == Role.TEACHER:
-            self._setup_teacher(user, validated_data["teacher_type"])
+            if mode == "upgrade_guest_to_both":
+                self._upgrade_guest_to_both(user)
+            else:
+                self._setup_teacher(user, validated_data["teacher_type"])
         else:
             self._setup_student(user, validated_data.get("profiles", []))
 
@@ -256,6 +281,22 @@ class SignupSerializer(serializers.Serializer):
                 "is_primary": not user.user_roles.filter(is_primary=True).exists(),
             },
         )
+
+    def _upgrade_guest_to_both(self, user):
+        """
+        Case 7: user is already a GUEST expert. They want to apply as FACULTY too.
+        - Set teacher_type = BOTH on the existing TeacherProfile (guest side stays live).
+        - The existing TEACHER UserRole stays is_active=True (so teacher context still
+          works with their guest identity).
+        - No new UserRole is created — BOTH means one account, one role row, two tracks.
+          Admin approval for the faculty track is handled separately via the
+          faculty_application_status field or however the admin queue is extended.
+        The account is already verified, so no email is sent.
+        """
+        tp = user.teacher_profile
+        tp.teacher_type = TeacherProfile.TYPE_BOTH
+        tp.save(update_fields=["teacher_type"])
+        # The TEACHER UserRole already exists and is active — nothing to change there.
 
     def _setup_teacher(self, user, teacher_type):
         # Approval policy by track (matches the signup UI):

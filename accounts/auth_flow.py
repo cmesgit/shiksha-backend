@@ -484,9 +484,13 @@ class EmailCheckView(APIView):
             user = User.objects.get(email__iexact=email)
         except User.DoesNotExist:
             return Response(empty)
+        teacher = getattr(user, "teacher_profile", None)
         return Response({
-            "exists":      True,
-            "has_student": user.has_role(Role.STUDENT),
-            "has_teacher": hasattr(user, "teacher_profile"),
-            "is_verified": user.is_verified,
+            "exists":        True,
+            "has_student":   user.has_role(Role.STUDENT),
+            "has_teacher":   teacher is not None,
+            # Expose the track so the frontend can offer the GUEST→BOTH upgrade
+            # path when a guest expert wants to add a FACULTY identity.
+            "teacher_type":  teacher.teacher_type if teacher else None,
+            "is_verified":   user.is_verified,
         })
