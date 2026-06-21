@@ -37,6 +37,7 @@ from rest_framework.exceptions import ValidationError
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth import authenticate
 from django.db import transaction
+from django.utils import timezone
 
 from .models import User, LearnerProfile, Role, UserRole, TeacherProfile
 
@@ -257,19 +258,39 @@ class SignupSerializer(serializers.Serializer):
         )
 
     def _setup_teacher(self, user, teacher_type):
+        # Approval policy by track (matches the signup UI):
+        #   GUEST  → listed immediately, no screening ("You're live!")
+        #   FACULTY → inactive until an admin approves (admin review queue)
+        # So a guest is approved/active at signup; a faculty applicant is not.
+        is_guest = teacher_type == TeacherProfile.TYPE_GUEST
+
         # No teacher_password — single account password handles everything.
-        tp = TeacherProfile(user=user, teacher_type=teacher_type)
+        tp = TeacherProfile(
+            user=user,
+            teacher_type=teacher_type,
+            is_approved=is_guest,
+        )
         tp.save()
 
         teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
-        UserRole.objects.get_or_create(
+        role, created = UserRole.objects.get_or_create(
             user = user,
             role = teacher_role,
             defaults={
-                "is_active":  False,   # inactive until admin approves
+                # Guests go live immediately; faculty await admin approval.
+                "is_active":  is_guest,
                 "is_primary": not user.user_roles.filter(is_primary=True).exists(),
+                # Stamp auto-approval so guests never appear in the admin queue
+                # (which filters is_active=False, approved_at__isnull=True).
+                "approved_at": timezone.now() if is_guest else None,
             },
         )
+        # Edge case: a TEACHER role row already existed for this account. If
+        # this is a guest signup, make sure it's active/stamped.
+        if not created and is_guest and not role.is_active:
+            role.is_active   = True
+            role.approved_at = role.approved_at or timezone.now()
+            role.save(update_fields=["is_active", "approved_at"])
 
         # Teacher always gets a SELF learner profile too.
         if not user.learner_profiles.filter(
