@@ -355,9 +355,13 @@ class UserRole(models.Model):
 
         if self.role.name == "TEACHER":
             tp = getattr(self.user, "teacher_profile", None)
-            if tp and not tp.is_approved:
-                tp.is_approved = True
-                tp.save(update_fields=["is_approved"])
+            if tp:
+                # Admin approval gates the academy (faculty) track. Flip it
+                # from pending → approved, then resync the legacy fields.
+                if tp.academy_status == tp.TRACK_PENDING:
+                    tp.academy_status = tp.TRACK_APPROVED
+                tp.sync_type_from_tracks()
+                tp.save(update_fields=["academy_status", "teacher_type", "is_approved"])
 
     def __str__(self):
         return f"{self.user.email} -> {self.role.name}"
@@ -614,6 +618,26 @@ class TeacherProfile(models.Model):
         (TYPE_BOTH, "Both"),
     ]
 
+    # Per-track lifecycle. A teacher is "assigned" to a track by an admin
+    # (academy/faculty) or auto-listed (skill/guest). The dashboard switch in
+    # both the teacher and student apps reads these directly:
+    #   locked    → not applied for; the switch tile shows a padlock + "Apply"
+    #   pending   → applied, waiting on admin review; tile shows "In review"
+    #   approved  → live; tile is selectable and routes to that dashboard
+    # "academy" maps to the FACULTY track, "skill" maps to the GUEST track.
+    TRACK_LOCKED = "locked"
+    TRACK_PENDING = "pending"
+    TRACK_APPROVED = "approved"
+    TRACK_STATUS_CHOICES = [
+        (TRACK_LOCKED, "Locked"),
+        (TRACK_PENDING, "Pending review"),
+        (TRACK_APPROVED, "Approved"),
+    ]
+
+    # The two switchable tracks, by the public name used across the apps.
+    TRACK_ACADEMY = "academy"
+    TRACK_SKILL = "skill"
+
     # Tier assigned by the screening panel; drives the rate band.
     TIER_STANDARD = "standard"
     TIER_SENIOR = "senior"
@@ -645,6 +669,15 @@ class TeacherProfile(models.Model):
         max_length=10, choices=TEACHER_TYPE_CHOICES, default=TYPE_FACULTY
     )
     tier = models.CharField(max_length=10, choices=TIER_CHOICES, blank=True)
+
+    # Per-track status (see TRACK_* above). teacher_type stays in sync via
+    # sync_type_from_tracks() for backward compatibility with older code.
+    academy_status = models.CharField(
+        max_length=10, choices=TRACK_STATUS_CHOICES, default=TRACK_LOCKED
+    )
+    skill_status = models.CharField(
+        max_length=10, choices=TRACK_STATUS_CHOICES, default=TRACK_LOCKED
+    )
 
     # --- Section 1: Educational Qualifications ---
     highest_degree = models.CharField(
@@ -729,6 +762,63 @@ class TeacherProfile(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
 
+
+    # ── Track helpers ─────────────────────────────────────────────────────
+    def track_status(self, track):
+        """Status for 'academy' or 'skill'."""
+        if track == self.TRACK_ACADEMY:
+            return self.academy_status
+        if track == self.TRACK_SKILL:
+            return self.skill_status
+        return self.TRACK_LOCKED
+
+    def set_track_status(self, track, status):
+        if track == self.TRACK_ACADEMY:
+            self.academy_status = status
+        elif track == self.TRACK_SKILL:
+            self.skill_status = status
+
+    def approved_tracks(self):
+        out = []
+        if self.academy_status == self.TRACK_APPROVED:
+            out.append(self.TRACK_ACADEMY)
+        if self.skill_status == self.TRACK_APPROVED:
+            out.append(self.TRACK_SKILL)
+        return out
+
+    def pending_tracks(self):
+        out = []
+        if self.academy_status == self.TRACK_PENDING:
+            out.append(self.TRACK_ACADEMY)
+        if self.skill_status == self.TRACK_PENDING:
+            out.append(self.TRACK_SKILL)
+        return out
+
+    @staticmethod
+    def track_for_type(teacher_type):
+        """Map a signup teacher_type (GUEST/FACULTY) to a track name."""
+        return (
+            TeacherProfile.TRACK_SKILL
+            if teacher_type == TeacherProfile.TYPE_GUEST
+            else TeacherProfile.TRACK_ACADEMY
+        )
+
+    def sync_type_from_tracks(self):
+        """Keep the legacy teacher_type + is_approved in step with the
+        per-track statuses so existing dashboards/admin keep working.
+
+        A track counts toward teacher_type once it is applied for (pending or
+        approved). is_approved is True whenever ANY track is live, which is
+        what the legacy gates ("teacher account active") really meant."""
+        academy_on = self.academy_status in (self.TRACK_PENDING, self.TRACK_APPROVED)
+        skill_on = self.skill_status in (self.TRACK_PENDING, self.TRACK_APPROVED)
+        if academy_on and skill_on:
+            self.teacher_type = self.TYPE_BOTH
+        elif skill_on:
+            self.teacher_type = self.TYPE_GUEST
+        elif academy_on:
+            self.teacher_type = self.TYPE_FACULTY
+        self.is_approved = bool(self.approved_tracks())
 
     # ── Teacher password helpers ──────────────────────────────────────────
     def set_teacher_password(self, raw_password):

@@ -30,13 +30,14 @@ Signup cases:
             + TEACHER role (reuses existing SELF learner).
 
   Case 5  EXISTING (has_student) + Student signup  → BLOCK
-  Case 6  EXISTING (has_teacher=FACULTY) + Teacher/GUEST signup  → BLOCK
-          (already has faculty, can't add guest in the other direction)
-
-  Case 7  EXISTING (has_teacher=GUEST) + Teacher/FACULTY signup  → UPGRADE
-          → verify ACCOUNT password, upgrade teacher_type to BOTH,
-            add a pending FACULTY UserRole so admin can review the faculty
-            application while the GUEST side stays live.
+  Case 6  EXISTING teacher + signup for the OTHER track → ADD TRACK
+          A teacher assigned to one track (e.g. Skill/Guest) can apply for the
+          track they're missing (e.g. Academy/Faculty). The new track is added
+          to the SAME TeacherProfile:
+            · adding Skill (guest)   → listed immediately (approved)
+            · adding Academy (faculty) → pending admin review
+          The track they already hold keeps working the whole time.
+  Case 7  EXISTING teacher + signup for a track they already hold → BLOCK
 """
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
@@ -127,29 +128,33 @@ class SignupSerializer(serializers.Serializer):
                 data["_existing_user"] = existing_user
 
             elif role == Role.TEACHER:
+                if not data.get("teacher_type"):
+                    raise ValidationError(
+                        {"teacher_type": "Choose Guest expert (skill) or Faculty (academy)."}
+                    )
+                target_track = TeacherProfile.track_for_type(data["teacher_type"])
+
                 if has_teacher:
                     tp = existing_user.teacher_profile
-                    existing_type = tp.teacher_type
-
-                    # Case 7: GUEST → wants to add FACULTY → upgrade to BOTH
-                    if (existing_type == TeacherProfile.TYPE_GUEST
-                            and data.get("teacher_type") == TeacherProfile.TYPE_FACULTY):
-                        authed = authenticate(email=email, password=password)
-                        if not authed:
-                            raise ValidationError(
-                                {"password": "Incorrect password for this account."}
-                            )
-                        data["_mode"]          = "upgrade_guest_to_both"
-                        data["_existing_user"] = existing_user
-                    else:
-                        # FACULTY trying to add GUEST, or same type again → block
+                    current = tp.track_status(target_track)
+                    # Already hold this track (live or in review) → nothing to add.
+                    if current in (TeacherProfile.TRACK_PENDING, TeacherProfile.TRACK_APPROVED):
+                        nice = "Academy (Faculty)" if target_track == TeacherProfile.TRACK_ACADEMY else "Skill (Guest expert)"
                         raise ValidationError(
-                            "This email already has a teacher account. Log in instead."
+                            f"You're already set up for {nice} on this account. Log in instead."
                         )
+                    # Otherwise they're adding the track they're missing.
+                    authed = authenticate(email=email, password=password)
+                    if not authed:
+                        raise ValidationError(
+                            {"password": "Incorrect password for this account."}
+                        )
+                    data["_mode"]          = "add_teacher_track"
+                    data["_existing_user"] = existing_user
+                    data["_target_track"]  = target_track
                     return data
-                if not data.get("teacher_type"):
-                    raise ValidationError({"teacher_type": "Choose Guest expert or Faculty."})
-                # has_student only → add teacher identity.
+
+                # has_student only → add a brand-new teacher identity (one track).
                 # Ownership proof = account password.
                 authed = authenticate(email=email, password=password)
                 if not authed:
@@ -226,8 +231,8 @@ class SignupSerializer(serializers.Serializer):
             user = existing_user
 
         if role == Role.TEACHER:
-            if mode == "upgrade_guest_to_both":
-                self._upgrade_guest_to_both(user)
+            if mode == "add_teacher_track":
+                self._add_teacher_track(user, validated_data["_target_track"])
             else:
                 self._setup_teacher(user, validated_data["teacher_type"])
         else:
@@ -282,64 +287,73 @@ class SignupSerializer(serializers.Serializer):
             },
         )
 
-    def _upgrade_guest_to_both(self, user):
-        """
-        Case 7: user is already a GUEST expert. They want to apply as FACULTY too.
-        - Set teacher_type = BOTH on the existing TeacherProfile (guest side stays live).
-        - The existing TEACHER UserRole stays is_active=True (so teacher context still
-          works with their guest identity).
-        - No new UserRole is created — BOTH means one account, one role row, two tracks.
-          Admin approval for the faculty track is handled separately via the
-          faculty_application_status field or however the admin queue is extended.
-        The account is already verified, so no email is sent.
-        """
-        tp = user.teacher_profile
-        tp.teacher_type = TeacherProfile.TYPE_BOTH
-        tp.save(update_fields=["teacher_type"])
-        # The TEACHER UserRole already exists and is active — nothing to change there.
-
-    def _setup_teacher(self, user, teacher_type):
-        # Approval policy by track (matches the signup UI):
-        #   GUEST  → listed immediately, no screening ("You're live!")
-        #   FACULTY → inactive until an admin approves (admin review queue)
-        # So a guest is approved/active at signup; a faculty applicant is not.
-        is_guest = teacher_type == TeacherProfile.TYPE_GUEST
-
-        # No teacher_password — single account password handles everything.
-        tp = TeacherProfile(
-            user=user,
-            teacher_type=teacher_type,
-            is_approved=is_guest,
+    # ── track approval policy ──────────────────────────────────────────────
+    # Skill (Guest expert) is auto-listed the moment they apply; Academy
+    # (Faculty) waits in the admin review queue. One place decides this so the
+    # new-teacher and add-track paths can never drift apart.
+    def _initial_status_for(self, track):
+        return (
+            TeacherProfile.TRACK_APPROVED
+            if track == TeacherProfile.TRACK_SKILL
+            else TeacherProfile.TRACK_PENDING
         )
-        tp.save()
 
+    def _ensure_teacher_role(self, user, *, active):
+        """Create/refresh the TEACHER UserRole. `active` mirrors whether the
+        teacher already has a live (approved) track — an active role row is
+        what lets them enter teacher mode; a pending faculty applicant stays
+        inactive so they surface in the admin approval queue."""
         teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
         role, created = UserRole.objects.get_or_create(
-            user = user,
-            role = teacher_role,
+            user=user,
+            role=teacher_role,
             defaults={
-                # Guests go live immediately; faculty await admin approval.
-                "is_active":  is_guest,
+                "is_active":  active,
                 "is_primary": not user.user_roles.filter(is_primary=True).exists(),
-                # Stamp auto-approval so guests never appear in the admin queue
-                # (which filters is_active=False, approved_at__isnull=True).
-                "approved_at": timezone.now() if is_guest else None,
+                "approved_at": timezone.now() if active else None,
             },
         )
-        # Edge case: a TEACHER role row already existed for this account. If
-        # this is a guest signup, make sure it's active/stamped.
-        if not created and is_guest and not role.is_active:
+        if not created and active and not role.is_active:
             role.is_active   = True
             role.approved_at = role.approved_at or timezone.now()
             role.save(update_fields=["is_active", "approved_at"])
+        return role
 
-        # Teacher always gets a SELF learner profile too.
+    def _ensure_self_learner(self, user):
+        """A teacher account always carries a SELF learner profile so the
+        person can also learn / switch to the student side."""
         if not user.learner_profiles.filter(
             relationship=LearnerProfile.RELATIONSHIP_SELF, is_active=True
         ).exists():
             LearnerProfile.objects.create(
                 account      = user,
-                display_name = user.username,
+                display_name = user.username or user.email.split("@")[0],
                 relationship = LearnerProfile.RELATIONSHIP_SELF,
                 is_default   = not user.learner_profiles.filter(is_active=True).exists(),
             )
+
+    def _setup_teacher(self, user, teacher_type):
+        """Brand-new teacher identity, applying through a single track."""
+        track  = TeacherProfile.track_for_type(teacher_type)
+        status = self._initial_status_for(track)
+
+        tp = TeacherProfile(user=user, teacher_type=teacher_type)
+        tp.set_track_status(track, status)
+        tp.sync_type_from_tracks()   # sets teacher_type + is_approved coherently
+        tp.save()
+
+        self._ensure_teacher_role(user, active=bool(tp.approved_tracks()))
+        self._ensure_self_learner(user)
+
+    def _add_teacher_track(self, user, track):
+        """Existing teacher applying for the track they don't yet hold.
+        The track they already have keeps working untouched."""
+        tp = user.teacher_profile
+        tp.set_track_status(track, self._initial_status_for(track))
+        tp.sync_type_from_tracks()
+        tp.save(update_fields=["academy_status", "skill_status",
+                               "teacher_type", "is_approved"])
+
+        # If the newly added track is live (skill), make sure the role is
+        # active so they can enter that dashboard right away.
+        self._ensure_teacher_role(user, active=bool(tp.approved_tracks()))

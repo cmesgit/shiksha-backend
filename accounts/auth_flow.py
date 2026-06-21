@@ -42,11 +42,13 @@ CTX_TEACHER = "teacher"
 # Token & cookie helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_tokens(user, *, context, profile=None):
+def build_tokens(user, *, context, profile=None, active_track=None):
     refresh = RefreshToken.for_user(user)
     refresh["context"] = context
     if profile is not None:
         refresh["active_profile"] = str(profile.id)
+    if active_track is not None:
+        refresh["active_track"] = active_track
     return refresh
 
 
@@ -93,6 +95,26 @@ def serialize_profile_card(p):
     }
 
 
+def serialize_teacher(teacher, *, active_track=None):
+    """Single shape for the teacher identity, used by login, /me and the
+    teacher-context switch. `tracks` carries the per-track status so the
+    academy/skill-dev switch in both apps can render locked / pending /
+    approved without extra round-trips."""
+    if teacher is None:
+        return None
+    return {
+        "type": teacher.teacher_type,          # legacy: GUEST | FACULTY | BOTH
+        "tier": teacher.tier,
+        "tracks": {
+            "academy": teacher.academy_status,  # FACULTY track
+            "skill":   teacher.skill_status,    # GUEST track
+        },
+        "approved_tracks": teacher.approved_tracks(),
+        "pending_tracks":  teacher.pending_tracks(),
+        "active_track":    active_track,        # which dashboard is in context
+    }
+
+
 def _ensure_default_profile(user):
     profiles = list(user.learner_profiles.filter(is_active=True))
     if profiles:
@@ -128,10 +150,13 @@ class LoginView(APIView):
 
         profiles    = _ensure_default_profile(user)
         teacher     = getattr(user, "teacher_profile", None)
-        has_teacher = bool(teacher and teacher.is_approved)
+        # A teacher identity in ANY state (even a faculty application still in
+        # review) means we show the picker, so the person sees their status and
+        # can pick the learner side or an approved teaching track.
+        has_teacher_identity = teacher is not None
 
-        # Auto-select: single PIN-free profile, no teacher identity
-        if len(profiles) == 1 and not has_teacher:
+        # Auto-select: single PIN-free profile, no teacher identity at all.
+        if len(profiles) == 1 and not has_teacher_identity:
             profile = profiles[0]
             if not profile.has_pin():
                 refresh = build_tokens(user, context=CTX_LEARNER, profile=profile)
@@ -144,16 +169,13 @@ class LoginView(APIView):
                 }
                 return set_auth_cookies(Response(body, status=status.HTTP_200_OK), refresh)
 
-        # Multiple profiles or teacher identity → return account token, let
-        # frontend show the profile picker.
+        # Multiple profiles or a teacher identity → return account token, let
+        # the frontend show the profile picker.
         refresh = build_tokens(user, context=CTX_ACCOUNT)
         body = {
             "context":  CTX_ACCOUNT,
             "profiles": [serialize_profile_card(p) for p in profiles],
-            "teacher":  {
-                "type": teacher.teacher_type,
-                "tier": teacher.tier,
-            } if has_teacher else None,
+            "teacher":  serialize_teacher(teacher),
         }
         return set_auth_cookies(Response(body, status=status.HTTP_200_OK), refresh)
 
@@ -193,12 +215,19 @@ class ProfileSelectView(APIView):
 
 class TeacherContextView(APIView):
     """
-    POST { password }
+    POST { password, track? }
     Uses the ACCOUNT password. No separate teacher password exists.
 
-    200  { context: "teacher", teacher: { type, tier } }
+    `track` is optional and one of "academy" | "skill". It chooses which
+    dashboard to enter for teachers approved on both tracks; when omitted we
+    default to academy if approved, otherwise skill. The chosen track rides in
+    the token as `active_track` so the dashboard switch knows where it is.
+
+    200  { context: "teacher", teacher: { …, active_track } }
     409  { code: "no_teacher" }
-    403  { code: "not_approved" }
+    403  { code: "not_approved" }            # no approved track yet
+    403  { code: "track_locked" }            # asked for a track they don't hold
+    403  { code: "track_pending" }           # asked for a track still in review
     400  { code: "bad_password" }
     """
     permission_classes = [IsAuthenticated]
@@ -213,7 +242,8 @@ class TeacherContextView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        if not (teacher.is_approved and request.user.has_role(Role.TEACHER)):
+        approved = teacher.approved_tracks()
+        if not (approved and request.user.has_role(Role.TEACHER)):
             return Response(
                 {"code": "not_approved", "detail": "Your teacher account is awaiting approval."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -226,10 +256,32 @@ class TeacherContextView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        refresh = build_tokens(request.user, context=CTX_TEACHER)
+        # Resolve which dashboard to enter.
+        track = request.data.get("track") or None
+        if track:
+            if track not in (teacher.TRACK_ACADEMY, teacher.TRACK_SKILL):
+                raise ValidationError({"track": "Unknown track."})
+            st = teacher.track_status(track)
+            if st == teacher.TRACK_PENDING:
+                return Response(
+                    {"code": "track_pending",
+                     "detail": "That track is still in admin review."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if st != teacher.TRACK_APPROVED:
+                return Response(
+                    {"code": "track_locked",
+                     "detail": "You haven't been assigned to that track yet."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        else:
+            # Default: prefer academy when approved, else the first approved.
+            track = teacher.TRACK_ACADEMY if teacher.TRACK_ACADEMY in approved else approved[0]
+
+        refresh = build_tokens(request.user, context=CTX_TEACHER, active_track=track)
         body = {
             "context": CTX_TEACHER,
-            "teacher": {"type": teacher.teacher_type, "tier": teacher.tier},
+            "teacher": serialize_teacher(teacher, active_track=track),
         }
         return set_auth_cookies(Response(body, status=status.HTTP_200_OK), refresh)
 
@@ -288,11 +340,11 @@ class MeView(APIView):
         user    = request.user
         token   = getattr(request, "auth", None)
         context = token.get("context") if token else None
+        active_track = token.get("active_track") if token else None
 
         active   = get_active_profile(request)
         profiles = list(user.learner_profiles.filter(is_active=True))
         teacher  = getattr(user, "teacher_profile", None)
-        has_teacher = bool(teacher and teacher.is_approved)
 
         return Response({
             "id":             str(user.id),
@@ -302,10 +354,7 @@ class MeView(APIView):
             "roles":          user.get_active_roles(),
             "active_profile": serialize_profile_card(active) if active else None,
             "profiles":       [serialize_profile_card(p) for p in profiles],
-            "teacher": {
-                "type": teacher.teacher_type,
-                "tier": teacher.tier,
-            } if has_teacher else None,
+            "teacher":        serialize_teacher(teacher, active_track=active_track),
             "profile":          _legacy_profile_dict(active),
             "profile_complete": active.is_complete if active else False,
         })
@@ -489,8 +538,10 @@ class EmailCheckView(APIView):
             "exists":        True,
             "has_student":   user.has_role(Role.STUDENT),
             "has_teacher":   teacher is not None,
-            # Expose the track so the frontend can offer the GUEST→BOTH upgrade
-            # path when a guest expert wants to add a FACULTY identity.
+            # Track-level status drives the signup branch: a teacher can add the
+            # track they don't yet hold, but not one already live/in review.
             "teacher_type":  teacher.teacher_type if teacher else None,
+            "academy_status": teacher.academy_status if teacher else "locked",
+            "skill_status":   teacher.skill_status if teacher else "locked",
             "is_verified":   user.is_verified,
         })
