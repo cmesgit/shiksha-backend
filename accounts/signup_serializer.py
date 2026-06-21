@@ -47,6 +47,8 @@ class SignupProfileSerializer(serializers.Serializer):
         choices=[LearnerProfile.RELATIONSHIP_SELF, LearnerProfile.RELATIONSHIP_DEPENDENT],
         required=False,
     )
+    # Optional 4–6 digit PIN to lock this profile. Blank / omitted = no PIN.
+    pin = serializers.CharField(max_length=6, required=False, allow_blank=True)
 
 
 class SignupSerializer(serializers.Serializer):
@@ -158,6 +160,11 @@ class SignupSerializer(serializers.Serializer):
                     raise ValidationError(
                         {"profiles": f"Profile {i + 1}: a name is required."}
                     )
+                pin = (p.get("pin") or "").strip()
+                if pin and (not pin.isdigit() or not (4 <= len(pin) <= 6)):
+                    raise ValidationError(
+                        {"profiles": f"Profile {i + 1}: PIN must be 4-6 digits."}
+                    )
             existing_count = (
                 existing_user.learner_profiles.filter(is_active=True).count()
                 if existing_user else 0
@@ -228,12 +235,16 @@ class SignupSerializer(serializers.Serializer):
             if rel == LearnerProfile.RELATIONSHIP_SELF:
                 has_self = True
 
-            LearnerProfile.objects.create(
+            lp = LearnerProfile(
                 account      = user,
                 display_name = entry["display_name"].strip(),
                 relationship = rel,
                 is_default   = (i == 0 and existing_count == 0),
             )
+            pin = (entry.get("pin") or "").strip()
+            if pin:
+                lp.set_pin(pin)
+            lp.save()
 
         student_role, _ = Role.objects.get_or_create(name=Role.STUDENT)
         UserRole.objects.get_or_create(
