@@ -405,3 +405,13 @@ class Message(models.Model):
 
     def __str__(self):
         return f"Msg {self.id}"
+
+
+# ── Additive models (separate files, imported here so Django discovers them) ──
+# These lines are the ONLY change to this file. The models live in their own
+# modules so they can be added without touching the original models above.
+from .course_models import (  # noqa: F401, E402
+    SkillCourse, SkillCourseSection, SkillCourseLecture,
+    SkillCourseEnrollment, SkillLectureProgress,
+)
+from .review_models import ExpertReview  # noqa: F401, E402
