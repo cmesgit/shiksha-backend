@@ -1129,26 +1129,53 @@ class AdminStatsView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def get(self, request):
-        from courses.models import Course
-        from forum.models import ForumPost
-        from payments.models import Order
+        from .models import TeacherProfile
 
         total_users = User.objects.count()
-        active_courses = Course.objects.filter(is_active=True).count() if hasattr(Course, "is_active") else Course.objects.count()
         active_enrollments = Enrollment.objects.filter(status=Enrollment.STATUS_ACTIVE).count()
-        forum_posts = ForumPost.objects.count()
 
-        total_revenue = (
-            Order.objects
-            .filter(status=Order.STATUS_PAID)
-            .aggregate(total=models.Sum("amount"))["total"]
-        ) or 0
+        # Courses / forum / payments live in apps that may be absent or empty in
+        # some deployments. Never let a missing app 500 the dashboard.
+        active_courses = 0
+        try:
+            from courses.models import Course
+            active_courses = (
+                Course.objects.filter(is_active=True).count()
+                if hasattr(Course, "is_active") else Course.objects.count()
+            )
+        except Exception:
+            active_courses = 0
 
-        pending_approvals = UserRole.objects.filter(
-            role__name="TEACHER",
-            is_active=False,
-            approved_at__isnull=True,
+        forum_posts = 0
+        try:
+            from forum.models import ForumPost
+            forum_posts = ForumPost.objects.count()
+        except Exception:
+            forum_posts = 0
+
+        # Revenue only means something once a paying gateway is wired. While the
+        # provider is "free"/manual there are no paid orders, so this is 0.
+        total_revenue = 0
+        try:
+            from payments.models import Order
+            total_revenue = (
+                Order.objects
+                .filter(status=Order.STATUS_PAID)
+                .aggregate(total=models.Sum("amount"))["total"]
+            ) or 0
+        except Exception:
+            total_revenue = 0
+
+        # Pending approvals = academy (Faculty) applications awaiting review.
+        # (Skill/Guest auto-lists, so it never pends.) This counts the track
+        # status directly, which also catches guests who later applied for
+        # academy — they have an active role but a pending academy track.
+        pending_approvals = TeacherProfile.objects.filter(
+            academy_status=TeacherProfile.TRACK_PENDING
         ).count()
+
+        # Surface the active payment mode so the admin UI can adapt.
+        payment_provider = getattr(settings, "PAYMENT_PROVIDER", "free")
 
         return Response({
             "total_users": total_users,
@@ -1157,6 +1184,7 @@ class AdminStatsView(APIView):
             "forum_posts": forum_posts,
             "total_revenue": total_revenue,
             "pending_approvals": pending_approvals,
+            "payment_provider": payment_provider,
         })
 
 
@@ -1261,39 +1289,70 @@ class AdminTeacherApprovalListView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def get(self, request):
+        from .models import TeacherProfile
+        from .serializers import TeacherTrackApprovalSerializer
+
         qs = (
-            UserRole.objects
-            .filter(
-                role__name="TEACHER",
-                is_active=False,
-                approved_at__isnull=True,
-            )
-            .select_related("user", "role")
+            TeacherProfile.objects
+            .filter(academy_status=TeacherProfile.TRACK_PENDING)
+            .select_related("user")
             .order_by("-created_at")
         )
-        return Response(TeacherApprovalSerializer(qs, many=True).data)
+        return Response(TeacherTrackApprovalSerializer(qs, many=True).data)
 
 
 class AdminTeacherApprovalActionView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request, approval_id):
+        from .models import TeacherProfile, Role
+
         action = request.data.get("action", "").lower()
         if action not in ("approve", "reject"):
             raise ValidationError({"action": "Must be 'approve' or 'reject'."})
 
-        role = (
-            UserRole.objects
-            .filter(id=approval_id, role__name="TEACHER", is_active=False)
+        # `approval_id` is the TeacherProfile primary key (see the list view).
+        tp = (
+            TeacherProfile.objects
             .select_related("user")
+            .filter(pk=approval_id, academy_status=TeacherProfile.TRACK_PENDING)
             .first()
         )
-        if not role:
+        if not tp:
             return Response({"detail": "Approval request not found."}, status=404)
 
         if action == "approve":
-            role.approve(request.user)
-            return Response({"detail": "Teacher approved.", "id": str(role.id)})
+            tp.academy_status = TeacherProfile.TRACK_APPROVED
+            tp.sync_type_from_tracks()
+            tp.save(update_fields=["academy_status", "teacher_type", "is_approved"])
+
+            # Make sure the TEACHER role is active + stamped so they can enter
+            # the academy dashboard. (A guest who added academy already had an
+            # active role; this is a no-op for them.)
+            teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
+            ur, _ = UserRole.objects.get_or_create(
+                user=tp.user, role=teacher_role,
+                defaults={"is_active": True, "approved_at": timezone.now(),
+                          "approved_by": request.user},
+            )
+            if not ur.is_active or ur.approved_at is None:
+                ur.is_active = True
+                ur.approved_at = ur.approved_at or timezone.now()
+                ur.approved_by = ur.approved_by or request.user
+                ur.save(update_fields=["is_active", "approved_at", "approved_by"])
+
+            return Response({"detail": "Teacher approved for Academy.", "id": str(tp.pk)})
         else:
-            role.delete()
-            return Response({"detail": "Teacher request rejected."})
+            # Reject the academy application; the skill track (if any) is untouched.
+            tp.academy_status = TeacherProfile.TRACK_LOCKED
+            tp.sync_type_from_tracks()
+            tp.save(update_fields=["academy_status", "teacher_type", "is_approved"])
+
+            # If no track survives, deactivate the teacher role so they fall back
+            # to being a plain learner.
+            if not tp.approved_tracks():
+                UserRole.objects.filter(
+                    user=tp.user, role__name="TEACHER"
+                ).update(is_active=False, approved_at=None)
+
+            return Response({"detail": "Academy application rejected.", "id": str(tp.pk)})

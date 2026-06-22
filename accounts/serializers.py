@@ -641,3 +641,39 @@ class TeacherApprovalSerializer(serializers.ModelSerializer):
         if profile and profile.full_name:
             return profile.full_name
         return obj.user.username or obj.user.email
+
+
+class TeacherTrackApprovalSerializer(serializers.ModelSerializer):
+    """Track-aware approval row, keyed by TeacherProfile id.
+
+    The admin queue only ever shows the academy (Faculty) track, since the
+    skill (Guest) track auto-lists with no review. `id` is the TeacherProfile
+    primary key, which the action endpoint accepts.
+    """
+    user_id = serializers.UUIDField(source="user.id", read_only=True)
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    user_name = serializers.SerializerMethodField()
+    requested_at = serializers.DateTimeField(source="created_at", read_only=True)
+    track = serializers.SerializerMethodField()
+    track_label = serializers.SerializerMethodField()
+
+    class Meta:
+        from .models import TeacherProfile
+        model = TeacherProfile
+        fields = (
+            "id", "user_id", "user_email", "user_name",
+            "requested_at", "track", "track_label",
+        )
+
+    def get_user_name(self, obj):
+        profile = default_learner(obj.user)
+        if profile and profile.full_name:
+            return profile.full_name
+        return obj.user.username or obj.user.email
+
+    def get_track(self, obj):
+        # Academy is the only track that pends; report it explicitly.
+        return "academy"
+
+    def get_track_label(self, obj):
+        return "Academy (Faculty)"
