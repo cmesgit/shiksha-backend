@@ -422,7 +422,7 @@ class TeacherAssignmentSubmissionsView(generics.ListAPIView):
         return (
             AssignmentSubmission.objects
             .filter(assignment=assignment)
-            .select_related("student", "student__profile", "assignment")
+            .select_related("student", "assignment")
             .annotate(
                 submission_status=Case(
                     When(submitted_at__gt=assignment.due_date, then=Value("Late")),
@@ -453,7 +453,7 @@ class SubjectAssignmentsView(APIView):
         teacher_prefetch = Prefetch(
             "chapter__subject__subject_teachers",
             queryset=SubjectTeacher.objects.select_related(
-                "teacher__profile"
+                "teacher"
             ).order_by("order"),
             to_attr="prefetched_teachers",
         )
@@ -513,15 +513,15 @@ class DownloadAllSubmissionsView(APIView):
         submissions = (
             AssignmentSubmission.objects
             .filter(assignment=assignment)
-            .select_related("student__profile")
+            .select_related("student")
         )
 
         buffer = BytesIO()
         with zipfile.ZipFile(buffer, "w") as zf:
             for sub in submissions:
                 if sub.submitted_file:
-                    name = getattr(sub.student, "profile", None)
-                    student_name = name.full_name if name else sub.student.email
+                    lp = sub.student.default_learner_profile()
+                    student_name = (lp.full_name if lp and lp.full_name else sub.student.email)
                     filename = f"{student_name}_{sub.submitted_file.name.split('/')[-1]}"
                     zf.writestr(filename, sub.submitted_file.read())
 

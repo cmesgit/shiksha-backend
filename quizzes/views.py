@@ -555,7 +555,7 @@ class StudentQuizAttemptsView(APIView):
                 student=request.user,
                 status=QuizAttempt.STATUS_SUBMITTED,
             )
-            .select_related("student__profile")
+            .select_related("student")
             .order_by("attempt_number")
         )
 
@@ -564,8 +564,9 @@ class StudentQuizAttemptsView(APIView):
                 "id": a.id,
                 "attempt_number": a.attempt_number,
                 "student_name": (
-                    (lambda p: p.full_name if p else a.student.username)(a.student.default_learner_profile())
-                    if hasattr(a.student, "profile") else a.student.email
+                    (lambda p: p.full_name if p and p.full_name else a.student.username)(
+                        a.student.default_learner_profile()
+                    )
                 ),
                 "submitted_at": a.submitted_at,
                 "score": a.score,
@@ -600,23 +601,37 @@ class TeacherQuizAttemptsView(APIView):
 
         from django.db.models import Max, FloatField, ExpressionWrapper, F
 
-        student_summaries = (
+        student_summaries = list(
             QuizAttempt.objects
             .filter(quiz=quiz, status=QuizAttempt.STATUS_SUBMITTED)
-            .values("student_id", "student__profile__full_name", "student__email")
+            .values("student_id", "student__email")
             .annotate(
                 latest_submitted_at=Max("submitted_at"),
                 best_score=Max("score"),
                 average_score=Avg("score"),
                 attempts_count=Count("id"),
             )
-            .order_by("student__profile__full_name")
+            .order_by("student__email")
         )
+
+        # Resolve display names from learner profiles in one query (the legacy
+        # one-to-one Profile model was removed; default profile preferred).
+        from accounts.models import LearnerProfile
+        _ids = [s["student_id"] for s in student_summaries]
+        _name_map = {}
+        for _lp in (
+            LearnerProfile.objects
+            .filter(account_id__in=_ids, is_active=True)
+            .order_by("account_id", "-is_default", "created_at")
+        ):
+            _name_map.setdefault(
+                _lp.account_id, (_lp.full_name or "").strip() or _lp.display_name
+            )
 
         data = [
             {
                 "student_id": s["student_id"],
-                "student_name": s["student__profile__full_name"] or s["student__email"],
+                "student_name": _name_map.get(s["student_id"]) or s["student__email"],
                 "student_email": s["student__email"],
                 "latest_submitted_at": s["latest_submitted_at"],
                 "best_score": s["best_score"],
@@ -660,7 +675,7 @@ class TeacherStudentAttemptsView(generics.ListAPIView):
                 student_id=student_id,
                 status=QuizAttempt.STATUS_SUBMITTED
             )
-            .select_related("student", "student__profile")
+            .select_related("student")
             .order_by("attempt_number")
         )
 
@@ -671,7 +686,7 @@ class TeacherQuizAttemptDetailView(APIView):
     def get(self, request, pk):
         attempt = get_object_or_404(
             QuizAttempt.objects
-            .select_related("student__profile", "quiz")
+            .select_related("student", "quiz")
             .prefetch_related(
                 "answers__question__choices",
                 "answers__selected_choice",

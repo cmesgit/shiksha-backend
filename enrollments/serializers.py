@@ -219,13 +219,16 @@ class AdminEnrollmentRequestListSerializer(serializers.ModelSerializer):
         )
 
     def get_user_name(self, obj):
-        profile = getattr(obj.user, "profile", None)
-        if profile:
-            full = f"{profile.first_name} {profile.last_name}".strip()
-            if full:
-                return full
-            if profile.full_name:
-                return profile.full_name
+        # The legacy one-to-one Profile model was removed; the account holder's
+        # name now lives on the User (AbstractUser) or on their learner profile.
+        full = (obj.user.get_full_name() or "").strip()
+        if full:
+            return full
+        lp = obj.learner_profile
+        if lp:
+            name = f"{lp.first_name} {lp.last_name}".strip() or lp.display_name
+            if name:
+                return name
         return obj.user.username or obj.user.email
 
     def get_learner_name(self, obj):
@@ -280,8 +283,8 @@ class AdminActionSerializer(serializers.Serializer):
 class BatchStudentSerializer(serializers.ModelSerializer):
     """Serializes an Enrollment for the admin batch roster view.
 
-    Covers the fields used in AdminBatchRosterView:
-      select_related("user", "user__profile", "course", "batch")
+    The student's name comes from the linked learner profile (the legacy
+    one-to-one Profile model was removed in accounts migration 0011).
     """
     user_email = serializers.EmailField(source="user.email", read_only=True)
     user_name = serializers.SerializerMethodField()
@@ -301,11 +304,10 @@ class BatchStudentSerializer(serializers.ModelSerializer):
         )
 
     def get_user_name(self, obj):
-        profile = getattr(obj.user, "profile", None)
-        if profile:
-            full = f"{profile.first_name} {profile.last_name}".strip()
-            if full:
-                return full
-            if getattr(profile, "full_name", None):
-                return profile.full_name
-        return obj.user.username or obj.user.email
+        lp = obj.learner_profile
+        if lp:
+            name = f"{lp.first_name} {lp.last_name}".strip() or lp.display_name
+            if name:
+                return name
+        full = (obj.user.get_full_name() or "").strip()
+        return full or obj.user.username or obj.user.email

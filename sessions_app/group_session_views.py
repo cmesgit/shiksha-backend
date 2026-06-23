@@ -46,16 +46,14 @@ def _gs_qs():
     """Base queryset with everything needed by the list serializer."""
     return (
         GroupSession.objects.select_related(
-            "host", "host__profile",
-            "invited_teacher", "invited_teacher__profile",
+            "host",
+            "invited_teacher",
             "subject", "subject__course",
         )
         .prefetch_related(
             Prefetch(
                 "invites",
-                queryset=GroupSessionInvite.objects.select_related(
-                    "user", "user__profile"
-                ),
+                queryset=GroupSessionInvite.objects.select_related("user"),
             )
         )
     )

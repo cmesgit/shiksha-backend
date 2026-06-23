@@ -27,10 +27,11 @@ class AdminOrderSerializer(serializers.ModelSerializer):
         )
 
     def get_user_name(self, obj):
-        profile = getattr(obj.user, "profile", None)
-        if profile and profile.full_name:
-            return profile.full_name
-        return obj.user.username or obj.user.email
+        lp = obj.user.default_learner_profile()
+        if lp and (lp.full_name or "").strip():
+            return lp.full_name
+        full = (obj.user.get_full_name() or "").strip()
+        return full or obj.user.username or obj.user.email
 
 
 class AdminOrderListView(APIView):
@@ -39,7 +40,7 @@ class AdminOrderListView(APIView):
     def get(self, request):
         qs = (
             Order.objects
-            .select_related("user", "user__profile", "course")
+            .select_related("user", "course")
             .order_by("-created_at")
         )
 

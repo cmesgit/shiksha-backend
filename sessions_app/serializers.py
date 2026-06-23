@@ -9,23 +9,36 @@ from .models import PrivateSession, SessionParticipant, ChatMessage
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _default_learner(user):
+    """The account's default (else first) learner profile, or None.
+
+    Personal data moved off the deleted Profile model onto LearnerProfile.
+    """
+    if user is None or not hasattr(user, "learner_profiles"):
+        return None
+    return (
+        user.learner_profiles.filter(is_default=True).first()
+        or user.learner_profiles.first()
+    )
+
+
 def get_user_name(user):
     if user is None:
         return "Unknown"
-    profile = getattr(user, "profile", None)
-    if profile:
-        name = getattr(profile, "full_name", None)
+    full = (user.get_full_name() or "").strip()
+    if full:
+        return full
+    lp = _default_learner(user)
+    if lp:
+        name = (lp.full_name or "").strip() or lp.display_name
         if name:
             return name
-    full = user.get_full_name()
-    return full if full else user.username
+    return user.username
 
 
 def get_student_id(user):
-    profile = getattr(user, "profile", None)
-    if profile:
-        return getattr(profile, "student_id", None)
-    return None
+    lp = _default_learner(user)
+    return getattr(lp, "student_id", None) if lp else None
 
 
 def calculate_duration_minutes(obj):

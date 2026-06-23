@@ -16,11 +16,6 @@ from .serializers import (
     AdminActionSerializer,
     BatchStudentSerializer,
 )
-from .services import (
-    start_trial,
-    trial_eligibility,
-    get_active_subscription,
-)
 
 
 # ---------- Student endpoints ----------
@@ -54,7 +49,7 @@ class AdminEnrollmentRequestListView(APIView):
     def get(self, request):
         qs = (
             EnrollmentRequest.objects
-            .select_related("user", "user__profile", "course")
+            .select_related("user", "learner_profile", "course")
             .order_by("-submitted_at")
         )
 
@@ -108,70 +103,6 @@ class AdminEnrollmentRequestActionView(APIView):
         return Response(out.data)
 
 
-# ---------- Free trial ----------
-
-def _get_course_or_404(course_id):
-    try:
-        return Course.objects.get(pk=course_id)
-    except Course.DoesNotExist:
-        raise NotFound("Course not found.")
-
-
-def _subscription_snapshot(sub):
-    if sub is None:
-        return None
-    return {
-        "id": str(sub.id),
-        "kind": sub.kind,
-        "status": sub.status,
-        "starts_at": sub.starts_at,
-        "expires_at": sub.expires_at,
-        "days_remaining": sub.days_remaining,
-        "is_trial": sub.is_trial,
-    }
-
-
-class TrialStatusView(APIView):
-    """GET /api/enrollments/courses/<course_id>/trial-status/
-
-    Returns whether the user can start a free trial, plus the current
-    subscription snapshot (if any). Used by the frontend to decide which
-    CTA to show on the course detail page.
-    """
-    permission_classes = [IsAuthenticated, IsEmailVerified]
-
-    def get(self, request, course_id):
-        course = _get_course_or_404(course_id)
-        elig = trial_eligibility(user=request.user, course=course)
-        return Response({
-            **elig,
-            "subscription": _subscription_snapshot(
-                get_active_subscription(user=request.user, course=course)
-            ),
-        })
-
-
-class StartTrialView(APIView):
-    """POST /api/enrollments/courses/<course_id>/start-trial/
-
-    Atomically grants a 30-day free trial. Idempotent against races via the
-    unique constraint on (user, course) where kind=TRIAL.
-    """
-    permission_classes = [IsAuthenticated, IsEmailVerified]
-
-    def post(self, request, course_id):
-        course = _get_course_or_404(course_id)
-        subscription = start_trial(user=request.user, course=course)
-        from .models import Subscription
-        return Response(
-            {
-                "detail": f"Your {Subscription.TRIAL_DURATION_DAYS}-day free trial has started.",
-                "subscription": _subscription_snapshot(subscription),
-            },
-            status=status.HTTP_201_CREATED,
-        )
-
-
 class AdminBatchRosterView(APIView):
     """List enrolled students, filterable by batch / course / status.
 
@@ -186,7 +117,7 @@ class AdminBatchRosterView(APIView):
     def get(self, request):
         qs = (
             Enrollment.objects
-            .select_related("user", "user__profile", "course")
+            .select_related("user", "learner_profile", "course")
             .order_by("batch_code", "user__email")
         )
 

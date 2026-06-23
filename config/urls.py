@@ -14,8 +14,6 @@ urlpatterns = [
     path("api/dashboard/", include("dashboard.urls")),
     path("api/activity/", include("activity.urls")),
     path("api/materials/", include("materials.urls")),
-    path("api/forum/", include("forum.urls")),
-    path("api/news/", include("news.urls")),
     path("api/enrollments/", include("enrollments.urls")),
     path("api/payments/", include("payments.urls")),
     path("api/skill/", include("skills.urls")),

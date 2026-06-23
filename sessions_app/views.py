@@ -149,9 +149,7 @@ def _session_qs():
     """Base queryset with all relations needed by SessionListSerializer."""
     return PrivateSession.objects.select_related(
         "teacher",
-        "teacher__profile",
         "requested_by",
-        "requested_by__profile",
     )
 
 
@@ -263,9 +261,9 @@ def student_sessions(request):
     if search:
         qs = qs.filter(
             Q(subject__icontains=search)
-            | Q(teacher__profile__full_name__icontains=search)
+            | Q(teacher__learner_profiles__full_name__icontains=search)
             | Q(teacher__username__icontains=search)
-            | Q(requested_by__profile__full_name__icontains=search)
+            | Q(requested_by__learner_profiles__full_name__icontains=search)
             | Q(requested_by__username__icontains=search)
         ).distinct()
 
@@ -392,9 +390,9 @@ def _apply_search(qs, search):
         return qs
     return qs.filter(
         Q(subject__icontains=search)
-        | Q(teacher__profile__full_name__icontains=search)
+        | Q(teacher__learner_profiles__full_name__icontains=search)
         | Q(teacher__username__icontains=search)
-        | Q(requested_by__profile__full_name__icontains=search)
+        | Q(requested_by__learner_profiles__full_name__icontains=search)
         | Q(requested_by__username__icontains=search)
     ).distinct()
 
@@ -633,8 +631,8 @@ def session_detail(request, session_id):
     """Return full session detail. Accessible by teacher, student, or participant."""
     try:
         session = PrivateSession.objects.select_related(
-            "teacher", "teacher__profile",
-            "requested_by", "requested_by__profile",
+            "teacher",
+            "requested_by",
         ).prefetch_related("participants__user").get(pk=session_id)
     except PrivateSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)

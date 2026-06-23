@@ -1204,8 +1204,9 @@ class AdminUserListView(APIView):
             qs = qs.filter(
                 models.Q(email__icontains=search)
                 | models.Q(username__icontains=search)
-                | models.Q(profile__full_name__icontains=search)
-            )
+                | models.Q(learner_profiles__full_name__icontains=search)
+                | models.Q(learner_profiles__display_name__icontains=search)
+            ).distinct()
 
         role = request.query_params.get("role", "").strip().upper()
         if role:
