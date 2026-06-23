@@ -77,6 +77,12 @@ class PublicCourseListView(APIView):
         cat = request.query_params.get("category")
         if cat:
             qs = qs.filter(category__slug=cat)
+        # Filter to a single expert's courses. `teacher` is the ExpertProfile id
+        # (what the frontend knows as the expert id); it maps back to the
+        # underlying TeacherProfile via the expert_profile one-to-one.
+        teacher = request.query_params.get("teacher")
+        if teacher:
+            qs = qs.filter(teacher_profile__expert_profile__id=teacher)
         q = request.query_params.get("q", "").strip()
         if q:
             qs = qs.filter(title__icontains=q)
