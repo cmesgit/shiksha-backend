@@ -67,7 +67,7 @@ class ExpertListView(APIView):
         qs = (
             ExpertProfile.objects
             .filter(is_listed=True)
-            .select_related("category", "teacher_profile__user", "teacher_profile__user__profile")
+            .select_related("category", "teacher_profile__user")
         )
         cat = request.query_params.get("cat") or request.query_params.get("category")
         if cat:
@@ -87,7 +87,7 @@ class ExpertDetailView(APIView):
         expert = (
             ExpertProfile.objects
             .filter(id=expert_id, is_listed=True)
-            .select_related("category", "teacher_profile__user", "teacher_profile__user__profile")
+            .select_related("category", "teacher_profile__user")
             .first()
         )
         if not expert:
@@ -199,7 +199,7 @@ class ReviewQueueView(APIView):
         qs = (
             TeacherApplication.objects
             .exclude(status=TeacherApplication.STATUS_REJECTED)
-            .select_related("category", "user", "user__profile", "interview")
+            .select_related("category", "user", "interview")
             .order_by("-created_at")
         )
         st = request.query_params.get("status")
