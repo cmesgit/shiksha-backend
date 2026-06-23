@@ -37,6 +37,44 @@ def _get_expert(user):
     return ep
 
 
+# ── Availability bookkeeping (shared with the booking flow) ───────────────
+# `availability_slots` shape: {"open": ["0-1", ...], "booked": ["1-0", ...]}
+# `open`   = teacher-declared free slots.
+# `booked` = slots a learner has taken; this is the source of truth for
+#            "taken" and is what greys a slot out for *everyone*.
+
+def _avail(expert):
+    return getattr(expert, "availability_slots", None) or {}
+
+
+def slot_is_open(expert, slot_key):
+    """A slot is bookable if the teacher declared it open and it isn't taken."""
+    a = _avail(expert)
+    return slot_key in a.get("open", []) and slot_key not in a.get("booked", [])
+
+
+def mark_slot_booked(expert, slot_key):
+    """Add slot_key to booked (idempotent) and persist."""
+    a = _avail(expert)
+    booked = list(a.get("booked", []))
+    if slot_key not in booked:
+        booked.append(slot_key)
+    a["booked"] = booked
+    expert.availability_slots = a
+    expert.save(update_fields=["availability_slots"])
+
+
+def free_slot(expert, slot_key):
+    """Remove slot_key from booked (called on cancel/decline/complete)."""
+    if not slot_key:
+        return
+    a = _avail(expert)
+    booked = [s for s in a.get("booked", []) if s != slot_key]
+    a["booked"] = booked
+    expert.availability_slots = a
+    expert.save(update_fields=["availability_slots"])
+
+
 # ── Dashboard overview ────────────────────────────────────────────────────
 
 class TeacherDashboardView(APIView):
@@ -238,13 +276,8 @@ class TeacherAvailabilityView(APIView):
             raise ValidationError({"open": "Must be a list of slot-key strings."})
         avail         = getattr(ep, "availability_slots", None) or {}
         avail["open"] = open_slots
-        # Use update_fields only if availability_slots column exists;
-        # gracefully skip if the migration hasn't run yet.
-        try:
-            ep.availability_slots = avail
-            ep.save(update_fields=["availability_slots"])
-        except Exception:
-            pass
+        ep.availability_slots = avail
+        ep.save(update_fields=["availability_slots"])
         return Response({
             "open":   avail.get("open",   []),
             "booked": avail.get("booked", []),
@@ -271,6 +304,9 @@ class TeacherDeclineSessionView(APIView):
             )
         sess.status = SkillSession.STATUS_CANCELLED
         sess.save(update_fields=["status", "updated_at"])
+        # Release the reserved availability slot back to the expert's grid.
+        if sess.slot_key:
+            free_slot(ep, sess.slot_key)
         return Response({"ok": True, "status": sess.status})
 
 
@@ -311,4 +347,28 @@ class TeacherProfileUpdateView(APIView):
             "hourly_rate":  ep.hourly_rate // 100,
             "bio":          ep.bio,
             "availability": ep.availability,
+        })
+
+
+# ── Public availability read (any authenticated user, by expert id) ───────
+
+class ExpertAvailabilityView(APIView):
+    """
+    GET /skill/teachers/<expert_id>/availability/  → { open: [...], booked: [...] }
+
+    Public read of a *specific* expert's weekly availability, for the student
+    booking screen. Unlike TeacherAvailabilityView (which serves the caller's
+    OWN profile via _get_expert), this resolves the expert by id so a learner
+    can see the tutor's real open/booked slots instead of a local mock.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, expert_id):
+        ep = ExpertProfile.objects.filter(id=expert_id, is_listed=True).first()
+        if not ep:
+            raise NotFound("Expert not found.")
+        a = getattr(ep, "availability_slots", None) or {}
+        return Response({
+            "open":   a.get("open",   []),
+            "booked": a.get("booked", []),
         })
