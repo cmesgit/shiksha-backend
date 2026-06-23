@@ -24,6 +24,10 @@ from .review_views import (
     SubmitReviewView, ExpertReviewListView, MyReviewableSessionsView,
 )
 from .payment_config_views import SkillPaymentConfigView
+from .teacher_views import (
+    TeacherDashboardView, TeacherEarningsView, TeacherAvailabilityView,
+    TeacherDeclineSessionView, TeacherProfileUpdateView,
+)
 
 urlpatterns = [
     # ── Payment mode (free / manual_upi / razorpay), read from GlobalSettings ─
@@ -74,6 +78,13 @@ urlpatterns = [
     path("teacher/sessions/<uuid:session_id>/confirm/",    TeacherConfirmSessionView.as_view()),
     path("teacher/sessions/<uuid:session_id>/complete/",   TeacherCompleteSessionView.as_view()),
     path("teacher/inbox/",                                 TeacherInboxView.as_view()),
+
+    # ── Teacher — extra endpoints ────────────────────────────────────────────
+    path("teacher/dashboard/",                              TeacherDashboardView.as_view()),
+    path("teacher/earnings/",                               TeacherEarningsView.as_view()),
+    path("teacher/availability/",                           TeacherAvailabilityView.as_view()),
+    path("teacher/sessions/<uuid:session_id>/decline/",     TeacherDeclineSessionView.as_view()),
+    path("teacher/profile/",                                TeacherProfileUpdateView.as_view()),
 
     # ── Admin ─────────────────────────────────────────────────────────────────
     path("admin/interview-queue/",                              ReviewQueueView.as_view()),
