@@ -3,17 +3,18 @@ PLACEMENT: backend/backend/skills/student_skill_views.py
 ACTION:    Replace the entire file.
 
 Changes from original:
-  fmt_session() now includes `expert_teacher_id` — the TeacherProfile UUID
-  so the frontend can open a direct WS chat with that expert.
-
-  experts_data list now includes `teacher_id` for the same reason.
+  1. fmt_session() adds expert_teacher_id (TeacherProfile UUID) so the
+     frontend can open a WS chat DM with the expert.
+  2. experts_data list adds teacher_id for the same reason.
+  3. New SkillSessionDetailView at the bottom — powers the session detail page.
+     Registered in urls.py as: path("sessions/<uuid:session_id>/", SkillSessionDetailView.as_view())
 """
 import datetime
 from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, NotFound
 
 from accounts.auth_flow import get_active_profile
 from .models import ExpertProfile, SkillSession, SkillCategory
@@ -26,13 +27,13 @@ class StudentSkillDashboardView(APIView):
     GET /skill/student/dashboard/
 
     Returns everything the student Skill Dev section needs in one call:
-      - stats:            enrolled_count, lessons_done, hours_learned, upcoming_count
-      - skill_courses:    in-progress enrollments with per-course progress
+      - stats:             enrolled_count, lessons_done, hours_learned, upcoming_count
+      - skill_courses:     in-progress enrollments with per-course progress
       - completed_courses: completed enrollments
       - upcoming_sessions: confirmed/requested sessions, upcoming first
-      - past_sessions:    completed sessions with review status
-      - reviewable:       sessions awaiting a review
-      - experts:          experts the learner has sessions with
+      - past_sessions:     completed sessions with review status
+      - reviewable:        sessions awaiting a review
+      - experts:           experts the learner has sessions with
     """
     permission_classes = [IsAuthenticated]
 
@@ -85,13 +86,22 @@ class StudentSkillDashboardView(APIView):
                 else:
                     when_str = scheduled.strftime("%-d %b · %-I:%M %p")
 
+            # Expert photo
+            img = None
+            if s.expert.photo:
+                img = request.build_absolute_uri(s.expert.photo.url)
+            else:
+                lp = s.expert.user.default_learner_profile()
+                if lp and lp.profile_photo:
+                    img = request.build_absolute_uri(lp.profile_photo.url)
+
             return {
                 "id":                 str(s.id),
                 "session_id":         str(s.id),
                 "expert_id":          str(s.expert.id),
-                "expert_teacher_id":  str(s.expert.teacher_profile_id),  # NEW — TeacherProfile UUID for chat
+                "expert_teacher_id":  str(s.expert.teacher_profile_id),  # TeacherProfile UUID for chat
                 "expert_name":        expert_name,
-                "expert_img":         None,
+                "expert_img":         img,
                 "topic":              (s.note[:60] if s.note else "1-on-1 session"),
                 "when":               when_str,
                 "scheduled_for":      scheduled,
@@ -137,9 +147,9 @@ class StudentSkillDashboardView(APIView):
             modules  = []
             lec_cursor = 0
             for sec in sections:
-                sec_lecs          = list(sec.lectures.all())
-                sec_total         = len(sec_lecs)
-                completed_in_sec  = SkillLectureProgress.objects.filter(
+                sec_lecs         = list(sec.lectures.all())
+                sec_total        = len(sec_lecs)
+                completed_in_sec = SkillLectureProgress.objects.filter(
                     enrollment=e, lecture__section=sec
                 ).count()
                 done_all = completed_in_sec == sec_total and sec_total > 0
@@ -156,8 +166,8 @@ class StudentSkillDashboardView(APIView):
             resume_mod    = next((m["t"] for m in modules if m.get("cur")), (modules[0]["t"] if modules else ""))
             resume_lesson = f"Lesson {done_lec + 1}"
 
-            tp   = c.teacher_profile
-            lp   = tp.user.default_learner_profile() if tp else None
+            tp          = c.teacher_profile
+            lp          = tp.user.default_learner_profile() if tp else None
             expert_name = (
                 (lp.display_name or lp.full_name or "") if lp
                 else (tp.user.username if tp else "Expert")
@@ -194,7 +204,7 @@ class StudentSkillDashboardView(APIView):
         total_lessons_done = sum(c["done"] for c in skill_courses + completed_courses)
         hours_learned      = max(0, round(total_lessons_done * 5 / 60))
 
-        # ── Experts the learner has sessions/enrollments with ────────
+        # ── Experts the learner has sessions with ────────────────────
         expert_ids_seen = set()
         experts_data    = []
         for s in all_sessions:
@@ -203,7 +213,7 @@ class StudentSkillDashboardView(APIView):
                 expert_ids_seen.add(eid)
                 experts_data.append({
                     "id":         eid,
-                    "teacher_id": str(s.expert.teacher_profile_id),  # NEW — for chat
+                    "teacher_id": str(s.expert.teacher_profile_id),  # TeacherProfile UUID for chat
                     "name":       s.expert.display_name(),
                     "skill":      s.expert.headline or "",
                     "rating":     float(s.expert.rating) if s.expert.rating else None,
@@ -212,10 +222,10 @@ class StudentSkillDashboardView(APIView):
 
         return Response({
             "stats": {
-                "enrolled_count":  len(in_progress),
-                "lessons_done":    total_lessons_done,
-                "hours_learned":   hours_learned,
-                "upcoming_count":  len(upcoming_data),
+                "enrolled_count": len(in_progress),
+                "lessons_done":   total_lessons_done,
+                "hours_learned":  hours_learned,
+                "upcoming_count": len(upcoming_data),
             },
             "skill_courses":      skill_courses,
             "completed_courses":  completed_courses,
@@ -229,7 +239,7 @@ class StudentSkillDashboardView(APIView):
 class StudentSkillExpertsView(APIView):
     """
     GET /skill/student/experts/
-    Returns listed experts for the Explore tab (public, paginated via ?cat=&search=).
+    Returns listed experts for the Explore tab (public, ?cat=&search=).
     """
     permission_classes = [AllowAny]
 
@@ -254,7 +264,7 @@ class StudentSkillExpertsView(APIView):
                 name = ep.user.username or ep.user.email or "Expert"
             result.append({
                 "id":         str(ep.id),
-                "teacher_id": str(ep.teacher_profile_id),  # NEW — for chat
+                "teacher_id": str(ep.teacher_profile_id),  # TeacherProfile UUID for chat
                 "name":       name,
                 "role":       ep.headline,
                 "img":        ep.photo.url if ep.photo else None,
@@ -265,3 +275,91 @@ class StudentSkillExpertsView(APIView):
                 "skills":     ep.skill_tags or [],
             })
         return Response(result)
+
+
+class SkillSessionDetailView(APIView):
+    """
+    GET /skill/sessions/<session_id>/
+    Full detail for one session — powers the SkillSessionDetail.jsx page.
+    Only the owning learner can access their own session.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, session_id):
+        learner = get_active_profile(request)
+        if not learner:
+            raise PermissionDenied("Select a learner profile.")
+
+        try:
+            session = SkillSession.objects.select_related(
+                "expert__teacher_profile__user",
+                "expert__category",
+            ).get(id=session_id, learner_profile=learner)
+        except (SkillSession.DoesNotExist, ValueError):
+            raise NotFound("Session not found.")
+
+        expert = session.expert
+        now    = timezone.now()
+
+        # Live detection — 5 min before start until session end
+        is_live = False
+        if session.scheduled_for:
+            start   = session.scheduled_for
+            end     = start + datetime.timedelta(minutes=session.duration_mins)
+            is_live = now >= start - datetime.timedelta(minutes=5) and now <= end
+
+        reviewed = ExpertReview.objects.filter(
+            session=session, learner_profile=learner
+        ).exists()
+
+        booking_ref = f"SHK-{session.id.hex[:8].upper()}"
+
+        # Friendly time string
+        when_str = ""
+        if session.scheduled_for:
+            d     = session.scheduled_for
+            today = now.date()
+            if d.date() == today:
+                when_str = "Today · " + d.strftime("%-I:%M %p")
+            elif d.date() == today + datetime.timedelta(days=1):
+                when_str = "Tomorrow · " + d.strftime("%-I:%M %p")
+            else:
+                when_str = d.strftime("%-d %b %Y · %-I:%M %p")
+
+        # Expert photo
+        img = None
+        if expert.photo:
+            img = request.build_absolute_uri(expert.photo.url)
+        else:
+            lp = expert.user.default_learner_profile()
+            if lp and lp.profile_photo:
+                img = request.build_absolute_uri(lp.profile_photo.url)
+
+        return Response({
+            "id":             str(session.id),
+            "booking_ref":    booking_ref,
+            "topic":          session.note or "1-on-1 session",
+            "status":         session.status,
+            "payment_status": session.payment_status,
+            "scheduled_for":  session.scheduled_for,
+            "when":           when_str,
+            "duration_mins":  session.duration_mins,
+            "contact_mode":   session.contact_mode,
+            "meeting_url":    session.meeting_url or None,
+            "amount":         session.amount,
+            "is_live":        is_live,
+            "reviewed":       reviewed,
+            "created_at":     session.created_at,
+            "expert": {
+                "id":                 str(expert.id),
+                "teacher_profile_id": str(expert.teacher_profile_id),
+                "name":               expert.display_name(),
+                "img":                img,
+                "title":              expert.headline or "",
+                "cat":                expert.category.label if expert.category_id else "",
+                "rate":               expert.rate_rupees,
+                "rating":             float(expert.rating) if expert.rating else None,
+                "skills":             expert.skill_tags or [],
+                "availability":       expert.availability or "",
+            },
+        })

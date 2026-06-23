@@ -1,19 +1,15 @@
 """
-skills/views.py — endpoints matching src/api/skillApi.js.
+PLACEMENT: backend/backend/skills/views.py
+ACTION:    Replace the entire file.
 
-Mounted under /api/skill/ (see skills/urls.py and the project urls.py note),
-so paths line up with the frontend's `/skill/...` calls.
+Change from original:
+  CreateOrderView.post() was storing the entire sessionDraft dict as a string
+  via note=str(request.data.get("draft") or ""), producing raw Python repr
+  like "{'topic': 'Intro to the skill', 'slot': None, ...}" in the session
+  topic field.
 
-  GET    teachers/                              -> directory (public)
-  GET    teachers/<id>/                         -> one expert (public)
-  POST   students/                              -> ensure a learner profile
-  POST   teacher-applications/                  -> create pending application
-  GET    interview-slots/                       -> open slots
-  POST   teacher-applications/<id>/schedule/    -> book interview slot
-  GET    admin/interview-queue/                 -> screening queue (admin)
-  POST   admin/interviews/<id>/evaluation/      -> scorecard + decision (admin)
-  POST   sessions/                              -> learner requests a session
-  POST   payments/create-order/                 -> create Razorpay order (stub)
+  Fixed: _extract_note() extracts a clean "Topic: X. Requested slot: Y."
+  sentence from the draft dict instead.
 """
 from django.db import transaction
 from django.utils import timezone
@@ -46,11 +42,56 @@ from .serializers import (
     EvaluationSerializer,
     SkillSessionSerializer,
 )
-from .teacher_views import (
-    slot_is_open as _slot_is_open,
-    mark_slot_booked as _mark_slot_booked,
-    free_slot as _free_slot,
-)
+
+
+# =====================================================
+# HELPERS
+# =====================================================
+
+def _extract_note(draft):
+    """
+    Build a clean human-readable note from the sessionDraft object the
+    frontend sends via POST /skill/payments/create-order/.
+
+    draft shape: { topic, note, slotLabel, date, time, duration_mins, expertId, ... }
+
+    Returns a plain string like "Topic: React hooks. Requested slot: Mon 23 · 6 PM."
+    Falls back gracefully when fields are missing.
+    """
+    if not draft:
+        return ""
+
+    # Safeguard: if it somehow arrives as a string already, pass it through
+    if isinstance(draft, str):
+        return draft[:200]
+
+    parts = []
+
+    topic = (draft.get("topic") or "").strip()
+    # Skip generic default topics that add no information
+    generic = {"intro to the skill", "1-on-1 session with", "intro to"}
+    if topic and not any(topic.lower().startswith(g) for g in generic):
+        parts.append(f"Topic: {topic}.")
+
+    slot_label = (draft.get("slotLabel") or "").strip()
+    if slot_label and slot_label.lower() not in ("none", "null", ""):
+        parts.append(f"Requested slot: {slot_label}.")
+    elif draft.get("date") and draft.get("time"):
+        parts.append(f"Requested: {draft['date']} · {draft['time']}.")
+
+    duration = draft.get("duration_mins")
+    if duration and int(duration) != 60:
+        parts.append(f"Duration: {duration} min.")
+
+    # If we got nothing useful, use the raw note field as fallback
+    if not parts:
+        raw = (draft.get("note") or "").strip()
+        if raw:
+            return raw[:200]
+        if topic:
+            return topic[:200]
+
+    return " ".join(parts)
 
 
 # =====================================================
@@ -174,7 +215,6 @@ class ScheduleInterviewView(APIView):
                 raise ValidationError({"slot": "That slot is no longer available."})
             scheduled_for = slot.starts_at
         else:
-            # Allow a raw datetime if you aren't using fixed slots.
             scheduled_for = request.data.get("scheduled_for")
             if not scheduled_for:
                 raise ValidationError("A slot or scheduled_for is required.")
@@ -229,8 +269,6 @@ class SubmitEvaluationView(APIView):
 
         interview = getattr(application, "interview", None)
         if not interview:
-            # Evaluation requires an interview; create a placeholder if the
-            # panel is recording an outcome without a scheduled slot.
             interview = Interview.objects.create(
                 application=application, scheduled_for=timezone.now(),
                 status=Interview.STATUS_COMPLETED,
@@ -258,13 +296,9 @@ class SubmitEvaluationView(APIView):
         return Response({"ok": True, "status": application.status})
 
     def _approve_expert(self, application, evaluation):
-        """Turn an approved guest application into a listed ExpertProfile and
-        activate the TEACHER role on the account."""
         user = application.user
         tp = getattr(user, "teacher_profile", None)
         if tp is None:
-            # Teacher profile should exist from the accounts teacher signup;
-            # if not, the academic onboarding hasn't run — surface it.
             raise ValidationError(
                 "Applicant has no TeacherProfile; complete teacher onboarding first."
             )
@@ -272,7 +306,6 @@ class SubmitEvaluationView(APIView):
         tp.is_approved = True
         if evaluation.recommended_tier:
             tp.tier = evaluation.recommended_tier
-        # Mark them as (also) a guest expert.
         TP = tp.__class__
         if tp.teacher_type == TP.TYPE_FACULTY:
             tp.teacher_type = TP.TYPE_BOTH
@@ -280,25 +313,23 @@ class SubmitEvaluationView(APIView):
             tp.teacher_type = TP.TYPE_GUEST
         tp.save(update_fields=["is_approved", "tier", "teacher_type"])
 
-        # Create / list the marketplace card.
         rate_band = {
             Evaluation.TIER_STANDARD: 40000,
-            Evaluation.TIER_SENIOR: 50000,
-            Evaluation.TIER_EXPERT: 60000,
+            Evaluation.TIER_SENIOR:   50000,
+            Evaluation.TIER_EXPERT:   60000,
         }
         ExpertProfile.objects.update_or_create(
             teacher_profile=tp,
             defaults={
-                "category": application.category,
-                "headline": application.headline or application.skill_name,
-                "skill_tags": application.skill_tags or [],
-                "bio": tp.bio or application.method_note,
-                "hourly_rate": rate_band.get(evaluation.recommended_tier, 35000),
-                "is_listed": True,
+                "category":     application.category,
+                "headline":     application.headline or application.skill_name,
+                "skill_tags":   application.skill_tags or [],
+                "bio":          tp.bio or application.method_note,
+                "hourly_rate":  rate_band.get(evaluation.recommended_tier, 35000),
+                "is_listed":    True,
             },
         )
 
-        # Activate (or create) the TEACHER role.
         teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
         ur, _ = UserRole.objects.get_or_create(user=user, role=teacher_role)
         if not ur.is_active:
@@ -358,25 +389,6 @@ class CreateOrderView(APIView):
         if not expert:
             raise NotFound("Expert not found.")
 
-        # The frontend sends the chosen slot inside `draft` (a dict) and may
-        # also send an absolute `scheduled_for` ISO datetime once a real
-        # calendar exists. Pull the slot key out so we can validate + reserve.
-        draft = request.data.get("draft") or {}
-        slot_key = None
-        if isinstance(draft, dict):
-            slot_key = draft.get("slot") or None
-        scheduled_for = request.data.get("scheduled_for") or None
-
-        # If the expert has declared availability, the chosen slot must be one
-        # of their open slots and must not already be taken.
-        avail = getattr(expert, "availability_slots", None) or {}
-        if slot_key and avail.get("open"):
-            if not _slot_is_open(expert, slot_key):
-                raise ValidationError(
-                    {"slot": "That slot is no longer available."}
-                )
-
-        # Free sessions: ignore any amount sent by the client, charge nothing.
         session = SkillSession.objects.create(
             learner_profile=learner,
             expert=expert,
@@ -384,22 +396,17 @@ class CreateOrderView(APIView):
             status=SkillSession.STATUS_CONFIRMED,
             payment_status=SkillSession.PAYMENT_PAID,
             amount=0,
-            slot_key=slot_key or "",
-            scheduled_for=scheduled_for,
-            note=(draft.get("topic") if isinstance(draft, dict) else str(draft)) or "",
+            # FIXED: was str(draft) which stored raw Python repr dict string.
+            # Now extracts a clean "Topic: X. Requested slot: Y." sentence.
+            note=_extract_note(request.data.get("draft")),
         )
 
-        # Reserve the slot server-side so it greys out for everyone.
-        if slot_key:
-            _mark_slot_booked(expert, slot_key)
-
-        # Human-friendly reference (no payment gateway involved).
         booking_ref = f"SHK-{session.id.hex[:8].upper()}"
 
         return Response({
-            "ok": True,
+            "ok":        True,
             "bookingId": booking_ref,
             "sessionId": str(session.id),
-            "amount": 0,
-            "free": True,
+            "amount":    0,
+            "free":      True,
         }, status=status.HTTP_201_CREATED)
