@@ -9,7 +9,7 @@ Everything is read from GlobalSettings, so the admin can flip free ↔ manual UP
 ↔ Razorpay live with no server restart. The frontend calls this on load and
 decides whether to show a one-tap free enroll, the UPI form, or a gateway button.
 """
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -18,7 +18,7 @@ from enrollments.payments import get_payment_provider
 
 class SkillPaymentConfigView(APIView):
     """Active payment mode for the skill marketplace, plus payee details."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get(self, request):
         provider = get_payment_provider()
