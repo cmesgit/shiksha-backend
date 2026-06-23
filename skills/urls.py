@@ -24,6 +24,7 @@ from .review_views import (
     SubmitReviewView, ExpertReviewListView, MyReviewableSessionsView,
 )
 from .payment_config_views import SkillPaymentConfigView
+from .student_skill_views import StudentSkillDashboardView, StudentSkillExpertsView
 from .teacher_views import (
     TeacherDashboardView, TeacherEarningsView, TeacherAvailabilityView,
     TeacherDeclineSessionView, TeacherProfileUpdateView,
@@ -78,6 +79,10 @@ urlpatterns = [
     path("teacher/sessions/<uuid:session_id>/confirm/",    TeacherConfirmSessionView.as_view()),
     path("teacher/sessions/<uuid:session_id>/complete/",   TeacherCompleteSessionView.as_view()),
     path("teacher/inbox/",                                 TeacherInboxView.as_view()),
+
+    # ── Student skill dashboard ───────────────────────────────────────────────
+    path("student/dashboard/",  StudentSkillDashboardView.as_view()),
+    path("student/experts/",    StudentSkillExpertsView.as_view()),
 
     # ── Teacher — extra endpoints ────────────────────────────────────────────
     path("teacher/dashboard/",                              TeacherDashboardView.as_view()),
