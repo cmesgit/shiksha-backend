@@ -7,7 +7,8 @@ from django.utils import timezone
 from django.db import transaction
 
 from accounts.email_utils import send_gmail
-from courses.models import Course, Batch
+from accounts.auth_flow import get_active_profile
+from courses.models import Course
 
 from .models import Enrollment, EnrollmentRequest, Subscription
 
@@ -84,11 +85,13 @@ def _grant_subscription(request_obj):
     days = course.subscription_duration_days or 30
     now = timezone.now()
 
+    learner = request_obj.learner_profile
+
     active = (
         Subscription.objects
         .select_for_update()
         .filter(
-            user=request_obj.user,
+            learner_profile=learner,
             course=course,
             status=Subscription.STATUS_ACTIVE,
             expires_at__gt=now,
@@ -104,6 +107,7 @@ def _grant_subscription(request_obj):
 
     return Subscription.objects.create(
         user=request_obj.user,
+        learner_profile=learner,
         course=course,
         starts_at=now,
         expires_at=now + timedelta(days=days),
@@ -116,45 +120,6 @@ class CourseBriefSerializer(serializers.ModelSerializer):
     class Meta:
         model = Course
         fields = ("id", "title", "price")
-
-
-class BatchBriefSerializer(serializers.ModelSerializer):
-    seats_taken = serializers.IntegerField(read_only=True)
-    is_full = serializers.BooleanField(read_only=True)
-
-    class Meta:
-        model = Batch
-        fields = ("id", "name", "code", "year", "capacity", "seats_taken", "is_full")
-
-
-class BatchStudentSerializer(serializers.ModelSerializer):
-    """One row per enrolled student, for the admin batch-roster view."""
-    user_email = serializers.EmailField(source="user.email", read_only=True)
-    user_name = serializers.SerializerMethodField()
-    course_title = serializers.CharField(source="course.title", read_only=True)
-    batch = BatchBriefSerializer(read_only=True)
-
-    class Meta:
-        model = Enrollment
-        fields = (
-            "id",
-            "user_email",
-            "user_name",
-            "course_title",
-            "batch",
-            "status",
-            "enrolled_at",
-        )
-
-    def get_user_name(self, obj):
-        profile = getattr(obj.user, "profile", None)
-        if profile:
-            full = f"{profile.first_name} {profile.last_name}".strip()
-            if full:
-                return full
-            if getattr(profile, "full_name", ""):
-                return profile.full_name
-        return obj.user.username or obj.user.email
 
 
 # -------- Student-facing --------
@@ -174,21 +139,33 @@ class EnrollmentRequestCreateSerializer(serializers.ModelSerializer):
         read_only_fields = ("id",)
 
     def validate(self, attrs):
-        user = self.context["request"].user
+        request = self.context["request"]
+        learner = get_active_profile(request)
+        if learner is None:
+            raise serializers.ValidationError(
+                "Select a learner profile before enrolling."
+            )
         course = attrs["course"]
 
         if EnrollmentRequest.objects.filter(
-            user=user, course=course, status=EnrollmentRequest.STATUS_PENDING
+            learner_profile=learner, course=course,
+            status=EnrollmentRequest.STATUS_PENDING,
         ).exists():
             raise serializers.ValidationError(
-                "You already have a pending request for this course."
+                "This learner already has a pending request for this course."
             )
 
+        attrs["_learner"] = learner
         return attrs
 
     def create(self, validated_data):
-        user = self.context["request"].user
-        return EnrollmentRequest.objects.create(user=user, **validated_data)
+        request = self.context["request"]
+        learner = validated_data.pop("_learner")
+        return EnrollmentRequest.objects.create(
+            user=request.user,
+            learner_profile=learner,
+            **validated_data,
+        )
 
 
 class MyEnrollmentRequestSerializer(serializers.ModelSerializer):
@@ -217,6 +194,7 @@ class MyEnrollmentRequestSerializer(serializers.ModelSerializer):
 class AdminEnrollmentRequestListSerializer(serializers.ModelSerializer):
     user_email = serializers.EmailField(source="user.email", read_only=True)
     user_name = serializers.SerializerMethodField()
+    learner_name = serializers.SerializerMethodField()
     course_title = serializers.CharField(source="course.title", read_only=True)
     course_price = serializers.IntegerField(source="course.price", read_only=True)
 
@@ -226,6 +204,7 @@ class AdminEnrollmentRequestListSerializer(serializers.ModelSerializer):
             "id",
             "user_email",
             "user_name",
+            "learner_name",
             "course_title",
             "course_price",
             "amount_paid",
@@ -240,14 +219,24 @@ class AdminEnrollmentRequestListSerializer(serializers.ModelSerializer):
         )
 
     def get_user_name(self, obj):
-        profile = getattr(obj.user, "profile", None)
-        if profile:
-            full = f"{profile.first_name} {profile.last_name}".strip()
-            if full:
-                return full
-            if profile.full_name:
-                return profile.full_name
+        # The legacy one-to-one Profile model was removed; the account holder's
+        # name now lives on the User (AbstractUser) or on their learner profile.
+        full = (obj.user.get_full_name() or "").strip()
+        if full:
+            return full
+        lp = obj.learner_profile
+        if lp:
+            name = f"{lp.first_name} {lp.last_name}".strip() or lp.display_name
+            if name:
+                return name
         return obj.user.username or obj.user.email
+
+    def get_learner_name(self, obj):
+        lp = obj.learner_profile
+        if not lp:
+            return None
+        name = f"{lp.first_name} {lp.last_name}".strip()
+        return name or lp.display_name
 
 
 class AdminActionSerializer(serializers.Serializer):
@@ -255,34 +244,10 @@ class AdminActionSerializer(serializers.Serializer):
 
     action = serializers.ChoiceField(choices=ACTION_CHOICES)
     admin_note = serializers.CharField(required=False, allow_blank=True)
-    # Optional: assign the student to a batch at approval time.
-    batch = serializers.PrimaryKeyRelatedField(
-        queryset=Batch.objects.all(),
-        required=False,
-        allow_null=True,
-    )
-
-    def validate(self, attrs):
-        # Cross-field checks that need the target request object.
-        request_obj = self.context.get("request_obj")
-        action = attrs.get("action")
-        batch = attrs.get("batch")
-
-        if action == "approve" and batch is not None and request_obj is not None:
-            if batch.course_id != request_obj.course_id:
-                raise serializers.ValidationError(
-                    {"batch": "This batch does not belong to the requested course."}
-                )
-            if batch.is_full:
-                raise serializers.ValidationError(
-                    {"batch": "The selected batch is full."}
-                )
-        return attrs
 
     def save(self, *, request_obj, reviewer):
         action = self.validated_data["action"]
         note = self.validated_data.get("admin_note", "")
-        batch = self.validated_data.get("batch")
 
         if request_obj.status != EnrollmentRequest.STATUS_PENDING:
             raise serializers.ValidationError("This request has already been reviewed.")
@@ -294,28 +259,14 @@ class AdminActionSerializer(serializers.Serializer):
 
             if action == "approve":
                 request_obj.status = EnrollmentRequest.STATUS_APPROVED
-
-                enrollment, created = Enrollment.objects.get_or_create(
-                    user=request_obj.user,
+                Enrollment.objects.get_or_create(
+                    learner_profile=request_obj.learner_profile,
                     course=request_obj.course,
                     defaults={
+                        "user": request_obj.user,
                         "status": Enrollment.STATUS_ACTIVE,
-                        "batch": batch,
                     },
                 )
-
-                # Re-approval / re-activation path: make sure status is ACTIVE
-                # and apply the batch if the admin chose one.
-                fields_to_update = []
-                if enrollment.status != Enrollment.STATUS_ACTIVE:
-                    enrollment.status = Enrollment.STATUS_ACTIVE
-                    fields_to_update.append("status")
-                if batch is not None and enrollment.batch_id != batch.id:
-                    enrollment.batch = batch
-                    fields_to_update.append("batch")
-                if not created and fields_to_update:
-                    enrollment.save(update_fields=fields_to_update)
-
                 _grant_subscription(request_obj)
             else:
                 request_obj.status = EnrollmentRequest.STATUS_REJECTED
@@ -325,3 +276,38 @@ class AdminActionSerializer(serializers.Serializer):
         _send_enrollment_decision_email(request_obj)
 
         return request_obj
+
+
+# -------- Batch roster (admin) --------
+
+class BatchStudentSerializer(serializers.ModelSerializer):
+    """Serializes an Enrollment for the admin batch roster view.
+
+    The student's name comes from the linked learner profile (the legacy
+    one-to-one Profile model was removed in accounts migration 0011).
+    """
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    user_name = serializers.SerializerMethodField()
+    course_title = serializers.CharField(source="course.title", read_only=True)
+    batch_code = serializers.CharField(read_only=True, default=None)
+
+    class Meta:
+        model = Enrollment
+        fields = (
+            "id",
+            "user_email",
+            "user_name",
+            "course_title",
+            "batch_code",
+            "status",
+            "enrolled_at",
+        )
+
+    def get_user_name(self, obj):
+        lp = obj.learner_profile
+        if lp:
+            name = f"{lp.first_name} {lp.last_name}".strip() or lp.display_name
+            if name:
+                return name
+        full = (obj.user.get_full_name() or "").strip()
+        return full or obj.user.username or obj.user.email

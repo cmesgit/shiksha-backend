@@ -141,7 +141,7 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def get_user_name(self, user):
         try:
-            profile = user.profile
+            profile = user.default_learner_profile()
             return profile.full_name or profile.first_name or user.email
         except Exception:
             return user.email

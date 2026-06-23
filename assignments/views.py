@@ -79,10 +79,13 @@ class AssignmentDetailView(generics.RetrieveAPIView):
         if user.has_role(Role.TEACHER):
             _assert_teacher_owns_assignment(user, instance)
         else:
-            if not Enrollment.objects.filter(
-                user=user, course=course, status=Enrollment.STATUS_ACTIVE
-            ).exists():
-                raise PermissionDenied("Not authorized.")
+            from enrollments.services import has_active_subscription, lock_payload
+
+            if not has_active_subscription(user=user, course=course):
+                return Response(
+                    lock_payload(user=user, course=course),
+                    status=402,
+                )
 
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
@@ -107,12 +110,14 @@ class SubmitAssignmentView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if not Enrollment.objects.filter(
-            user=request.user,
-            course=assignment.chapter.subject.course,
-            status=Enrollment.STATUS_ACTIVE,
-        ).exists():
-            return Response({"detail": "Not authorized."}, status=status.HTTP_403_FORBIDDEN)
+        from enrollments.services import has_active_subscription, lock_payload
+
+        course = assignment.chapter.subject.course
+        if not has_active_subscription(user=request.user, course=course):
+            return Response(
+                lock_payload(user=request.user, course=course),
+                status=402,
+            )
 
         file = request.FILES.get("file")
         if not file:
@@ -151,10 +156,15 @@ class CourseAssignmentsView(generics.ListAPIView):
                 chapter__subject__subject_teachers__teacher=user,
             )
         else:
-            if not Enrollment.objects.filter(
-                user=user, course_id=course_id, status=Enrollment.STATUS_ACTIVE
-            ).exists():
-                raise PermissionDenied("Not enrolled.")
+            from courses.models import Course
+            from enrollments.services import has_active_subscription
+
+            try:
+                course_obj = Course.objects.get(pk=course_id)
+            except Course.DoesNotExist:
+                raise PermissionDenied("Course not found.")
+            if not has_active_subscription(user=user, course=course_obj):
+                raise PermissionDenied("Your subscription for this course has expired.")
             queryset = Assignment.objects.filter(
                 chapter__subject__course__id=course_id)
 
@@ -412,7 +422,7 @@ class TeacherAssignmentSubmissionsView(generics.ListAPIView):
         return (
             AssignmentSubmission.objects
             .filter(assignment=assignment)
-            .select_related("student", "student__profile", "assignment")
+            .select_related("student", "assignment")
             .annotate(
                 submission_status=Case(
                     When(submitted_at__gt=assignment.due_date, then=Value("Late")),
@@ -443,7 +453,7 @@ class SubjectAssignmentsView(APIView):
         teacher_prefetch = Prefetch(
             "chapter__subject__subject_teachers",
             queryset=SubjectTeacher.objects.select_related(
-                "teacher__profile"
+                "teacher"
             ).order_by("order"),
             to_attr="prefetched_teachers",
         )
@@ -464,7 +474,7 @@ class SubjectAssignmentsView(APIView):
 
             teachers = assignment.chapter.subject.prefetched_teachers
             teacher_name = (
-                teachers[0].teacher.profile.full_name if teachers else None
+                (lambda p: p.full_name if p else None)(teachers[0].teacher.default_learner_profile()) if teachers else None if teachers else None
             )
 
             data.append({
@@ -503,15 +513,15 @@ class DownloadAllSubmissionsView(APIView):
         submissions = (
             AssignmentSubmission.objects
             .filter(assignment=assignment)
-            .select_related("student__profile")
+            .select_related("student")
         )
 
         buffer = BytesIO()
         with zipfile.ZipFile(buffer, "w") as zf:
             for sub in submissions:
                 if sub.submitted_file:
-                    name = getattr(sub.student, "profile", None)
-                    student_name = name.full_name if name else sub.student.email
+                    lp = sub.student.default_learner_profile()
+                    student_name = (lp.full_name if lp and lp.full_name else sub.student.email)
                     filename = f"{student_name}_{sub.submitted_file.name.split('/')[-1]}"
                     zf.writestr(filename, sub.submitted_file.read())
 

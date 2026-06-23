@@ -22,10 +22,10 @@ class EnrollmentRequestAdmin(admin.ModelAdmin):
 
 @admin.register(Enrollment)
 class EnrollmentAdmin(admin.ModelAdmin):
-    list_display = ("user", "course", "batch", "status", "enrolled_at")
-    list_filter = ("status", "batch", "enrolled_at")
-    search_fields = ("user__email", "course__title", "batch__code", "batch__name")
-    autocomplete_fields = ("user", "course", "batch")
+    list_display = ("user", "course", "batch_code", "status", "enrolled_at")
+    list_filter = ("status", "enrolled_at")
+    search_fields = ("user__email", "course__title", "batch_code")
+    autocomplete_fields = ("user", "course")
 
 
 @admin.register(Subscription)

@@ -149,9 +149,7 @@ def _session_qs():
     """Base queryset with all relations needed by SessionListSerializer."""
     return PrivateSession.objects.select_related(
         "teacher",
-        "teacher__profile",
         "requested_by",
-        "requested_by__profile",
     )
 
 
@@ -263,9 +261,9 @@ def student_sessions(request):
     if search:
         qs = qs.filter(
             Q(subject__icontains=search)
-            | Q(teacher__profile__full_name__icontains=search)
+            | Q(teacher__learner_profiles__full_name__icontains=search)
             | Q(teacher__username__icontains=search)
-            | Q(requested_by__profile__full_name__icontains=search)
+            | Q(requested_by__learner_profiles__full_name__icontains=search)
             | Q(requested_by__username__icontains=search)
         ).distinct()
 
@@ -392,9 +390,9 @@ def _apply_search(qs, search):
         return qs
     return qs.filter(
         Q(subject__icontains=search)
-        | Q(teacher__profile__full_name__icontains=search)
+        | Q(teacher__learner_profiles__full_name__icontains=search)
         | Q(teacher__username__icontains=search)
-        | Q(requested_by__profile__full_name__icontains=search)
+        | Q(requested_by__learner_profiles__full_name__icontains=search)
         | Q(requested_by__username__icontains=search)
     ).distinct()
 
@@ -633,9 +631,9 @@ def session_detail(request, session_id):
     """Return full session detail. Accessible by teacher, student, or participant."""
     try:
         session = PrivateSession.objects.select_related(
-            "teacher", "teacher__profile",
-            "requested_by", "requested_by__profile",
-        ).prefetch_related("participants__user__profile").get(pk=session_id)
+            "teacher",
+            "requested_by",
+        ).prefetch_related("participants__user").get(pk=session_id)
     except PrivateSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -813,7 +811,7 @@ def subject_teachers(request, subject_id):
 
     qs = SubjectTeacher.objects.filter(
         subject_id=subject_id
-    ).select_related("teacher", "teacher__profile")
+    ).select_related("teacher")
 
     if date and time:
         try:
@@ -834,7 +832,7 @@ def subject_teachers(request, subject_id):
     data = [
         {
             "id": str(st.teacher.id),
-            "name": getattr(st.teacher.profile, "full_name", st.teacher.username),
+            "name": getattr(st.teacher.default_learner_profile(), "full_name", None) or st.teacher.username,
         }
         for st in qs
     ]
@@ -865,7 +863,7 @@ def subject_students(request, subject_id):
             course=subject.course,
             status=Enrollment.STATUS_ACTIVE,   # "ACTIVE"
         )
-        .select_related("user", "user__profile")
+        .select_related("user")
         .exclude(user=request.user)
     )
 

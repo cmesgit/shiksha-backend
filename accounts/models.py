@@ -5,7 +5,9 @@ from django.conf import settings
 from django.utils import timezone
 from django.core.exceptions import ValidationError
 from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.hashers import make_password, check_password
 from django.db import models
+from django.db.models import Q
 
 
 # =====================================================
@@ -38,6 +40,19 @@ class User(AbstractUser):
             is_active=True
         ).exists()
 
+    def default_learner_profile(self):
+        """The account's default LearnerProfile (SELF holder), or None.
+
+        Personal/academic data lives on LearnerProfile now; this replaces the
+        old one-to-one ``user.profile`` accessor.
+        """
+        qs = self.learner_profiles.filter(is_active=True)
+        return (
+            qs.filter(is_default=True).first()
+            or qs.filter(relationship="SELF").first()
+            or qs.first()
+        )
+
     def get_active_roles(self):
         return list(
             self.user_roles.filter(is_active=True)
@@ -49,79 +64,36 @@ class User(AbstractUser):
 # PROFILE (Common for all users)
 # =====================================================
 
-class Profile(models.Model):
+# =====================================================
+# LEARNER PROFILE  (one account -> many learners)
+# =====================================================
+#
+# This replaces the "one User == one learner" assumption. One account
+# (User) owns several LearnerProfiles: the account holder plus any
+# dependents (children). Each profile carries its own student_id,
+# academic info, and an optional switch-PIN. There is no per-profile
+# password in the lighter model — the account password authenticates,
+# then a profile is selected (PIN-gated for dependents) and rides in
+# the JWT as the `active_profile` claim.
+
+class LearnerProfile(models.Model):
+    RELATIONSHIP_SELF = "SELF"
+    RELATIONSHIP_DEPENDENT = "DEPENDENT"
+    RELATIONSHIP_CHOICES = [
+        (RELATIONSHIP_SELF, "Account holder"),
+        (RELATIONSHIP_DEPENDENT, "Dependent / child"),
+    ]
+
     GENDER_CHOICES = [
         ("male", "Male"),
         ("female", "Female"),
         ("other", "Other"),
         ("prefer_not_to_say", "Prefer not to say"),
     ]
-
-    user = models.OneToOneField(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="profile"
-    )
-
-    # --- Personal Info ---
-    first_name = models.CharField(max_length=100, blank=True)
-    last_name = models.CharField(max_length=100, blank=True)
-    phone = models.CharField(max_length=20, blank=True)
-    gender = models.CharField(max_length=20, choices=GENDER_CHOICES, blank=True)
-    date_of_birth = models.DateField(null=True, blank=True)
-    profile_photo = models.ImageField(upload_to="profiles/photos/", null=True, blank=True)
-
-    # --- Legacy fields (kept for backward compat, will be removed later) ---
-    full_name = models.CharField(max_length=255, null=True, blank=True)
-
-    student_id = models.CharField(
-        max_length=50,
-        unique=True,
-        null=True,
-        blank=True
-    )
-
-    avatar_image = models.ImageField(
-        upload_to="avatar/",
-        null=True,
-        blank=True
-    )
-
-    avatar_emoji = models.CharField(
-        max_length=10,
-        blank=True,
-        null=True
-    )
-
-    # --- Address (structured) ---
-    state = models.CharField(max_length=100, blank=True)
-    district = models.CharField(max_length=100, blank=True)
-    city_town = models.CharField(max_length=150, blank=True)
-    pin_code = models.CharField(max_length=10, blank=True)
-
-    # --- Legacy address fields (kept for backward compat) ---
-    current_address = models.TextField(blank=True)
-    permanent_address = models.TextField(blank=True)
-    same_as_current = models.BooleanField(default=False)
-
-    # --- Student: Parent/Guardian Info ---
-    father_name = models.CharField(max_length=150, blank=True)
-    father_phone = models.CharField(max_length=15, blank=True)
-    mother_name = models.CharField(max_length=150, blank=True)
-    mother_phone = models.CharField(max_length=15, blank=True)
-    guardian_name = models.CharField(max_length=150, blank=True)
-    guardian_phone = models.CharField(max_length=15, blank=True)
-    parent_guardian_email = models.EmailField(blank=True)
-
-    # --- Legacy parent fields ---
-    guardian = models.CharField(max_length=150, blank=True)
-
-    # --- Student: Academic Info ---
     CURRENTLY_STUDYING_CHOICES = [
         ("yes", "Yes"),
         ("no", "No"),
     ]
-
     CLASS_CHOICES = [
         ("8", "Class 8"),
         ("9", "Class 9"),
@@ -129,13 +101,11 @@ class Profile(models.Model):
         ("11", "Class 11"),
         ("12", "Class 12"),
     ]
-
     STREAM_CHOICES = [
         ("science", "Science"),
         ("commerce", "Commerce"),
         ("arts", "Arts"),
     ]
-
     BOARD_CHOICES = [
         ("cbse", "CBSE"),
         ("icse", "ICSE"),
@@ -143,7 +113,6 @@ class Profile(models.Model):
         ("nios", "NIOS"),
         ("other", "Other State Board"),
     ]
-
     HIGHEST_EDUCATION_CHOICES = [
         ("below_8", "Below Class 8"),
         ("8", "Class 8"),
@@ -153,35 +122,101 @@ class Profile(models.Model):
         ("12", "Class 12"),
     ]
 
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    account = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="learner_profiles",
+    )
+
+    # Shown in the profile picker ("Profile 1", or the child's name).
+    display_name = models.CharField(max_length=100)
+    relationship = models.CharField(
+        max_length=10, choices=RELATIONSHIP_CHOICES, default=RELATIONSHIP_SELF
+    )
+
+    # Hashed switch-PIN. Blank = no PIN required to enter this profile.
+    pin = models.CharField(max_length=128, blank=True)
+
+    is_default = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+
+    # --- Personal Info ---
+    first_name = models.CharField(max_length=100, blank=True)
+    last_name = models.CharField(max_length=100, blank=True)
+    full_name = models.CharField(max_length=255, blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    gender = models.CharField(max_length=20, choices=GENDER_CHOICES, blank=True)
+    date_of_birth = models.DateField(null=True, blank=True)
+    profile_photo = models.ImageField(upload_to="learners/photos/", null=True, blank=True)
+    avatar_image = models.ImageField(upload_to="learners/avatar/", null=True, blank=True)
+    avatar_emoji = models.CharField(max_length=10, blank=True)
+
+    student_id = models.CharField(max_length=50, unique=True, null=True, blank=True)
+
+    # --- Address ---
+    state = models.CharField(max_length=100, blank=True)
+    district = models.CharField(max_length=100, blank=True)
+    city_town = models.CharField(max_length=150, blank=True)
+    pin_code = models.CharField(max_length=10, blank=True)
+
+    # --- Parent / Guardian (meaningful for DEPENDENT profiles;
+    #     for SELF the account holder is the contact) ---
+    father_name = models.CharField(max_length=150, blank=True)
+    father_phone = models.CharField(max_length=15, blank=True)
+    mother_name = models.CharField(max_length=150, blank=True)
+    mother_phone = models.CharField(max_length=15, blank=True)
+    guardian_name = models.CharField(max_length=150, blank=True)
+    guardian_phone = models.CharField(max_length=15, blank=True)
+    parent_guardian_email = models.EmailField(blank=True)
+
+    # --- Academic Info ---
     currently_studying = models.CharField(
         max_length=3, choices=CURRENTLY_STUDYING_CHOICES, blank=True
     )
-
-    # If currently studying = yes
     current_class = models.CharField(max_length=5, choices=CLASS_CHOICES, blank=True)
     stream = models.CharField(max_length=20, choices=STREAM_CHOICES, blank=True)
     board = models.CharField(max_length=20, choices=BOARD_CHOICES, blank=True)
     board_other = models.CharField(max_length=150, blank=True)
     school_name = models.CharField(max_length=250, blank=True)
     academic_year = models.CharField(max_length=20, blank=True)
-
-    # If currently studying = no
     highest_education = models.CharField(
         max_length=10, choices=HIGHEST_EDUCATION_CHOICES, blank=True
     )
     reason_not_studying = models.CharField(max_length=200, blank=True)
 
+    created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    def save(self, *args, **kwargs):
-        # Keep legacy full_name in sync
-        if self.first_name or self.last_name:
-            self.full_name = f"{self.first_name} {self.last_name}".strip()
-        # Legacy address sync
-        if self.same_as_current:
-            self.permanent_address = self.current_address
-        super().save(*args, **kwargs)
+    class Meta:
+        ordering = ["-is_default", "created_at"]
+        constraints = [
+            # At most one default profile per account.
+            models.UniqueConstraint(
+                fields=["account"],
+                condition=Q(is_default=True),
+                name="one_default_learner_per_account",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["account", "is_active"]),
+        ]
 
+    # --- PIN helpers ---
+    def set_pin(self, raw_pin):
+        self.pin = make_password(raw_pin) if raw_pin else ""
+
+    def check_pin(self, raw_pin):
+        # No PIN configured -> entry is open (used by SELF profiles).
+        if not self.pin:
+            return True
+        return check_password(raw_pin, self.pin)
+
+    def has_pin(self):
+        return bool(self.pin)
+
+    # --- Avatar helpers ---
     def avatar_type(self):
         if self.avatar_image:
             return "image"
@@ -196,36 +231,35 @@ class Profile(models.Model):
             return self.avatar_emoji
         return None
 
-    def __str__(self):
-        return f"{self.user.email} Profile"
+    def save(self, *args, **kwargs):
+        if self.first_name or self.last_name:
+            self.full_name = f"{self.first_name} {self.last_name}".strip()
+        if not self.display_name:
+            self.display_name = self.full_name or "Learner"
+        super().save(*args, **kwargs)
 
     @property
     def is_complete(self):
-        """Check if student profile form is complete."""
         has_personal = bool(
-            self.first_name
-            and self.last_name
-            and self.phone
-            and self.date_of_birth
+            self.first_name and self.last_name and self.phone and self.date_of_birth
         )
         has_address = bool(self.state and self.district and self.city_town)
-
-        # At least one complete parent/guardian contact (name + phone)
         has_parent_contact = (
             (bool(self.father_name) and bool(self.father_phone))
             or (bool(self.mother_name) and bool(self.mother_phone))
             or (bool(self.guardian_name) and bool(self.guardian_phone))
         )
-
         has_academic = bool(self.currently_studying)
-
         return bool(
             has_personal
             and has_address
             and has_parent_contact
             and has_academic
-            and self.user.is_verified
+            and self.account.is_verified
         )
+
+    def __str__(self):
+        return f"{self.account.email} · {self.display_name}"
 
 
 # =====================================================
@@ -297,6 +331,9 @@ class UserRole(models.Model):
         ]
 
     def clean(self):
+        # A user can hold several active roles at once (e.g. an approved
+        # TEACHER who also learns). We only keep the "one primary role"
+        # invariant for deciding a default landing surface.
         if self.is_primary:
             existing_primary = UserRole.objects.filter(
                 user=self.user,
@@ -305,15 +342,6 @@ class UserRole(models.Model):
 
             if existing_primary.exists():
                 raise ValidationError("User already has a primary role.")
-
-        if self.is_active:
-            existing_active = UserRole.objects.filter(
-                user=self.user,
-                is_active=True
-            ).exclude(pk=self.pk)
-
-            if existing_active.exists():
-                raise ValidationError("User already has an active role.")
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -327,9 +355,13 @@ class UserRole(models.Model):
 
         if self.role.name == "TEACHER":
             tp = getattr(self.user, "teacher_profile", None)
-            if tp and not tp.is_approved:
-                tp.is_approved = True
-                tp.save(update_fields=["is_approved"])
+            if tp:
+                # Admin approval gates the academy (faculty) track. Flip it
+                # from pending → approved, then resync the legacy fields.
+                if tp.academy_status == tp.TRACK_PENDING:
+                    tp.academy_status = tp.TRACK_APPROVED
+                tp.sync_type_from_tracks()
+                tp.save(update_fields=["academy_status", "teacher_type", "is_approved"])
 
     def __str__(self):
         return f"{self.user.email} -> {self.role.name}"
@@ -418,71 +450,66 @@ class EmailVerificationToken(models.Model):
 
 
 # =====================================================
-# PASSWORD RESET TOKEN (OTP-based)
+# PASSWORD RESET CODE
 # =====================================================
+#
+# Code-based reset (no emailed links). Flow:
+#   request → a 6-digit code is hashed + stored, emailed to the user
+#   verify  → the raw code is checked; on success a one-time `ticket`
+#             (UUID) is issued so the final step needs no code re-entry
+#   confirm → the ticket sets the new password and burns the record
+#
+# One email == one User, so there is exactly one active code per account.
 
-class PasswordResetToken(models.Model):
-    OTP_TTL_MINUTES = 15
-    TICKET_TTL_MINUTES = 10
-    MAX_ATTEMPTS = 5
-
+class PasswordResetCode(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="password_reset_tokens",
+        related_name="password_reset_codes",
     )
 
     code_hash = models.CharField(max_length=128)
-    attempts = models.PositiveSmallIntegerField(default=0)
-
+    # Issued only after the code is verified; used by the confirm step.
     ticket = models.UUIDField(null=True, blank=True, unique=True)
-    ticket_expires_at = models.DateTimeField(null=True, blank=True)
+
+    used = models.BooleanField(default=False)
+    attempts = models.PositiveSmallIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
-    used_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [
-            models.Index(fields=["user", "-created_at"]),
+            models.Index(fields=["user", "used"]),
             models.Index(fields=["ticket"]),
+            models.Index(fields=["expires_at"]),
         ]
 
+    CODE_TTL = timedelta(minutes=15)
+    MAX_ATTEMPTS = 5
+
     @classmethod
-    def generate(cls, user):
+    def issue(cls, user):
+        """Invalidate prior codes and create a new one. Returns (obj, raw_code)."""
         import secrets
-        from django.contrib.auth.hashers import make_password
 
-        code = f"{secrets.randbelow(1000000):06d}"
-        token = cls.objects.create(
+        cls.objects.filter(user=user, used=False).update(used=True)
+        raw_code = f"{secrets.randbelow(1_000_000):06d}"
+        obj = cls.objects.create(
             user=user,
-            code_hash=make_password(code),
-            expires_at=timezone.now() + timedelta(minutes=cls.OTP_TTL_MINUTES),
+            code_hash=make_password(raw_code),
+            expires_at=timezone.now() + cls.CODE_TTL,
         )
-        return token, code
-
-    def code_is_valid(self, raw_code):
-        from django.contrib.auth.hashers import check_password
-        return check_password(raw_code, self.code_hash)
+        return obj, raw_code
 
     def is_expired(self):
         return timezone.now() > self.expires_at
 
-    def issue_ticket(self):
-        self.ticket = uuid.uuid4()
-        self.ticket_expires_at = timezone.now() + timedelta(minutes=self.TICKET_TTL_MINUTES)
-        self.save(update_fields=["ticket", "ticket_expires_at"])
-        return self.ticket
-
-    def ticket_is_valid(self, raw_ticket):
-        if not self.ticket or not self.ticket_expires_at:
-            return False
-        if str(self.ticket) != str(raw_ticket):
-            return False
-        return timezone.now() <= self.ticket_expires_at
+    def check_code(self, raw_code):
+        return check_password(raw_code, self.code_hash)
 
     def __str__(self):
-        return f"PasswordResetToken for {self.user.email}"
+        return f"ResetCode for {self.user.email}"
 
 
 # =====================================================
@@ -578,6 +605,49 @@ class TeacherProfile(models.Model):
         ("other", "Other"),
     ]
 
+    # Which track the teacher applied through. A teacher may ultimately do
+    # both (course_applications AND skill_applications already coexist on
+    # this model); this records the primary track chosen at signup and
+    # which dashboard they land on. "BOTH" is allowed once approved for each.
+    TYPE_GUEST = "GUEST"      # specialized-skills "guest expert"
+    TYPE_FACULTY = "FACULTY"  # academic class 8-12 faculty
+    TYPE_BOTH = "BOTH"
+    TEACHER_TYPE_CHOICES = [
+        (TYPE_GUEST, "Guest expert (skills)"),
+        (TYPE_FACULTY, "Faculty (academic)"),
+        (TYPE_BOTH, "Both"),
+    ]
+
+    # Per-track lifecycle. A teacher is "assigned" to a track by an admin
+    # (academy/faculty) or auto-listed (skill/guest). The dashboard switch in
+    # both the teacher and student apps reads these directly:
+    #   locked    → not applied for; the switch tile shows a padlock + "Apply"
+    #   pending   → applied, waiting on admin review; tile shows "In review"
+    #   approved  → live; tile is selectable and routes to that dashboard
+    # "academy" maps to the FACULTY track, "skill" maps to the GUEST track.
+    TRACK_LOCKED = "locked"
+    TRACK_PENDING = "pending"
+    TRACK_APPROVED = "approved"
+    TRACK_STATUS_CHOICES = [
+        (TRACK_LOCKED, "Locked"),
+        (TRACK_PENDING, "Pending review"),
+        (TRACK_APPROVED, "Approved"),
+    ]
+
+    # The two switchable tracks, by the public name used across the apps.
+    TRACK_ACADEMY = "academy"
+    TRACK_SKILL = "skill"
+
+    # Tier assigned by the screening panel; drives the rate band.
+    TIER_STANDARD = "standard"
+    TIER_SENIOR = "senior"
+    TIER_EXPERT = "expert"
+    TIER_CHOICES = [
+        (TIER_STANDARD, "Standard"),
+        (TIER_SENIOR, "Senior"),
+        (TIER_EXPERT, "Expert"),
+    ]
+
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -590,6 +660,24 @@ class TeacherProfile(models.Model):
     photo = models.ImageField(upload_to="teachers/", null=True, blank=True)
     rating = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
     is_approved = models.BooleanField(default=False)
+
+    # Separate teacher-context password (independent of account/learner password)
+    teacher_password = models.CharField(max_length=128, blank=True, default="")
+
+    # --- Track + tier ---
+    teacher_type = models.CharField(
+        max_length=10, choices=TEACHER_TYPE_CHOICES, default=TYPE_FACULTY
+    )
+    tier = models.CharField(max_length=10, choices=TIER_CHOICES, blank=True)
+
+    # Per-track status (see TRACK_* above). teacher_type stays in sync via
+    # sync_type_from_tracks() for backward compatibility with older code.
+    academy_status = models.CharField(
+        max_length=10, choices=TRACK_STATUS_CHOICES, default=TRACK_LOCKED
+    )
+    skill_status = models.CharField(
+        max_length=10, choices=TRACK_STATUS_CHOICES, default=TRACK_LOCKED
+    )
 
     # --- Section 1: Educational Qualifications ---
     highest_degree = models.CharField(
@@ -674,6 +762,81 @@ class TeacherProfile(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
 
+
+    # ── Track helpers ─────────────────────────────────────────────────────
+    def track_status(self, track):
+        """Status for 'academy' or 'skill'."""
+        if track == self.TRACK_ACADEMY:
+            return self.academy_status
+        if track == self.TRACK_SKILL:
+            return self.skill_status
+        return self.TRACK_LOCKED
+
+    def set_track_status(self, track, status):
+        if track == self.TRACK_ACADEMY:
+            self.academy_status = status
+        elif track == self.TRACK_SKILL:
+            self.skill_status = status
+
+    def approved_tracks(self):
+        out = []
+        if self.academy_status == self.TRACK_APPROVED:
+            out.append(self.TRACK_ACADEMY)
+        if self.skill_status == self.TRACK_APPROVED:
+            out.append(self.TRACK_SKILL)
+        return out
+
+    def pending_tracks(self):
+        out = []
+        if self.academy_status == self.TRACK_PENDING:
+            out.append(self.TRACK_ACADEMY)
+        if self.skill_status == self.TRACK_PENDING:
+            out.append(self.TRACK_SKILL)
+        return out
+
+    @staticmethod
+    def track_for_type(teacher_type):
+        """Map a signup teacher_type (GUEST/FACULTY) to a track name."""
+        return (
+            TeacherProfile.TRACK_SKILL
+            if teacher_type == TeacherProfile.TYPE_GUEST
+            else TeacherProfile.TRACK_ACADEMY
+        )
+
+    def sync_type_from_tracks(self):
+        """Keep the legacy teacher_type + is_approved in step with the
+        per-track statuses so existing dashboards/admin keep working.
+
+        A track counts toward teacher_type once it is applied for (pending or
+        approved). is_approved is True whenever ANY track is live, which is
+        what the legacy gates ("teacher account active") really meant."""
+        academy_on = self.academy_status in (self.TRACK_PENDING, self.TRACK_APPROVED)
+        skill_on = self.skill_status in (self.TRACK_PENDING, self.TRACK_APPROVED)
+        if academy_on and skill_on:
+            self.teacher_type = self.TYPE_BOTH
+        elif skill_on:
+            self.teacher_type = self.TYPE_GUEST
+        elif academy_on:
+            self.teacher_type = self.TYPE_FACULTY
+        self.is_approved = bool(self.approved_tracks())
+
+    # ── Teacher password helpers ──────────────────────────────────────────
+    def set_teacher_password(self, raw_password):
+        from django.contrib.auth.hashers import make_password as _mp
+        self.teacher_password = _mp(raw_password) if raw_password else ""
+
+    def check_teacher_password(self, raw_password):
+        """Verify teacher-context password.
+        Falls back to account password when teacher_password is blank
+        (brand-new teacher whose teacher pw still mirrors the account pw)."""
+        from django.contrib.auth.hashers import check_password as _cp
+        if self.teacher_password:
+            return _cp(raw_password, self.teacher_password)
+        return self.user.check_password(raw_password or "")
+
+    def has_teacher_password(self):
+        return bool(self.teacher_password)
+
     def save(self, *args, **kwargs):
         if self.same_as_current:
             self.permanent_address = self.current_address
@@ -682,7 +845,7 @@ class TeacherProfile(models.Model):
     @property
     def is_complete(self):
         """Check if teacher profile form is complete."""
-        profile = getattr(self.user, "profile", None)
+        profile = self.user.default_learner_profile()
         has_personal = bool(
             profile
             and profile.first_name

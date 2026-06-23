@@ -24,10 +24,21 @@ class EnrollmentRequest(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
+    # The ACCOUNT that submitted / paid (kept for billing + audit).
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="enrollment_requests",
+    )
+
+    # The LEARNER who will actually get access. Nullable during the
+    # migration window; backfilled to each account's default profile.
+    learner_profile = models.ForeignKey(
+        "accounts.LearnerProfile",
+        on_delete=models.CASCADE,
+        related_name="enrollment_requests",
+        null=True,
+        blank=True,
     )
 
     course = models.ForeignKey(
@@ -67,13 +78,13 @@ class EnrollmentRequest(models.Model):
         ordering = ["-submitted_at"]
         indexes = [
             models.Index(fields=["status", "-submitted_at"]),
-            models.Index(fields=["user", "status"]),
+            models.Index(fields=["learner_profile", "status"]),
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=["user", "course"],
+                fields=["learner_profile", "course"],
                 condition=models.Q(status="PENDING"),
-                name="unique_pending_request_per_user_course",
+                name="unique_pending_request_per_learner_course",
             ),
         ]
 
@@ -98,24 +109,20 @@ class Enrollment(models.Model):
         related_name="enrollments",
     )
 
+    learner_profile = models.ForeignKey(
+        "accounts.LearnerProfile",
+        on_delete=models.CASCADE,
+        related_name="enrollments",
+        null=True,
+        blank=True,
+    )
+
     course = models.ForeignKey(
         "courses.Course",
         on_delete=models.CASCADE,
         related_name="enrollments",
     )
 
-    # NEW: structured batch assignment.
-    batch = models.ForeignKey(
-        "courses.Batch",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="enrollments",
-    )
-
-    # LEGACY: kept only so the data migration can backfill `batch`.
-    # Delete this field (and run a migration) once 0003 has run and you've
-    # confirmed every row has a `batch` set where it should.
     batch_code = models.CharField(max_length=30, null=True, blank=True)
 
     status = models.CharField(
@@ -127,11 +134,10 @@ class Enrollment(models.Model):
     enrolled_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ("user", "course")
+        unique_together = ("learner_profile", "course")
         indexes = [
-            models.Index(fields=["user", "course"]),
+            models.Index(fields=["learner_profile", "course"]),
             models.Index(fields=["status"]),
-            models.Index(fields=["batch", "status"]),  # "active students in A13"
         ]
 
     def __str__(self):
@@ -155,6 +161,14 @@ class Subscription(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="subscriptions",
+    )
+
+    learner_profile = models.ForeignKey(
+        "accounts.LearnerProfile",
+        on_delete=models.CASCADE,
+        related_name="subscriptions",
+        null=True,
+        blank=True,
     )
 
     course = models.ForeignKey(
@@ -186,7 +200,7 @@ class Subscription(models.Model):
     class Meta:
         ordering = ["-expires_at"]
         indexes = [
-            models.Index(fields=["user", "course", "status"]),
+            models.Index(fields=["learner_profile", "course", "status"]),
             models.Index(fields=["expires_at"]),
         ]
 

@@ -7,6 +7,23 @@ LOGGING = {
     "root": {"handlers": ["console"], "level": "WARNING"},
 }
 
+# ── Security overrides for dev ────────────────────────────────────────────
+# settings_base enables these for prod (Nginx on the droplet handles HTTPS).
+# Keeping SECURE_SSL_REDIRECT True in dev causes SecurityMiddleware to redirect
+# every Gunicorn-bound HTTP request to HTTPS, stripping CORS headers en route.
+SECURE_SSL_REDIRECT = False
+SECURE_HSTS_SECONDS = 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = False
+
+# IMPORTANT: dev is still served over HTTPS by Nginx. The cookies use
+# SameSite=None (set in settings_base for cross-subdomain auth), and browsers
+# DROP any SameSite=None cookie that is not also Secure. Setting these False
+# silently breaks the Django admin login (session cookie discarded -> login
+# page just reloads) and the JWT auth cookies. Keep them True.
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+# ─────────────────────────────────────────────────────────────────────────
+
 ALLOWED_HOSTS = [
     "134.209.154.122",
     "api.dev.shikshacom.com",

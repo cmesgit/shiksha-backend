@@ -16,3 +16,24 @@ token.json
 *.log
 z
 .settings.py
+# Media uploads
+media/
+
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment variables
+.env
+*.env
+
+# Credentials
+token.json
+credentials.json
+
+# OS files
+.DS_Store

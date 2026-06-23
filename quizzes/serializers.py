@@ -141,10 +141,10 @@ class QuizSubmitSerializer(serializers.Serializer):
         quiz = self.context["quiz"]
         user = self.context["request"].user
 
-        if not Enrollment.objects.filter(
-            user=user, course=quiz.subject.course, status=Enrollment.STATUS_ACTIVE
-        ).exists():
-            raise ValidationError("Not enrolled in this course.")
+        from enrollments.services import has_active_subscription
+
+        if not has_active_subscription(user=user, course=quiz.subject.course):
+            raise ValidationError("Your subscription for this course has expired.")
 
         if not quiz.is_published:
             raise ValidationError("Quiz not published.")
@@ -295,7 +295,7 @@ class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
     student_email = serializers.EmailField(
         source="student.email", read_only=True)
     student_name = serializers.CharField(
-        source="student.profile.full_name", read_only=True)
+        source="student.username", read_only=True)
     total_marks = serializers.IntegerField(
         source="quiz.total_marks", read_only=True)
 

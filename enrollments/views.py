@@ -1,10 +1,12 @@
 from rest_framework import generics, status
+from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser
 
-from accounts.permissions import IsAdmin
+from accounts.permissions import IsAdmin, IsEmailVerified
+from courses.models import Course
 
 from .models import EnrollmentRequest, Enrollment
 from .serializers import (
@@ -47,7 +49,7 @@ class AdminEnrollmentRequestListView(APIView):
     def get(self, request):
         qs = (
             EnrollmentRequest.objects
-            .select_related("user", "user__profile", "course")
+            .select_related("user", "learner_profile", "course")
             .order_by("-submitted_at")
         )
 
@@ -115,8 +117,8 @@ class AdminBatchRosterView(APIView):
     def get(self, request):
         qs = (
             Enrollment.objects
-            .select_related("user", "user__profile", "course", "batch")
-            .order_by("batch__code", "user__email")
+            .select_related("user", "learner_profile", "course")
+            .order_by("batch_code", "user__email")
         )
 
         batch_id = request.query_params.get("batch")
@@ -124,10 +126,10 @@ class AdminBatchRosterView(APIView):
         course_id = request.query_params.get("course")
         status_filter = request.query_params.get("status", Enrollment.STATUS_ACTIVE).strip().upper()
 
-        if batch_id:
-            qs = qs.filter(batch_id=batch_id)
+        if batch_id:  # NOTE: no batch FK; filtering by batch_code only
+            pass  # batch_id filter not supported (no batch FK on Enrollment)
         if code:
-            qs = qs.filter(batch__code__iexact=code.replace(" ", ""))
+            qs = qs.filter(batch_code__iexact=code.replace(" ", ""))
         if course_id:
             qs = qs.filter(course_id=course_id)
         if status_filter in (Enrollment.STATUS_ACTIVE, Enrollment.STATUS_REVOKED):

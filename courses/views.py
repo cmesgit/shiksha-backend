@@ -178,6 +178,9 @@ class MyEnrolledCoursesView(APIView):
                     "status": sub.status,
                     "is_active": is_active,
                     "days_remaining": days_remaining,
+                    # Per-course trials were removed; every subscription is a
+                    # full (paid/free-grant) one now.
+                    "is_trial": False,
                 }
                 course_data["payment_history"] = payment_history
 
@@ -446,14 +449,14 @@ class SubjectStudentsView(APIView):
                 course=subject.course,
                 status=Enrollment.STATUS_ACTIVE,
             )
-            .select_related("user", "user__profile")
-            .order_by("user__profile__full_name")
+            .select_related("user", "learner_profile")
+            .order_by("learner_profile__full_name")
         )
 
         students = []
         for enrollment in enrollments:
             u = enrollment.user
-            profile = getattr(u, "profile", None)
+            profile = enrollment.learner_profile
 
             students.append({
                 "id": str(u.id),
@@ -538,8 +541,8 @@ class TeacherAllStudentsView(APIView):
                 course_id__in=course_ids,
                 status=Enrollment.STATUS_ACTIVE,
             )
-            .select_related("user", "user__profile", "course")
-            .order_by("user__profile__full_name")
+            .select_related("user", "learner_profile", "course")
+            .order_by("learner_profile__full_name")
         )
 
         seen = set()
@@ -552,7 +555,7 @@ class TeacherAllStudentsView(APIView):
                 continue
             seen.add(u.id)
 
-            profile = getattr(u, "profile", None)
+            profile = enrollment.learner_profile
 
             students.append({
                 "id": str(u.id),

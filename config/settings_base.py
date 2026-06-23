@@ -14,6 +14,17 @@ DEBUG = os.getenv("DJANGO_DEBUG", "False") == "True"
 
 AUTH_USER_MODEL = "accounts.User"
 
+# Password strength is enforced wherever validate_password() is called
+# (signup, change-password, password reset). Without this, those checks are
+# no-ops. Min length 8 matches the frontend's client-side guard.
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+     "OPTIONS": {"min_length": 8}},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -35,16 +46,17 @@ INSTALLED_APPS = [
     "livestream.apps.LivestreamConfig",
     "dashboard",
     "activity.apps.ActivityConfig",
-    "forum",
     "sessions_app",
     "channels",
-    "news",
+    "skills",
+    "global_settings",
+    "chat",
 ]
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
-    'django.middleware.common.CommonMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'django.middleware.common.CommonMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -162,6 +174,12 @@ CHANNEL_LAYERS = {
     },
 }
 GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")
+
+# ── Payments ────────────────────────────────────────
+# The live payment mode is normally read from the GlobalSettings singleton
+# (admin-toggleable, no restart). This env var is only the fallback used
+# before that table exists / is migrated. Values: free | manual_upi | razorpay
+PAYMENT_PROVIDER = os.getenv("PAYMENT_PROVIDER", "free")
 # ── Celery ──────────────────────────────────────────
 CELERY_BROKER_URL = "redis://127.0.0.1:6379/1"
 CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/1"

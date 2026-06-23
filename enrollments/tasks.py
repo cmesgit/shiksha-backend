@@ -3,20 +3,20 @@ from config.celery import app
 
 @app.task
 def expire_subscriptions():
-    """Flip ACTIVE Subscriptions whose expires_at has passed to EXPIRED.
+    """Daily housekeeping for the Subscription table.
 
-    Runs nightly via Celery beat. The user-facing API computes is_active in
-    real time, so this is purely for keeping the DB status field consistent
-    with reality (admin reports, queries, etc.).
+    Flip any ACTIVE subscription whose end date has passed to EXPIRED. The
+    platform is on the free model and no longer tracks per-course trials, so
+    this is a single bulk update with no per-kind branching or email sends.
+    (Trial reminder/expiry emails were removed along with the trial fields.)
     """
     from django.utils import timezone
-
     from enrollments.models import Subscription
 
     now = timezone.now()
-    qs = Subscription.objects.filter(
-        status=Subscription.STATUS_ACTIVE,
-        expires_at__lte=now,
+    expired = (
+        Subscription.objects
+        .filter(status=Subscription.STATUS_ACTIVE, expires_at__lte=now)
+        .update(status=Subscription.STATUS_EXPIRED)
     )
-    count = qs.update(status=Subscription.STATUS_EXPIRED)
-    return f"Expired {count} subscriptions"
+    return {"expired": expired}

@@ -1,5 +1,6 @@
 import os
 import logging
+import uuid
 from accounts.email_utils import send_gmail
 from rest_framework import status
 from rest_framework.permissions import BasePermission, IsAuthenticated, AllowAny, IsAdminUser
@@ -29,7 +30,6 @@ from accounts.models import (
     AuthEvent,
     User,
     EmailVerificationToken,
-    PasswordResetToken,
     Role,
     UserRole,
 )
@@ -43,6 +43,7 @@ from accounts.throttles import (
 )
 
 from .serializers import (
+    default_learner,
     SignupSerializer,
     UserMeSerializer,
     StudentFormFillupSerializer,
@@ -60,75 +61,36 @@ from .serializers import (
 
 from .permissions import IsAdmin
 
-from .models import TeacherProfile, Profile , TeacherCourseApplication, TeacherSkillApplication
+from .models import TeacherProfile, LearnerProfile, PasswordResetCode, TeacherCourseApplication, TeacherSkillApplication
 
 from .permissions import IsEmailVerified
+
+# Active-profile resolver (lives with the new login flow)
+from .auth_flow import get_active_profile
 
 # Indian states and districts data
 from .indian_states_data import STATES_WITH_DISTRICTS
 
 
+def _profile_target(request):
+    """Personal/academic data now lives on the ACTIVE LearnerProfile.
+
+    Returns the learner profile selected in the JWT; falls back to the
+    account's default LearnerProfile when no profile is active in the token.
+    """
+    learner = get_active_profile(request)
+    if learner is not None:
+        return learner
+    return default_learner(request.user)
+
+
 # =====================================================
 # VERIFIED USERS ONLY
 # =====================================================
-
-class MeView(APIView):
-    permission_classes = [IsAuthenticated, IsEmailVerified]
-    parser_classes = [MultiPartParser, FormParser, JSONParser]
-
-    def get(self, request):
-        user = (
-            User.objects
-            .select_related("profile")
-            .prefetch_related(
-                Prefetch(
-                    "enrollments",
-                    queryset=Enrollment.objects
-                    .filter(status="ACTIVE")
-                    .select_related("course")
-                ),
-                "user_roles__role"
-            )
-            .get(id=request.user.id)
-        )
-
-        return Response(UserMeSerializer(user, context={"request": request}).data)
-
-    def patch(self, request):
-        user = request.user
-        profile = user.profile
-        data = request.data
-
-        username = data.get("username")
-        if username:
-            user.username = username
-            user.save(update_fields=["username"])
-
-        profile_data = data.get("profile") or {}
-        full_name = profile_data.get("full_name")
-        if full_name is not None:
-            profile.full_name = full_name
-            parts = full_name.strip().split(None, 1)
-            profile.first_name = parts[0] if parts else ""
-            profile.last_name = parts[1] if len(parts) > 1 else ""
-
-        phone = profile_data.get("phone")
-        if phone is not None:
-            profile.phone = phone
-
-        avatar_emoji = profile_data.get("avatar_emoji")
-        if avatar_emoji is not None:
-            profile.avatar_emoji = avatar_emoji
-            if profile.avatar_image:
-                profile.avatar_image.delete(save=False)
-                profile.avatar_image = None
-
-        if "avatar_image" in request.FILES:
-            profile.avatar_image = request.FILES["avatar_image"]
-            profile.avatar_emoji = ""
-
-        profile.save()
-        return self.get(request)
+#
+# MeView now lives in accounts/auth_flow.py (context-aware: it echoes the
+# active profile + context from the JWT). Import it from there in urls.py.
+# Profile/avatar edits go through StudentProfileView / TeacherProfileView.
 
 
 # =====================================================
@@ -146,6 +108,8 @@ class SignupView(APIView):
     def post(self, request):
         # Free the email if a previous unverified signup was abandoned.
         # Matches the 24h token expiry so real duplicates still get rejected.
+        # NOTE: filter includes is_verified=False so verified users are never
+        # deleted — important for the add-to-existing flow.
         from datetime import timedelta
         email = (request.data.get("email") or "").strip().lower()
         if email:
@@ -161,9 +125,22 @@ class SignupView(APIView):
         with transaction.atomic():
             user = serializer.save()
 
-            EmailVerificationToken.objects.filter(user=user).delete()
-            token = EmailVerificationToken.generate(user)
+            # Only generate a verification token for unverified accounts.
+            # Add-to-existing flows operate on a verified account — skip.
+            if not user.is_verified:
+                EmailVerificationToken.objects.filter(user=user).delete()
+                token = EmailVerificationToken.generate(user)
+            else:
+                token = None
 
+        # ── Add-to-existing (verified account): no email, go straight to login ──
+        if token is None:
+            return Response(
+                {"detail": "Identity added successfully. Please log in."},
+                status=status.HTTP_200_OK,
+            )
+
+        # ── New account: send verification email ──────────────────────────
         base_url = self._get_api_base_url(request)
         verify_link = (
             f"{base_url}/api/accounts/verify-email/?token={token.token}"
@@ -198,67 +175,12 @@ class SignupView(APIView):
 
 
 # =====================================================
-# LOGIN — JWT ISSUED ONLY IF VERIFIED
+# LOGIN
 # =====================================================
-
-class LoginView(APIView):
-    permission_classes = [AllowAny]
-    throttle_classes = [LoginRateThrottle]
-
-    def post(self, request):
-        email = request.data.get("email", "").strip().lower()
-        password = request.data.get("password")
-
-        if not email or not password:
-            raise ValidationError("Email and password are required.")
-
-        user = authenticate(request, email=email, password=password)
-
-        if not user:
-            log_auth_event(request, AuthEvent.EVENT_LOGIN_FAILED)
-            raise ValidationError("Invalid credentials.")
-
-        if not user.is_verified:
-            log_auth_event(
-                request,
-                AuthEvent.EVENT_LOGIN_BLOCKED_UNVERIFIED,
-                user=user,
-            )
-            raise ValidationError("Email not verified.")
-
-        refresh = RefreshToken.for_user(user)
-
-        response = Response(
-            {"user": UserMeSerializer(user).data},
-            status=status.HTTP_200_OK,
-        )
-
-        response.delete_cookie("access", domain=settings.COOKIE_DOMAIN)
-        response.delete_cookie("refresh", domain=settings.COOKIE_DOMAIN)
-
-        response.set_cookie(
-            key="access",
-            value=str(refresh.access_token),
-            httponly=True,
-            secure=True,
-            samesite="None",
-            domain=settings.COOKIE_DOMAIN,
-            max_age=3600,
-        )
-
-        response.set_cookie(
-            key="refresh",
-            value=str(refresh),
-            httponly=True,
-            secure=True,
-            samesite="None",
-            domain=settings.COOKIE_DOMAIN,
-            max_age=60 * 60 * 24 * 7,
-        )
-
-        log_auth_event(request, AuthEvent.EVENT_LOGIN_SUCCESS, user=user)
-
-        return response
+#
+# LoginView (step 1: account auth -> returns profiles) and the profile
+# selection / teacher-context / PIN views all live in accounts/auth_flow.py.
+# Import them in urls.py. RefreshView below is unchanged.
 
 
 # =====================================================
@@ -440,7 +362,7 @@ class FormFillupView(APIView):
     def get(self, request):
         user = request.user
         is_teacher = self._is_teacher(user)
-        profile = user.profile
+        profile = _profile_target(request)
 
         if is_teacher:
             tp = getattr(user, "teacher_profile", None)
@@ -573,7 +495,7 @@ class FormFillupView(APIView):
             serializer.is_valid(raise_exception=True)
             serializer.update(user, serializer.validated_data)
         else:
-            profile = user.profile
+            profile = _profile_target(request)
             serializer = StudentFormFillupSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             serializer.update(profile, serializer.validated_data)
@@ -606,7 +528,7 @@ class TeacherProfileView(APIView):
 
     def patch(self, request):
         user = request.user
-        profile = user.profile
+        profile = _profile_target(request)
         tp, _ = TeacherProfile.objects.get_or_create(user=user)
 
         data = request.data
@@ -645,7 +567,7 @@ class TeacherProfileView(APIView):
 
     def get(self, request):
         user = request.user
-        profile = user.profile
+        profile = _profile_target(request)
         tp = getattr(user, "teacher_profile", None)
 
         # Active courses & subjects via SubjectTeacher
@@ -728,7 +650,7 @@ class StudentProfileView(APIView):
     }
 
     def patch(self, request):
-        profile = request.user.profile
+        profile = _profile_target(request)
         data = request.data
 
         for field in self.PROFILE_FIELDS:
@@ -746,7 +668,7 @@ class StudentProfileView(APIView):
 
     def get(self, request):
         user = request.user
-        profile = user.profile
+        profile = _profile_target(request)
 
         data = {
             "name": f"{profile.first_name} {profile.last_name}".strip(),
@@ -836,7 +758,8 @@ class IsProfileComplete(BasePermission):
     def has_permission(self, request, view):
         if not request.user.is_authenticated:
             return False
-        return hasattr(request.user, "profile") and request.user.profile.is_complete
+        target = _profile_target(request)
+        return bool(target and getattr(target, "is_complete", False))
 
 
 # =====================================================
@@ -844,43 +767,42 @@ class IsProfileComplete(BasePermission):
 # =====================================================
 
 class RefreshView(APIView):
+    """
+    Rotate the refresh token while preserving the JWT context claims
+    (`context` and `active_profile`) that drive the multi-profile login
+    flow. The old implementation used RefreshToken.for_user() which
+    strips all custom claims, causing the frontend to lose learner/teacher
+    context on every token rotation.
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
+        from .auth_flow import build_tokens, set_auth_cookies, CTX_ACCOUNT
+        from accounts.models import LearnerProfile
+
         refresh_token = request.COOKIES.get("refresh")
 
         if not refresh_token:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         try:
-            token = RefreshToken(refresh_token)
-            user = User.objects.get(id=token["user_id"])
+            old_token = RefreshToken(refresh_token)
+            user = User.objects.get(id=old_token["user_id"])
 
-            new_refresh = RefreshToken.for_user(user)
+            # --- Preserve context claims from the expiring token ---
+            context = old_token.get("context") or CTX_ACCOUNT
+            old_profile_id = old_token.get("active_profile")
 
-            response = Response({"detail": "refreshed"})
+            profile = None
+            if old_profile_id:
+                profile = (
+                    LearnerProfile.objects
+                    .filter(id=old_profile_id, account=user, is_active=True)
+                    .first()
+                )
 
-            response.set_cookie(
-                key="access",
-                value=str(new_refresh.access_token),
-                httponly=True,
-                secure=True,
-                samesite="None",
-                domain=settings.COOKIE_DOMAIN,
-                max_age=3600,
-            )
-
-            response.set_cookie(
-                key="refresh",
-                value=str(new_refresh),
-                httponly=True,
-                secure=True,
-                samesite="None",
-                domain=settings.COOKIE_DOMAIN,
-                max_age=60 * 60 * 24 * 7,
-            )
-
-            return response
+            new_refresh = build_tokens(user, context=context, profile=profile)
+            return set_auth_cookies(Response({"detail": "refreshed"}), new_refresh)
 
         except (TokenError, User.DoesNotExist):
             return Response(status=status.HTTP_401_UNAUTHORIZED)
@@ -898,7 +820,7 @@ class TeacherListView(APIView):
             is_approved=True,
             user__user_roles__role__name="TEACHER",
             user__user_roles__is_active=True,
-        ).select_related("user", "user__profile").distinct()
+        ).select_related("user").distinct()
 
         subject = request.query_params.get("subject", "").strip()
         if subject:
@@ -906,7 +828,7 @@ class TeacherListView(APIView):
 
         data = []
         for tp in qs:
-            profile = getattr(tp.user, "profile", None)
+            profile = default_learner(tp.user)
             name = ""
             if profile:
                 if profile.first_name:
@@ -944,7 +866,7 @@ class TeacherPublicProfileView(APIView):
         try:
             tp = (
                 TeacherProfile.objects
-                .select_related("user", "user__profile")
+                .select_related("user")
                 .prefetch_related("course_applications", "skill_applications")
                 .get(
                     user__id=user_id,
@@ -956,7 +878,7 @@ class TeacherPublicProfileView(APIView):
         except TeacherProfile.DoesNotExist:
             return Response({"detail": "Teacher not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        profile = getattr(tp.user, "profile", None)
+        profile = default_learner(tp.user)
 
         name = ""
         if profile:
@@ -1042,38 +964,30 @@ class ValidateStudentIdView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, student_id):
-        try:
-            profile = Profile.objects.select_related("user").get(
-                student_id=student_id
-            )
-        except Profile.DoesNotExist:
-            return Response({
-                "valid": False,
-                "name": None,
-                "user_id": None,
-                "student_id": student_id,
-            })
+        not_found = {
+            "valid": False,
+            "name": None,
+            "user_id": None,
+            "profile_id": None,
+            "student_id": student_id,
+        }
 
-        if not profile.user.has_role("STUDENT"):
-            return Response({
-                "valid": False,
-                "name": None,
-                "user_id": None,
-                "student_id": student_id,
-            })
+        learner = (
+            LearnerProfile.objects
+            .select_related("account")
+            .filter(student_id=student_id, is_active=True)
+            .first()
+        )
+        if not learner:
+            return Response(not_found)
 
-        name = ""
-        if profile.first_name:
-            name = f"{profile.first_name} {profile.last_name}".strip()
-        elif profile.full_name:
-            name = profile.full_name
-        else:
-            name = profile.user.username
+        name = f"{learner.first_name} {learner.last_name}".strip() or learner.display_name
 
         return Response({
             "valid": True,
             "name": name,
-            "user_id": str(profile.user.id),
+            "user_id": str(learner.account_id),
+            "profile_id": str(learner.id),
             "student_id": student_id,
         })
 
@@ -1102,6 +1016,112 @@ class ChangePasswordView(APIView):
 
 
 # =====================================================
+# PASSWORD RESET (code-based, unauthenticated)
+# =====================================================
+
+class PasswordResetRequestView(APIView):
+    """POST { email } → always 200. Emails a 6-digit code if the account exists."""
+    permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetRequestRateThrottle]
+
+    def post(self, request):
+        serializer = PasswordResetRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+
+        # Never reveal whether the email exists.
+        generic = Response({"detail": "If an account exists for that email, a code has been sent."})
+
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            return generic
+
+        _, raw_code = PasswordResetCode.issue(user)
+        try:
+            send_gmail(
+                to=user.email,
+                subject="Your ShikshaCom password reset code",
+                message_text=(
+                    f"Your password reset code is {raw_code}.\n\n"
+                    "It expires in 15 minutes. If you didn't request this, ignore this email."
+                ),
+            )
+        except Exception:
+            # Don't leak transport errors to the client; the code is already stored.
+            pass
+        return generic
+
+
+class PasswordResetVerifyView(APIView):
+    """POST { email, code } → { ticket }. Validates the code, issues a one-time ticket."""
+    permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetVerifyRateThrottle]
+
+    def post(self, request):
+        serializer = PasswordResetVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+        code = serializer.validated_data["code"].strip()
+
+        invalid = ValidationError({"code": "Invalid or expired code."})
+
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            raise invalid
+
+        rec = (
+            PasswordResetCode.objects
+            .filter(user=user, used=False)
+            .order_by("-created_at")
+            .first()
+        )
+        if rec is None or rec.is_expired():
+            raise invalid
+        if rec.attempts >= PasswordResetCode.MAX_ATTEMPTS:
+            rec.used = True
+            rec.save(update_fields=["used"])
+            raise ValidationError({"code": "Too many attempts. Request a new code."})
+
+        if not rec.check_code(code):
+            rec.attempts += 1
+            rec.save(update_fields=["attempts"])
+            raise invalid
+
+        rec.ticket = uuid.uuid4()
+        rec.save(update_fields=["ticket"])
+        return Response({"ticket": str(rec.ticket)})
+
+
+class PasswordResetConfirmView(APIView):
+    """POST { email, ticket, new_password } → 200. Sets the new password, burns the code."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+        ticket = serializer.validated_data["ticket"]
+        new_password = serializer.validated_data["new_password"]
+
+        try:
+            user = User.objects.get(email__iexact=email)
+            rec = PasswordResetCode.objects.get(user=user, ticket=ticket, used=False)
+        except (User.DoesNotExist, PasswordResetCode.DoesNotExist):
+            raise ValidationError({"detail": "Invalid or expired reset request."})
+
+        if rec.is_expired():
+            raise ValidationError({"detail": "This reset request has expired. Start again."})
+
+        user.set_password(new_password)
+        user.save()
+        rec.used = True
+        rec.save(update_fields=["used"])
+        return Response({"detail": "Password changed successfully. Please log in."})
+
+
+# =====================================================
 # ADMIN VIEWS
 # =====================================================
 
@@ -1109,26 +1129,53 @@ class AdminStatsView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def get(self, request):
-        from courses.models import Course
-        from forum.models import ForumPost
-        from payments.models import Order
+        from .models import TeacherProfile
 
         total_users = User.objects.count()
-        active_courses = Course.objects.filter(is_active=True).count() if hasattr(Course, "is_active") else Course.objects.count()
         active_enrollments = Enrollment.objects.filter(status=Enrollment.STATUS_ACTIVE).count()
-        forum_posts = ForumPost.objects.count()
 
-        total_revenue = (
-            Order.objects
-            .filter(status=Order.STATUS_PAID)
-            .aggregate(total=models.Sum("amount"))["total"]
-        ) or 0
+        # Courses / forum / payments live in apps that may be absent or empty in
+        # some deployments. Never let a missing app 500 the dashboard.
+        active_courses = 0
+        try:
+            from courses.models import Course
+            active_courses = (
+                Course.objects.filter(is_active=True).count()
+                if hasattr(Course, "is_active") else Course.objects.count()
+            )
+        except Exception:
+            active_courses = 0
 
-        pending_approvals = UserRole.objects.filter(
-            role__name="TEACHER",
-            is_active=False,
-            approved_at__isnull=True,
+        forum_posts = 0
+        try:
+            from forum.models import ForumPost
+            forum_posts = ForumPost.objects.count()
+        except Exception:
+            forum_posts = 0
+
+        # Revenue only means something once a paying gateway is wired. While the
+        # provider is "free"/manual there are no paid orders, so this is 0.
+        total_revenue = 0
+        try:
+            from payments.models import Order
+            total_revenue = (
+                Order.objects
+                .filter(status=Order.STATUS_PAID)
+                .aggregate(total=models.Sum("amount"))["total"]
+            ) or 0
+        except Exception:
+            total_revenue = 0
+
+        # Pending approvals = academy (Faculty) applications awaiting review.
+        # (Skill/Guest auto-lists, so it never pends.) This counts the track
+        # status directly, which also catches guests who later applied for
+        # academy — they have an active role but a pending academy track.
+        pending_approvals = TeacherProfile.objects.filter(
+            academy_status=TeacherProfile.TRACK_PENDING
         ).count()
+
+        # Surface the active payment mode so the admin UI can adapt.
+        payment_provider = getattr(settings, "PAYMENT_PROVIDER", "free")
 
         return Response({
             "total_users": total_users,
@@ -1137,6 +1184,7 @@ class AdminStatsView(APIView):
             "forum_posts": forum_posts,
             "total_revenue": total_revenue,
             "pending_approvals": pending_approvals,
+            "payment_provider": payment_provider,
         })
 
 
@@ -1146,7 +1194,7 @@ class AdminUserListView(APIView):
     def get(self, request):
         qs = (
             User.objects
-            .select_related("profile")
+            .select_related()
             .prefetch_related("user_roles__role")
             .order_by("-date_joined")
         )
@@ -1156,8 +1204,9 @@ class AdminUserListView(APIView):
             qs = qs.filter(
                 models.Q(email__icontains=search)
                 | models.Q(username__icontains=search)
-                | models.Q(profile__full_name__icontains=search)
-            )
+                | models.Q(learner_profiles__full_name__icontains=search)
+                | models.Q(learner_profiles__display_name__icontains=search)
+            ).distinct()
 
         role = request.query_params.get("role", "").strip().upper()
         if role:
@@ -1204,7 +1253,7 @@ class AdminUserDetailView(APIView):
     def get(self, request, user_id):
         user = (
             User.objects
-            .select_related("profile")
+            .select_related()
             .prefetch_related(
                 "user_roles__role",
                 Prefetch("enrollments", queryset=Enrollment.objects.select_related("course")),
@@ -1227,7 +1276,7 @@ class AdminUserDetailView(APIView):
 
         user = (
             User.objects
-            .select_related("profile")
+            .select_related()
             .prefetch_related(
                 "user_roles__role",
                 Prefetch("enrollments", queryset=Enrollment.objects.select_related("course")),
@@ -1241,184 +1290,70 @@ class AdminTeacherApprovalListView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def get(self, request):
+        from .models import TeacherProfile
+        from .serializers import TeacherTrackApprovalSerializer
+
         qs = (
-            UserRole.objects
-            .filter(
-                role__name="TEACHER",
-                is_active=False,
-                approved_at__isnull=True,
-            )
-            .select_related("user", "user__profile", "role")
+            TeacherProfile.objects
+            .filter(academy_status=TeacherProfile.TRACK_PENDING)
+            .select_related("user")
             .order_by("-created_at")
         )
-        return Response(TeacherApprovalSerializer(qs, many=True).data)
+        return Response(TeacherTrackApprovalSerializer(qs, many=True).data)
 
 
 class AdminTeacherApprovalActionView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request, approval_id):
+        from .models import TeacherProfile, Role
+
         action = request.data.get("action", "").lower()
         if action not in ("approve", "reject"):
             raise ValidationError({"action": "Must be 'approve' or 'reject'."})
 
-        role = (
-            UserRole.objects
-            .filter(id=approval_id, role__name="TEACHER", is_active=False)
+        # `approval_id` is the TeacherProfile primary key (see the list view).
+        tp = (
+            TeacherProfile.objects
             .select_related("user")
+            .filter(pk=approval_id, academy_status=TeacherProfile.TRACK_PENDING)
             .first()
         )
-        if not role:
+        if not tp:
             return Response({"detail": "Approval request not found."}, status=404)
 
         if action == "approve":
-            role.approve(request.user)
-            return Response({"detail": "Teacher approved.", "id": str(role.id)})
+            tp.academy_status = TeacherProfile.TRACK_APPROVED
+            tp.sync_type_from_tracks()
+            tp.save(update_fields=["academy_status", "teacher_type", "is_approved"])
+
+            # Make sure the TEACHER role is active + stamped so they can enter
+            # the academy dashboard. (A guest who added academy already had an
+            # active role; this is a no-op for them.)
+            teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
+            ur, _ = UserRole.objects.get_or_create(
+                user=tp.user, role=teacher_role,
+                defaults={"is_active": True, "approved_at": timezone.now(),
+                          "approved_by": request.user},
+            )
+            if not ur.is_active or ur.approved_at is None:
+                ur.is_active = True
+                ur.approved_at = ur.approved_at or timezone.now()
+                ur.approved_by = ur.approved_by or request.user
+                ur.save(update_fields=["is_active", "approved_at", "approved_by"])
+
+            return Response({"detail": "Teacher approved for Academy.", "id": str(tp.pk)})
         else:
-            role.delete()
-            return Response({"detail": "Teacher request rejected."})
+            # Reject the academy application; the skill track (if any) is untouched.
+            tp.academy_status = TeacherProfile.TRACK_LOCKED
+            tp.sync_type_from_tracks()
+            tp.save(update_fields=["academy_status", "teacher_type", "is_approved"])
 
+            # If no track survives, deactivate the teacher role so they fall back
+            # to being a plain learner.
+            if not tp.approved_tracks():
+                UserRole.objects.filter(
+                    user=tp.user, role__name="TEACHER"
+                ).update(is_active=False, approved_at=None)
 
-# =====================================================
-# FORGOT PASSWORD — REQUEST OTP
-# =====================================================
-
-class PasswordResetRequestView(APIView):
-    permission_classes = [AllowAny]
-    throttle_classes = [PasswordResetRequestRateThrottle]
-
-    GENERIC_OK = {
-        "detail": "If an account with that email exists, a verification code has been sent."
-    }
-
-    def post(self, request):
-        serializer = PasswordResetRequestSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data["email"].strip().lower()
-
-        user = User.objects.filter(email__iexact=email).first()
-        if not user or not user.is_active:
-            return Response(self.GENERIC_OK)
-
-        PasswordResetToken.objects.filter(user=user, used_at__isnull=True).delete()
-        token, code = PasswordResetToken.generate(user)
-
-        html = f"""
-        <h2>Reset your password</h2>
-        <p>Use the verification code below to reset your password. It expires in {PasswordResetToken.OTP_TTL_MINUTES} minutes.</p>
-        <p style="font-size:28px;letter-spacing:6px;font-weight:bold;padding:12px 18px;background:#f1f5f9;display:inline-block;border-radius:6px;">{code}</p>
-        <p>If you did not request a password reset, you can ignore this email.</p>
-        """
-        text = (
-            f"Your password reset code is: {code}\n"
-            f"It expires in {PasswordResetToken.OTP_TTL_MINUTES} minutes.\n"
-            f"If you did not request a password reset, you can ignore this email."
-        )
-
-        try:
-            send_gmail(
-                to=user.email,
-                subject="Your password reset code",
-                message_text=text,
-                html=html,
-            )
-        except Exception as e:
-            logger.error(f"Failed to send password reset code to {user.email}: {e}")
-
-        return Response(self.GENERIC_OK)
-
-
-# =====================================================
-# FORGOT PASSWORD — VERIFY OTP
-# =====================================================
-
-class PasswordResetVerifyView(APIView):
-    permission_classes = [AllowAny]
-    throttle_classes = [PasswordResetVerifyRateThrottle]
-
-    def post(self, request):
-        serializer = PasswordResetVerifySerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data["email"].strip().lower()
-        code = serializer.validated_data["code"].strip()
-
-        user = User.objects.filter(email__iexact=email).first()
-        if not user:
-            raise ValidationError({"detail": "Invalid or expired code."})
-
-        token = (
-            PasswordResetToken.objects
-            .filter(user=user, used_at__isnull=True)
-            .order_by("-created_at")
-            .first()
-        )
-
-        if not token or token.is_expired():
-            raise ValidationError({"detail": "Invalid or expired code."})
-
-        if token.attempts >= PasswordResetToken.MAX_ATTEMPTS:
-            raise ValidationError({"detail": "Too many invalid attempts. Please request a new code."})
-
-        if not token.code_is_valid(code):
-            token.attempts += 1
-            token.save(update_fields=["attempts"])
-            raise ValidationError({"detail": "Invalid or expired code."})
-
-        ticket = token.issue_ticket()
-        return Response({
-            "ticket": str(ticket),
-            "expires_in_minutes": PasswordResetToken.TICKET_TTL_MINUTES,
-        })
-
-
-# =====================================================
-# FORGOT PASSWORD — CONFIRM (SET NEW PASSWORD)
-# =====================================================
-
-class PasswordResetConfirmView(APIView):
-    permission_classes = [AllowAny]
-    throttle_classes = [PasswordResetVerifyRateThrottle]
-
-    def post(self, request):
-        serializer = PasswordResetConfirmSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data["email"].strip().lower()
-        ticket = serializer.validated_data["ticket"]
-        new_password = serializer.validated_data["new_password"]
-
-        user = User.objects.filter(email__iexact=email).first()
-        if not user:
-            raise ValidationError({"detail": "Invalid or expired reset session."})
-
-        token = (
-            PasswordResetToken.objects
-            .filter(user=user, used_at__isnull=True)
-            .order_by("-created_at")
-            .first()
-        )
-
-        if not token or not token.ticket_is_valid(ticket):
-            raise ValidationError({"detail": "Invalid or expired reset session."})
-
-        with transaction.atomic():
-            user.set_password(new_password)
-            user.save(update_fields=["password"])
-            token.used_at = timezone.now()
-            token.save(update_fields=["used_at"])
-            PasswordResetToken.objects.filter(user=user, used_at__isnull=True).delete()
-
-        html = """
-        <h2>Your password has been changed</h2>
-        <p>Your Shiksha account password was just changed. If this wasn't you, please reset your password again immediately and contact support.</p>
-        """
-        try:
-            send_gmail(
-                to=user.email,
-                subject="Your password has been changed",
-                message_text="Your Shiksha account password was just changed. If this wasn't you, please reset it again immediately and contact support.",
-                html=html,
-            )
-        except Exception as e:
-            logger.error(f"Failed to send password change notification to {user.email}: {e}")
-
-        return Response({"detail": "Your password has been changed."})
+            return Response({"detail": "Academy application rejected.", "id": str(tp.pk)})
