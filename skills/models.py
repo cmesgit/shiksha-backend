@@ -415,3 +415,4 @@ from .course_models import (  # noqa: F401, E402
     SkillCourseEnrollment, SkillLectureProgress,
 )
 from .review_models import ExpertReview  # noqa: F401, E402
+from .payment_models import SkillPaymentRequest  # noqa: F401, E402

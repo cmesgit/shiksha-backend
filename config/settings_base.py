@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "channels",
     "news",
     "skills",
+    "global_settings",
     "chat",
 ]
 
@@ -175,6 +176,12 @@ CHANNEL_LAYERS = {
     },
 }
 GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")
+
+# ── Payments ────────────────────────────────────────
+# The live payment mode is normally read from the GlobalSettings singleton
+# (admin-toggleable, no restart). This env var is only the fallback used
+# before that table exists / is migrated. Values: free | manual_upi | razorpay
+PAYMENT_PROVIDER = os.getenv("PAYMENT_PROVIDER", "free")
 # ── Celery ──────────────────────────────────────────
 CELERY_BROKER_URL = "redis://127.0.0.1:6379/1"
 CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/1"

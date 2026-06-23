@@ -23,8 +23,12 @@ from .messaging_views import (
 from .review_views import (
     SubmitReviewView, ExpertReviewListView, MyReviewableSessionsView,
 )
+from .payment_config_views import SkillPaymentConfigView
 
 urlpatterns = [
+    # ── Payment mode (free / manual_upi / razorpay), read from GlobalSettings ─
+    path("payment-config/", SkillPaymentConfigView.as_view()),
+
     # ── Public expert directory ──────────────────────────────────────────────
     path("categories/",     CategoryListView.as_view()),
     path("teachers/",       ExpertListView.as_view()),

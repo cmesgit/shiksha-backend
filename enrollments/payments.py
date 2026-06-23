@@ -105,8 +105,22 @@ _PROVIDERS = {
 }
 
 
+def get_active_payment_mode():
+    """The payment mode in force right now.
+
+    Reads the GlobalSettings singleton (admin-toggleable, no restart). The
+    free-trial master switch wins: while it's on, everything is free. Falls
+    back to ``settings.PAYMENT_PROVIDER`` (env var) if the settings table
+    isn't available yet — e.g. before the global_settings app is migrated.
+    """
+    try:
+        from global_settings.models import GlobalSettings
+        return GlobalSettings.load().effective_mode
+    except Exception:
+        return getattr(settings, "PAYMENT_PROVIDER", "free")
+
+
 def get_payment_provider():
-    """The active provider, per ``settings.PAYMENT_PROVIDER`` (default free)."""
-    name = getattr(settings, "PAYMENT_PROVIDER", "free")
-    cls = _PROVIDERS.get(name, FreeProvider)
+    """The active provider object for the current payment mode."""
+    cls = _PROVIDERS.get(get_active_payment_mode(), FreeProvider)
     return cls()
