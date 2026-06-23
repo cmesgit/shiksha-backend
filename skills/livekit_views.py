@@ -30,25 +30,32 @@ from .models import SkillSession, ExpertProfile
 def _make_token(identity: str, room_name: str, *, can_publish: bool = True) -> str:
     """
     Generate a LiveKit access token.
-    Falls back to a stub string if the livekit package isn't installed yet —
-    so the endpoint keeps working in dev even before pip install livekit.
+    Falls back to a stub string if the livekit-api package isn't installed yet —
+    so the endpoint keeps working in dev even before `pip install livekit-api`.
     """
     try:
-        from livekit import AccessToken, VideoGrants
-        at = AccessToken(
-            api_key    = getattr(settings, "LIVEKIT_API_KEY",    "devkey"),
-            api_secret = getattr(settings, "LIVEKIT_API_SECRET", "devsecret"),
+        # AccessToken / VideoGrants live in `livekit.api` (the livekit-api
+        # package), NOT the top-level `livekit` rtc package. Importing them
+        # from `livekit` directly raises ImportError even when installed,
+        # which previously made this always return the stub.
+        from livekit.api import AccessToken, VideoGrants
+        token = (
+            AccessToken(
+                getattr(settings, "LIVEKIT_API_KEY", "devkey"),
+                getattr(settings, "LIVEKIT_API_SECRET", "devsecret"),
+            )
+            .with_identity(identity)
+            .with_grants(VideoGrants(
+                room_join=True,
+                room=room_name,
+                can_publish=can_publish,
+                can_subscribe=True,
+            ))
+            .to_jwt()
         )
-        at.identity = identity
-        at.add_grant(VideoGrants(
-            room_join  = True,
-            room       = room_name,
-            can_publish= can_publish,
-            can_subscribe = True,
-        ))
-        return str(at.to_jwt())
+        return token
     except ImportError:
-        # livekit package not installed — return a clear placeholder.
+        # livekit-api not installed — return a clear placeholder.
         return f"livekit-stub::room={room_name}::identity={identity}"
 
 
@@ -89,7 +96,13 @@ class JoinSessionView(APIView):
 
         token = _make_token(identity, room_name, can_publish=can_publish)
 
-        ws_url = getattr(settings, "LIVEKIT_WS_URL", "ws://localhost:7880")
+        # settings defines LIVEKIT_URL (not LIVEKIT_WS_URL); fall back to the
+        # old name then localhost so existing envs keep working.
+        ws_url = (
+            getattr(settings, "LIVEKIT_URL", None)
+            or getattr(settings, "LIVEKIT_WS_URL", None)
+            or "ws://localhost:7880"
+        )
 
         return Response({
             "token":     token,

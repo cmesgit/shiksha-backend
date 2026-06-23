@@ -1,10 +1,12 @@
 """
-skills/student_skill_views.py — learner-facing aggregation endpoints.
+PLACEMENT: backend/backend/skills/student_skill_views.py
+ACTION:    Replace the entire file.
 
-Add to skills/urls.py:
-    from .student_skill_views import StudentSkillDashboardView, StudentSkillExpertsView
-    path("student/dashboard/",  StudentSkillDashboardView.as_view()),
-    path("student/experts/",    StudentSkillExpertsView.as_view()),
+Changes from original:
+  fmt_session() now includes `expert_teacher_id` — the TeacherProfile UUID
+  so the frontend can open a direct WS chat with that expert.
+
+  experts_data list now includes `teacher_id` for the same reason.
 """
 import datetime
 from django.utils import timezone
@@ -29,7 +31,7 @@ class StudentSkillDashboardView(APIView):
       - completed_courses: completed enrollments
       - upcoming_sessions: confirmed/requested sessions, upcoming first
       - past_sessions:    completed sessions with review status
-      - reviewable:       sessions awaiting a review (mirrors my-reviewable-sessions)
+      - reviewable:       sessions awaiting a review
       - experts:          experts the learner has sessions with
     """
     permission_classes = [IsAuthenticated]
@@ -84,19 +86,20 @@ class StudentSkillDashboardView(APIView):
                     when_str = scheduled.strftime("%-d %b · %-I:%M %p")
 
             return {
-                "id":            str(s.id),
-                "session_id":    str(s.id),
-                "expert_id":     str(s.expert.id),
-                "expert_name":   expert_name,
-                "expert_img":    None,  # wired if expert.photo exists
-                "topic":         (s.note[:60] if s.note else "1-on-1 session"),
-                "when":          when_str,
-                "scheduled_for": scheduled,
-                "dur":           f"{s.duration_mins} min",
-                "duration_mins": s.duration_mins,
-                "live":          is_live,
-                "status":        s.status,
-                "reviewed":      str(s.id) in reviewed_ids if is_past else None,
+                "id":                 str(s.id),
+                "session_id":         str(s.id),
+                "expert_id":          str(s.expert.id),
+                "expert_teacher_id":  str(s.expert.teacher_profile_id),  # NEW — TeacherProfile UUID for chat
+                "expert_name":        expert_name,
+                "expert_img":         None,
+                "topic":              (s.note[:60] if s.note else "1-on-1 session"),
+                "when":               when_str,
+                "scheduled_for":      scheduled,
+                "dur":                f"{s.duration_mins} min",
+                "duration_mins":      s.duration_mins,
+                "live":               is_live,
+                "status":             s.status,
+                "reviewed":           str(s.id) in reviewed_ids if is_past else None,
             }
 
         upcoming_data = [fmt_session(s) for s in upcoming]
@@ -125,33 +128,31 @@ class StudentSkillDashboardView(APIView):
         completed_en = [e for e in enrollments if e.status == SkillCourseEnrollment.STATUS_COMPLETED]
 
         def build_course(e):
-            c        = e.course
+            c         = e.course
             total_lec = SkillCourseLecture.objects.filter(section__course=c).count()
             done_lec  = SkillLectureProgress.objects.filter(enrollment=e).count()
             pct       = round(done_lec * 100 / total_lec) if total_lec else 0
 
-            # Build modules list from sections
             sections = c.sections.prefetch_related("lectures").order_by("order")
             modules  = []
             lec_cursor = 0
             for sec in sections:
-                sec_lecs   = list(sec.lectures.all())
-                sec_total  = len(sec_lecs)
-                completed_in_sec = SkillLectureProgress.objects.filter(
+                sec_lecs          = list(sec.lectures.all())
+                sec_total         = len(sec_lecs)
+                completed_in_sec  = SkillLectureProgress.objects.filter(
                     enrollment=e, lecture__section=sec
                 ).count()
-                done_all  = completed_in_sec == sec_total and sec_total > 0
-                is_cur    = (not done_all and lec_cursor <= done_lec < lec_cursor + sec_total)
+                done_all = completed_in_sec == sec_total and sec_total > 0
+                is_cur   = (not done_all and lec_cursor <= done_lec < lec_cursor + sec_total)
                 modules.append({
                     "t":    sec.title,
                     "n":    sec_total,
-                    "d":    f"{sec_total * 5}m",   # rough; real duration needs sum(duration_sec)
+                    "d":    f"{sec_total * 5}m",
                     "done": done_all,
                     "cur":  is_cur,
                 })
                 lec_cursor += sec_total
 
-            # Find resume point
             resume_mod    = next((m["t"] for m in modules if m.get("cur")), (modules[0]["t"] if modules else ""))
             resume_lesson = f"Lesson {done_lec + 1}"
 
@@ -161,32 +162,32 @@ class StudentSkillDashboardView(APIView):
                 (lp.display_name or lp.full_name or "") if lp
                 else (tp.user.username if tp else "Expert")
             )
-            ep  = getattr(tp, "expert_profile", None) if tp else None
+            ep = getattr(tp, "expert_profile", None) if tp else None
 
             return {
-                "id":          str(c.id),
+                "id":            str(c.id),
                 "enrollment_id": str(e.id),
-                "title":       c.title,
-                "expert":      expert_name,
-                "expert_id":   str(ep.id) if ep else None,
-                "img":         None,
-                "cat":         c.category.label if c.category_id else "",
-                "color":       c.category.color if c.category_id else "#0a808a",
-                "pct":         pct,
-                "done":        done_lec,
-                "total":       total_lec,
-                "hrs":         f"{max(1, round(total_lec * 5 / 60))}h",
-                "rating":      float(ep.rating) if ep and ep.rating else None,
-                "reviews":     0,
+                "title":         c.title,
+                "expert":        expert_name,
+                "expert_id":     str(ep.id) if ep else None,
+                "img":           None,
+                "cat":           c.category.label if c.category_id else "",
+                "color":         c.category.color if c.category_id else "#0a808a",
+                "pct":           pct,
+                "done":          done_lec,
+                "total":         total_lec,
+                "hrs":           f"{max(1, round(total_lec * 5 / 60))}h",
+                "rating":        float(ep.rating) if ep and ep.rating else None,
+                "reviews":       0,
                 "resume": {
                     "mod":    resume_mod,
                     "lesson": resume_lesson,
                     "at":     f"{done_lec * 5}m in",
                 },
-                "modules":     modules,
+                "modules": modules,
             }
 
-        skill_courses    = [build_course(e) for e in in_progress]
+        skill_courses     = [build_course(e) for e in in_progress]
         completed_courses = [build_course(e) for e in completed_en]
 
         # ── Stats ────────────────────────────────────────────────────
@@ -201,11 +202,12 @@ class StudentSkillDashboardView(APIView):
             if eid not in expert_ids_seen:
                 expert_ids_seen.add(eid)
                 experts_data.append({
-                    "id":     eid,
-                    "name":   s.expert.display_name(),
-                    "skill":  s.expert.headline or "",
-                    "rating": float(s.expert.rating) if s.expert.rating else None,
-                    "rate":   s.expert.rate_rupees,
+                    "id":         eid,
+                    "teacher_id": str(s.expert.teacher_profile_id),  # NEW — for chat
+                    "name":       s.expert.display_name(),
+                    "skill":      s.expert.headline or "",
+                    "rating":     float(s.expert.rating) if s.expert.rating else None,
+                    "rate":       s.expert.rate_rupees,
                 })
 
         return Response({
@@ -228,7 +230,6 @@ class StudentSkillExpertsView(APIView):
     """
     GET /skill/student/experts/
     Returns listed experts for the Explore tab (public, paginated via ?cat=&search=).
-    Mirrors ExpertListView but returns the shape the student UI expects.
     """
     permission_classes = [AllowAny]
 
@@ -252,14 +253,15 @@ class StudentSkillExpertsView(APIView):
             if not name:
                 name = ep.user.username or ep.user.email or "Expert"
             result.append({
-                "id":       str(ep.id),
-                "name":     name,
-                "role":     ep.headline,
-                "img":      ep.photo.url if ep.photo else None,
-                "rating":   float(ep.rating) if ep.rating else None,
-                "rate":     ep.rate_rupees,
-                "cat":      ep.category.slug if ep.category_id else "",
-                "reply":    "~1h",
-                "skills":   ep.skill_tags or [],
+                "id":         str(ep.id),
+                "teacher_id": str(ep.teacher_profile_id),  # NEW — for chat
+                "name":       name,
+                "role":       ep.headline,
+                "img":        ep.photo.url if ep.photo else None,
+                "rating":     float(ep.rating) if ep.rating else None,
+                "rate":       ep.rate_rupees,
+                "cat":        ep.category.slug if ep.category_id else "",
+                "reply":      "~1h",
+                "skills":     ep.skill_tags or [],
             })
         return Response(result)

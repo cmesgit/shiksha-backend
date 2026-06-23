@@ -339,6 +339,10 @@ class SkillSession(models.Model):
 
     scheduled_for = models.DateTimeField(null=True, blank=True)
     duration_mins = models.PositiveIntegerField(default=60)
+    # The availability slot this session reserved, e.g. "3-1" (day-slot index).
+    # Stored so the slot can be released back to the expert's `open` grid when
+    # the session is cancelled / declined / completed.
+    slot_key = models.CharField(max_length=16, blank=True)
     amount = models.PositiveIntegerField(default=0, help_text="Paise")
     note = models.TextField(blank=True)            # the contact draft / message
     meeting_url = models.CharField(max_length=300, blank=True)

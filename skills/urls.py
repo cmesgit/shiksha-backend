@@ -27,7 +27,7 @@ from .payment_config_views import SkillPaymentConfigView
 from .student_skill_views import StudentSkillDashboardView, StudentSkillExpertsView
 from .teacher_views import (
     TeacherDashboardView, TeacherEarningsView, TeacherAvailabilityView,
-    TeacherDeclineSessionView, TeacherProfileUpdateView,
+    TeacherDeclineSessionView, TeacherProfileUpdateView, ExpertAvailabilityView,
 )
 
 urlpatterns = [
@@ -39,6 +39,7 @@ urlpatterns = [
     path("teachers/",       ExpertListView.as_view()),
     path("teachers/<uuid:expert_id>/",          ExpertDetailView.as_view()),
     path("teachers/<uuid:expert_id>/reviews/",  ExpertReviewListView.as_view()),
+    path("teachers/<uuid:expert_id>/availability/", ExpertAvailabilityView.as_view()),
 
     # ── Public skill courses ─────────────────────────────────────────────────
     path("courses/",                             PublicCourseListView.as_view()),

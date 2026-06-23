@@ -1,9 +1,12 @@
 """
-skills/serializers.py
+PLACEMENT: backend/backend/skills/serializers.py
+ACTION:    Replace the entire file.
 
-Output shapes deliberately match the keys the frontend already reads in
-src/components/skill/data.js (TEACHERS / CANDIDATES), so flipping
-USE_MOCK=false in skillApi.js needs no component changes.
+One real change from the original:
+  ExpertCardSerializer now includes `teacher_profile_id` — the TeacherProfile
+  UUID that the chat system's StartDirectView needs to open a 1-on-1 thread.
+  Without this field, the frontend can only pass ExpertProfile.id, which is a
+  different UUID and causes a "Target not found" 400 error.
 """
 from rest_framework import serializers
 
@@ -25,13 +28,16 @@ class SkillCategorySerializer(serializers.ModelSerializer):
 
 class ExpertCardSerializer(serializers.ModelSerializer):
     """Matches a TEACHERS[] entry from data.js."""
-    name = serializers.SerializerMethodField()
-    title = serializers.CharField(source="headline")
-    skills = serializers.ListField(source="skill_tags", child=serializers.CharField())
-    cat = serializers.SerializerMethodField()
-    rate = serializers.IntegerField(source="rate_rupees")
-    sessions = serializers.IntegerField(source="sessions_count")
-    img = serializers.SerializerMethodField()
+    name               = serializers.SerializerMethodField()
+    title              = serializers.CharField(source="headline")
+    skills             = serializers.ListField(source="skill_tags", child=serializers.CharField())
+    cat                = serializers.SerializerMethodField()
+    rate               = serializers.IntegerField(source="rate_rupees")
+    sessions           = serializers.IntegerField(source="sessions_count")
+    img                = serializers.SerializerMethodField()
+    # NEW: TeacherProfile UUID — used by frontend chat to call
+    # POST /chat/conversations/direct/ { target_kind: "TEACHER", target_id }
+    teacher_profile_id = serializers.UUIDField(source="teacher_profile.id", read_only=True)
 
     class Meta:
         model = ExpertProfile
@@ -39,6 +45,7 @@ class ExpertCardSerializer(serializers.ModelSerializer):
             "id", "name", "title", "skills", "cat",
             "rating", "sessions", "rate", "img", "bio",
             "badges", "availability",
+            "teacher_profile_id",
         ]
 
     def get_name(self, obj):
@@ -53,7 +60,6 @@ class ExpertCardSerializer(serializers.ModelSerializer):
         if obj.photo:
             url = obj.photo.url
         else:
-            # user.profile (old model) was removed in 0011; use LearnerProfile.
             lp = obj.user.default_learner_profile()
             if lp and lp.profile_photo:
                 url = lp.profile_photo.url
@@ -63,7 +69,6 @@ class ExpertCardSerializer(serializers.ModelSerializer):
 
 
 class TeacherApplicationCreateSerializer(serializers.ModelSerializer):
-    # Accept a category slug from the frontend; resolve to FK.
     category = serializers.SlugRelatedField(
         slug_field="slug", queryset=SkillCategory.objects.all(),
         required=False, allow_null=True,
@@ -86,12 +91,12 @@ class InterviewSlotSerializer(serializers.ModelSerializer):
 
 class ReviewQueueSerializer(serializers.ModelSerializer):
     """Matches a CANDIDATES[] entry from data.js."""
-    name = serializers.SerializerMethodField()
+    name  = serializers.SerializerMethodField()
     skill = serializers.CharField(source="skill_name")
-    cat = serializers.SerializerMethodField()
-    exp = serializers.CharField(source="experience")
-    img = serializers.SerializerMethodField()
-    time = serializers.SerializerMethodField()
+    cat   = serializers.SerializerMethodField()
+    exp   = serializers.CharField(source="experience")
+    img   = serializers.SerializerMethodField()
+    time  = serializers.SerializerMethodField()
     stage = serializers.CharField(read_only=True)
 
     class Meta:
@@ -99,7 +104,6 @@ class ReviewQueueSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "skill", "cat", "exp", "img", "time", "status", "stage"]
 
     def get_name(self, obj):
-        # user.profile (old model) removed in migration 0011.
         lp = obj.user.default_learner_profile()
         if lp:
             name = f"{lp.first_name} {lp.last_name}".strip() or lp.full_name or lp.display_name

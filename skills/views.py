@@ -46,6 +46,11 @@ from .serializers import (
     EvaluationSerializer,
     SkillSessionSerializer,
 )
+from .teacher_views import (
+    slot_is_open as _slot_is_open,
+    mark_slot_booked as _mark_slot_booked,
+    free_slot as _free_slot,
+)
 
 
 # =====================================================
@@ -353,6 +358,24 @@ class CreateOrderView(APIView):
         if not expert:
             raise NotFound("Expert not found.")
 
+        # The frontend sends the chosen slot inside `draft` (a dict) and may
+        # also send an absolute `scheduled_for` ISO datetime once a real
+        # calendar exists. Pull the slot key out so we can validate + reserve.
+        draft = request.data.get("draft") or {}
+        slot_key = None
+        if isinstance(draft, dict):
+            slot_key = draft.get("slot") or None
+        scheduled_for = request.data.get("scheduled_for") or None
+
+        # If the expert has declared availability, the chosen slot must be one
+        # of their open slots and must not already be taken.
+        avail = getattr(expert, "availability_slots", None) or {}
+        if slot_key and avail.get("open"):
+            if not _slot_is_open(expert, slot_key):
+                raise ValidationError(
+                    {"slot": "That slot is no longer available."}
+                )
+
         # Free sessions: ignore any amount sent by the client, charge nothing.
         session = SkillSession.objects.create(
             learner_profile=learner,
@@ -361,8 +384,14 @@ class CreateOrderView(APIView):
             status=SkillSession.STATUS_CONFIRMED,
             payment_status=SkillSession.PAYMENT_PAID,
             amount=0,
-            note=str(request.data.get("draft") or ""),
+            slot_key=slot_key or "",
+            scheduled_for=scheduled_for,
+            note=(draft.get("topic") if isinstance(draft, dict) else str(draft)) or "",
         )
+
+        # Reserve the slot server-side so it greys out for everyone.
+        if slot_key:
+            _mark_slot_booked(expert, slot_key)
 
         # Human-friendly reference (no payment gateway involved).
         booking_ref = f"SHK-{session.id.hex[:8].upper()}"
