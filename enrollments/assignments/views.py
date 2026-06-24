@@ -80,17 +80,10 @@ class AssignmentDetailView(generics.RetrieveAPIView):
             _assert_teacher_owns_assignment(user, instance)
         else:
             from enrollments.services import has_active_subscription, lock_payload
-            from accounts.auth_flow import get_active_profile
 
-            learner = get_active_profile(request)
-            if learner is None:
+            if not has_active_subscription(user=user, course=course):
                 return Response(
-                    {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
-                    status=403,
-                )
-            if not has_active_subscription(user=user, course=course, learner_profile=learner):
-                return Response(
-                    lock_payload(user=user, course=course, learner_profile=learner),
+                    lock_payload(user=user, course=course),
                     status=402,
                 )
 
@@ -118,18 +111,11 @@ class SubmitAssignmentView(APIView):
             )
 
         from enrollments.services import has_active_subscription, lock_payload
-        from accounts.auth_flow import get_active_profile
 
         course = assignment.chapter.subject.course
-        learner = get_active_profile(request)
-        if learner is None:
+        if not has_active_subscription(user=request.user, course=course):
             return Response(
-                {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
-                status=403,
-            )
-        if not has_active_subscription(user=request.user, course=course, learner_profile=learner):
-            return Response(
-                lock_payload(user=request.user, course=course, learner_profile=learner),
+                lock_payload(user=request.user, course=course),
                 status=402,
             )
 
@@ -172,14 +158,12 @@ class CourseAssignmentsView(generics.ListAPIView):
         else:
             from courses.models import Course
             from enrollments.services import has_active_subscription
-            from accounts.auth_flow import get_active_profile
 
             try:
                 course_obj = Course.objects.get(pk=course_id)
             except Course.DoesNotExist:
                 raise PermissionDenied("Course not found.")
-            learner = get_active_profile(self.request)
-            if not has_active_subscription(user=user, course=course_obj, learner_profile=learner):
+            if not has_active_subscription(user=user, course=course_obj):
                 raise PermissionDenied("Your subscription for this course has expired.")
             queryset = Assignment.objects.filter(
                 chapter__subject__course__id=course_id)

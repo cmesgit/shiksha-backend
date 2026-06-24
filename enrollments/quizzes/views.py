@@ -286,17 +286,10 @@ class StartQuizView(APIView):
         )
 
         from enrollments.services import has_active_subscription, lock_payload
-        from accounts.auth_flow import get_active_profile
 
-        learner = get_active_profile(request)
-        if learner is None:
+        if not has_active_subscription(user=request.user, course=quiz.subject.course):
             return Response(
-                {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
-                status=403,
-            )
-        if not has_active_subscription(user=request.user, course=quiz.subject.course, learner_profile=learner):
-            return Response(
-                lock_payload(user=request.user, course=quiz.subject.course, learner_profile=learner),
+                lock_payload(user=request.user, course=quiz.subject.course),
                 status=402,
             )
 
@@ -380,17 +373,10 @@ class QuizDetailView(APIView):
                 raise PermissionDenied("Not authorized for this quiz.")
         else:
             from enrollments.services import has_active_subscription, lock_payload
-            from accounts.auth_flow import get_active_profile
 
-            learner = get_active_profile(request)
-            if learner is None:
+            if not has_active_subscription(user=request.user, course=quiz.subject.course):
                 return Response(
-                    {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
-                    status=403,
-                )
-            if not has_active_subscription(user=request.user, course=quiz.subject.course, learner_profile=learner):
-                return Response(
-                    lock_payload(user=request.user, course=quiz.subject.course, learner_profile=learner),
+                    lock_payload(user=request.user, course=quiz.subject.course),
                     status=402,
                 )
 
