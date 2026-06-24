@@ -1,0 +1,1359 @@
+import os
+import logging
+import uuid
+from accounts.email_utils import send_gmail
+from rest_framework import status
+from rest_framework.permissions import BasePermission, IsAuthenticated, AllowAny, IsAdminUser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from django.conf import settings
+from django.core.mail import send_mail
+from django.utils import timezone
+from django.contrib.auth import authenticate
+from django.shortcuts import redirect
+from django.db import transaction
+
+logger = logging.getLogger(__name__)
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.exceptions import TokenError
+
+from django.db import models
+from django.db.models import Prefetch
+
+from enrollments.models import Enrollment
+
+from accounts.audit import log_auth_event
+from accounts.models import (
+    AuthEvent,
+    User,
+    EmailVerificationToken,
+    Role,
+    UserRole,
+)
+
+from accounts.throttles import (
+    LoginRateThrottle,
+    ResendVerificationRateThrottle,
+    SignupRateThrottle,
+    PasswordResetRequestRateThrottle,
+    PasswordResetVerifyRateThrottle,
+)
+
+from .serializers import (
+    default_learner,
+    SignupSerializer,
+    UserMeSerializer,
+    StudentFormFillupSerializer,
+    TeacherFormFillupSerializer,
+    TeacherListSerializer,
+    ChangePasswordSerializer,
+    PasswordResetRequestSerializer,
+    PasswordResetVerifySerializer,
+    PasswordResetConfirmSerializer,
+    AdminUserListSerializer,
+    AdminUserDetailSerializer,
+    AdminUserUpdateSerializer,
+    TeacherApprovalSerializer,
+)
+
+from .permissions import IsAdmin
+
+from .models import TeacherProfile, LearnerProfile, PasswordResetCode, TeacherCourseApplication, TeacherSkillApplication
+
+from .permissions import IsEmailVerified
+
+# Active-profile resolver (lives with the new login flow)
+from .auth_flow import get_active_profile
+
+# Indian states and districts data
+from .indian_states_data import STATES_WITH_DISTRICTS
+
+
+def _profile_target(request):
+    """Personal/academic data now lives on the ACTIVE LearnerProfile.
+
+    Returns the learner profile selected in the JWT; falls back to the
+    account's default LearnerProfile when no profile is active in the token.
+    """
+    learner = get_active_profile(request)
+    if learner is not None:
+        return learner
+    return default_learner(request.user)
+
+
+# =====================================================
+# VERIFIED USERS ONLY
+# =====================================================
+#
+# MeView now lives in accounts/auth_flow.py (context-aware: it echoes the
+# active profile + context from the JWT). Import it from there in urls.py.
+# Profile/avatar edits go through StudentProfileView / TeacherProfileView.
+
+
+# =====================================================
+# SIGNUP — PUBLIC
+# =====================================================
+
+class SignupView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [SignupRateThrottle]
+
+    def _get_api_base_url(self, request):
+        """Return the correct API base URL based on the current host."""
+        return os.getenv("API_BASE_URL", "https://api.shikshacom.com")
+
+    def post(self, request):
+        # Free the email if a previous unverified signup was abandoned.
+        # Matches the 24h token expiry so real duplicates still get rejected.
+        # NOTE: filter includes is_verified=False so verified users are never
+        # deleted — important for the add-to-existing flow.
+        from datetime import timedelta
+        email = (request.data.get("email") or "").strip().lower()
+        if email:
+            User.objects.filter(
+                email__iexact=email,
+                is_verified=False,
+                date_joined__lt=timezone.now() - timedelta(hours=24),
+            ).delete()
+
+        serializer = SignupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            user = serializer.save()
+
+            # Only generate a verification token for unverified accounts.
+            # Add-to-existing flows operate on a verified account — skip.
+            if not user.is_verified:
+                EmailVerificationToken.objects.filter(user=user).delete()
+                token = EmailVerificationToken.generate(user)
+            else:
+                token = None
+
+        # ── Add-to-existing (verified account): no email, go straight to login ──
+        if token is None:
+            return Response(
+                {"detail": "Identity added successfully. Please log in."},
+                status=status.HTTP_200_OK,
+            )
+
+        # ── New account: send verification email ──────────────────────────
+        base_url = self._get_api_base_url(request)
+        verify_link = (
+            f"{base_url}/api/accounts/verify-email/?token={token.token}"
+        )
+
+        html = f"""
+        <h2>Verify your email</h2>
+        <p>Click the button below:</p>
+        <a href="{verify_link}" style="padding:10px 15px;background:#2563eb;color:white;text-decoration:none;border-radius:5px;">
+            Verify Email
+        </a>
+        """
+
+        try:
+            send_gmail(
+                to=user.email,
+                subject="Verify your email",
+                message_text=f"Click to verify:\n{verify_link}",
+                html=html,
+            )
+        except Exception as e:
+            logger.error(f"Failed to send verification email to {user.email}: {e}")
+            return Response(
+                {"detail": "Signup successful, but we couldn't send the verification email. Please use 'Resend Verification' to get your email."},
+                status=status.HTTP_201_CREATED,
+            )
+
+        return Response(
+            {"detail": "Signup successful. Please verify your email."},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+# =====================================================
+# LOGIN
+# =====================================================
+#
+# LoginView (step 1: account auth -> returns profiles) and the profile
+# selection / teacher-context / PIN views all live in accounts/auth_flow.py.
+# Import them in urls.py. RefreshView below is unchanged.
+
+
+# =====================================================
+# EMAIL VERIFICATION
+# =====================================================
+
+class VerifyEmailView(APIView):
+    permission_classes = [AllowAny]
+
+    def _get_frontend_base_url(self, request):
+        """Return the correct frontend URL based on the current host."""
+        return os.getenv("FRONTEND_BASE_URL", "https://shikshacom.com")
+
+    def get(self, request):
+        token_value = request.query_params.get("token")
+        frontend_url = self._get_frontend_base_url(request)
+
+        if not token_value:
+            return redirect(f"{frontend_url}/email-verified?status=failed")
+
+        try:
+            token = EmailVerificationToken.objects.select_related("user").get(
+                token=token_value,
+                expires_at__gt=timezone.now(),
+            )
+        except EmailVerificationToken.DoesNotExist:
+            log_auth_event(request, AuthEvent.EVENT_VERIFY_EMAIL_FAILED)
+            return redirect(f"{frontend_url}/email-verified?status=failed")
+
+        user = token.user
+
+        if not user.is_verified:
+            user.is_verified = True
+            user.verified_at = timezone.now()
+            user.save(update_fields=["is_verified", "verified_at"])
+
+        token.delete()
+
+        log_auth_event(
+            request,
+            AuthEvent.EVENT_VERIFY_EMAIL_SUCCESS,
+            user=user,
+        )
+
+        return redirect(f"{frontend_url}/email-verified?status=success")
+
+
+# =====================================================
+# RESEND VERIFICATION EMAIL
+# =====================================================
+
+class ResendVerificationEmailView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [ResendVerificationRateThrottle]
+
+    def _get_api_base_url(self, request):
+        """Return the correct API base URL based on the current host."""
+        return os.getenv("API_BASE_URL", "https://api.shikshacom.com")
+
+    def post(self, request):
+        email = request.data.get("email", "").strip().lower()
+
+        user = User.objects.filter(email=email).first()
+        if not user:
+            raise ValidationError("User not found.")
+
+        if user.is_verified:
+            raise ValidationError("Email already verified.")
+
+        EmailVerificationToken.objects.filter(user=user).delete()
+
+        token = EmailVerificationToken.generate(user)
+
+        base_url = self._get_api_base_url(request)
+        verify_link = (
+            f"{base_url}/api/accounts/verify-email/?token={token.token}"
+        )
+
+        html = f"""
+        <h2>Verify your email</h2>
+        <p>Click below:</p>
+        <a href="{verify_link}" style="padding:10px 15px;background:#2563eb;color:white;text-decoration:none;border-radius:5px;">
+            Verify Email
+        </a>
+        """
+
+        try:
+            send_gmail(
+                to=user.email,
+                subject="Verify your email",
+                message_text=f"Click to verify:\n{verify_link}",
+                html=html,
+            )
+        except Exception as e:
+            logger.error(f"Failed to resend verification email to {user.email}: {e}")
+            raise ValidationError("Failed to send verification email. Please try again later.")
+
+        log_auth_event(
+            request,
+            AuthEvent.EVENT_RESEND_VERIFICATION,
+            user=user,
+        )
+
+        return Response({"detail": "Verification email resent."})
+
+
+# =====================================================
+# REQUEST TEACHER ROLE
+# =====================================================
+
+class RequestTeacherRoleView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def post(self, request):
+        user = request.user
+
+        if user.has_role(Role.TEACHER):
+            raise ValidationError("You are already a teacher.")
+
+        teacher_role = Role.objects.get(name=Role.TEACHER)
+
+        if UserRole.objects.filter(user=user, role=teacher_role).exists():
+            raise ValidationError("Teacher role already requested.")
+
+        UserRole.objects.create(
+            user=user,
+            role=teacher_role,
+            is_active=False,
+        )
+
+        return Response(
+            {"detail": "Teacher role request submitted."},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+# =====================================================
+# APPROVE TEACHER ROLE (Superuser Works Here)
+# =====================================================
+
+class ApproveTeacherRoleView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+        user_id = request.data.get("user_id")
+        if not user_id:
+            raise ValidationError("user_id is required.")
+
+        teacher_role = Role.objects.get(name=Role.TEACHER)
+
+        try:
+            user_role = UserRole.objects.get(
+                user__id=user_id,
+                role=teacher_role,
+                is_active=False,
+            )
+        except UserRole.DoesNotExist:
+            raise ValidationError("No pending teacher request found.")
+
+        user_role.approve(admin_user=request.user)
+
+        return Response(
+            {"detail": "Teacher role approved."},
+            status=status.HTTP_200_OK,
+        )
+
+
+# =====================================================
+# FORM FILLUP (REVAMPED)
+# =====================================================
+
+class FormFillupView(APIView):
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def _is_teacher(self, user):
+        return "TEACHER" in user.get_active_roles()
+
+    def get(self, request):
+        user = request.user
+        is_teacher = self._is_teacher(user)
+        profile = _profile_target(request)
+
+        if is_teacher:
+            tp = getattr(user, "teacher_profile", None)
+
+            data = {
+                "form_type": "teacher",
+                "email": user.email,
+                "username": user.username,
+
+                # Personal info (from Profile)
+                "first_name": profile.first_name or "",
+                "last_name": profile.last_name or "",
+                "phone": profile.phone or "",
+                "gender": profile.gender or "",
+                "date_of_birth": profile.date_of_birth,
+                "profile_photo": profile.profile_photo.url if profile.profile_photo else None,
+
+                # Address (from Profile)
+                "state": profile.state or "",
+                "district": profile.district or "",
+                "city_town": profile.city_town or "",
+                "pin_code": profile.pin_code or "",
+
+                # Educational Qualifications
+                "highest_degree": tp.highest_degree if tp else "",
+                "field_of_study": tp.field_of_study if tp else "",
+                "year_of_completion": tp.year_of_completion if tp else None,
+                "teaching_certifications": tp.teaching_certifications if tp else [],
+                "qualification_certificate": (
+                    tp.qualification_certificate.url
+                    if tp and tp.qualification_certificate else None
+                ),
+
+                # Teaching Experience
+                "experience_range": tp.experience_range if tp else "",
+                "employment_status": tp.employment_status if tp else "",
+                "currently_employed": tp.currently_employed if tp else False,
+                "current_institution": tp.current_institution if tp else "",
+                "current_position": tp.current_position if tp else "",
+
+                # Verification Documents
+                "govt_id_type": tp.govt_id_type if tp else "",
+                "id_number": tp.id_number if tp else "",
+                "id_proof_front": (
+                    tp.id_proof_front.url if tp and tp.id_proof_front else None
+                ),
+                "id_proof_back": (
+                    tp.id_proof_back.url if tp and tp.id_proof_back else None
+                ),
+
+                # Course Applications
+                "course_applications": [
+                    {
+                        "id": ca.id,
+                        "subject": ca.subject,
+                        "boards": ca.boards,
+                        "classes": ca.classes,
+                        "streams": ca.streams,
+                    }
+                    for ca in (tp.course_applications.all() if tp else [])
+                ],
+
+                # Skill Applications
+                "skill_applications": [
+                    {
+                        "id": sa.id,
+                        "skill_name": sa.skill_name,
+                        "skill_description": sa.skill_description,
+                        "skill_related_subject": sa.skill_related_subject,
+                        "skill_supporting_file": (
+                            sa.supporting_file.url
+                            if sa.supporting_file else None
+                        ),
+                    }
+                    for sa in (tp.skill_applications.all() if tp else [])
+                ],
+
+            }
+        else:
+            data = {
+                "form_type": "student",
+                "email": user.email,
+                "username": user.username,
+
+                # Personal info
+                "first_name": profile.first_name or "",
+                "last_name": profile.last_name or "",
+                "phone": profile.phone or "",
+                "gender": profile.gender or "",
+                "date_of_birth": profile.date_of_birth,
+                "profile_photo": profile.profile_photo.url if profile.profile_photo else None,
+
+                # Address
+                "state": profile.state or "",
+                "district": profile.district or "",
+                "city_town": profile.city_town or "",
+                "pin_code": profile.pin_code or "",
+
+                # Parent/Guardian
+                "father_name": profile.father_name or "",
+                "father_phone": profile.father_phone or "",
+                "mother_name": profile.mother_name or "",
+                "mother_phone": profile.mother_phone or "",
+                "guardian_name": profile.guardian_name or "",
+                "guardian_phone": profile.guardian_phone or "",
+                "parent_guardian_email": profile.parent_guardian_email or "",
+
+                # Academic Info
+                "currently_studying": profile.currently_studying or "",
+                "current_class": profile.current_class or "",
+                "stream": profile.stream or "",
+                "board": profile.board or "",
+                "board_other": profile.board_other or "",
+                "school_name": profile.school_name or "",
+                "academic_year": profile.academic_year or "",
+                "highest_education": profile.highest_education or "",
+                "reason_not_studying": profile.reason_not_studying or "",
+            }
+
+        return Response(data)
+
+    def put(self, request):
+        user = request.user
+        is_teacher = self._is_teacher(user)
+
+        if is_teacher:
+            serializer = TeacherFormFillupSerializer(
+                data=request.data, context={"request": request}
+            )
+            serializer.is_valid(raise_exception=True)
+            serializer.update(user, serializer.validated_data)
+        else:
+            profile = _profile_target(request)
+            serializer = StudentFormFillupSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.update(profile, serializer.validated_data)
+
+        return Response({"detail": "Profile updated successfully."})
+
+
+# =====================================================
+# TEACHER PROFILE API
+# =====================================================
+
+class TeacherProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    PROFILE_FIELDS = {
+        "first_name", "last_name", "phone", "gender", "date_of_birth",
+        "state", "district", "city_town", "pin_code",
+    }
+    TEACHER_FIELDS = {
+        "bio", "highest_degree", "field_of_study", "year_of_completion",
+        "teaching_certifications",
+        "experience_range", "employment_status", "currently_employed",
+        "current_institution", "current_position",
+        "govt_id_type", "id_number",
+    }
+    TEACHER_FILE_FIELDS = {
+        "qualification_certificate", "id_proof_front", "id_proof_back",
+    }
+
+    def patch(self, request):
+        user = request.user
+        profile = _profile_target(request)
+        tp, _ = TeacherProfile.objects.get_or_create(user=user)
+
+        data = request.data
+
+        for field in self.PROFILE_FIELDS:
+            if field in data:
+                value = data[field]
+                if field == "date_of_birth" and value in ("", None):
+                    continue
+                setattr(profile, field, value)
+
+        photo_file = request.FILES.get("profile_photo") or request.FILES.get("photo")
+        if photo_file:
+            profile.profile_photo = photo_file
+            profile.avatar_image = photo_file
+            profile.avatar_emoji = None
+
+        profile.save()
+
+        for field in self.TEACHER_FIELDS:
+            if field in data:
+                value = data[field]
+                if field == "year_of_completion" and value in ("", None):
+                    continue
+                if field == "currently_employed":
+                    value = str(value).lower() in ("true", "1", "yes")
+                setattr(tp, field, value)
+
+        for field in self.TEACHER_FILE_FIELDS:
+            if field in request.FILES:
+                setattr(tp, field, request.FILES[field])
+
+        tp.save()
+
+        return self.get(request)
+
+    def get(self, request):
+        user = request.user
+        profile = _profile_target(request)
+        tp = getattr(user, "teacher_profile", None)
+
+        # Active courses & subjects via SubjectTeacher
+        from courses.models import SubjectTeacher
+        assignments = SubjectTeacher.objects.filter(
+            teacher=user
+        ).select_related("subject__course")
+
+        active_courses = {}
+        subjects = []
+        for a in assignments:
+            course = a.subject.course
+            course_key = str(course.id)
+            if course_key not in active_courses:
+                active_courses[course_key] = {
+                    "id": str(course.id),
+                    "title": str(course),
+                    "subjects": [],
+                }
+            active_courses[course_key]["subjects"].append(a.subject.name)
+
+            subjects.append({
+                "name": a.subject.name,
+                "course": str(course),
+            })
+
+        photo_url = None
+        if profile.profile_photo:
+            photo_url = request.build_absolute_uri(profile.profile_photo.url)
+
+        data = {
+            "name": f"{profile.first_name} {profile.last_name}".strip(),
+            "gender": profile.gender or "",
+            "photo": photo_url,
+            "bio": tp.bio if tp else "",
+            "highest_degree": tp.get_highest_degree_display() if tp and tp.highest_degree else "",
+            "field_of_study": tp.field_of_study if tp else "",
+            "teaching_certifications": tp.teaching_certifications if tp else [],
+            "experience_range": tp.get_experience_range_display() if tp and tp.experience_range else "",
+            "employment_status": tp.get_employment_status_display() if tp and tp.employment_status else "",
+            "rating": float(tp.rating) if tp and tp.rating else None,
+            "is_approved": tp.is_approved if tp else False,
+            "active_courses": list(active_courses.values()),
+            "subjects": subjects,
+            "course_applications": [
+                {
+                    "subject": ca.get_subject_display(),
+                    "boards": ca.boards,
+                    "classes": ca.classes,
+                    "streams": ca.streams,
+                }
+                for ca in (tp.course_applications.all() if tp else [])
+            ],
+            "skill_applications": [
+                {
+                    "skill_name": sa.skill_name,
+                    "skill_description": sa.skill_description,
+                    "skill_related_subject": sa.get_skill_related_subject_display(),
+                }
+                for sa in (tp.skill_applications.all() if tp else [])
+            ],
+        }
+
+        return Response(data)
+
+
+class StudentProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    PROFILE_FIELDS = {
+        "first_name", "last_name", "phone", "gender", "date_of_birth",
+        "state", "district", "city_town", "pin_code",
+        "father_name", "father_phone",
+        "mother_name", "mother_phone",
+        "guardian_name", "guardian_phone", "parent_guardian_email",
+        "currently_studying", "current_class", "stream", "board", "board_other",
+        "school_name", "academic_year",
+        "highest_education", "reason_not_studying",
+    }
+
+    def patch(self, request):
+        profile = _profile_target(request)
+        data = request.data
+
+        for field in self.PROFILE_FIELDS:
+            if field in data:
+                value = data[field]
+                if field == "date_of_birth" and value in ("", None):
+                    continue
+                setattr(profile, field, value)
+
+        if "profile_photo" in request.FILES:
+            profile.profile_photo = request.FILES["profile_photo"]
+
+        profile.save()
+        return self.get(request)
+
+    def get(self, request):
+        user = request.user
+        profile = _profile_target(request)
+
+        data = {
+            "name": f"{profile.first_name} {profile.last_name}".strip(),
+            "email": user.email,
+            "username": user.username,
+            "student_id": profile.student_id,
+            "photo": profile.profile_photo.url if profile.profile_photo else None,
+
+            "first_name": profile.first_name or "",
+            "last_name": profile.last_name or "",
+            "phone": profile.phone or "",
+            "gender": profile.gender or "",
+            "date_of_birth": profile.date_of_birth,
+
+            "state": profile.state or "",
+            "district": profile.district or "",
+            "city_town": profile.city_town or "",
+            "pin_code": profile.pin_code or "",
+
+            "father_name": profile.father_name or "",
+            "father_phone": profile.father_phone or "",
+            "mother_name": profile.mother_name or "",
+            "mother_phone": profile.mother_phone or "",
+            "guardian_name": profile.guardian_name or "",
+            "guardian_phone": profile.guardian_phone or "",
+            "parent_guardian_email": profile.parent_guardian_email or "",
+
+            "currently_studying": profile.currently_studying or "",
+            "current_class": profile.current_class or "",
+            "stream": profile.stream or "",
+            "board": profile.board or "",
+            "board_other": profile.board_other or "",
+            "school_name": profile.school_name or "",
+            "academic_year": profile.academic_year or "",
+            "highest_education": profile.highest_education or "",
+            "reason_not_studying": profile.reason_not_studying or "",
+        }
+
+        return Response(data)
+
+
+# =====================================================
+# STATES & DISTRICTS API
+# =====================================================
+
+class StatesListView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        """Return list of all Indian states/UTs."""
+        states = [{"name": s["name"]} for s in STATES_WITH_DISTRICTS]
+        return Response(states)
+
+
+class DistrictsListView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, state_name):
+        """Return districts for a given state."""
+        for s in STATES_WITH_DISTRICTS:
+            if s["name"].lower() == state_name.lower():
+                return Response(s["districts"])
+        return Response([], status=status.HTTP_404_NOT_FOUND)
+
+
+# =====================================================
+# LOGOUT
+# =====================================================
+
+class LogoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        response = Response({"detail": "Logged out."})
+
+        response.delete_cookie("access", domain=settings.COOKIE_DOMAIN)
+        response.delete_cookie("refresh", domain=settings.COOKIE_DOMAIN)
+
+        return response
+
+
+# =====================================================
+# PROFILE COMPLETE PERMISSION
+# =====================================================
+
+class IsProfileComplete(BasePermission):
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+        target = _profile_target(request)
+        return bool(target and getattr(target, "is_complete", False))
+
+
+# =====================================================
+# REFRESH TOKEN
+# =====================================================
+
+class RefreshView(APIView):
+    """
+    Rotate the refresh token while preserving the JWT context claims
+    (`context` and `active_profile`) that drive the multi-profile login
+    flow. The old implementation used RefreshToken.for_user() which
+    strips all custom claims, causing the frontend to lose learner/teacher
+    context on every token rotation.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from .auth_flow import build_tokens, set_auth_cookies, CTX_ACCOUNT
+        from accounts.models import LearnerProfile
+
+        refresh_token = request.COOKIES.get("refresh")
+
+        if not refresh_token:
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            old_token = RefreshToken(refresh_token)
+            user = User.objects.get(id=old_token["user_id"])
+
+            # --- Preserve context claims from the expiring token ---
+            context = old_token.get("context") or CTX_ACCOUNT
+            old_profile_id = old_token.get("active_profile")
+
+            profile = None
+            if old_profile_id:
+                profile = (
+                    LearnerProfile.objects
+                    .filter(id=old_profile_id, account=user, is_active=True)
+                    .first()
+                )
+
+            new_refresh = build_tokens(user, context=context, profile=profile)
+            return set_auth_cookies(Response({"detail": "refreshed"}), new_refresh)
+
+        except (TokenError, User.DoesNotExist):
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
+
+# =====================================================
+# TEACHER LIST (for private session request form)
+# =====================================================
+
+class TeacherListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = TeacherProfile.objects.filter(
+            is_approved=True,
+            user__user_roles__role__name="TEACHER",
+            user__user_roles__is_active=True,
+        ).select_related("user").distinct()
+
+        subject = request.query_params.get("subject", "").strip()
+        if subject:
+            qs = qs.filter(subject_specialization__icontains=subject)
+
+        data = []
+        for tp in qs:
+            profile = default_learner(tp.user)
+            name = ""
+            if profile:
+                if profile.first_name:
+                    name = f"{profile.first_name} {profile.last_name}".strip()
+                elif profile.full_name:
+                    name = profile.full_name
+            if not name:
+                name = tp.user.get_full_name() or tp.user.username
+
+            avatar = profile.avatar_value() if profile else None
+            if avatar and isinstance(avatar, str) and avatar.startswith("/"):
+                avatar = request.build_absolute_uri(avatar)
+
+            data.append({
+                "id": str(tp.user.id),
+                "name": name,
+                "subject": tp.subject_specialization or tp.subject or "",
+                "qualification": tp.qualification or "",
+                "rating": float(tp.rating) if tp.rating else None,
+                "avatar": avatar,
+            })
+
+        return Response(data)
+
+
+# =====================================================
+# TEACHER PUBLIC PROFILE DETAIL
+# =====================================================
+
+class TeacherPublicProfileView(APIView):
+    """Public (student-visible) subset of a teacher's profile."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        try:
+            tp = (
+                TeacherProfile.objects
+                .select_related("user")
+                .prefetch_related("course_applications", "skill_applications")
+                .get(
+                    user__id=user_id,
+                    is_approved=True,
+                    user__user_roles__role__name="TEACHER",
+                    user__user_roles__is_active=True,
+                )
+            )
+        except TeacherProfile.DoesNotExist:
+            return Response({"detail": "Teacher not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        profile = default_learner(tp.user)
+
+        name = ""
+        if profile:
+            if profile.first_name:
+                name = f"{profile.first_name} {profile.last_name}".strip()
+            elif profile.full_name:
+                name = profile.full_name
+        if not name:
+            name = tp.user.get_full_name() or tp.user.username
+
+        degree_label = dict(TeacherProfile.HIGHEST_DEGREE_CHOICES).get(
+            tp.highest_degree, ""
+        )
+        experience_label = dict(TeacherProfile.EXPERIENCE_CHOICES).get(
+            tp.experience_range, ""
+        )
+        employment_label = dict(TeacherProfile.EMPLOYMENT_STATUS_CHOICES).get(
+            tp.employment_status, ""
+        )
+        subject_map = dict(TeacherProfile.SUBJECT_CHOICES)
+        board_map = dict(TeacherProfile.BOARD_CHOICES)
+        class_map = dict(TeacherProfile.CLASS_CHOICES)
+        stream_map = dict(TeacherProfile.STREAM_CHOICES)
+
+        courses = [
+            {
+                "subject": subject_map.get(c.subject, c.subject),
+                "boards": [board_map.get(b, b) for b in (c.boards or [])],
+                "classes": [class_map.get(cls, cls) for cls in (c.classes or [])],
+                "streams": [stream_map.get(s, s) for s in (c.streams or [])],
+            }
+            for c in tp.course_applications.all()
+        ]
+
+        skills = [
+            {
+                "name": s.skill_name,
+                "description": s.skill_description,
+                "related_subject": subject_map.get(s.skill_related_subject, s.skill_related_subject),
+            }
+            for s in tp.skill_applications.all()
+        ]
+
+        avatar = profile.avatar_value() if profile else None
+        if avatar and isinstance(avatar, str) and avatar.startswith("/"):
+            avatar = request.build_absolute_uri(avatar)
+
+        data = {
+            "id": str(tp.user.id),
+            "name": name,
+            "avatar": avatar,
+            "subject": subject_map.get(tp.subject, tp.subject) or tp.subject_specialization or "",
+            "qualification": tp.qualification or "",
+            "bio": tp.bio or "",
+            "rating": float(tp.rating) if tp.rating else None,
+
+            "education": {
+                "highest_degree": degree_label,
+                "field_of_study": tp.field_of_study or "",
+                "year_of_completion": tp.year_of_completion,
+                "certifications": tp.teaching_certifications or [],
+            },
+            "experience": {
+                "range": experience_label,
+                "employment_status": employment_label,
+                "currently_employed": tp.currently_employed,
+                "current_institution": tp.current_institution or "",
+                "current_position": tp.current_position or "",
+                "previous_institution": tp.previous_institution or "",
+                "years": tp.teaching_experience_years,
+            },
+            "courses": courses,
+            "skills": skills,
+        }
+        return Response(data)
+
+
+# =====================================================
+# VALIDATE STUDENT ID (for group session form)
+# =====================================================
+
+class ValidateStudentIdView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, student_id):
+        not_found = {
+            "valid": False,
+            "name": None,
+            "user_id": None,
+            "profile_id": None,
+            "student_id": student_id,
+        }
+
+        learner = (
+            LearnerProfile.objects
+            .select_related("account")
+            .filter(student_id=student_id, is_active=True)
+            .first()
+        )
+        if not learner:
+            return Response(not_found)
+
+        name = f"{learner.first_name} {learner.last_name}".strip() or learner.display_name
+
+        return Response({
+            "valid": True,
+            "name": name,
+            "user_id": str(learner.account_id),
+            "profile_id": str(learner.id),
+            "student_id": student_id,
+        })
+
+# =====================================================
+# CHANGE PASSWORD
+# =====================================================
+
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        old_password = serializer.validated_data["old_password"]
+        new_password = serializer.validated_data["new_password"]
+
+        if not user.check_password(old_password):
+            raise ValidationError({"old_password": "Old password is incorrect."})
+
+        user.set_password(new_password)
+        user.save()
+
+        return Response({"detail": "Password changed successfully."})
+
+
+# =====================================================
+# PASSWORD RESET (code-based, unauthenticated)
+# =====================================================
+
+class PasswordResetRequestView(APIView):
+    """POST { email } → always 200. Emails a 6-digit code if the account exists."""
+    permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetRequestRateThrottle]
+
+    def post(self, request):
+        serializer = PasswordResetRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+
+        # Never reveal whether the email exists.
+        generic = Response({"detail": "If an account exists for that email, a code has been sent."})
+
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            return generic
+
+        _, raw_code = PasswordResetCode.issue(user)
+        try:
+            send_gmail(
+                to=user.email,
+                subject="Your ShikshaCom password reset code",
+                message_text=(
+                    f"Your password reset code is {raw_code}.\n\n"
+                    "It expires in 15 minutes. If you didn't request this, ignore this email."
+                ),
+            )
+        except Exception:
+            # Don't leak transport errors to the client; the code is already stored.
+            pass
+        return generic
+
+
+class PasswordResetVerifyView(APIView):
+    """POST { email, code } → { ticket }. Validates the code, issues a one-time ticket."""
+    permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetVerifyRateThrottle]
+
+    def post(self, request):
+        serializer = PasswordResetVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+        code = serializer.validated_data["code"].strip()
+
+        invalid = ValidationError({"code": "Invalid or expired code."})
+
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            raise invalid
+
+        rec = (
+            PasswordResetCode.objects
+            .filter(user=user, used=False)
+            .order_by("-created_at")
+            .first()
+        )
+        if rec is None or rec.is_expired():
+            raise invalid
+        if rec.attempts >= PasswordResetCode.MAX_ATTEMPTS:
+            rec.used = True
+            rec.save(update_fields=["used"])
+            raise ValidationError({"code": "Too many attempts. Request a new code."})
+
+        if not rec.check_code(code):
+            rec.attempts += 1
+            rec.save(update_fields=["attempts"])
+            raise invalid
+
+        rec.ticket = uuid.uuid4()
+        rec.save(update_fields=["ticket"])
+        return Response({"ticket": str(rec.ticket)})
+
+
+class PasswordResetConfirmView(APIView):
+    """POST { email, ticket, new_password } → 200. Sets the new password, burns the code."""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"].strip().lower()
+        ticket = serializer.validated_data["ticket"]
+        new_password = serializer.validated_data["new_password"]
+
+        try:
+            user = User.objects.get(email__iexact=email)
+            rec = PasswordResetCode.objects.get(user=user, ticket=ticket, used=False)
+        except (User.DoesNotExist, PasswordResetCode.DoesNotExist):
+            raise ValidationError({"detail": "Invalid or expired reset request."})
+
+        if rec.is_expired():
+            raise ValidationError({"detail": "This reset request has expired. Start again."})
+
+        user.set_password(new_password)
+        user.save()
+        rec.used = True
+        rec.save(update_fields=["used"])
+        return Response({"detail": "Password changed successfully. Please log in."})
+
+
+# =====================================================
+# ADMIN VIEWS
+# =====================================================
+
+class AdminStatsView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        from .models import TeacherProfile
+
+        total_users = User.objects.count()
+        active_enrollments = Enrollment.objects.filter(status=Enrollment.STATUS_ACTIVE).count()
+
+        # Courses / forum / payments live in apps that may be absent or empty in
+        # some deployments. Never let a missing app 500 the dashboard.
+        active_courses = 0
+        try:
+            from courses.models import Course
+            active_courses = (
+                Course.objects.filter(is_active=True).count()
+                if hasattr(Course, "is_active") else Course.objects.count()
+            )
+        except Exception:
+            active_courses = 0
+
+        forum_posts = 0
+        try:
+            from forum.models import ForumPost
+            forum_posts = ForumPost.objects.count()
+        except Exception:
+            forum_posts = 0
+
+        # Revenue only means something once a paying gateway is wired. While the
+        # provider is "free"/manual there are no paid orders, so this is 0.
+        total_revenue = 0
+        try:
+            from payments.models import Order
+            total_revenue = (
+                Order.objects
+                .filter(status=Order.STATUS_PAID)
+                .aggregate(total=models.Sum("amount"))["total"]
+            ) or 0
+        except Exception:
+            total_revenue = 0
+
+        # Pending approvals = academy (Faculty) applications awaiting review.
+        # (Skill/Guest auto-lists, so it never pends.) This counts the track
+        # status directly, which also catches guests who later applied for
+        # academy — they have an active role but a pending academy track.
+        pending_approvals = TeacherProfile.objects.filter(
+            academy_status=TeacherProfile.TRACK_PENDING
+        ).count()
+
+        # Surface the active payment mode so the admin UI can adapt.
+        payment_provider = getattr(settings, "PAYMENT_PROVIDER", "free")
+
+        return Response({
+            "total_users": total_users,
+            "active_courses": active_courses,
+            "active_enrollments": active_enrollments,
+            "forum_posts": forum_posts,
+            "total_revenue": total_revenue,
+            "pending_approvals": pending_approvals,
+            "payment_provider": payment_provider,
+        })
+
+
+class AdminUserListView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        qs = (
+            User.objects
+            .select_related()
+            .prefetch_related("user_roles__role")
+            .order_by("-date_joined")
+        )
+
+        search = request.query_params.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                models.Q(email__icontains=search)
+                | models.Q(username__icontains=search)
+                | models.Q(learner_profiles__full_name__icontains=search)
+                | models.Q(learner_profiles__display_name__icontains=search)
+            ).distinct()
+
+        role = request.query_params.get("role", "").strip().upper()
+        if role:
+            qs = qs.filter(
+                user_roles__role__name=role,
+                user_roles__is_active=True,
+            ).distinct()
+
+        def _bool(val):
+            if val in (None, ""):
+                return None
+            return str(val).lower() in ("true", "1", "yes")
+
+        is_verified = _bool(request.query_params.get("is_verified"))
+        if is_verified is not None:
+            qs = qs.filter(is_verified=is_verified)
+
+        is_active = _bool(request.query_params.get("is_active"))
+        if is_active is not None:
+            qs = qs.filter(is_active=is_active)
+
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = min(100, max(1, int(request.query_params.get("page_size", 25))))
+        except (TypeError, ValueError):
+            page_size = 25
+
+        count = qs.count()
+        start = (page - 1) * page_size
+        results = qs[start:start + page_size]
+
+        return Response({
+            "count": count,
+            "results": AdminUserListSerializer(results, many=True).data,
+        })
+
+
+class AdminUserDetailView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, user_id):
+        user = (
+            User.objects
+            .select_related()
+            .prefetch_related(
+                "user_roles__role",
+                Prefetch("enrollments", queryset=Enrollment.objects.select_related("course")),
+            )
+            .filter(id=user_id)
+            .first()
+        )
+        if not user:
+            return Response({"detail": "User not found."}, status=404)
+        return Response(AdminUserDetailSerializer(user).data)
+
+    def patch(self, request, user_id):
+        user = User.objects.filter(id=user_id).first()
+        if not user:
+            return Response({"detail": "User not found."}, status=404)
+
+        serializer = AdminUserUpdateSerializer(user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        user = (
+            User.objects
+            .select_related()
+            .prefetch_related(
+                "user_roles__role",
+                Prefetch("enrollments", queryset=Enrollment.objects.select_related("course")),
+            )
+            .get(id=user.id)
+        )
+        return Response(AdminUserDetailSerializer(user).data)
+
+
+class AdminTeacherApprovalListView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        from .models import TeacherProfile
+        from .serializers import TeacherTrackApprovalSerializer
+
+        qs = (
+            TeacherProfile.objects
+            .filter(academy_status=TeacherProfile.TRACK_PENDING)
+            .select_related("user")
+            .order_by("-created_at")
+        )
+        return Response(TeacherTrackApprovalSerializer(qs, many=True).data)
+
+
+class AdminTeacherApprovalActionView(APIView):
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, approval_id):
+        from .models import TeacherProfile, Role
+
+        action = request.data.get("action", "").lower()
+        if action not in ("approve", "reject"):
+            raise ValidationError({"action": "Must be 'approve' or 'reject'."})
+
+        # `approval_id` is the TeacherProfile primary key (see the list view).
+        tp = (
+            TeacherProfile.objects
+            .select_related("user")
+            .filter(pk=approval_id, academy_status=TeacherProfile.TRACK_PENDING)
+            .first()
+        )
+        if not tp:
+            return Response({"detail": "Approval request not found."}, status=404)
+
+        if action == "approve":
+            tp.academy_status = TeacherProfile.TRACK_APPROVED
+            tp.sync_type_from_tracks()
+            tp.save(update_fields=["academy_status", "teacher_type", "is_approved"])
+
+            # Make sure the TEACHER role is active + stamped so they can enter
+            # the academy dashboard. (A guest who added academy already had an
+            # active role; this is a no-op for them.)
+            teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
+            ur, _ = UserRole.objects.get_or_create(
+                user=tp.user, role=teacher_role,
+                defaults={"is_active": True, "approved_at": timezone.now(),
+                          "approved_by": request.user},
+            )
+            if not ur.is_active or ur.approved_at is None:
+                ur.is_active = True
+                ur.approved_at = ur.approved_at or timezone.now()
+                ur.approved_by = ur.approved_by or request.user
+                ur.save(update_fields=["is_active", "approved_at", "approved_by"])
+
+            return Response({"detail": "Teacher approved for Academy.", "id": str(tp.pk)})
+        else:
+            # Reject the academy application; the skill track (if any) is untouched.
+            tp.academy_status = TeacherProfile.TRACK_LOCKED
+            tp.sync_type_from_tracks()
+            tp.save(update_fields=["academy_status", "teacher_type", "is_approved"])
+
+            # If no track survives, deactivate the teacher role so they fall back
+            # to being a plain learner.
+            if not tp.approved_tracks():
+                UserRole.objects.filter(
+                    user=tp.user, role__name="TEACHER"
+                ).update(is_active=False, approved_at=None)
+
+            return Response({"detail": "Academy application rejected.", "id": str(tp.pk)})

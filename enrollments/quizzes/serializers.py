@@ -142,10 +142,8 @@ class QuizSubmitSerializer(serializers.Serializer):
         user = self.context["request"].user
 
         from enrollments.services import has_active_subscription
-        from accounts.auth_flow import get_active_profile
 
-        learner = get_active_profile(self.context["request"])
-        if not has_active_subscription(user=user, course=quiz.subject.course, learner_profile=learner):
+        if not has_active_subscription(user=user, course=quiz.subject.course):
             raise ValidationError("Your subscription for this course has expired.")
 
         if not quiz.is_published:

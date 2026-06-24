@@ -213,22 +213,14 @@ def join_live_session(request, session_id):
     # ── Student ──
     if user.has_role("STUDENT"):
         from enrollments.services import has_active_subscription, lock_payload
-        from accounts.auth_flow import get_active_profile
 
-        learner = get_active_profile(request)
-        if learner is None:
-            return Response(
-                {"detail": "Select a learner profile to join.", "lock_reason": "no_learner_profile"},
-                status=403,
-            )
-
-        if not has_active_subscription(user=user, course=session.course, learner_profile=learner):
-            return Response(lock_payload(user=user, course=session.course, learner_profile=learner), status=402)
+        if not has_active_subscription(user=user, course=session.course):
+            return Response(lock_payload(user=user, course=session.course), status=402)
 
         # Recheck subscription hasn't expired or been revoked mid-session
         if session.status in [LiveSession.STATUS_LIVE, LiveSession.STATUS_PAUSED]:
-            if not has_active_subscription(user=user, course=session.course, learner_profile=learner):
-                return Response(lock_payload(user=user, course=session.course, learner_profile=learner), status=402)
+            if not has_active_subscription(user=user, course=session.course):
+                return Response(lock_payload(user=user, course=session.course), status=402)
 
         if now < session.start_time - timedelta(minutes=15):
             return Response({"detail": "Too early"}, status=403)
