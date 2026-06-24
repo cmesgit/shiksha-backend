@@ -49,6 +49,20 @@ from django.utils import timezone
 from .models import User, LearnerProfile, Role, UserRole, TeacherProfile
 
 
+def _generate_unique_username(email):
+    """Derive a unique username from the email local-part, adding a numeric
+    suffix on collision. Used when signup doesn't supply one."""
+    import re
+    base = re.sub(r"[^a-zA-Z0-9_.+-]", "", (email or "").split("@")[0]) or "user"
+    base = base[:140]  # leave room for a suffix (max_length 150)
+    candidate = base
+    n = 1
+    while User.objects.filter(username__iexact=candidate).exists():
+        n += 1
+        candidate = f"{base}{n}"
+    return candidate
+
+
 class SignupProfileSerializer(serializers.Serializer):
     display_name = serializers.CharField(max_length=100)
     relationship = serializers.ChoiceField(
@@ -168,8 +182,10 @@ class SignupSerializer(serializers.Serializer):
             # ── brand new account ─────────────────────────────────────────
             data["_mode"] = "create"
 
-            if not (data.get("username") or "").strip():
-                raise ValidationError({"username": "Username is required."})
+            # Username is optional. If blank, we auto-generate a unique one in
+            # create() from the email local-part. (Login is by email; the
+            # username is just a unique internal handle — users shouldn't have
+            # to invent one, and a profile/display name must NOT double as it.)
 
             try:
                 validate_password(password)
@@ -220,9 +236,11 @@ class SignupSerializer(serializers.Serializer):
         password      = validated_data["password"]
 
         if mode == "create":
+            supplied = (validated_data.get("username") or "").strip()
+            username = supplied or _generate_unique_username(validated_data["email"])
             user = User.objects.create_user(
                 email    = validated_data["email"],
-                username = validated_data["username"],
+                username = username,
                 password = password,
             )
             user.is_verified = False
