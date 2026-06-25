@@ -505,7 +505,11 @@ class CreateOrderView(APIView):
                 learner_profile=learner,
                 expert=expert,
                 contact_mode=SkillSession.CONTACT_SESSION,
-                status=SkillSession.STATUS_CONFIRMED,
+                # A booking is a REQUEST until the expert accepts it. It must
+                # land in the expert's "Pending requests" queue (status
+                # 'requested'), NOT be auto-confirmed — the expert chooses to
+                # accept (→ confirmed) or decline (→ cancelled, slot released).
+                status=SkillSession.STATUS_REQUESTED,
                 # Platform does not collect — settlement is direct (P2P).
                 payment_status=SkillSession.PAYMENT_UNPAID,
                 amount=amount,
@@ -525,6 +529,7 @@ class CreateOrderView(APIView):
             "ok":            True,
             "bookingId":     booking_ref,
             "sessionId":     str(session.id),
+            "status":        session.status,   # 'requested' — awaiting expert acceptance
             "amount":        amount,
             "amount_rupees": amount // 100,
             # Direct settlement details for the learner.
