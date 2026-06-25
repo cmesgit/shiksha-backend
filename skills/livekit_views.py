@@ -79,11 +79,14 @@ class JoinSessionView(APIView):
         if not sess:
             raise NotFound("Session not found.")
 
-        if sess.status not in (
-            SkillSession.STATUS_CONFIRMED,
-            SkillSession.STATUS_REQUESTED,  # allow join on free sessions
-        ):
-            raise PermissionDenied(f"Session is not joinable (status: {sess.status}).")
+        # A session is only joinable once the expert has ACCEPTED it
+        # (status 'confirmed'). A still-'requested' booking is pending and must
+        # not be enterable by either side until the expert accepts.
+        if sess.status != SkillSession.STATUS_CONFIRMED:
+            raise PermissionDenied(
+                f"Session is not joinable yet (status: {sess.status}). "
+                "It must be accepted by the expert first."
+            )
 
         # Decide identity + publish rights.
         is_expert   = (sess.expert.teacher_profile.user_id == user.id)

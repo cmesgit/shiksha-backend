@@ -71,6 +71,7 @@ class StudentSkillDashboardView(APIView):
             expert_name = s.expert.display_name()
             scheduled   = s.scheduled_for
             is_live     = bool(
+                s.status == SkillSession.STATUS_CONFIRMED and
                 scheduled and
                 now >= scheduled and
                 now <= scheduled + datetime.timedelta(minutes=s.duration_mins)
