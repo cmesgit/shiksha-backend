@@ -100,3 +100,34 @@ admin.site.register(SkillCourseSection)
 admin.site.register(SkillCourseLecture)
 admin.site.register(SkillCourseEnrollment)
 admin.site.register(ExpertReview)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Guest-expert advertising subscriptions — bulk approve
+# ─────────────────────────────────────────────────────────────────────────
+
+from .subscription_models import ExpertAdSubscription  # noqa: E402
+
+
+@admin.register(ExpertAdSubscription)
+class ExpertAdSubscriptionAdmin(admin.ModelAdmin):
+    list_display = ("expert", "plan", "status", "amount", "current_period_end", "updated_at")
+    list_filter = ("status", "plan")
+    search_fields = ("expert__teacher_profile__user__email", "upi_reference")
+    actions = ("approve_subscriptions", "cancel_subscriptions")
+
+    @admin.action(description="Approve / activate selected subscriptions (30 days)")
+    def approve_subscriptions(self, request, queryset):
+        n = 0
+        for sub in queryset:
+            sub.activate(reviewer=request.user)
+            n += 1
+        self.message_user(request, f"{n} subscription(s) activated.")
+
+    @admin.action(description="Cancel selected subscriptions")
+    def cancel_subscriptions(self, request, queryset):
+        n = 0
+        for sub in queryset:
+            sub.cancel()
+            n += 1
+        self.message_user(request, f"{n} subscription(s) cancelled.")

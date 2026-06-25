@@ -122,14 +122,6 @@ class TeacherDashboardView(APIView):
                 "status":        s.status,
             })
 
-        # Monthly earnings
-        month_start   = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        month_sessions = sessions.filter(
-            status=SkillSession.STATUS_COMPLETED, updated_at__gte=month_start
-        )
-        month_earned  = sum(s.amount // 100 for s in month_sessions)
-        month_count   = month_sessions.count()
-
         # Activity feed (last 8 state-changed sessions)
         recent   = sessions.order_by("-updated_at")[:8]
         activity = []
@@ -145,6 +137,26 @@ class TeacherDashboardView(APIView):
             elif s.status == SkillSession.STATUS_CANCELLED:
                 activity.append({"text": f"Session cancelled · {name}", "color": "#c0492f"})
 
+        # Advertising status (replaces the old earnings widget — there is no
+        # earnings bar for guest experts; payments are settled directly with
+        # learners, off-platform).
+        sub = getattr(ep, "ad_subscription", None)
+        advertising = {
+            "is_advertised":  ep.is_advertised(),
+            "is_featured":    ep.is_featured,
+            "reach_count":    ep.reach_count,
+            "billing_free":   ep.billing_is_free(),
+            "sub_status":     sub.status if sub else "none",
+            "sub_active":     bool(sub and sub.is_currently_active()),
+            "period_end":     sub.current_period_end if sub else None,
+        }
+
+        # Profile-completeness nudges the dashboard can surface.
+        profile_todo = {
+            "needs_payment":  not bool(ep.payment_upi),
+            "needs_location": ep.has_offline_class() and not bool(ep.class_location),
+        }
+
         return Response({
             "stats": {
                 "taught":          taught,
@@ -152,13 +164,10 @@ class TeacherDashboardView(APIView):
                 "pending":         pending,
                 "course_students": course_students,
             },
-            "next_up":  next_up,
-            "earnings": {
-                "month_earned":   month_earned,
-                "month_sessions": month_count,
-                "month_goal":     25000,
-            },
-            "activity": activity,
+            "next_up":      next_up,
+            "advertising":  advertising,
+            "profile_todo": profile_todo,
+            "activity":     activity,
         })
 
 
@@ -314,10 +323,44 @@ class TeacherDeclineSessionView(APIView):
 
 class TeacherProfileUpdateView(APIView):
     """
-    PATCH /skill/teacher/profile/
-    Accepts: hourly_rate (int, rupees), bio (str), availability (str)
+    GET   /skill/teacher/profile/  → current editable expert profile
+    PATCH /skill/teacher/profile/  → update it
+
+    Editable fields:
+      hourly_rate (int ₹), bio, availability, subject_description,
+      languages (list[str]),
+      class_mode (home|travel|online) + class_location,
+      pincode / state / district / city / latitude / longitude,
+      payment_upi / payment_name / payment_note  (the expert's OWN payee
+      details — learners pay them directly).
     """
     permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        ep = _get_expert(request.user)
+        return Response(self._serialize(ep))
+
+    def _serialize(self, ep):
+        return {
+            "hourly_rate":         ep.hourly_rate // 100,
+            "bio":                 ep.bio,
+            "availability":        ep.availability,
+            "subject_description": ep.subject_description,
+            "languages":           ep.languages or [],
+            "class_mode":          ep.class_mode,
+            "class_location":      ep.class_location,
+            "pincode":             ep.pincode,
+            "state":               ep.state,
+            "district":            ep.district,
+            "city":                ep.city,
+            "latitude":            ep.latitude,
+            "longitude":           ep.longitude,
+            "payment_upi":         ep.payment_upi,
+            "payment_name":        ep.payment_name,
+            "payment_note":        ep.payment_note,
+            "is_advertised":       ep.is_advertised(),
+            "reach_count":         ep.reach_count,
+        }
 
     def patch(self, request):
         ep     = _get_expert(request.user)
@@ -339,15 +382,72 @@ class TeacherProfileUpdateView(APIView):
             ep.availability = str(data["availability"])[:120]
             fields.append("availability")
 
-        if fields:
-            ep.save(update_fields=fields + ["updated_at"])
+        if "subject_description" in data:
+            ep.subject_description = str(data["subject_description"])
+            fields.append("subject_description")
 
-        return Response({
-            "ok":           True,
-            "hourly_rate":  ep.hourly_rate // 100,
-            "bio":          ep.bio,
-            "availability": ep.availability,
-        })
+        if "languages" in data:
+            langs = data["languages"]
+            if isinstance(langs, str):
+                langs = [s.strip() for s in langs.split(",") if s.strip()]
+            if not isinstance(langs, list):
+                raise ValidationError({"languages": "Must be a list of languages."})
+            ep.languages = [str(x)[:40] for x in langs][:10]
+            fields.append("languages")
+
+        # ── Location / class mode (offline-class search) ──────────────────
+        new_mode = data.get("class_mode", ep.class_mode)
+        if "class_mode" in data:
+            if new_mode not in (ep.MODE_HOME, ep.MODE_TRAVEL, ep.MODE_ONLINE):
+                raise ValidationError({"class_mode": "Must be home, travel or online."})
+            ep.class_mode = new_mode
+            fields.append("class_mode")
+
+        if "class_location" in data:
+            ep.class_location = str(data["class_location"])[:255]
+            fields.append("class_location")
+
+        for f in ("pincode", "state", "district", "city"):
+            if f in data:
+                setattr(ep, f, str(data[f])[:150])
+                fields.append(f)
+
+        for f in ("latitude", "longitude"):
+            if f in data and data[f] not in (None, ""):
+                try:
+                    setattr(ep, f, float(data[f]))
+                    fields.append(f)
+                except (TypeError, ValueError):
+                    raise ValidationError({f: "Must be a number."})
+
+        # Exact location is required when teaching offline.
+        effective_mode = ep.class_mode
+        if effective_mode in (ep.MODE_HOME, ep.MODE_TRAVEL):
+            location_text = (
+                data.get("class_location", ep.class_location) or ""
+            ).strip()
+            if not location_text:
+                raise ValidationError({
+                    "class_location":
+                    "Tell learners where the class is held (required for "
+                    "'at my place' / 'I can travel')."
+                })
+
+        # ── Direct (P2P) payee details ────────────────────────────────────
+        if "payment_upi" in data:
+            ep.payment_upi = str(data["payment_upi"])[:120]
+            fields.append("payment_upi")
+        if "payment_name" in data:
+            ep.payment_name = str(data["payment_name"])[:120]
+            fields.append("payment_name")
+        if "payment_note" in data:
+            ep.payment_note = str(data["payment_note"])[:200]
+            fields.append("payment_note")
+
+        if fields:
+            ep.save(update_fields=list(dict.fromkeys(fields)) + ["updated_at"])
+
+        return Response({"ok": True, **self._serialize(ep)})
 
 
 # ── Public availability read (any authenticated user, by expert id) ───────

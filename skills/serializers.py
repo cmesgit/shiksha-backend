@@ -2,11 +2,16 @@
 PLACEMENT: backend/backend/skills/serializers.py
 ACTION:    Replace the entire file.
 
-One real change from the original:
-  ExpertCardSerializer now includes `teacher_profile_id` — the TeacherProfile
-  UUID that the chat system's StartDirectView needs to open a 1-on-1 thread.
-  Without this field, the frontend can only pass ExpertProfile.id, which is a
-  different UUID and causes a "Target not found" 400 error.
+Adds to ExpertCardSerializer (public directory card):
+  • location block (city/district/state/pincode) + class_mode/class_location
+    so learners can find someone who teaches offline near them,
+  • languages + subject_description,
+  • advertising signals: advertised (bool), featured (bool), reach.
+The expert's own UPI (pay_to) is deliberately NOT in the public card — it is
+only surfaced to a learner after they book (booking response + session detail).
+
+Unchanged: ExpertCardSerializer still exposes `teacher_profile_id`, which the
+chat system's StartDirectView needs to open a 1-on-1 thread.
 """
 from rest_framework import serializers
 
@@ -27,7 +32,7 @@ class SkillCategorySerializer(serializers.ModelSerializer):
 
 
 class ExpertCardSerializer(serializers.ModelSerializer):
-    """Matches a TEACHERS[] entry from data.js."""
+    """Matches a TEACHERS[] entry from data.js, plus location + advertising."""
     name               = serializers.SerializerMethodField()
     title              = serializers.CharField(source="headline")
     skills             = serializers.ListField(source="skill_tags", child=serializers.CharField())
@@ -35,9 +40,22 @@ class ExpertCardSerializer(serializers.ModelSerializer):
     rate               = serializers.IntegerField(source="rate_rupees")
     sessions           = serializers.IntegerField(source="sessions_count")
     img                = serializers.SerializerMethodField()
-    # NEW: TeacherProfile UUID — used by frontend chat to call
-    # POST /chat/conversations/direct/ { target_kind: "TEACHER", target_id }
     teacher_profile_id = serializers.UUIDField(source="teacher_profile.id", read_only=True)
+
+    # Location / offline teaching
+    class_mode     = serializers.CharField()
+    class_location = serializers.CharField()
+    location       = serializers.SerializerMethodField()
+    offline        = serializers.SerializerMethodField()
+
+    # Teaching extras
+    languages           = serializers.ListField(child=serializers.CharField())
+    subject_description = serializers.CharField()
+
+    # Advertising signals (homepage ordering / badges)
+    advertised = serializers.SerializerMethodField()
+    featured   = serializers.BooleanField(source="is_featured")
+    reach      = serializers.IntegerField(source="reach_count")
 
     class Meta:
         model = ExpertProfile
@@ -46,6 +64,12 @@ class ExpertCardSerializer(serializers.ModelSerializer):
             "rating", "sessions", "rate", "img", "bio",
             "badges", "availability",
             "teacher_profile_id",
+            # location
+            "class_mode", "class_location", "location", "offline",
+            # extras
+            "languages", "subject_description",
+            # advertising
+            "advertised", "featured", "reach",
         ]
 
     def get_name(self, obj):
@@ -53,6 +77,22 @@ class ExpertCardSerializer(serializers.ModelSerializer):
 
     def get_cat(self, obj):
         return obj.category.slug if obj.category_id else None
+
+    def get_advertised(self, obj):
+        return obj.is_advertised()
+
+    def get_offline(self, obj):
+        return obj.has_offline_class()
+
+    def get_location(self, obj):
+        if not (obj.city or obj.district or obj.state or obj.pincode):
+            return None
+        return {
+            "city":     obj.city,
+            "district": obj.district,
+            "state":    obj.state,
+            "pincode":  obj.pincode,
+        }
 
     def get_img(self, obj):
         request = self.context.get("request")

@@ -249,31 +249,31 @@ class CourseEnrollView(APIView):
         if existing:
             return Response(EnrollmentSerializer(existing).data)
 
-        provider = get_payment_provider()
-
-        if not provider.auto_activate and c.price > 0:
-            # Paid gateway not wired yet — surface what the admin has set.
-            return Response(
-                {
-                    "requires_payment": True,
-                    "provider":  provider.name,
-                    "label":     provider.label,
-                    "amount":    c.price,
-                    "price_rupees": c.price_rupees,
-                    "detail":    "Payment is required. Contact admin.",
-                },
-                status=status.HTTP_402_PAYMENT_REQUIRED,
-            )
-
-        # Free or auto-activate — grant immediately.
+        # Course money is settled DIRECTLY between the learner and the expert —
+        # the platform never collects it. We grant access on enrol and hand back
+        # the expert's payee details + their chat id so the learner can pay them
+        # directly and coordinate. (In the free launch phase price is 0 anyway.)
         enroll = SkillCourseEnrollment.objects.create(
             learner_profile=learner,
             course=c,
             status=SkillCourseEnrollment.STATUS_ACTIVE,
-            amount_paid=0,
-            payment_ref="free",
+            amount_paid=0,           # platform collected nothing (P2P)
+            payment_ref="direct",
         )
-        return Response(EnrollmentSerializer(enroll).data, status=status.HTTP_201_CREATED)
+
+        tp = c.teacher_profile
+        ep = getattr(tp, "expert_profile", None) if tp else None
+        body = EnrollmentSerializer(enroll).data
+        if c.price and c.price > 0:
+            body.update({
+                "settlement":        "direct",
+                "amount":            c.price,
+                "price_rupees":      c.price_rupees,
+                "pay_to":            ep.pay_to() if ep else None,
+                "expert_teacher_id": str(tp.id) if tp else None,  # open chat
+                "detail": "Pay the expert directly and coordinate over chat.",
+            })
+        return Response(body, status=status.HTTP_201_CREATED)
 
 
 class MySkillCoursesView(APIView):

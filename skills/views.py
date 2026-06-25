@@ -138,6 +138,48 @@ def _slot_to_datetime(slot_key):
 # DIRECTORY (public)
 # =====================================================
 
+def _rank_experts(qs):
+    """Advertised experts first, then by reach, then rating/sessions.
+
+    `is_advertised()` is per-row (depends on billing mode + subscription), so we
+    can't express it as a single ORDER BY. We split into advertised / rest,
+    each ordered by reach→rating→sessions, then concatenate. Directory sizes are
+    small, so materialising is fine.
+    """
+    rows = list(
+        qs.order_by("-reach_count", "-rating", "-sessions_count")
+    )
+    advertised = [e for e in rows if e.is_advertised()]
+    rest       = [e for e in rows if not e.is_advertised()]
+    return advertised + rest
+
+
+def _apply_location_filter(qs, request):
+    """Optional 'find a tutor near me (offline)' filtering.
+
+    Query params:
+      offline=1            → only experts who teach at home / can travel
+      pincode / district / state → location match (any that are provided)
+    Matching is inclusive (OR across the provided location fields); ranking
+    above still floats advertised experts to the top.
+    """
+    p = request.query_params
+    if (p.get("offline") or "").lower() in ("1", "true", "yes"):
+        qs = qs.filter(class_mode__in=[ExpertProfile.MODE_HOME, ExpertProfile.MODE_TRAVEL])
+
+    from django.db.models import Q
+    loc = Q()
+    if p.get("pincode"):
+        loc |= Q(pincode=p["pincode"].strip())
+    if p.get("district"):
+        loc |= Q(district__iexact=p["district"].strip())
+    if p.get("state"):
+        loc |= Q(state__iexact=p["state"].strip())
+    if loc:
+        qs = qs.filter(loc)
+    return qs
+
+
 class CategoryListView(APIView):
     permission_classes = [AllowAny]
 
@@ -163,7 +205,12 @@ class ExpertListView(APIView):
         if search:
             qs = qs.filter(headline__icontains=search)
 
-        return Response(ExpertCardSerializer(qs, many=True, context={"request": request}).data)
+        qs = _apply_location_filter(qs, request)
+
+        experts = _rank_experts(qs)
+        return Response(
+            ExpertCardSerializer(experts, many=True, context={"request": request}).data
+        )
 
 
 class ExpertDetailView(APIView):
@@ -402,17 +449,16 @@ class SessionRequestView(APIView):
 
 class CreateOrderView(APIView):
     """
-    Book a session — currently FREE.
+    Book a session — payment is DIRECT (P2P) between the learner and the expert.
 
-    Payment is intentionally disabled for now: instead of creating a Razorpay
-    order and parking the session in `pending_payment`, we confirm the session
-    immediately and mark it settled (nothing owed). The endpoint name and
-    response shape are unchanged so the existing frontend keeps working.
+    The platform never collects session money. We confirm the booking and hand
+    back the expert's own payee details (`pay_to`) plus the rate, so the learner
+    can pay the expert directly and the two coordinate over chat. The expert
+    later marks the session complete. (Course purchases work the same way — see
+    course_views.CourseEnrollView.)
 
-    To re-enable paid sessions later, restore the Razorpay order-create here,
-    set status=STATUS_PENDING_PAYMENT / payment_status=PAYMENT_UNPAID, and add a
-    server-side /skill/payments/verify/ endpoint that confirms the signature
-    before flipping the session to confirmed/paid.
+    `payment_status` stays UNPAID because the platform can't observe an
+    off-platform transfer; it is not a gate on joining or completing.
     """
     permission_classes = [IsAuthenticated]
 
@@ -451,19 +497,19 @@ class CreateOrderView(APIView):
             except (TypeError, ValueError):
                 duration = 60
 
+        # The rate the learner owes the expert directly (paise on the model).
+        amount = expert.hourly_rate or 0
+
         with transaction.atomic():
             session = SkillSession.objects.create(
                 learner_profile=learner,
                 expert=expert,
                 contact_mode=SkillSession.CONTACT_SESSION,
                 status=SkillSession.STATUS_CONFIRMED,
-                payment_status=SkillSession.PAYMENT_PAID,
-                amount=0,
-                # FIXED: was str(draft) which stored raw Python repr dict string.
-                # Now extracts a clean "Topic: X. Requested slot: Y." sentence.
+                # Platform does not collect — settlement is direct (P2P).
+                payment_status=SkillSession.PAYMENT_UNPAID,
+                amount=amount,
                 note=_extract_note(draft),
-                # NEW: persist the reserved slot + a concrete time so the session
-                # shows up under "upcoming" with a real schedule and can go live.
                 slot_key=slot_key,
                 scheduled_for=scheduled_for,
                 duration_mins=duration,
@@ -476,11 +522,15 @@ class CreateOrderView(APIView):
         booking_ref = f"SHK-{session.id.hex[:8].upper()}"
 
         return Response({
-            "ok":           True,
-            "bookingId":    booking_ref,
-            "sessionId":    str(session.id),
-            "amount":       0,
-            "free":         True,
-            "slot_key":     slot_key,
+            "ok":            True,
+            "bookingId":     booking_ref,
+            "sessionId":     str(session.id),
+            "amount":        amount,
+            "amount_rupees": amount // 100,
+            # Direct settlement details for the learner.
+            "settlement":    "direct",
+            "pay_to":        expert.pay_to(),
+            "expert_teacher_id": str(expert.teacher_profile_id),  # to open chat
+            "slot_key":      slot_key,
             "scheduled_for": scheduled_for,
         }, status=status.HTTP_201_CREATED)

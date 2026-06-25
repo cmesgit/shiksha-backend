@@ -85,7 +85,64 @@ class ExpertProfile(models.Model):
     rating = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
     sessions_count = models.PositiveIntegerField(default=0)
 
-    is_listed = models.BooleanField(default=False)
+    is_listed = models.BooleanField(
+        default=False,
+        help_text="Approved expert appears in the directory. FREE — never gated "
+                  "by subscription. Gates session/booking visibility, so it must "
+                  "stay True for every approved expert.",
+    )
+
+    # ── Advertising (subscription-gated) ──────────────────────────────────
+    # `is_listed` = in the directory for free. `is_featured` = paid advertising
+    # is currently active (homepage promotion + reach boost). In the free launch
+    # phase (GlobalSettings.effective_mode == 'free') everyone is advertised
+    # regardless of `is_featured`; once billing switches on, only experts with
+    # an active ad-subscription are advertised. See `is_advertised`.
+    is_featured = models.BooleanField(default=False)
+    featured_since = models.DateTimeField(null=True, blank=True)
+    # Visibility score. Grows while advertised / on completed sessions, and is
+    # decayed when an ad-subscription is cancelled or lapses.
+    reach_count = models.PositiveIntegerField(default=0)
+
+    # ── Offline-class location (for "find a tutor near me") ───────────────
+    # Surfaced to learners searching for someone who can teach offline. Exact
+    # location is required when class_mode is "home" or "travel" (validated in
+    # the profile-update view).
+    MODE_HOME = "home"
+    MODE_TRAVEL = "travel"
+    MODE_ONLINE = "online"
+    CLASS_MODE_CHOICES = [
+        (MODE_HOME, "At my place"),
+        (MODE_TRAVEL, "I can travel to the learner"),
+        (MODE_ONLINE, "Online only"),
+    ]
+    class_mode = models.CharField(
+        max_length=10, choices=CLASS_MODE_CHOICES, default=MODE_ONLINE
+    )
+    class_location = models.CharField(
+        max_length=255, blank=True,
+        help_text="Exact location text; required when class_mode is home/travel.",
+    )
+    pincode = models.CharField(max_length=10, blank=True)
+    state = models.CharField(max_length=100, blank=True)
+    district = models.CharField(max_length=100, blank=True)
+    city = models.CharField(max_length=150, blank=True)
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+
+    # ── Teaching profile extras ───────────────────────────────────────────
+    languages = models.JSONField(default=list, blank=True)   # ["English","Hindi"]
+    subject_description = models.TextField(blank=True)
+
+    # ── Direct (P2P) payment details ──────────────────────────────────────
+    # Booking/course money is settled DIRECTLY between the learner and the
+    # expert — the platform never collects it. These are the expert's own payee
+    # details, shown to a learner after booking so they can pay the expert.
+    payment_upi = models.CharField(
+        max_length=120, blank=True, help_text="Expert's own UPI ID (learners pay here)."
+    )
+    payment_name = models.CharField(max_length=120, blank=True)
+    payment_note = models.CharField(max_length=200, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -116,6 +173,52 @@ class ExpertProfile(models.Model):
             if lp.display_name:
                 return lp.display_name
         return u.username or u.email
+
+    # ── Advertising / reach ────────────────────────────────────────────────
+    @staticmethod
+    def billing_is_free():
+        """True when the platform is in its free launch phase (no charges)."""
+        try:
+            from global_settings.models import GlobalSettings
+            return GlobalSettings.load().effective_mode == GlobalSettings.PAYMENT_FREE
+        except Exception:
+            # Fail open to FREE so a missing settings row never hides experts.
+            return True
+
+    def is_advertised(self):
+        """Whether this expert is promoted on the homepage right now.
+
+        Free phase  → every listed expert is advertised (no subscription needed).
+        Paid phase  → only experts with an active ad-subscription (is_featured).
+        """
+        if not self.is_listed:
+            return False
+        if self.billing_is_free():
+            return True
+        return self.is_featured
+
+    def add_reach(self, amount):
+        if amount:
+            self.reach_count = (self.reach_count or 0) + int(amount)
+            self.save(update_fields=["reach_count", "updated_at"])
+
+    def decay_reach(self, factor=0.5):
+        """Drop reach when advertising stops (subscription cancelled/lapsed)."""
+        self.reach_count = int((self.reach_count or 0) * factor)
+        self.save(update_fields=["reach_count", "updated_at"])
+
+    def has_offline_class(self):
+        return self.class_mode in (self.MODE_HOME, self.MODE_TRAVEL)
+
+    def pay_to(self):
+        """Direct-payment payee block shown to a learner, or None if unset."""
+        if not (self.payment_upi or self.payment_name):
+            return None
+        return {
+            "upi":  self.payment_upi,
+            "name": self.payment_name or self.display_name(),
+            "note": self.payment_note,
+        }
 
     def __str__(self):
         return f"Expert · {self.display_name()}"
@@ -399,3 +502,4 @@ from .course_models import (  # noqa: F401, E402
 )
 from .review_models import ExpertReview  # noqa: F401, E402
 from .payment_models import SkillPaymentRequest  # noqa: F401, E402
+from .subscription_models import ExpertAdSubscription  # noqa: F401, E402

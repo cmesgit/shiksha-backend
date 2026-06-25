@@ -24,6 +24,11 @@ from .review_views import (
     SubmitReviewView, ExpertReviewListView, MyReviewableSessionsView,
 )
 from .payment_config_views import SkillPaymentConfigView
+from .subscription_views import (
+    ExpertSubscriptionView, ExpertSubscriptionSubmitPaymentView,
+    AdminAdSubscriptionQueueView, AdminAdSubscriptionApproveView,
+    AdminAdSubscriptionRejectView,
+)
 from .student_skill_views import (
     StudentSkillDashboardView,
     StudentSkillExpertsView,
@@ -96,9 +101,16 @@ urlpatterns = [
     path("teacher/sessions/<uuid:session_id>/decline/",      TeacherDeclineSessionView.as_view()),
     path("teacher/profile/",                                 TeacherProfileUpdateView.as_view()),
 
+    # ── Guest-expert advertising subscription ─────────────────────────────────
+    path("subscription/",                 ExpertSubscriptionView.as_view()),
+    path("subscription/submit-payment/",  ExpertSubscriptionSubmitPaymentView.as_view()),
+
     # ── Admin ─────────────────────────────────────────────────────────────────
     path("admin/interview-queue/",                               ReviewQueueView.as_view()),
     path("admin/interviews/<uuid:application_id>/evaluation/",   SubmitEvaluationView.as_view()),
     path("admin/courses/",                                       AdminSkillCourseQueueView.as_view()),
     path("admin/courses/<uuid:course_id>/review/",               AdminSkillCourseReviewView.as_view()),
+    path("admin/ad-subscriptions/",                              AdminAdSubscriptionQueueView.as_view()),
+    path("admin/ad-subscriptions/<uuid:sub_id>/approve/",        AdminAdSubscriptionApproveView.as_view()),
+    path("admin/ad-subscriptions/<uuid:sub_id>/reject/",         AdminAdSubscriptionRejectView.as_view()),
 ]

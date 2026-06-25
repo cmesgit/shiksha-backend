@@ -30,14 +30,16 @@ Signup cases:
             + TEACHER role (reuses existing SELF learner).
 
   Case 5  EXISTING (has_student) + Student signup  → BLOCK
-  Case 6  EXISTING teacher + signup for the OTHER track → ADD TRACK
-          A teacher assigned to one track (e.g. Skill/Guest) can apply for the
-          track they're missing (e.g. Academy/Faculty). The new track is added
-          to the SAME TeacherProfile:
-            · adding Skill (guest)   → listed immediately (approved)
+  Case 6  EXISTING teacher + signup for the OTHER track → ADD TRACK (asymmetric)
+          A Guest-expert (Skill) teacher may apply for the Faculty (Academy)
+          track; the new track is added to the SAME TeacherProfile:
             · adding Academy (faculty) → pending admin review
-          The track they already hold keeps working the whole time.
+          The Skill track they already hold keeps working the whole time.
+          The REVERSE is NOT allowed: a Faculty (Academy) teacher may NOT add
+          the Skill/Guest track — faculty stay faculty-only (see
+          TeacherProfile.can_apply_track / track_add_block_reason).
   Case 7  EXISTING teacher + signup for a track they already hold → BLOCK
+  Case 8  EXISTING Faculty teacher + signup for Skill/Guest → BLOCK (asymmetry)
 """
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
@@ -150,14 +152,13 @@ class SignupSerializer(serializers.Serializer):
 
                 if has_teacher:
                     tp = existing_user.teacher_profile
-                    current = tp.track_status(target_track)
-                    # Already hold this track (live or in review) → nothing to add.
-                    if current in (TeacherProfile.TRACK_PENDING, TeacherProfile.TRACK_APPROVED):
-                        nice = "Academy (Faculty)" if target_track == TeacherProfile.TRACK_ACADEMY else "Skill (Guest expert)"
-                        raise ValidationError(
-                            f"You're already set up for {nice} on this account. Log in instead."
-                        )
-                    # Otherwise they're adding the track they're missing.
+                    # Enforce the asymmetric Faculty/Guest rule via the single
+                    # source of truth on the model. This rejects both an
+                    # already-held track AND a Faculty account trying to add
+                    # Skill. (Guest adding Faculty stays allowed.)
+                    if not tp.can_apply_track(target_track):
+                        raise ValidationError(tp.track_add_block_reason(target_track))
+                    # Otherwise they're adding a track they're allowed to add.
                     authed = authenticate(email=email, password=password)
                     if not authed:
                         raise ValidationError(
@@ -367,6 +368,10 @@ class SignupSerializer(serializers.Serializer):
         """Existing teacher applying for the track they don't yet hold.
         The track they already have keeps working untouched."""
         tp = user.teacher_profile
+        # Defense in depth: never add a track the policy forbids, even if a
+        # caller reached here directly. validate() is the primary gate.
+        if not tp.can_apply_track(track):
+            raise ValidationError(tp.track_add_block_reason(track))
         tp.set_track_status(track, self._initial_status_for(track))
         tp.sync_type_from_tracks()
         tp.save(update_fields=["academy_status", "skill_status",

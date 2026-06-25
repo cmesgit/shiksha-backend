@@ -524,7 +524,7 @@ class EmailCheckView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        from .models import User, Role
+        from .models import User, Role, TeacherProfile
         email = (request.data.get("email") or "").strip().lower()
         empty = {"exists": False, "has_student": False, "has_teacher": False, "is_verified": False}
         if not email:
@@ -543,5 +543,16 @@ class EmailCheckView(APIView):
             "teacher_type":  teacher.teacher_type if teacher else None,
             "academy_status": teacher.academy_status if teacher else "locked",
             "skill_status":   teacher.skill_status if teacher else "locked",
+            # Explicit add-eligibility so the frontend never re-derives the
+            # asymmetric Faculty/Guest rule. For a non-teacher both are True
+            # (they'd be creating a fresh teacher identity on one track).
+            "can_add_academy": (
+                teacher.can_apply_track(TeacherProfile.TRACK_ACADEMY)
+                if teacher else True
+            ),
+            "can_add_skill": (
+                teacher.can_apply_track(TeacherProfile.TRACK_SKILL)
+                if teacher else True
+            ),
             "is_verified":   user.is_verified,
         })
