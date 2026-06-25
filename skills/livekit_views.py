@@ -1,3 +1,5 @@
+# PLACEMENT: skills/livekit_views.py  (replace the whole file)
+# slot back to the expert's open grid (matches the existing decline behaviour).
 """
 skills/livekit_views.py — LiveKit room token generation and session management.
 
@@ -177,6 +179,11 @@ class TeacherCompleteSessionView(APIView):
             expert=ep, status=SkillSession.STATUS_COMPLETED
         ).count()
         ep.save(update_fields=["sessions_count"])
+        # Release the reserved weekly slot back to the expert's open grid so the
+        # same recurring time can be booked again. (Decline does the same.)
+        if sess.slot_key:
+            from .teacher_views import free_slot
+            free_slot(ep, sess.slot_key)
         return Response({"detail": "Session marked complete."})
 
 

@@ -1,3 +1,5 @@
+# PLACEMENT: skills/views.py  (replace the whole file)
+# validates it's open, stores slot_key + a real scheduled_for, and locks it.
 """
 PLACEMENT: backend/backend/skills/views.py
 ACTION:    Replace the entire file.
@@ -13,6 +15,7 @@ Change from original:
 """
 from django.db import transaction
 from django.utils import timezone
+import datetime
 
 from rest_framework import status
 from rest_framework.views import APIView
@@ -23,6 +26,10 @@ from rest_framework.exceptions import ValidationError, PermissionDenied, NotFoun
 from accounts.models import LearnerProfile, Role, UserRole
 from accounts.permissions import IsAdmin
 from accounts.auth_flow import get_active_profile
+
+# Slot bookkeeping lives next to the teacher-facing availability views so the
+# booking flow and the expert's own grid share one source of truth.
+from .teacher_views import slot_is_open, mark_slot_booked
 
 from .models import (
     SkillCategory,
@@ -92,6 +99,39 @@ def _extract_note(draft):
             return topic[:200]
 
     return " ".join(parts)
+
+
+# Hours that the booking grid's slot indices map to. Must stay in lock-step
+# with SLOTS in the frontend availability.js: ["9 AM","11 AM","2 PM","4 PM","6 PM","8 PM"].
+_SLOT_HOURS = [9, 11, 14, 16, 18, 20]
+
+
+def _slot_to_datetime(slot_key):
+    """
+    Turn a weekly grid key "<dayIndex>-<slotIndex>" (e.g. "3-1") into a concrete
+    timezone-aware datetime in the *current* week. dayIndex 0 = Monday .. 5 = Sat.
+
+    The grid is weekly-recurring, so if the resolved time has already passed this
+    week we roll it forward to the same slot next week. Returns None for an
+    unparseable / out-of-range key so booking can still proceed without a time.
+    """
+    if not slot_key:
+        return None
+    try:
+        di, si = (int(x) for x in slot_key.split("-"))
+    except (ValueError, AttributeError):
+        return None
+    if not (0 <= di <= 6) or not (0 <= si < len(_SLOT_HOURS)):
+        return None
+
+    now = timezone.localtime()
+    monday = (now - datetime.timedelta(days=now.weekday())).date()
+    target_date = monday + datetime.timedelta(days=di)
+    naive = datetime.datetime.combine(target_date, datetime.time(hour=_SLOT_HOURS[si]))
+    dt = timezone.make_aware(naive, timezone.get_current_timezone())
+    if dt < now:
+        dt += datetime.timedelta(days=7)
+    return dt
 
 
 # =====================================================
@@ -389,24 +429,58 @@ class CreateOrderView(APIView):
         if not expert:
             raise NotFound("Expert not found.")
 
-        session = SkillSession.objects.create(
-            learner_profile=learner,
-            expert=expert,
-            contact_mode=SkillSession.CONTACT_SESSION,
-            status=SkillSession.STATUS_CONFIRMED,
-            payment_status=SkillSession.PAYMENT_PAID,
-            amount=0,
-            # FIXED: was str(draft) which stored raw Python repr dict string.
-            # Now extracts a clean "Topic: X. Requested slot: Y." sentence.
-            note=_extract_note(request.data.get("draft")),
-        )
+        draft = request.data.get("draft")
+        slot_key = ""
+        if isinstance(draft, dict):
+            slot_key = (draft.get("slot") or "").strip()
+
+        # Reserve the chosen slot. The grid the learner picked from is the
+        # expert's `availability_slots` (served by ExpertAvailabilityView), so we
+        # validate against the same source of truth before locking it.
+        if slot_key and not slot_is_open(expert, slot_key):
+            raise ValidationError(
+                {"slot": "That time slot is no longer available. Please pick another."}
+            )
+
+        scheduled_for = _slot_to_datetime(slot_key)
+
+        duration = 60
+        if isinstance(draft, dict):
+            try:
+                duration = int(draft.get("duration_mins") or 60)
+            except (TypeError, ValueError):
+                duration = 60
+
+        with transaction.atomic():
+            session = SkillSession.objects.create(
+                learner_profile=learner,
+                expert=expert,
+                contact_mode=SkillSession.CONTACT_SESSION,
+                status=SkillSession.STATUS_CONFIRMED,
+                payment_status=SkillSession.PAYMENT_PAID,
+                amount=0,
+                # FIXED: was str(draft) which stored raw Python repr dict string.
+                # Now extracts a clean "Topic: X. Requested slot: Y." sentence.
+                note=_extract_note(draft),
+                # NEW: persist the reserved slot + a concrete time so the session
+                # shows up under "upcoming" with a real schedule and can go live.
+                slot_key=slot_key,
+                scheduled_for=scheduled_for,
+                duration_mins=duration,
+            )
+            # Lock the slot so it greys out for every other learner. (Released
+            # again on decline/complete so the weekly grid stays reusable.)
+            if slot_key:
+                mark_slot_booked(expert, slot_key)
 
         booking_ref = f"SHK-{session.id.hex[:8].upper()}"
 
         return Response({
-            "ok":        True,
-            "bookingId": booking_ref,
-            "sessionId": str(session.id),
-            "amount":    0,
-            "free":      True,
+            "ok":           True,
+            "bookingId":    booking_ref,
+            "sessionId":    str(session.id),
+            "amount":       0,
+            "free":         True,
+            "slot_key":     slot_key,
+            "scheduled_for": scheduled_for,
         }, status=status.HTTP_201_CREATED)

@@ -1,3 +1,6 @@
+# PLACEMENT: skills/models.py  (replace the whole file)
+# that migration 0003 created but the model had lost) + aligns slot_key help_text.
+# No new migration: the model now matches 0003/0004 exactly.
 """
 skills/models.py — the specialized-skills domain.
 
@@ -63,6 +66,16 @@ class ExpertProfile(models.Model):
     skill_tags = models.JSONField(default=list, blank=True)    # ["React", "Node.js"]
     bio = models.TextField(blank=True)
     availability = models.CharField(max_length=120, blank=True)
+    # Weekly bookable grid driving the Book-a-Tutor calendar + the expert's
+    # own Availability screen. Shape: {"open": ["0-1", ...], "booked": ["1-0", ...]}
+    # where each key is "<dayIndex>-<slotIndex>". This field is added by
+    # migration 0003_expertprofile_availability_slots; it MUST stay defined on
+    # the model (without it, every availability read/write silently breaks).
+    availability_slots = models.JSONField(
+        blank=True,
+        default=dict,
+        help_text='Weekly availability. Shape: {"open":["0-1","2-3"], "booked":["1-0"]}',
+    )
     badges = models.JSONField(default=list, blank=True)        # ["Verified", "Top-rated"]
     photo = models.ImageField(upload_to="skills/experts/", null=True, blank=True)
 
@@ -342,7 +355,10 @@ class SkillSession(models.Model):
     # The availability slot this session reserved, e.g. "3-1" (day-slot index).
     # Stored so the slot can be released back to the expert's `open` grid when
     # the session is cancelled / declined / completed.
-    slot_key = models.CharField(max_length=16, blank=True)
+    slot_key = models.CharField(
+        max_length=16, blank=True,
+        help_text="Reserved availability slot, e.g. '3-1' (day-slot index).",
+    )
     amount = models.PositiveIntegerField(default=0, help_text="Paise")
     note = models.TextField(blank=True)            # the contact draft / message
     meeting_url = models.CharField(max_length=300, blank=True)
@@ -365,50 +381,13 @@ class SkillSession(models.Model):
 
 
 # =====================================================
-# CONTACT THREAD  (learner <-> expert messaging)
+# CONTACT THREAD  (learner <-> expert messaging)  — REMOVED
 # =====================================================
-
-class Conversation(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    learner_profile = models.ForeignKey(
-        "accounts.LearnerProfile", on_delete=models.CASCADE, related_name="skill_threads"
-    )
-    expert = models.ForeignKey(
-        ExpertProfile, on_delete=models.CASCADE, related_name="threads"
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ["-updated_at"]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["learner_profile", "expert"],
-                name="unique_thread_per_learner_expert",
-            )
-        ]
-
-    def __str__(self):
-        return f"Thread · {self.learner_profile_id} ↔ {self.expert_id}"
-
-
-class Message(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    conversation = models.ForeignKey(
-        Conversation, on_delete=models.CASCADE, related_name="messages"
-    )
-    sender = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="skill_messages"
-    )
-    body = models.TextField()
-    created_at = models.DateTimeField(auto_now_add=True)
-    read_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["created_at"]
-
-    def __str__(self):
-        return f"Msg {self.id}"
+# The old REST-based Conversation + Message models lived here. They are GONE:
+# all 1-on-1 messaging now runs through the realtime WebSocket `chat/` app
+# (chat.Conversation / chat.Message), which every frontend already uses. The
+# tables are dropped by migration 0005_remove_skill_messaging. messaging_views.py
+# and its /skill/conversations/ routes were removed in the same change.
 
 
 # ── Additive models (separate files, imported here so Django discovers them) ──
