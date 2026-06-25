@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth.forms import UserCreationForm
 from .models import User, LearnerProfile, Role, UserRole, TeacherProfile, TeacherCourseApplication, TeacherSkillApplication
 
 
@@ -7,9 +8,34 @@ from .models import User, LearnerProfile, Role, UserRole, TeacherProfile, Teache
 # USER ADMIN
 # =========================
 
+class UserCreationFormWithEmail(UserCreationForm):
+    """Add-user form that collects a required email.
+
+    ``email`` is the model's USERNAME_FIELD and is unique, so it must be
+    captured at creation time. Including it here also makes the ModelForm
+    validate uniqueness and surface a clean error instead of letting a
+    blank/duplicate email hit the DB and raise an IntegrityError (500).
+    """
+
+    class Meta(UserCreationForm.Meta):
+        model = User
+        fields = ("email", "username")
+
+
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
     model = User
+    add_form = UserCreationFormWithEmail
+
+    add_fieldsets = (
+        (
+            None,
+            {
+                "classes": ("wide",),
+                "fields": ("email", "username", "password1", "password2"),
+            },
+        ),
+    )
 
     list_display = (
         "email",
