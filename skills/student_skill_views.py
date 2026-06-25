@@ -70,12 +70,16 @@ class StudentSkillDashboardView(APIView):
         def fmt_session(s, *, is_past=False):
             expert_name = s.expert.display_name()
             scheduled   = s.scheduled_for
-            is_live     = bool(
-                s.status == SkillSession.STATUS_CONFIRMED and
+            is_confirmed = s.status == SkillSession.STATUS_CONFIRMED
+            # Live if the expert has actually started the class (started_at set),
+            # OR we're inside the originally scheduled window. Either way only
+            # for an accepted (confirmed) session.
+            in_window = bool(
                 scheduled and
                 now >= scheduled and
                 now <= scheduled + datetime.timedelta(minutes=s.duration_mins)
             )
+            is_live = bool(is_confirmed and (s.started_at or in_window))
             when_str = ""
             if scheduled:
                 today = now.date()
@@ -109,6 +113,8 @@ class StudentSkillDashboardView(APIView):
                 "dur":                f"{s.duration_mins} min",
                 "duration_mins":      s.duration_mins,
                 "live":               is_live,
+                "joinable":           is_confirmed,
+                "started":            bool(s.started_at),
                 "status":             s.status,
                 "reviewed":           str(s.id) in reviewed_ids if is_past else None,
             }

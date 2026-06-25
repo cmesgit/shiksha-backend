@@ -101,6 +101,13 @@ class JoinSessionView(APIView):
 
         token = _make_token(identity, room_name, can_publish=can_publish)
 
+        # The expert entering the room IS "starting the class". Stamp it once so
+        # the learner's dashboard can show a live "Join now" prompt immediately,
+        # regardless of the originally scheduled time.
+        if is_expert and sess.started_at is None:
+            sess.started_at = timezone.now()
+            sess.save(update_fields=["started_at", "updated_at"])
+
         # settings defines LIVEKIT_URL (not LIVEKIT_WS_URL); fall back to the
         # old name then localhost so existing envs keep working.
         ws_url = (
@@ -203,17 +210,25 @@ def _teacher_session(user, session_id):
 
 
 def _session_card(s, teacher_view=False):
+    from django.utils import timezone
     if teacher_view:
         who_name = s.learner_profile.display_name or s.learner_profile.full_name or "Student"
         who_id   = str(s.learner_profile.id)
     else:
         who_name = s.expert.display_name()
         who_id   = str(s.expert.id)
+    # A confirmed session is joinable. It is "live" once the expert has started
+    # it (started_at set) — and still considered live until it's completed.
+    is_confirmed = s.status == SkillSession.STATUS_CONFIRMED
+    is_live = bool(is_confirmed and s.started_at)
     return {
         "id":            str(s.id),
         "status":        s.status,
         "contact_mode":  s.contact_mode,
         "scheduled_for": s.scheduled_for,
+        "started_at":    s.started_at,
+        "live":          is_live,
+        "joinable":      is_confirmed,
         "duration_mins": s.duration_mins,
         "note":          s.note,
         "meeting_url":   s.meeting_url,

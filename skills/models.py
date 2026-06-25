@@ -454,6 +454,10 @@ class SkillSession(models.Model):
     )
 
     scheduled_for = models.DateTimeField(null=True, blank=True)
+    # Set the moment the EXPERT enters the room (clicks "Start class"). The
+    # learner's dashboard reads this to surface a live "Join now" signal, since
+    # the expert may start at any time — not just inside the scheduled window.
+    started_at = models.DateTimeField(null=True, blank=True)
     duration_mins = models.PositiveIntegerField(default=60)
     # The availability slot this session reserved, e.g. "3-1" (day-slot index).
     # Stored so the slot can be released back to the expert's `open` grid when
