@@ -7,6 +7,9 @@ from .views import (
     AdminBatchRosterView,
 )
 from .payment_views import PaymentConfigView, FreeEnrollView
+from .admin_enrollment_views import (
+    AdminEnrollmentListView, AdminEnrollmentActionView,
+)
 
 urlpatterns = [
     # Payment mode (pluggable: free / manual_upi / razorpay)
@@ -19,4 +22,7 @@ urlpatterns = [
     path("admin/requests/", AdminEnrollmentRequestListView.as_view()),
     path("admin/requests/<uuid:request_id>/action/", AdminEnrollmentRequestActionView.as_view()),
     path("admin/batch-roster/", AdminBatchRosterView.as_view()),
+    # Admin — enrollment management (list + revoke/reactivate)
+    path("admin/enrollments/", AdminEnrollmentListView.as_view()),
+    path("admin/enrollments/<uuid:enrollment_id>/action/", AdminEnrollmentActionView.as_view()),
 ]

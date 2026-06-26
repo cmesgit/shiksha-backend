@@ -237,3 +237,101 @@ def _session_card(s, teacher_view=False):
         "created_at":    s.created_at,
         ("learner" if teacher_view else "expert"): {"id": who_id, "name": who_name},
     }
+
+
+# ── Admin: platform-wide session monitor ─────────────────────────────────
+from accounts.permissions import IsAdmin
+
+
+class AdminSessionListView(APIView):
+    """
+    GET /skill/admin/sessions/?status=<status>  → all 1-on-1 sessions.
+
+    A friendly, read-only replacement for the raw Django-admin SkillSession
+    list: every booking across the platform with learner, expert, status, and
+    schedule. Optional ?status= filter (requested/confirmed/completed/cancelled).
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        qs = (SkillSession.objects
+              .select_related("learner_profile", "expert", "expert__teacher_profile")
+              .order_by("-created_at"))
+        st = request.query_params.get("status")
+        if st:
+            qs = qs.filter(status=st)
+        qs = qs[:300]  # cap for safety
+
+        rows = []
+        for s in qs:
+            learner = (s.learner_profile.display_name
+                       or s.learner_profile.full_name or "Student")
+            rows.append({
+                "id":            str(s.id),
+                "learner":       learner,
+                "expert":        s.expert.display_name(),
+                "expert_id":     str(s.expert.id),
+                "status":        s.status,
+                "scheduled_for": s.scheduled_for,
+                "started_at":    s.started_at,
+                "duration_mins": s.duration_mins,
+                "created_at":    s.created_at,
+            })
+
+        # Small status summary so the admin page can show counts.
+        from django.db.models import Count
+        counts = {row["status"]: row["n"] for row in
+                  SkillSession.objects.values("status").annotate(n=Count("id"))}
+        return Response({"sessions": rows, "counts": counts})
+
+
+class AdminUserSkillProfileView(APIView):
+    """
+    GET /skill/admin/users/<user_id>/skill-profile/
+
+    Skill-dev context for a single user, shown on the admin user-detail page:
+      - whether they are an approved expert (+ a small summary), and
+      - their 1-on-1 sessions as a LEARNER.
+    Kept separate from the accounts user serializer so the skills app stays
+    decoupled from accounts.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, user_id):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        user = User.objects.filter(id=user_id).first()
+        if not user:
+            raise NotFound("User not found.")
+
+        ep = ExpertProfile.objects.filter(teacher_profile__user=user).first()
+        expert = None
+        if ep:
+            expert = {
+                "id":         str(ep.id),
+                "name":       ep.display_name(),
+                "listed":     ep.is_listed,
+                "advertised": ep.is_advertised(),
+                "featured":   ep.is_featured,
+                "rating":     float(ep.rating) if ep.rating is not None else None,
+                "sessions":   ep.sessions_count,
+                "reach":      ep.reach_count,
+            }
+
+        sessions = (SkillSession.objects
+                    .filter(learner_profile__user=user)
+                    .select_related("expert")
+                    .order_by("-created_at")[:50])
+        learner_sessions = [{
+            "id":            str(s.id),
+            "expert":        s.expert.display_name(),
+            "status":        s.status,
+            "scheduled_for": s.scheduled_for,
+            "created_at":    s.created_at,
+        } for s in sessions]
+
+        return Response({
+            "is_expert":        bool(ep),
+            "expert":           expert,
+            "learner_sessions": learner_sessions,
+        })

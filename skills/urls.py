@@ -19,6 +19,8 @@ from .course_views import (
 from .livekit_views import (
     JoinSessionView, MySessionsView,
     TeacherSessionsView, TeacherConfirmSessionView, TeacherCompleteSessionView,
+    AdminSessionListView,        # NEW — admin platform-wide session monitor
+    AdminUserSkillProfileView,   # NEW — per-user skill context for admin
 )
 from .review_views import (
     SubmitReviewView, ExpertReviewListView, MyReviewableSessionsView,
@@ -107,6 +109,8 @@ urlpatterns = [
 
     # ── Admin ─────────────────────────────────────────────────────────────────
     path("admin/interview-queue/",                               ReviewQueueView.as_view()),
+    path("admin/sessions/",                                      AdminSessionListView.as_view()),
+    path("admin/users/<uuid:user_id>/skill-profile/",            AdminUserSkillProfileView.as_view()),
     path("admin/interviews/<uuid:application_id>/evaluation/",   SubmitEvaluationView.as_view()),
     path("admin/courses/",                                       AdminSkillCourseQueueView.as_view()),
     path("admin/courses/<uuid:course_id>/review/",               AdminSkillCourseReviewView.as_view()),
