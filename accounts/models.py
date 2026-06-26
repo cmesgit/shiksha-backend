@@ -820,6 +820,51 @@ class TeacherProfile(models.Model):
             self.teacher_type = self.TYPE_FACULTY
         self.is_approved = bool(self.approved_tracks())
 
+    # ── Track-add policy (the asymmetric Faculty / Guest rule) ─────────────
+    #
+    # Business rule (single source of truth — encoded purely from status so
+    # the signup, add-track, switcher and settings paths can never drift):
+    #   • A teacher who FIRST became Faculty (academy) can NOT later add the
+    #     Skill / Guest-expert track — faculty stay faculty-only, one dashboard.
+    #   • A teacher who FIRST became a Guest expert (skill) CAN later add the
+    #     Faculty (academy) track — they then get the two-dashboard switcher.
+    #
+    #   ⇒ the Skill track may be added only when Academy was never taken
+    #     (academy_status == locked) AND Skill isn't already held.
+    #   ⇒ the Academy track may be added whenever it isn't already held;
+    #     holding the Skill track does NOT block it.
+    def holds_track(self, track):
+        """True if the track is already live or in review (i.e. 'held')."""
+        return self.track_status(track) in (self.TRACK_PENDING, self.TRACK_APPROVED)
+
+    def can_apply_track(self, track):
+        """Whether this profile is allowed to ADD `track` right now."""
+        if track == self.TRACK_ACADEMY:
+            # Faculty can always be added if not already held.
+            return not self.holds_track(self.TRACK_ACADEMY)
+        if track == self.TRACK_SKILL:
+            # Skill / Guest only if Academy was never held and Skill isn't held.
+            return (
+                not self.holds_track(self.TRACK_ACADEMY)
+                and not self.holds_track(self.TRACK_SKILL)
+            )
+        return False
+
+    def track_add_block_reason(self, track):
+        """Human-readable reason `track` can't be added, or '' if it can."""
+        if self.can_apply_track(track):
+            return ""
+        if track == self.TRACK_SKILL and self.holds_track(self.TRACK_ACADEMY):
+            return (
+                "Faculty accounts can't add the Skill Dev (Guest expert) track. "
+                "Guest experts can add Faculty, but not the other way around."
+            )
+        if self.holds_track(track):
+            nice = ("Academy (Faculty)" if track == self.TRACK_ACADEMY
+                    else "Skill (Guest expert)")
+            return f"You're already set up for {nice} on this account. Log in instead."
+        return "That track can't be added to this account."
+
     # ── Teacher password helpers ──────────────────────────────────────────
     def set_teacher_password(self, raw_password):
         from django.contrib.auth.hashers import make_password as _mp

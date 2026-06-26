@@ -70,11 +70,16 @@ class StudentSkillDashboardView(APIView):
         def fmt_session(s, *, is_past=False):
             expert_name = s.expert.display_name()
             scheduled   = s.scheduled_for
-            is_live     = bool(
+            is_confirmed = s.status == SkillSession.STATUS_CONFIRMED
+            # Live if the expert has actually started the class (started_at set),
+            # OR we're inside the originally scheduled window. Either way only
+            # for an accepted (confirmed) session.
+            in_window = bool(
                 scheduled and
                 now >= scheduled and
                 now <= scheduled + datetime.timedelta(minutes=s.duration_mins)
             )
+            is_live = bool(is_confirmed and (s.started_at or in_window))
             when_str = ""
             if scheduled:
                 today = now.date()
@@ -108,6 +113,8 @@ class StudentSkillDashboardView(APIView):
                 "dur":                f"{s.duration_mins} min",
                 "duration_mins":      s.duration_mins,
                 "live":               is_live,
+                "joinable":           is_confirmed,
+                "started":            bool(s.started_at),
                 "status":             s.status,
                 "reviewed":           str(s.id) in reviewed_ids if is_past else None,
             }
@@ -239,7 +246,11 @@ class StudentSkillDashboardView(APIView):
 class StudentSkillExpertsView(APIView):
     """
     GET /skill/student/experts/
-    Returns listed experts for the Explore tab (public, ?cat=&search=).
+    Listed experts for the Explore tab (public). Supports:
+      ?cat=  &search=
+      ?offline=1                  → only experts who teach offline
+      ?pincode= &district= &state= → "near me" location match
+    Advertised experts are floated to the top.
     """
     permission_classes = [AllowAny]
 
@@ -254,8 +265,26 @@ class StudentSkillExpertsView(APIView):
         if search:
             qs = qs.filter(headline__icontains=search)
 
+        p = request.query_params
+        if (p.get("offline") or "").lower() in ("1", "true", "yes"):
+            qs = qs.filter(class_mode__in=[ExpertProfile.MODE_HOME, ExpertProfile.MODE_TRAVEL])
+        from django.db.models import Q
+        loc = Q()
+        if p.get("pincode"):
+            loc |= Q(pincode=p["pincode"].strip())
+        if p.get("district"):
+            loc |= Q(district__iexact=p["district"].strip())
+        if p.get("state"):
+            loc |= Q(state__iexact=p["state"].strip())
+        if loc:
+            qs = qs.filter(loc)
+
+        # Advertised first, then reach / rating.
+        rows = list(qs.order_by("-reach_count", "-rating", "-sessions_count")[:80])
+        rows = [e for e in rows if e.is_advertised()] + [e for e in rows if not e.is_advertised()]
+
         result = []
-        for ep in qs[:40]:
+        for ep in rows[:40]:
             lp = ep.user.default_learner_profile()
             name = ""
             if lp:
@@ -273,6 +302,16 @@ class StudentSkillExpertsView(APIView):
                 "cat":        ep.category.slug if ep.category_id else "",
                 "reply":      "~1h",
                 "skills":     ep.skill_tags or [],
+                # location / offline-teaching signals
+                "class_mode": ep.class_mode,
+                "offline":    ep.has_offline_class(),
+                "location": (
+                    {"city": ep.city, "district": ep.district,
+                     "state": ep.state, "pincode": ep.pincode}
+                    if (ep.city or ep.district or ep.state or ep.pincode) else None
+                ),
+                "languages":  ep.languages or [],
+                "advertised": ep.is_advertised(),
             })
         return Response(result)
 
@@ -341,6 +380,11 @@ class SkillSessionDetailView(APIView):
             "topic":          session.note or "1-on-1 session",
             "status":         session.status,
             "payment_status": session.payment_status,
+            # Money is settled DIRECTLY with the expert; surface their payee
+            # details so the learner can pay them.
+            "settlement":     "direct",
+            "pay_to":         expert.pay_to(),
+            "amount_rupees":  (session.amount or 0) // 100,
             "scheduled_for":  session.scheduled_for,
             "when":           when_str,
             "duration_mins":  session.duration_mins,

@@ -1,3 +1,5 @@
+# PLACEMENT: backend/backend/chat/models.py   (REPLACE THE WHOLE FILE)
+# DEPLOY:    /app/shiksha-backend/chat/models.py
 """
 chat/models.py
 
@@ -6,17 +8,33 @@ Real-time chat for ShikshaCom dashboards.
 IDENTITY MODEL (matches the multi-profile account system):
   A *participant* is NOT a User. It is a specific identity on an account:
     - a LearnerProfile  (a learner — the holder or a dependent child), or
-    - a TeacherProfile  (the teacher identity).
+    - a TeacherProfile  (the teacher identity — faculty AND/OR guest expert).
   This is "per active profile": child A and child B on the same account chat
   as separate participants, and the teacher identity is its own inbox.
+
+  A "guest expert" and a "faculty teacher" are the SAME TeacherProfile seen
+  through its two approved tracks (skill_status / academy_status); both are
+  KIND_TEACHER here. A "skill-dev student" and an "academy student" are the
+  SAME LearnerProfile seen through the two tracks; both are KIND_LEARNER.
+  Roles are computed for display/filtering in services.participant_roles().
 
 CONVERSATION KINDS (v1):
   DIRECT  — 1:1 between exactly two participants (e.g. learner <-> teacher).
   COURSE  — a group room scoped to a course; participants are everyone
             enrolled (as their learner profile) plus the course's teacher(s).
 
-Identity is stored polymorphically via (participant_kind, learner_profile,
-teacher_profile) rather than a generic FK, to keep queries simple and indexed.
+BLOCKING (added):
+  A Block is one identity silencing another. Permission is enforced in the
+  views (chat/views.py), per the platform rule:
+    • a TEACHER (faculty or guest expert) can block ANY user;
+    • a LEARNER (academy or skill-dev student) can block other LEARNERS only —
+      never a teacher / guest expert.
+  Enforcement at send time lives in services.post_message_checked(): if a block
+  exists in EITHER direction between the two parties of a direct thread, the
+  message is refused.
+
+Identity is stored polymorphically via (kind, learner_profile, teacher_profile)
+rather than a generic FK, to keep queries simple and indexed.
 """
 import uuid
 from django.conf import settings
@@ -176,3 +194,60 @@ class Message(models.Model):
 
     def __str__(self):
         return f"msg {self.id} in {self.conversation_id}"
+
+
+# ===========================================================================
+# BLOCKING
+# ===========================================================================
+
+class Block(models.Model):
+    """One identity silencing another.
+
+    `pair_key` is the de-dupe key "<blockerIdentity>><blockedIdentity>", e.g.
+    "T:<uuid>>L:<uuid>". It is set by services.create_block(); the unique
+    constraint on it stops duplicate block rows.
+    """
+    KIND_LEARNER = "LEARNER"
+    KIND_TEACHER = "TEACHER"
+    KIND_CHOICES = [
+        (KIND_LEARNER, "Learner profile"),
+        (KIND_TEACHER, "Teacher identity"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # who is doing the blocking
+    blocker_kind = models.CharField(max_length=10, choices=KIND_CHOICES)
+    blocker_learner = models.ForeignKey(
+        LearnerProfile, null=True, blank=True,
+        on_delete=models.CASCADE, related_name="chat_blocks_made",
+    )
+    blocker_teacher = models.ForeignKey(
+        TeacherProfile, null=True, blank=True,
+        on_delete=models.CASCADE, related_name="chat_blocks_made",
+    )
+
+    # who is being blocked
+    blocked_kind = models.CharField(max_length=10, choices=KIND_CHOICES)
+    blocked_learner = models.ForeignKey(
+        LearnerProfile, null=True, blank=True,
+        on_delete=models.CASCADE, related_name="chat_blocks_received",
+    )
+    blocked_teacher = models.ForeignKey(
+        TeacherProfile, null=True, blank=True,
+        on_delete=models.CASCADE, related_name="chat_blocks_received",
+    )
+
+    pair_key = models.CharField(max_length=120, unique=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["blocker_learner"]),
+            models.Index(fields=["blocker_teacher"]),
+            models.Index(fields=["blocked_learner"]),
+            models.Index(fields=["blocked_teacher"]),
+        ]
+
+    def __str__(self):
+        return f"Block {self.pair_key}"

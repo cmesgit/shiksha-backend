@@ -92,6 +92,18 @@ def serialize_profile_card(p):
         "avatar_type":      p.avatar_type(),
         "avatar":           p.avatar_value(),
         "profile_complete": p.is_complete,
+        # Personal data — editable from Manage profile (all optional). Feeds the
+        # faculty application form, which reads the same fields off this profile.
+        "first_name":       p.first_name or "",
+        "last_name":        p.last_name or "",
+        "phone":            p.phone or "",
+        "gender":           p.gender or "",
+        "date_of_birth":    p.date_of_birth.isoformat() if p.date_of_birth else "",
+        "state":            p.state or "",
+        "district":         p.district or "",
+        "city_town":        p.city_town or "",
+        "pin_code":         p.pin_code or "",
+        "profile_photo":    p.profile_photo.url if p.profile_photo else "",
     }
 
 
@@ -448,6 +460,36 @@ class ProfileDetailView(APIView):
             if f in data:
                 setattr(profile, f, data[f])
 
+        # Optional personal data (Manage profile). None of these is required;
+        # an empty value clears the field. These are the same fields the faculty
+        # application form reads, so editing them here keeps that form in sync.
+        for f in ("phone", "state", "district", "city_town", "pin_code"):
+            if f in data:
+                val = data.get(f)
+                setattr(profile, f, val.strip() if isinstance(val, str) else (val or ""))
+
+        if "gender" in data:
+            g = (data.get("gender") or "").strip()
+            allowed = {c[0] for c in LearnerProfile.GENDER_CHOICES}
+            if g and g not in allowed:
+                raise ValidationError({"gender": "Invalid choice."})
+            profile.gender = g
+
+        if "date_of_birth" in data:
+            dob = (data.get("date_of_birth") or "").strip()
+            if dob:
+                from datetime import date
+                try:
+                    y, m, d = (int(x) for x in dob.split("-"))
+                    profile.date_of_birth = date(y, m, d)
+                except Exception:
+                    raise ValidationError({"date_of_birth": "Use YYYY-MM-DD."})
+            else:
+                profile.date_of_birth = None
+
+        if "profile_photo" in request.FILES:
+            profile.profile_photo = request.FILES["profile_photo"]
+
         if "pin" in data:
             new_pin = data["pin"]
             if new_pin and (not str(new_pin).isdigit() or not (4 <= len(str(new_pin)) <= 6)):
@@ -524,7 +566,7 @@ class EmailCheckView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        from .models import User, Role
+        from .models import User, Role, TeacherProfile
         email = (request.data.get("email") or "").strip().lower()
         empty = {"exists": False, "has_student": False, "has_teacher": False, "is_verified": False}
         if not email:
@@ -543,5 +585,16 @@ class EmailCheckView(APIView):
             "teacher_type":  teacher.teacher_type if teacher else None,
             "academy_status": teacher.academy_status if teacher else "locked",
             "skill_status":   teacher.skill_status if teacher else "locked",
+            # Explicit add-eligibility so the frontend never re-derives the
+            # asymmetric Faculty/Guest rule. For a non-teacher both are True
+            # (they'd be creating a fresh teacher identity on one track).
+            "can_add_academy": (
+                teacher.can_apply_track(TeacherProfile.TRACK_ACADEMY)
+                if teacher else True
+            ),
+            "can_add_skill": (
+                teacher.can_apply_track(TeacherProfile.TRACK_SKILL)
+                if teacher else True
+            ),
             "is_verified":   user.is_verified,
         })

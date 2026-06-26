@@ -1,3 +1,5 @@
+# Place at: config/asgi.py
+
 # isort: skip_file
 import os
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
@@ -8,6 +10,7 @@ import livestream.routing
 import sessions_app.routing
 from accounts.routing import websocket_urlpatterns as accounts_ws
 from chat.routing import websocket_urlpatterns as chat_ws
+from forum.routing import websocket_urlpatterns as forum_ws  # ← ADDED
 from accounts.middleware import JWTAuthMiddleware
 
 application = ProtocolTypeRouter({
@@ -18,6 +21,7 @@ application = ProtocolTypeRouter({
             + sessions_app.routing.websocket_urlpatterns
             + accounts_ws
             + chat_ws
+            + forum_ws  # ← ADDED
         )
     ),
 })

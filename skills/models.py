@@ -1,3 +1,6 @@
+# PLACEMENT: skills/models.py  (replace the whole file)
+# that migration 0003 created but the model had lost) + aligns slot_key help_text.
+# No new migration: the model now matches 0003/0004 exactly.
 """
 skills/models.py — the specialized-skills domain.
 
@@ -63,6 +66,16 @@ class ExpertProfile(models.Model):
     skill_tags = models.JSONField(default=list, blank=True)    # ["React", "Node.js"]
     bio = models.TextField(blank=True)
     availability = models.CharField(max_length=120, blank=True)
+    # Weekly bookable grid driving the Book-a-Tutor calendar + the expert's
+    # own Availability screen. Shape: {"open": ["0-1", ...], "booked": ["1-0", ...]}
+    # where each key is "<dayIndex>-<slotIndex>". This field is added by
+    # migration 0003_expertprofile_availability_slots; it MUST stay defined on
+    # the model (without it, every availability read/write silently breaks).
+    availability_slots = models.JSONField(
+        blank=True,
+        default=dict,
+        help_text='Weekly availability. Shape: {"open":["0-1","2-3"], "booked":["1-0"]}',
+    )
     badges = models.JSONField(default=list, blank=True)        # ["Verified", "Top-rated"]
     photo = models.ImageField(upload_to="skills/experts/", null=True, blank=True)
 
@@ -72,7 +85,64 @@ class ExpertProfile(models.Model):
     rating = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
     sessions_count = models.PositiveIntegerField(default=0)
 
-    is_listed = models.BooleanField(default=False)
+    is_listed = models.BooleanField(
+        default=False,
+        help_text="Approved expert appears in the directory. FREE — never gated "
+                  "by subscription. Gates session/booking visibility, so it must "
+                  "stay True for every approved expert.",
+    )
+
+    # ── Advertising (subscription-gated) ──────────────────────────────────
+    # `is_listed` = in the directory for free. `is_featured` = paid advertising
+    # is currently active (homepage promotion + reach boost). In the free launch
+    # phase (GlobalSettings.effective_mode == 'free') everyone is advertised
+    # regardless of `is_featured`; once billing switches on, only experts with
+    # an active ad-subscription are advertised. See `is_advertised`.
+    is_featured = models.BooleanField(default=False)
+    featured_since = models.DateTimeField(null=True, blank=True)
+    # Visibility score. Grows while advertised / on completed sessions, and is
+    # decayed when an ad-subscription is cancelled or lapses.
+    reach_count = models.PositiveIntegerField(default=0)
+
+    # ── Offline-class location (for "find a tutor near me") ───────────────
+    # Surfaced to learners searching for someone who can teach offline. Exact
+    # location is required when class_mode is "home" or "travel" (validated in
+    # the profile-update view).
+    MODE_HOME = "home"
+    MODE_TRAVEL = "travel"
+    MODE_ONLINE = "online"
+    CLASS_MODE_CHOICES = [
+        (MODE_HOME, "At my place"),
+        (MODE_TRAVEL, "I can travel to the learner"),
+        (MODE_ONLINE, "Online only"),
+    ]
+    class_mode = models.CharField(
+        max_length=10, choices=CLASS_MODE_CHOICES, default=MODE_ONLINE
+    )
+    class_location = models.CharField(
+        max_length=255, blank=True,
+        help_text="Exact location text; required when class_mode is home/travel.",
+    )
+    pincode = models.CharField(max_length=10, blank=True)
+    state = models.CharField(max_length=100, blank=True)
+    district = models.CharField(max_length=100, blank=True)
+    city = models.CharField(max_length=150, blank=True)
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+
+    # ── Teaching profile extras ───────────────────────────────────────────
+    languages = models.JSONField(default=list, blank=True)   # ["English","Hindi"]
+    subject_description = models.TextField(blank=True)
+
+    # ── Direct (P2P) payment details ──────────────────────────────────────
+    # Booking/course money is settled DIRECTLY between the learner and the
+    # expert — the platform never collects it. These are the expert's own payee
+    # details, shown to a learner after booking so they can pay the expert.
+    payment_upi = models.CharField(
+        max_length=120, blank=True, help_text="Expert's own UPI ID (learners pay here)."
+    )
+    payment_name = models.CharField(max_length=120, blank=True)
+    payment_note = models.CharField(max_length=200, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -103,6 +173,99 @@ class ExpertProfile(models.Model):
             if lp.display_name:
                 return lp.display_name
         return u.username or u.email
+
+    # ── Advertising / reach ────────────────────────────────────────────────
+    @staticmethod
+    def billing_is_free():
+        """True when the platform is in its free launch phase (no charges)."""
+        try:
+            from global_settings.models import GlobalSettings
+            return GlobalSettings.load().effective_mode == GlobalSettings.PAYMENT_FREE
+        except Exception:
+            # Fail open to FREE so a missing settings row never hides experts.
+            return True
+
+    def is_advertised(self):
+        """Whether this expert is promoted on the homepage right now.
+
+        Free phase  → every listed expert is advertised (no subscription needed).
+        Paid phase  → only experts with an active ad-subscription (is_featured).
+        """
+        if not self.is_listed:
+            return False
+        if self.billing_is_free():
+            return True
+        return self.is_featured
+
+    def add_reach(self, amount):
+        if amount:
+            self.reach_count = (self.reach_count or 0) + int(amount)
+            self.save(update_fields=["reach_count", "updated_at"])
+
+    def decay_reach(self, factor=0.5):
+        """Drop reach when advertising stops (subscription cancelled/lapsed)."""
+        self.reach_count = int((self.reach_count or 0) * factor)
+        self.save(update_fields=["reach_count", "updated_at"])
+
+    # ── Profile completeness + auto-listing (guest-expert onboarding gate) ──
+    # The signup flow and the dashboard editor both decide "is this profile
+    # filled?" through here, so they can never disagree. An expert is listed in
+    # the public directory only once complete — a half-finished signup stays
+    # hidden and the dashboard forces the profile screen until it's done.
+    def completeness(self):
+        """{"is_complete": bool, "missing": [field_key, ...]}.
+
+        Field keys are stable identifiers the frontend maps to labels. Personal
+        fields (name/dob/phone/photo) are read from the SELF learner profile."""
+        from . import profile_ops as ops
+        lp = self.teacher_profile.user.default_learner_profile()
+
+        missing = ops.expert_missing(
+            category_id=self.category_id,
+            subject_description=self.subject_description,
+            languages=self.languages,
+            bio=self.bio,
+            hourly_rate=self.hourly_rate // 100,   # stored in paise
+            class_mode=self.class_mode,
+            class_location=self.class_location,
+        )
+        missing += ops.personal_missing(
+            full_name=(lp.full_name if lp else ""),
+            first_name=(lp.first_name if lp else ""),
+            last_name=(lp.last_name if lp else ""),
+            date_of_birth=(lp.date_of_birth if lp else None),
+            phone=(lp.phone if lp else ""),
+            profile_photo=(lp.profile_photo if lp else None) or self.photo,
+        )
+        return {"is_complete": not missing, "missing": missing}
+
+    @property
+    def is_complete(self):
+        return self.completeness()["is_complete"]
+
+    def refresh_listing(self, *, save=True):
+        """List the expert (free) once their profile is complete. Never
+        UN-lists an already-listed profile, so an approved expert who later
+        blanks a field keeps their listing while the dashboard nudges them to
+        fix it. Returns the resulting ``is_listed``."""
+        if self.is_complete and not self.is_listed:
+            self.is_listed = True
+            if save:
+                self.save(update_fields=["is_listed", "updated_at"])
+        return self.is_listed
+
+    def has_offline_class(self):
+        return self.class_mode in (self.MODE_HOME, self.MODE_TRAVEL)
+
+    def pay_to(self):
+        """Direct-payment payee block shown to a learner, or None if unset."""
+        if not (self.payment_upi or self.payment_name):
+            return None
+        return {
+            "upi":  self.payment_upi,
+            "name": self.payment_name or self.display_name(),
+            "note": self.payment_note,
+        }
 
     def __str__(self):
         return f"Expert · {self.display_name()}"
@@ -338,11 +501,18 @@ class SkillSession(models.Model):
     )
 
     scheduled_for = models.DateTimeField(null=True, blank=True)
+    # Set the moment the EXPERT enters the room (clicks "Start class"). The
+    # learner's dashboard reads this to surface a live "Join now" signal, since
+    # the expert may start at any time — not just inside the scheduled window.
+    started_at = models.DateTimeField(null=True, blank=True)
     duration_mins = models.PositiveIntegerField(default=60)
     # The availability slot this session reserved, e.g. "3-1" (day-slot index).
     # Stored so the slot can be released back to the expert's `open` grid when
     # the session is cancelled / declined / completed.
-    slot_key = models.CharField(max_length=16, blank=True)
+    slot_key = models.CharField(
+        max_length=16, blank=True,
+        help_text="Reserved availability slot, e.g. '3-1' (day-slot index).",
+    )
     amount = models.PositiveIntegerField(default=0, help_text="Paise")
     note = models.TextField(blank=True)            # the contact draft / message
     meeting_url = models.CharField(max_length=300, blank=True)
@@ -365,50 +535,13 @@ class SkillSession(models.Model):
 
 
 # =====================================================
-# CONTACT THREAD  (learner <-> expert messaging)
+# CONTACT THREAD  (learner <-> expert messaging)  — REMOVED
 # =====================================================
-
-class Conversation(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    learner_profile = models.ForeignKey(
-        "accounts.LearnerProfile", on_delete=models.CASCADE, related_name="skill_threads"
-    )
-    expert = models.ForeignKey(
-        ExpertProfile, on_delete=models.CASCADE, related_name="threads"
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ["-updated_at"]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["learner_profile", "expert"],
-                name="unique_thread_per_learner_expert",
-            )
-        ]
-
-    def __str__(self):
-        return f"Thread · {self.learner_profile_id} ↔ {self.expert_id}"
-
-
-class Message(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    conversation = models.ForeignKey(
-        Conversation, on_delete=models.CASCADE, related_name="messages"
-    )
-    sender = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="skill_messages"
-    )
-    body = models.TextField()
-    created_at = models.DateTimeField(auto_now_add=True)
-    read_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["created_at"]
-
-    def __str__(self):
-        return f"Msg {self.id}"
+# The old REST-based Conversation + Message models lived here. They are GONE:
+# all 1-on-1 messaging now runs through the realtime WebSocket `chat/` app
+# (chat.Conversation / chat.Message), which every frontend already uses. The
+# tables are dropped by migration 0005_remove_skill_messaging. messaging_views.py
+# and its /skill/conversations/ routes were removed in the same change.
 
 
 # ── Additive models (separate files, imported here so Django discovers them) ──
@@ -420,3 +553,4 @@ from .course_models import (  # noqa: F401, E402
 )
 from .review_models import ExpertReview  # noqa: F401, E402
 from .payment_models import SkillPaymentRequest  # noqa: F401, E402
+from .subscription_models import ExpertAdSubscription  # noqa: F401, E402

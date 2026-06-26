@@ -1,3 +1,5 @@
+# PLACEMENT: skills/views.py  (replace the whole file)
+# validates it's open, stores slot_key + a real scheduled_for, and locks it.
 """
 PLACEMENT: backend/backend/skills/views.py
 ACTION:    Replace the entire file.
@@ -13,6 +15,7 @@ Change from original:
 """
 from django.db import transaction
 from django.utils import timezone
+import datetime
 
 from rest_framework import status
 from rest_framework.views import APIView
@@ -23,6 +26,10 @@ from rest_framework.exceptions import ValidationError, PermissionDenied, NotFoun
 from accounts.models import LearnerProfile, Role, UserRole
 from accounts.permissions import IsAdmin
 from accounts.auth_flow import get_active_profile
+
+# Slot bookkeeping lives next to the teacher-facing availability views so the
+# booking flow and the expert's own grid share one source of truth.
+from .teacher_views import slot_is_open, mark_slot_booked
 
 from .models import (
     SkillCategory,
@@ -94,9 +101,84 @@ def _extract_note(draft):
     return " ".join(parts)
 
 
+# Hours that the booking grid's slot indices map to. Must stay in lock-step
+# with SLOTS in the frontend availability.js: ["9 AM","11 AM","2 PM","4 PM","6 PM","8 PM"].
+_SLOT_HOURS = [9, 11, 14, 16, 18, 20]
+
+
+def _slot_to_datetime(slot_key):
+    """
+    Turn a weekly grid key "<dayIndex>-<slotIndex>" (e.g. "3-1") into a concrete
+    timezone-aware datetime in the *current* week. dayIndex 0 = Monday .. 5 = Sat.
+
+    The grid is weekly-recurring, so if the resolved time has already passed this
+    week we roll it forward to the same slot next week. Returns None for an
+    unparseable / out-of-range key so booking can still proceed without a time.
+    """
+    if not slot_key:
+        return None
+    try:
+        di, si = (int(x) for x in slot_key.split("-"))
+    except (ValueError, AttributeError):
+        return None
+    if not (0 <= di <= 6) or not (0 <= si < len(_SLOT_HOURS)):
+        return None
+
+    now = timezone.localtime()
+    monday = (now - datetime.timedelta(days=now.weekday())).date()
+    target_date = monday + datetime.timedelta(days=di)
+    naive = datetime.datetime.combine(target_date, datetime.time(hour=_SLOT_HOURS[si]))
+    dt = timezone.make_aware(naive, timezone.get_current_timezone())
+    if dt < now:
+        dt += datetime.timedelta(days=7)
+    return dt
+
+
 # =====================================================
 # DIRECTORY (public)
 # =====================================================
+
+def _rank_experts(qs):
+    """Advertised experts first, then by reach, then rating/sessions.
+
+    `is_advertised()` is per-row (depends on billing mode + subscription), so we
+    can't express it as a single ORDER BY. We split into advertised / rest,
+    each ordered by reach→rating→sessions, then concatenate. Directory sizes are
+    small, so materialising is fine.
+    """
+    rows = list(
+        qs.order_by("-reach_count", "-rating", "-sessions_count")
+    )
+    advertised = [e for e in rows if e.is_advertised()]
+    rest       = [e for e in rows if not e.is_advertised()]
+    return advertised + rest
+
+
+def _apply_location_filter(qs, request):
+    """Optional 'find a tutor near me (offline)' filtering.
+
+    Query params:
+      offline=1            → only experts who teach at home / can travel
+      pincode / district / state → location match (any that are provided)
+    Matching is inclusive (OR across the provided location fields); ranking
+    above still floats advertised experts to the top.
+    """
+    p = request.query_params
+    if (p.get("offline") or "").lower() in ("1", "true", "yes"):
+        qs = qs.filter(class_mode__in=[ExpertProfile.MODE_HOME, ExpertProfile.MODE_TRAVEL])
+
+    from django.db.models import Q
+    loc = Q()
+    if p.get("pincode"):
+        loc |= Q(pincode=p["pincode"].strip())
+    if p.get("district"):
+        loc |= Q(district__iexact=p["district"].strip())
+    if p.get("state"):
+        loc |= Q(state__iexact=p["state"].strip())
+    if loc:
+        qs = qs.filter(loc)
+    return qs
+
 
 class CategoryListView(APIView):
     permission_classes = [AllowAny]
@@ -123,7 +205,12 @@ class ExpertListView(APIView):
         if search:
             qs = qs.filter(headline__icontains=search)
 
-        return Response(ExpertCardSerializer(qs, many=True, context={"request": request}).data)
+        qs = _apply_location_filter(qs, request)
+
+        experts = _rank_experts(qs)
+        return Response(
+            ExpertCardSerializer(experts, many=True, context={"request": request}).data
+        )
 
 
 class ExpertDetailView(APIView):
@@ -362,17 +449,16 @@ class SessionRequestView(APIView):
 
 class CreateOrderView(APIView):
     """
-    Book a session — currently FREE.
+    Book a session — payment is DIRECT (P2P) between the learner and the expert.
 
-    Payment is intentionally disabled for now: instead of creating a Razorpay
-    order and parking the session in `pending_payment`, we confirm the session
-    immediately and mark it settled (nothing owed). The endpoint name and
-    response shape are unchanged so the existing frontend keeps working.
+    The platform never collects session money. We confirm the booking and hand
+    back the expert's own payee details (`pay_to`) plus the rate, so the learner
+    can pay the expert directly and the two coordinate over chat. The expert
+    later marks the session complete. (Course purchases work the same way — see
+    course_views.CourseEnrollView.)
 
-    To re-enable paid sessions later, restore the Razorpay order-create here,
-    set status=STATUS_PENDING_PAYMENT / payment_status=PAYMENT_UNPAID, and add a
-    server-side /skill/payments/verify/ endpoint that confirms the signature
-    before flipping the session to confirmed/paid.
+    `payment_status` stays UNPAID because the platform can't observe an
+    off-platform transfer; it is not a gate on joining or completing.
     """
     permission_classes = [IsAuthenticated]
 
@@ -389,24 +475,67 @@ class CreateOrderView(APIView):
         if not expert:
             raise NotFound("Expert not found.")
 
-        session = SkillSession.objects.create(
-            learner_profile=learner,
-            expert=expert,
-            contact_mode=SkillSession.CONTACT_SESSION,
-            status=SkillSession.STATUS_CONFIRMED,
-            payment_status=SkillSession.PAYMENT_PAID,
-            amount=0,
-            # FIXED: was str(draft) which stored raw Python repr dict string.
-            # Now extracts a clean "Topic: X. Requested slot: Y." sentence.
-            note=_extract_note(request.data.get("draft")),
-        )
+        draft = request.data.get("draft")
+        slot_key = ""
+        if isinstance(draft, dict):
+            slot_key = (draft.get("slot") or "").strip()
+
+        # Reserve the chosen slot. The grid the learner picked from is the
+        # expert's `availability_slots` (served by ExpertAvailabilityView), so we
+        # validate against the same source of truth before locking it.
+        if slot_key and not slot_is_open(expert, slot_key):
+            raise ValidationError(
+                {"slot": "That time slot is no longer available. Please pick another."}
+            )
+
+        scheduled_for = _slot_to_datetime(slot_key)
+
+        duration = 60
+        if isinstance(draft, dict):
+            try:
+                duration = int(draft.get("duration_mins") or 60)
+            except (TypeError, ValueError):
+                duration = 60
+
+        # The rate the learner owes the expert directly (paise on the model).
+        amount = expert.hourly_rate or 0
+
+        with transaction.atomic():
+            session = SkillSession.objects.create(
+                learner_profile=learner,
+                expert=expert,
+                contact_mode=SkillSession.CONTACT_SESSION,
+                # A booking is a REQUEST until the expert accepts it. It must
+                # land in the expert's "Pending requests" queue (status
+                # 'requested'), NOT be auto-confirmed — the expert chooses to
+                # accept (→ confirmed) or decline (→ cancelled, slot released).
+                status=SkillSession.STATUS_REQUESTED,
+                # Platform does not collect — settlement is direct (P2P).
+                payment_status=SkillSession.PAYMENT_UNPAID,
+                amount=amount,
+                note=_extract_note(draft),
+                slot_key=slot_key,
+                scheduled_for=scheduled_for,
+                duration_mins=duration,
+            )
+            # Lock the slot so it greys out for every other learner. (Released
+            # again on decline/complete so the weekly grid stays reusable.)
+            if slot_key:
+                mark_slot_booked(expert, slot_key)
 
         booking_ref = f"SHK-{session.id.hex[:8].upper()}"
 
         return Response({
-            "ok":        True,
-            "bookingId": booking_ref,
-            "sessionId": str(session.id),
-            "amount":    0,
-            "free":      True,
+            "ok":            True,
+            "bookingId":     booking_ref,
+            "sessionId":     str(session.id),
+            "status":        session.status,   # 'requested' — awaiting expert acceptance
+            "amount":        amount,
+            "amount_rupees": amount // 100,
+            # Direct settlement details for the learner.
+            "settlement":    "direct",
+            "pay_to":        expert.pay_to(),
+            "expert_teacher_id": str(expert.teacher_profile_id),  # to open chat
+            "slot_key":      slot_key,
+            "scheduled_for": scheduled_for,
         }, status=status.HTTP_201_CREATED)

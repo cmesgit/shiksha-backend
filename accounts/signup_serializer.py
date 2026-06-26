@@ -30,14 +30,16 @@ Signup cases:
             + TEACHER role (reuses existing SELF learner).
 
   Case 5  EXISTING (has_student) + Student signup  → BLOCK
-  Case 6  EXISTING teacher + signup for the OTHER track → ADD TRACK
-          A teacher assigned to one track (e.g. Skill/Guest) can apply for the
-          track they're missing (e.g. Academy/Faculty). The new track is added
-          to the SAME TeacherProfile:
-            · adding Skill (guest)   → listed immediately (approved)
+  Case 6  EXISTING teacher + signup for the OTHER track → ADD TRACK (asymmetric)
+          A Guest-expert (Skill) teacher may apply for the Faculty (Academy)
+          track; the new track is added to the SAME TeacherProfile:
             · adding Academy (faculty) → pending admin review
-          The track they already hold keeps working the whole time.
+          The Skill track they already hold keeps working the whole time.
+          The REVERSE is NOT allowed: a Faculty (Academy) teacher may NOT add
+          the Skill/Guest track — faculty stay faculty-only (see
+          TeacherProfile.can_apply_track / track_add_block_reason).
   Case 7  EXISTING teacher + signup for a track they already hold → BLOCK
+  Case 8  EXISTING Faculty teacher + signup for Skill/Guest → BLOCK (asymmetry)
 """
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
@@ -92,6 +94,15 @@ class SignupSerializer(serializers.Serializer):
         choices=[TeacherProfile.TYPE_GUEST, TeacherProfile.TYPE_FACULTY],
         required=False,
     )
+
+    # Guest-expert only: optional profile data captured during signup so the
+    # expert's directory listing can be pre-filled (full_name, date_of_birth,
+    # phone, subject_description/category, languages, bio, hourly_rate,
+    # class_mode/class_location). Anything omitted is completed later on the
+    # dashboard — the profile stays UNLISTED and the dashboard forces the
+    # profile screen until every required field is present
+    # (see ExpertProfile.refresh_listing / completeness).
+    expert_profile = serializers.JSONField(required=False)
 
     # ── internal flags set during validate() ──────────────────────────────
     # _mode: "create" | "add_student_to_teacher" | "add_teacher_to_student"
@@ -150,14 +161,13 @@ class SignupSerializer(serializers.Serializer):
 
                 if has_teacher:
                     tp = existing_user.teacher_profile
-                    current = tp.track_status(target_track)
-                    # Already hold this track (live or in review) → nothing to add.
-                    if current in (TeacherProfile.TRACK_PENDING, TeacherProfile.TRACK_APPROVED):
-                        nice = "Academy (Faculty)" if target_track == TeacherProfile.TRACK_ACADEMY else "Skill (Guest expert)"
-                        raise ValidationError(
-                            f"You're already set up for {nice} on this account. Log in instead."
-                        )
-                    # Otherwise they're adding the track they're missing.
+                    # Enforce the asymmetric Faculty/Guest rule via the single
+                    # source of truth on the model. This rejects both an
+                    # already-held track AND a Faculty account trying to add
+                    # Skill. (Guest adding Faculty stays allowed.)
+                    if not tp.can_apply_track(target_track):
+                        raise ValidationError(tp.track_add_block_reason(target_track))
+                    # Otherwise they're adding a track they're allowed to add.
                     authed = authenticate(email=email, password=password)
                     if not authed:
                         raise ValidationError(
@@ -250,9 +260,15 @@ class SignupSerializer(serializers.Serializer):
 
         if role == Role.TEACHER:
             if mode == "add_teacher_track":
-                self._add_teacher_track(user, validated_data["_target_track"])
+                self._add_teacher_track(
+                    user, validated_data["_target_track"],
+                    validated_data.get("expert_profile"),
+                )
             else:
-                self._setup_teacher(user, validated_data["teacher_type"])
+                self._setup_teacher(
+                    user, validated_data["teacher_type"],
+                    validated_data.get("expert_profile"),
+                )
         else:
             self._setup_student(user, validated_data.get("profiles", []))
 
@@ -350,7 +366,7 @@ class SignupSerializer(serializers.Serializer):
                 is_default   = not user.learner_profiles.filter(is_active=True).exists(),
             )
 
-    def _setup_teacher(self, user, teacher_type):
+    def _setup_teacher(self, user, teacher_type, expert_payload=None):
         """Brand-new teacher identity, applying through a single track."""
         track  = TeacherProfile.track_for_type(teacher_type)
         status = self._initial_status_for(track)
@@ -363,10 +379,21 @@ class SignupSerializer(serializers.Serializer):
         self._ensure_teacher_role(user, active=bool(tp.approved_tracks()))
         self._ensure_self_learner(user)
 
-    def _add_teacher_track(self, user, track):
+        # Guest expert → every skill teacher gets an ExpertProfile so the
+        # dashboard + profile editor work immediately (no PermissionDenied),
+        # pre-filled with anything captured at signup. It stays UNLISTED until
+        # the profile is complete.
+        if track == TeacherProfile.TRACK_SKILL:
+            self._provision_expert(tp, expert_payload)
+
+    def _add_teacher_track(self, user, track, expert_payload=None):
         """Existing teacher applying for the track they don't yet hold.
         The track they already have keeps working untouched."""
         tp = user.teacher_profile
+        # Defense in depth: never add a track the policy forbids, even if a
+        # caller reached here directly. validate() is the primary gate.
+        if not tp.can_apply_track(track):
+            raise ValidationError(tp.track_add_block_reason(track))
         tp.set_track_status(track, self._initial_status_for(track))
         tp.sync_type_from_tracks()
         tp.save(update_fields=["academy_status", "skill_status",
@@ -375,3 +402,46 @@ class SignupSerializer(serializers.Serializer):
         # If the newly added track is live (skill), make sure the role is
         # active so they can enter that dashboard right away.
         self._ensure_teacher_role(user, active=bool(tp.approved_tracks()))
+
+        if track == TeacherProfile.TRACK_SKILL:
+            self._provision_expert(tp, expert_payload)
+
+    # ── Expert-profile provisioning (guest track) ──────────────────────────
+    def _provision_expert(self, teacher_profile, payload):
+        """Create the ExpertProfile for a guest teacher (idempotent) and apply
+        any profile data captured at signup. Runs through the SAME helpers the
+        dashboard editor uses, so signup and edit can never diverge.
+
+        ``payload`` may carry both expert fields (subject_description, category,
+        languages, bio, hourly_rate, class_mode, class_location) and the SELF
+        learner's personal fields (full_name, date_of_birth, phone)."""
+        from skills.models import ExpertProfile
+        from skills import profile_ops as ops
+
+        ep, _ = ExpertProfile.objects.get_or_create(teacher_profile=teacher_profile)
+
+        payload = payload if isinstance(payload, dict) else None
+        if payload:
+            try:
+                ep_fields = ops.apply_expert_fields(ep, payload)
+                ops.validate_location(ep)
+            except ValidationError:
+                # Never block account creation on optional signup-time profile
+                # data — the dashboard gate will require it properly. Persist
+                # whatever cleanly applied and move on.
+                ep_fields = []
+            if ep_fields:
+                ep.save()
+
+            learner = teacher_profile.user.default_learner_profile()
+            if learner:
+                try:
+                    p_fields = ops.apply_personal_fields(learner, payload)
+                except ValidationError:
+                    p_fields = []
+                if p_fields:
+                    learner.save()
+
+        # List now if (and only if) everything required is already present.
+        ep.refresh_listing()
+        return ep

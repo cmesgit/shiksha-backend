@@ -1,3 +1,5 @@
+# PLACEMENT: backend/backend/chat/consumers.py   (REPLACE THE WHOLE FILE)
+# DEPLOY:    /app/shiksha-backend/chat/consumers.py
 """
 chat/consumers.py
 
@@ -20,7 +22,14 @@ Client → server:
 Server → client:
   { "type": "history", "data": [ ...messages ] }
   { "type": "message", "data": { ...message } }
-  { "type": "typing", "data": { "identity": "L:...", "name": "..." } }
+  { "type": "typing",  "data": { "identity": "L:...", "name": "..." } }
+  { "type": "error",   "data": { "category": "profanity"|"political"|"blocked",
+                                 "reason": "...", "client_id": "..." } }
+
+The "error" frame is sent ONLY back to the sender (never broadcast). It fires
+when content moderation rejects the text, or when a block exists in either
+direction on a direct thread. Blocking is re-evaluated on every send, so it
+takes effect immediately for an open socket.
 """
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -67,10 +76,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         mtype = payload.get("type")
 
         if mtype == "message":
-            msg = await database_sync_to_async(self._save_message)(
-                payload.get("body", ""), payload.get("client_id", "")
+            client_id = payload.get("client_id", "")
+            msg, error = await database_sync_to_async(self._post_checked)(
+                payload.get("body", ""), client_id
             )
-            if msg:
+            if error:
+                # Refused (moderation or block) — inform the sender only.
+                error = dict(error)
+                error["client_id"] = client_id
+                await self.send(text_data=json.dumps({"type": "error", "data": error}))
+            elif msg:
                 await self.channel_layer.group_send(
                     self.group_name,
                     {"type": "chat.message", "data": services.serialize_message(msg)},
@@ -115,9 +130,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         msgs = list(conv.messages.order_by("-created_at")[:50])[::-1]
         return [services.serialize_message(m) for m in msgs]
 
-    def _save_message(self, body, client_id):
+    def _post_checked(self, body, client_id):
+        """Funnels through the single moderation + block gate.
+        Returns (message_or_None, error_or_None)."""
         conv = self._resolve_conversation()
-        return services.post_message(conv, self.me, body, client_id)
+        return services.post_message_checked(conv, self.me, body, client_id)
 
     def _mark_read(self):
         from django.utils import timezone

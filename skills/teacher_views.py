@@ -28,13 +28,21 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 
 from .models import ExpertProfile, SkillSession
 from .course_models import SkillCourseEnrollment
+from . import profile_ops
 
 
 def _get_expert(user):
     ep = ExpertProfile.objects.filter(teacher_profile__user=user).first()
-    if not ep:
-        raise PermissionDenied("No expert profile found for this account.")
-    return ep
+    if ep:
+        return ep
+    # Defense in depth for accounts created before ExpertProfile was wired into
+    # signup: auto-provision a (blank, UNLISTED) profile for anyone who holds
+    # the skill / guest-expert track, so the dashboard + editor always load and
+    # the completeness gate can take over. A faculty-only teacher gets none.
+    tp = getattr(user, "teacher_profile", None)
+    if tp and tp.holds_track(tp.TRACK_SKILL):
+        return ExpertProfile.objects.create(teacher_profile=tp)
+    raise PermissionDenied("No expert profile found for this account.")
 
 
 # ── Availability bookkeeping (shared with the booking flow) ───────────────
@@ -122,14 +130,6 @@ class TeacherDashboardView(APIView):
                 "status":        s.status,
             })
 
-        # Monthly earnings
-        month_start   = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        month_sessions = sessions.filter(
-            status=SkillSession.STATUS_COMPLETED, updated_at__gte=month_start
-        )
-        month_earned  = sum(s.amount // 100 for s in month_sessions)
-        month_count   = month_sessions.count()
-
         # Activity feed (last 8 state-changed sessions)
         recent   = sessions.order_by("-updated_at")[:8]
         activity = []
@@ -145,6 +145,26 @@ class TeacherDashboardView(APIView):
             elif s.status == SkillSession.STATUS_CANCELLED:
                 activity.append({"text": f"Session cancelled · {name}", "color": "#c0492f"})
 
+        # Advertising status (replaces the old earnings widget — there is no
+        # earnings bar for guest experts; payments are settled directly with
+        # learners, off-platform).
+        sub = getattr(ep, "ad_subscription", None)
+        advertising = {
+            "is_advertised":  ep.is_advertised(),
+            "is_featured":    ep.is_featured,
+            "reach_count":    ep.reach_count,
+            "billing_free":   ep.billing_is_free(),
+            "sub_status":     sub.status if sub else "none",
+            "sub_active":     bool(sub and sub.is_currently_active()),
+            "period_end":     sub.current_period_end if sub else None,
+        }
+
+        # Profile-completeness nudges the dashboard can surface.
+        profile_todo = {
+            "needs_payment":  not bool(ep.payment_upi),
+            "needs_location": ep.has_offline_class() and not bool(ep.class_location),
+        }
+
         return Response({
             "stats": {
                 "taught":          taught,
@@ -152,13 +172,10 @@ class TeacherDashboardView(APIView):
                 "pending":         pending,
                 "course_students": course_students,
             },
-            "next_up":  next_up,
-            "earnings": {
-                "month_earned":   month_earned,
-                "month_sessions": month_count,
-                "month_goal":     25000,
-            },
-            "activity": activity,
+            "next_up":      next_up,
+            "advertising":  advertising,
+            "profile_todo": profile_todo,
+            "activity":     activity,
         })
 
 
@@ -314,40 +331,51 @@ class TeacherDeclineSessionView(APIView):
 
 class TeacherProfileUpdateView(APIView):
     """
-    PATCH /skill/teacher/profile/
-    Accepts: hourly_rate (int, rupees), bio (str), availability (str)
+    GET   /skill/teacher/profile/  → current editable expert profile + completeness
+    PATCH /skill/teacher/profile/  → update it (JSON or multipart for the photo)
+
+    This is the guest expert's "manage profile" screen. It covers the full
+    signup field set so an expert can complete OR edit everything here:
+      • subject: category + subject_description, headline, skill_tags
+      • about you (bio), languages, availability note
+      • hourly fee (₹ → stored in paise)
+      • location: class_mode (home|travel|online) + class_location, and
+        pincode/state/district/city for offline discovery
+      • personal: full_name, date_of_birth, phone, profile photo (SELF learner)
+      • payment: payment_upi / payment_name / payment_note (P2P — learners pay
+        the expert directly; ShikshaCom takes no cut)
+
+    The response always carries ``is_complete`` + ``missing`` so the dashboard
+    can force completion before the expert is listed/discoverable.
     """
     permission_classes = [IsAuthenticated]
 
+    def get(self, request):
+        ep = _get_expert(request.user)
+        return Response(profile_ops.serialize_expert(ep))
+
     def patch(self, request):
-        ep     = _get_expert(request.user)
-        data   = request.data
-        fields = []
+        ep      = _get_expert(request.user)
+        data    = request.data
+        files   = getattr(request, "FILES", None) or {}
 
-        if "hourly_rate" in data:
-            try:
-                ep.hourly_rate = int(data["hourly_rate"]) * 100   # rupees → paise
-                fields.append("hourly_rate")
-            except (TypeError, ValueError):
-                raise ValidationError({"hourly_rate": "Must be an integer (₹)."})
+        # Expert-side fields (subject/teaching/location/payment + photo).
+        ep_fields = profile_ops.apply_expert_fields(ep, data, files=files)
+        profile_ops.validate_location(ep)
+        if ep_fields:
+            ep.save(update_fields=list(dict.fromkeys(ep_fields)) + ["updated_at"])
 
-        if "bio" in data:
-            ep.bio = str(data["bio"])
-            fields.append("bio")
+        # Personal fields live on the SELF learner profile.
+        learner = request.user.default_learner_profile()
+        if learner:
+            p_fields = profile_ops.apply_personal_fields(learner, data, files=files)
+            if p_fields:
+                learner.save()
 
-        if "availability" in data:
-            ep.availability = str(data["availability"])[:120]
-            fields.append("availability")
+        # List the expert now if the profile just became complete.
+        ep.refresh_listing()
 
-        if fields:
-            ep.save(update_fields=fields + ["updated_at"])
-
-        return Response({
-            "ok":           True,
-            "hourly_rate":  ep.hourly_rate // 100,
-            "bio":          ep.bio,
-            "availability": ep.availability,
-        })
+        return Response({"ok": True, **profile_ops.serialize_expert(ep)})
 
 
 # ── Public availability read (any authenticated user, by expert id) ───────

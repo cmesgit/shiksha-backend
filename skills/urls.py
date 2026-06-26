@@ -1,3 +1,7 @@
+# PLACEMENT: skills/urls.py  (replace the whole file)
+# Wires GET /skill/teachers/<id>/availability/ for the Book-a-Tutor grid AND
+# removes the dead /skill/conversations/ + /skill/teacher/inbox/ messaging routes
+# (the messaging_views module is deleted; all chat now runs through the chat app).
 """skills/urls.py — mounted under /api/skill/ in project urls.py."""
 from django.urls import path
 from .views import (
@@ -15,15 +19,18 @@ from .course_views import (
 from .livekit_views import (
     JoinSessionView, MySessionsView,
     TeacherSessionsView, TeacherConfirmSessionView, TeacherCompleteSessionView,
-)
-from .messaging_views import (
-    ConversationListCreateView, ConversationDetailView,
-    MessageSendView, TeacherInboxView,
+    AdminSessionListView,        # NEW — admin platform-wide session monitor
+    AdminUserSkillProfileView,   # NEW — per-user skill context for admin
 )
 from .review_views import (
     SubmitReviewView, ExpertReviewListView, MyReviewableSessionsView,
 )
 from .payment_config_views import SkillPaymentConfigView
+from .subscription_views import (
+    ExpertSubscriptionView, ExpertSubscriptionSubmitPaymentView,
+    AdminAdSubscriptionQueueView, AdminAdSubscriptionApproveView,
+    AdminAdSubscriptionRejectView,
+)
 from .student_skill_views import (
     StudentSkillDashboardView,
     StudentSkillExpertsView,
@@ -32,6 +39,7 @@ from .student_skill_views import (
 from .teacher_views import (
     TeacherDashboardView, TeacherEarningsView, TeacherAvailabilityView,
     TeacherDeclineSessionView, TeacherProfileUpdateView,
+    ExpertAvailabilityView,      # NEW — public read of a specific expert's slots
 )
 
 urlpatterns = [
@@ -42,6 +50,9 @@ urlpatterns = [
     path("categories/",                              CategoryListView.as_view()),
     path("teachers/",                                ExpertListView.as_view()),
     path("teachers/<uuid:expert_id>/",               ExpertDetailView.as_view()),
+    # NEW: powers the Book-a-Tutor weekly grid (was unwired → grid showed empty,
+    # so every slot looked "closed" and nothing could be booked).
+    path("teachers/<uuid:expert_id>/availability/",  ExpertAvailabilityView.as_view()),
     path("teachers/<uuid:expert_id>/reviews/",       ExpertReviewListView.as_view()),
 
     # ── Public skill courses ─────────────────────────────────────────────────
@@ -63,11 +74,6 @@ urlpatterns = [
     path("sessions/<uuid:session_id>/review/",       SubmitReviewView.as_view()),
     path("payments/create-order/",                   CreateOrderView.as_view()),
 
-    # ── Messaging ────────────────────────────────────────────────────────────
-    path("conversations/",                           ConversationListCreateView.as_view()),
-    path("conversations/<uuid:conv_id>/",            ConversationDetailView.as_view()),
-    path("conversations/<uuid:conv_id>/messages/",   MessageSendView.as_view()),
-
     # ── Teacher application + screening ──────────────────────────────────────
     path("teacher-applications/",                                TeacherApplicationCreateView.as_view()),
     path("teacher-applications/<uuid:application_id>/schedule/", ScheduleInterviewView.as_view()),
@@ -81,11 +87,10 @@ urlpatterns = [
     path("teacher/sections/<uuid:section_id>/lectures/",  TeacherLectureView.as_view()),
     path("teacher/lectures/<uuid:lecture_id>/",           TeacherLectureDetailView.as_view()),
 
-    # ── Teacher — sessions + inbox ────────────────────────────────────────────
+    # ── Teacher — sessions ────────────────────────────────────────────────────
     path("teacher/sessions/",                               TeacherSessionsView.as_view()),
     path("teacher/sessions/<uuid:session_id>/confirm/",     TeacherConfirmSessionView.as_view()),
     path("teacher/sessions/<uuid:session_id>/complete/",    TeacherCompleteSessionView.as_view()),
-    path("teacher/inbox/",                                  TeacherInboxView.as_view()),
 
     # ── Student skill dashboard ───────────────────────────────────────────────
     path("student/dashboard/",  StudentSkillDashboardView.as_view()),
@@ -98,9 +103,18 @@ urlpatterns = [
     path("teacher/sessions/<uuid:session_id>/decline/",      TeacherDeclineSessionView.as_view()),
     path("teacher/profile/",                                 TeacherProfileUpdateView.as_view()),
 
+    # ── Guest-expert advertising subscription ─────────────────────────────────
+    path("subscription/",                 ExpertSubscriptionView.as_view()),
+    path("subscription/submit-payment/",  ExpertSubscriptionSubmitPaymentView.as_view()),
+
     # ── Admin ─────────────────────────────────────────────────────────────────
     path("admin/interview-queue/",                               ReviewQueueView.as_view()),
+    path("admin/sessions/",                                      AdminSessionListView.as_view()),
+    path("admin/users/<uuid:user_id>/skill-profile/",            AdminUserSkillProfileView.as_view()),
     path("admin/interviews/<uuid:application_id>/evaluation/",   SubmitEvaluationView.as_view()),
     path("admin/courses/",                                       AdminSkillCourseQueueView.as_view()),
     path("admin/courses/<uuid:course_id>/review/",               AdminSkillCourseReviewView.as_view()),
+    path("admin/ad-subscriptions/",                              AdminAdSubscriptionQueueView.as_view()),
+    path("admin/ad-subscriptions/<uuid:sub_id>/approve/",        AdminAdSubscriptionApproveView.as_view()),
+    path("admin/ad-subscriptions/<uuid:sub_id>/reject/",         AdminAdSubscriptionRejectView.as_view()),
 ]

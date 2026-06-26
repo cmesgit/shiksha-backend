@@ -1,3 +1,5 @@
+# PLACEMENT: skills/livekit_views.py  (replace the whole file)
+# slot back to the expert's open grid (matches the existing decline behaviour).
 """
 skills/livekit_views.py — LiveKit room token generation and session management.
 
@@ -77,11 +79,14 @@ class JoinSessionView(APIView):
         if not sess:
             raise NotFound("Session not found.")
 
-        if sess.status not in (
-            SkillSession.STATUS_CONFIRMED,
-            SkillSession.STATUS_REQUESTED,  # allow join on free sessions
-        ):
-            raise PermissionDenied(f"Session is not joinable (status: {sess.status}).")
+        # A session is only joinable once the expert has ACCEPTED it
+        # (status 'confirmed'). A still-'requested' booking is pending and must
+        # not be enterable by either side until the expert accepts.
+        if sess.status != SkillSession.STATUS_CONFIRMED:
+            raise PermissionDenied(
+                f"Session is not joinable yet (status: {sess.status}). "
+                "It must be accepted by the expert first."
+            )
 
         # Decide identity + publish rights.
         is_expert   = (sess.expert.teacher_profile.user_id == user.id)
@@ -95,6 +100,13 @@ class JoinSessionView(APIView):
         can_publish = True   # both sides can publish their camera/mic
 
         token = _make_token(identity, room_name, can_publish=can_publish)
+
+        # The expert entering the room IS "starting the class". Stamp it once so
+        # the learner's dashboard can show a live "Join now" prompt immediately,
+        # regardless of the originally scheduled time.
+        if is_expert and sess.started_at is None:
+            sess.started_at = timezone.now()
+            sess.save(update_fields=["started_at", "updated_at"])
 
         # settings defines LIVEKIT_URL (not LIVEKIT_WS_URL); fall back to the
         # old name then localhost so existing envs keep working.
@@ -177,6 +189,11 @@ class TeacherCompleteSessionView(APIView):
             expert=ep, status=SkillSession.STATUS_COMPLETED
         ).count()
         ep.save(update_fields=["sessions_count"])
+        # Release the reserved weekly slot back to the expert's open grid so the
+        # same recurring time can be booked again. (Decline does the same.)
+        if sess.slot_key:
+            from .teacher_views import free_slot
+            free_slot(ep, sess.slot_key)
         return Response({"detail": "Session marked complete."})
 
 
@@ -193,17 +210,25 @@ def _teacher_session(user, session_id):
 
 
 def _session_card(s, teacher_view=False):
+    from django.utils import timezone
     if teacher_view:
         who_name = s.learner_profile.display_name or s.learner_profile.full_name or "Student"
         who_id   = str(s.learner_profile.id)
     else:
         who_name = s.expert.display_name()
         who_id   = str(s.expert.id)
+    # A confirmed session is joinable. It is "live" once the expert has started
+    # it (started_at set) — and still considered live until it's completed.
+    is_confirmed = s.status == SkillSession.STATUS_CONFIRMED
+    is_live = bool(is_confirmed and s.started_at)
     return {
         "id":            str(s.id),
         "status":        s.status,
         "contact_mode":  s.contact_mode,
         "scheduled_for": s.scheduled_for,
+        "started_at":    s.started_at,
+        "live":          is_live,
+        "joinable":      is_confirmed,
         "duration_mins": s.duration_mins,
         "note":          s.note,
         "meeting_url":   s.meeting_url,
@@ -212,3 +237,101 @@ def _session_card(s, teacher_view=False):
         "created_at":    s.created_at,
         ("learner" if teacher_view else "expert"): {"id": who_id, "name": who_name},
     }
+
+
+# ── Admin: platform-wide session monitor ─────────────────────────────────
+from accounts.permissions import IsAdmin
+
+
+class AdminSessionListView(APIView):
+    """
+    GET /skill/admin/sessions/?status=<status>  → all 1-on-1 sessions.
+
+    A friendly, read-only replacement for the raw Django-admin SkillSession
+    list: every booking across the platform with learner, expert, status, and
+    schedule. Optional ?status= filter (requested/confirmed/completed/cancelled).
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        qs = (SkillSession.objects
+              .select_related("learner_profile", "expert", "expert__teacher_profile")
+              .order_by("-created_at"))
+        st = request.query_params.get("status")
+        if st:
+            qs = qs.filter(status=st)
+        qs = qs[:300]  # cap for safety
+
+        rows = []
+        for s in qs:
+            learner = (s.learner_profile.display_name
+                       or s.learner_profile.full_name or "Student")
+            rows.append({
+                "id":            str(s.id),
+                "learner":       learner,
+                "expert":        s.expert.display_name(),
+                "expert_id":     str(s.expert.id),
+                "status":        s.status,
+                "scheduled_for": s.scheduled_for,
+                "started_at":    s.started_at,
+                "duration_mins": s.duration_mins,
+                "created_at":    s.created_at,
+            })
+
+        # Small status summary so the admin page can show counts.
+        from django.db.models import Count
+        counts = {row["status"]: row["n"] for row in
+                  SkillSession.objects.values("status").annotate(n=Count("id"))}
+        return Response({"sessions": rows, "counts": counts})
+
+
+class AdminUserSkillProfileView(APIView):
+    """
+    GET /skill/admin/users/<user_id>/skill-profile/
+
+    Skill-dev context for a single user, shown on the admin user-detail page:
+      - whether they are an approved expert (+ a small summary), and
+      - their 1-on-1 sessions as a LEARNER.
+    Kept separate from the accounts user serializer so the skills app stays
+    decoupled from accounts.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, user_id):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        user = User.objects.filter(id=user_id).first()
+        if not user:
+            raise NotFound("User not found.")
+
+        ep = ExpertProfile.objects.filter(teacher_profile__user=user).first()
+        expert = None
+        if ep:
+            expert = {
+                "id":         str(ep.id),
+                "name":       ep.display_name(),
+                "listed":     ep.is_listed,
+                "advertised": ep.is_advertised(),
+                "featured":   ep.is_featured,
+                "rating":     float(ep.rating) if ep.rating is not None else None,
+                "sessions":   ep.sessions_count,
+                "reach":      ep.reach_count,
+            }
+
+        sessions = (SkillSession.objects
+                    .filter(learner_profile__user=user)
+                    .select_related("expert")
+                    .order_by("-created_at")[:50])
+        learner_sessions = [{
+            "id":            str(s.id),
+            "expert":        s.expert.display_name(),
+            "status":        s.status,
+            "scheduled_for": s.scheduled_for,
+            "created_at":    s.created_at,
+        } for s in sessions]
+
+        return Response({
+            "is_expert":        bool(ep),
+            "expert":           expert,
+            "learner_sessions": learner_sessions,
+        })
