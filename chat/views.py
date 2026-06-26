@@ -69,7 +69,12 @@ class StartDirectView(APIView):
             raise ValidationError({"target_kind": "Must be LEARNER or TEACHER."})
 
         if target_kind == Participant.KIND_TEACHER:
+            # Accept either a TeacherProfile id OR a User id. The Academy
+            # teacher pages (Teachers/TeacherDetail) key off user.id, while the
+            # skill cards & directory pass teacher_profile.id — both resolve here.
             target = TeacherProfile.objects.filter(id=target_id).first()
+            if not target:
+                target = TeacherProfile.objects.filter(user__id=target_id).first()
         else:
             target = LearnerProfile.objects.filter(id=target_id, is_active=True).first()
         if not target:
@@ -100,6 +105,12 @@ class CourseRoomView(APIView):
         course_id = request.data.get("course_id")
         if not course_id:
             raise ValidationError({"course_id": "Required."})
+        # Only enrolled learners and the course's subject teachers may join.
+        if not services.can_join_course_room(kind, obj, course_id):
+            raise PermissionDenied(
+                "This class chat is only for students enrolled in the course and "
+                "its teachers."
+            )
         conv = services.ensure_course_room(course_id, request.data.get("title", ""))
         services._attach_participant(conv, kind, obj)
         me = services.participant_for(conv, kind, obj)

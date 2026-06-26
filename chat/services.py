@@ -215,6 +215,65 @@ def participant_roles(participant):
 
 
 # ---------------------------------------------------------------------------
+# Course-room membership  (who may join a KIND_COURSE room)
+# ---------------------------------------------------------------------------
+#
+# A per-course group room. Members are:
+#   • LEARNERS with an ACTIVE enrollment in that course, and
+#   • TEACHERS who teach at least one subject of that course.
+# Membership accretes as people open the room (the room shows the full message
+# history regardless of when someone joined); this gate decides who is allowed
+# to be attached, so a stranger can't join a class they're not part of.
+
+def learner_in_course(lp, course_id):
+    try:
+        from enrollments.models import Enrollment
+        return Enrollment.objects.filter(
+            learner_profile=lp, course_id=course_id, status=Enrollment.STATUS_ACTIVE
+        ).exists()
+    except Exception:
+        return False
+
+
+def teacher_in_course(tp, course_id):
+    try:
+        from courses.models import SubjectTeacher
+        return SubjectTeacher.objects.filter(
+            subject__course_id=course_id, teacher=tp.user
+        ).exists()
+    except Exception:
+        return False
+
+
+def can_join_course_room(kind, obj, course_id):
+    if kind == Participant.KIND_LEARNER:
+        return learner_in_course(obj, course_id)
+    if kind == Participant.KIND_TEACHER:
+        return teacher_in_course(obj, course_id)
+    return False
+
+
+def course_room_track(course_id):
+    """Best-effort track for a course room, used by the inbox filter tabs.
+    Returns "academy", "skilldev", or None (never raises)."""
+    if not course_id:
+        return None
+    try:
+        from courses.models import Course
+        if Course.objects.filter(id=course_id).exists():
+            return "academy"
+    except Exception:
+        pass
+    try:
+        from skills.course_models import SkillCourse
+        if SkillCourse.objects.filter(id=course_id).exists():
+            return "skilldev"
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Blocking
 # ---------------------------------------------------------------------------
 
@@ -404,9 +463,12 @@ def serialize_conversation(conv, me_participant=None):
         blocking = {"i_blocked": i_blocked, "blocked_me": blocked_me}
         can_block_flag = can_block(me_participant.kind, cp.kind)
 
+    track = course_room_track(conv.course_id) if conv.kind == Conversation.KIND_COURSE else None
+
     return {
         "id": str(conv.id),
         "kind": conv.kind,
+        "track": track,
         "title": conv.title or (others[0].display_name() if others else ""),
         "course_id": str(conv.course_id) if conv.course_id else None,
         "participants": [_participant_dict(p) for p in parts],
