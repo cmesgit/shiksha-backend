@@ -207,6 +207,53 @@ class ExpertProfile(models.Model):
         self.reach_count = int((self.reach_count or 0) * factor)
         self.save(update_fields=["reach_count", "updated_at"])
 
+    # ── Profile completeness + auto-listing (guest-expert onboarding gate) ──
+    # The signup flow and the dashboard editor both decide "is this profile
+    # filled?" through here, so they can never disagree. An expert is listed in
+    # the public directory only once complete — a half-finished signup stays
+    # hidden and the dashboard forces the profile screen until it's done.
+    def completeness(self):
+        """{"is_complete": bool, "missing": [field_key, ...]}.
+
+        Field keys are stable identifiers the frontend maps to labels. Personal
+        fields (name/dob/phone/photo) are read from the SELF learner profile."""
+        from . import profile_ops as ops
+        lp = self.teacher_profile.user.default_learner_profile()
+
+        missing = ops.expert_missing(
+            category_id=self.category_id,
+            subject_description=self.subject_description,
+            languages=self.languages,
+            bio=self.bio,
+            hourly_rate=self.hourly_rate // 100,   # stored in paise
+            class_mode=self.class_mode,
+            class_location=self.class_location,
+        )
+        missing += ops.personal_missing(
+            full_name=(lp.full_name if lp else ""),
+            first_name=(lp.first_name if lp else ""),
+            last_name=(lp.last_name if lp else ""),
+            date_of_birth=(lp.date_of_birth if lp else None),
+            phone=(lp.phone if lp else ""),
+            profile_photo=(lp.profile_photo if lp else None) or self.photo,
+        )
+        return {"is_complete": not missing, "missing": missing}
+
+    @property
+    def is_complete(self):
+        return self.completeness()["is_complete"]
+
+    def refresh_listing(self, *, save=True):
+        """List the expert (free) once their profile is complete. Never
+        UN-lists an already-listed profile, so an approved expert who later
+        blanks a field keeps their listing while the dashboard nudges them to
+        fix it. Returns the resulting ``is_listed``."""
+        if self.is_complete and not self.is_listed:
+            self.is_listed = True
+            if save:
+                self.save(update_fields=["is_listed", "updated_at"])
+        return self.is_listed
+
     def has_offline_class(self):
         return self.class_mode in (self.MODE_HOME, self.MODE_TRAVEL)
 

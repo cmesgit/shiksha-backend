@@ -28,13 +28,21 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 
 from .models import ExpertProfile, SkillSession
 from .course_models import SkillCourseEnrollment
+from . import profile_ops
 
 
 def _get_expert(user):
     ep = ExpertProfile.objects.filter(teacher_profile__user=user).first()
-    if not ep:
-        raise PermissionDenied("No expert profile found for this account.")
-    return ep
+    if ep:
+        return ep
+    # Defense in depth for accounts created before ExpertProfile was wired into
+    # signup: auto-provision a (blank, UNLISTED) profile for anyone who holds
+    # the skill / guest-expert track, so the dashboard + editor always load and
+    # the completeness gate can take over. A faculty-only teacher gets none.
+    tp = getattr(user, "teacher_profile", None)
+    if tp and tp.holds_track(tp.TRACK_SKILL):
+        return ExpertProfile.objects.create(teacher_profile=tp)
+    raise PermissionDenied("No expert profile found for this account.")
 
 
 # ── Availability bookkeeping (shared with the booking flow) ───────────────
@@ -323,131 +331,51 @@ class TeacherDeclineSessionView(APIView):
 
 class TeacherProfileUpdateView(APIView):
     """
-    GET   /skill/teacher/profile/  → current editable expert profile
-    PATCH /skill/teacher/profile/  → update it
+    GET   /skill/teacher/profile/  → current editable expert profile + completeness
+    PATCH /skill/teacher/profile/  → update it (JSON or multipart for the photo)
 
-    Editable fields:
-      hourly_rate (int ₹), bio, availability, subject_description,
-      languages (list[str]),
-      class_mode (home|travel|online) + class_location,
-      pincode / state / district / city / latitude / longitude,
-      payment_upi / payment_name / payment_note  (the expert's OWN payee
-      details — learners pay them directly).
+    This is the guest expert's "manage profile" screen. It covers the full
+    signup field set so an expert can complete OR edit everything here:
+      • subject: category + subject_description, headline, skill_tags
+      • about you (bio), languages, availability note
+      • hourly fee (₹ → stored in paise)
+      • location: class_mode (home|travel|online) + class_location, and
+        pincode/state/district/city for offline discovery
+      • personal: full_name, date_of_birth, phone, profile photo (SELF learner)
+      • payment: payment_upi / payment_name / payment_note (P2P — learners pay
+        the expert directly; ShikshaCom takes no cut)
+
+    The response always carries ``is_complete`` + ``missing`` so the dashboard
+    can force completion before the expert is listed/discoverable.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         ep = _get_expert(request.user)
-        return Response(self._serialize(ep))
-
-    def _serialize(self, ep):
-        return {
-            "hourly_rate":         ep.hourly_rate // 100,
-            "bio":                 ep.bio,
-            "availability":        ep.availability,
-            "subject_description": ep.subject_description,
-            "languages":           ep.languages or [],
-            "class_mode":          ep.class_mode,
-            "class_location":      ep.class_location,
-            "pincode":             ep.pincode,
-            "state":               ep.state,
-            "district":            ep.district,
-            "city":                ep.city,
-            "latitude":            ep.latitude,
-            "longitude":           ep.longitude,
-            "payment_upi":         ep.payment_upi,
-            "payment_name":        ep.payment_name,
-            "payment_note":        ep.payment_note,
-            "is_advertised":       ep.is_advertised(),
-            "reach_count":         ep.reach_count,
-        }
+        return Response(profile_ops.serialize_expert(ep))
 
     def patch(self, request):
-        ep     = _get_expert(request.user)
-        data   = request.data
-        fields = []
+        ep      = _get_expert(request.user)
+        data    = request.data
+        files   = getattr(request, "FILES", None) or {}
 
-        if "hourly_rate" in data:
-            try:
-                ep.hourly_rate = int(data["hourly_rate"]) * 100   # rupees → paise
-                fields.append("hourly_rate")
-            except (TypeError, ValueError):
-                raise ValidationError({"hourly_rate": "Must be an integer (₹)."})
+        # Expert-side fields (subject/teaching/location/payment + photo).
+        ep_fields = profile_ops.apply_expert_fields(ep, data, files=files)
+        profile_ops.validate_location(ep)
+        if ep_fields:
+            ep.save(update_fields=list(dict.fromkeys(ep_fields)) + ["updated_at"])
 
-        if "bio" in data:
-            ep.bio = str(data["bio"])
-            fields.append("bio")
+        # Personal fields live on the SELF learner profile.
+        learner = request.user.default_learner_profile()
+        if learner:
+            p_fields = profile_ops.apply_personal_fields(learner, data, files=files)
+            if p_fields:
+                learner.save()
 
-        if "availability" in data:
-            ep.availability = str(data["availability"])[:120]
-            fields.append("availability")
+        # List the expert now if the profile just became complete.
+        ep.refresh_listing()
 
-        if "subject_description" in data:
-            ep.subject_description = str(data["subject_description"])
-            fields.append("subject_description")
-
-        if "languages" in data:
-            langs = data["languages"]
-            if isinstance(langs, str):
-                langs = [s.strip() for s in langs.split(",") if s.strip()]
-            if not isinstance(langs, list):
-                raise ValidationError({"languages": "Must be a list of languages."})
-            ep.languages = [str(x)[:40] for x in langs][:10]
-            fields.append("languages")
-
-        # ── Location / class mode (offline-class search) ──────────────────
-        new_mode = data.get("class_mode", ep.class_mode)
-        if "class_mode" in data:
-            if new_mode not in (ep.MODE_HOME, ep.MODE_TRAVEL, ep.MODE_ONLINE):
-                raise ValidationError({"class_mode": "Must be home, travel or online."})
-            ep.class_mode = new_mode
-            fields.append("class_mode")
-
-        if "class_location" in data:
-            ep.class_location = str(data["class_location"])[:255]
-            fields.append("class_location")
-
-        for f in ("pincode", "state", "district", "city"):
-            if f in data:
-                setattr(ep, f, str(data[f])[:150])
-                fields.append(f)
-
-        for f in ("latitude", "longitude"):
-            if f in data and data[f] not in (None, ""):
-                try:
-                    setattr(ep, f, float(data[f]))
-                    fields.append(f)
-                except (TypeError, ValueError):
-                    raise ValidationError({f: "Must be a number."})
-
-        # Exact location is required when teaching offline.
-        effective_mode = ep.class_mode
-        if effective_mode in (ep.MODE_HOME, ep.MODE_TRAVEL):
-            location_text = (
-                data.get("class_location", ep.class_location) or ""
-            ).strip()
-            if not location_text:
-                raise ValidationError({
-                    "class_location":
-                    "Tell learners where the class is held (required for "
-                    "'at my place' / 'I can travel')."
-                })
-
-        # ── Direct (P2P) payee details ────────────────────────────────────
-        if "payment_upi" in data:
-            ep.payment_upi = str(data["payment_upi"])[:120]
-            fields.append("payment_upi")
-        if "payment_name" in data:
-            ep.payment_name = str(data["payment_name"])[:120]
-            fields.append("payment_name")
-        if "payment_note" in data:
-            ep.payment_note = str(data["payment_note"])[:200]
-            fields.append("payment_note")
-
-        if fields:
-            ep.save(update_fields=list(dict.fromkeys(fields)) + ["updated_at"])
-
-        return Response({"ok": True, **self._serialize(ep)})
+        return Response({"ok": True, **profile_ops.serialize_expert(ep)})
 
 
 # ── Public availability read (any authenticated user, by expert id) ───────

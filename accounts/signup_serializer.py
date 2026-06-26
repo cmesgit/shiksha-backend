@@ -95,6 +95,15 @@ class SignupSerializer(serializers.Serializer):
         required=False,
     )
 
+    # Guest-expert only: optional profile data captured during signup so the
+    # expert's directory listing can be pre-filled (full_name, date_of_birth,
+    # phone, subject_description/category, languages, bio, hourly_rate,
+    # class_mode/class_location). Anything omitted is completed later on the
+    # dashboard — the profile stays UNLISTED and the dashboard forces the
+    # profile screen until every required field is present
+    # (see ExpertProfile.refresh_listing / completeness).
+    expert_profile = serializers.JSONField(required=False)
+
     # ── internal flags set during validate() ──────────────────────────────
     # _mode: "create" | "add_student_to_teacher" | "add_teacher_to_student"
     # _existing_user: the User for add-to-existing modes
@@ -251,9 +260,15 @@ class SignupSerializer(serializers.Serializer):
 
         if role == Role.TEACHER:
             if mode == "add_teacher_track":
-                self._add_teacher_track(user, validated_data["_target_track"])
+                self._add_teacher_track(
+                    user, validated_data["_target_track"],
+                    validated_data.get("expert_profile"),
+                )
             else:
-                self._setup_teacher(user, validated_data["teacher_type"])
+                self._setup_teacher(
+                    user, validated_data["teacher_type"],
+                    validated_data.get("expert_profile"),
+                )
         else:
             self._setup_student(user, validated_data.get("profiles", []))
 
@@ -351,7 +366,7 @@ class SignupSerializer(serializers.Serializer):
                 is_default   = not user.learner_profiles.filter(is_active=True).exists(),
             )
 
-    def _setup_teacher(self, user, teacher_type):
+    def _setup_teacher(self, user, teacher_type, expert_payload=None):
         """Brand-new teacher identity, applying through a single track."""
         track  = TeacherProfile.track_for_type(teacher_type)
         status = self._initial_status_for(track)
@@ -364,7 +379,14 @@ class SignupSerializer(serializers.Serializer):
         self._ensure_teacher_role(user, active=bool(tp.approved_tracks()))
         self._ensure_self_learner(user)
 
-    def _add_teacher_track(self, user, track):
+        # Guest expert → every skill teacher gets an ExpertProfile so the
+        # dashboard + profile editor work immediately (no PermissionDenied),
+        # pre-filled with anything captured at signup. It stays UNLISTED until
+        # the profile is complete.
+        if track == TeacherProfile.TRACK_SKILL:
+            self._provision_expert(tp, expert_payload)
+
+    def _add_teacher_track(self, user, track, expert_payload=None):
         """Existing teacher applying for the track they don't yet hold.
         The track they already have keeps working untouched."""
         tp = user.teacher_profile
@@ -380,3 +402,46 @@ class SignupSerializer(serializers.Serializer):
         # If the newly added track is live (skill), make sure the role is
         # active so they can enter that dashboard right away.
         self._ensure_teacher_role(user, active=bool(tp.approved_tracks()))
+
+        if track == TeacherProfile.TRACK_SKILL:
+            self._provision_expert(tp, expert_payload)
+
+    # ── Expert-profile provisioning (guest track) ──────────────────────────
+    def _provision_expert(self, teacher_profile, payload):
+        """Create the ExpertProfile for a guest teacher (idempotent) and apply
+        any profile data captured at signup. Runs through the SAME helpers the
+        dashboard editor uses, so signup and edit can never diverge.
+
+        ``payload`` may carry both expert fields (subject_description, category,
+        languages, bio, hourly_rate, class_mode, class_location) and the SELF
+        learner's personal fields (full_name, date_of_birth, phone)."""
+        from skills.models import ExpertProfile
+        from skills import profile_ops as ops
+
+        ep, _ = ExpertProfile.objects.get_or_create(teacher_profile=teacher_profile)
+
+        payload = payload if isinstance(payload, dict) else None
+        if payload:
+            try:
+                ep_fields = ops.apply_expert_fields(ep, payload)
+                ops.validate_location(ep)
+            except ValidationError:
+                # Never block account creation on optional signup-time profile
+                # data — the dashboard gate will require it properly. Persist
+                # whatever cleanly applied and move on.
+                ep_fields = []
+            if ep_fields:
+                ep.save()
+
+            learner = teacher_profile.user.default_learner_profile()
+            if learner:
+                try:
+                    p_fields = ops.apply_personal_fields(learner, payload)
+                except ValidationError:
+                    p_fields = []
+                if p_fields:
+                    learner.save()
+
+        # List now if (and only if) everything required is already present.
+        ep.refresh_listing()
+        return ep
