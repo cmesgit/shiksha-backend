@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "skills",
     "global_settings",
     "chat",
+    "forum",
 ]
 
 MIDDLEWARE = [
