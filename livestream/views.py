@@ -103,8 +103,16 @@ class StudentLiveSessionListView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
 
-        if not user.has_role("STUDENT"):
-            raise PermissionDenied("Only students allowed.")
+        # Do NOT hard-require the STUDENT *role* here. A teacher account browsing
+        # in learner context has a SELF learner profile but no STUDENT role (see
+        # signup_serializer._setup_teacher, which never adds it), and the sibling
+        # learner lists — private student_sessions and group my_group_sessions —
+        # don't gate on the role either; they scope by ownership/enrollment.
+        # Gating live sessions on has_role("STUDENT") 403'd those users, which the
+        # UI surfaced as "Unable to load sessions" while private & group loaded
+        # fine. Access is already correctly scoped by the active-enrollment filter
+        # below, so a user with no active enrollment just gets an empty list
+        # instead of an error.
 
         course_id = self.request.query_params.get("course_id")
         subject_id = self.request.query_params.get("subject_id")
