@@ -104,6 +104,14 @@ class SignupSerializer(serializers.Serializer):
     # (see ExpertProfile.refresh_listing / completeness).
     expert_profile = serializers.JSONField(required=False)
 
+    # Faculty (Academy) only: optional teaching-background data captured during
+    # signup so admins reviewing the application have something to assess. These
+    # map onto EXISTING TeacherProfile columns (the same ones the full
+    # /form-fillup application writes) — no migration. Personal details and
+    # verification documents are finished later from the dashboard. Anything
+    # malformed is dropped, never raised (see _provision_faculty).
+    faculty_profile = serializers.JSONField(required=False)
+
     # ── internal flags set during validate() ──────────────────────────────
     # _mode: "create" | "add_student_to_teacher" | "add_teacher_to_student"
     # _existing_user: the User for add-to-existing modes
@@ -263,11 +271,13 @@ class SignupSerializer(serializers.Serializer):
                 self._add_teacher_track(
                     user, validated_data["_target_track"],
                     validated_data.get("expert_profile"),
+                    validated_data.get("faculty_profile"),
                 )
             else:
                 self._setup_teacher(
                     user, validated_data["teacher_type"],
                     validated_data.get("expert_profile"),
+                    validated_data.get("faculty_profile"),
                 )
         else:
             self._setup_student(user, validated_data.get("profiles", []))
@@ -366,7 +376,7 @@ class SignupSerializer(serializers.Serializer):
                 is_default   = not user.learner_profiles.filter(is_active=True).exists(),
             )
 
-    def _setup_teacher(self, user, teacher_type, expert_payload=None):
+    def _setup_teacher(self, user, teacher_type, expert_payload=None, faculty_payload=None):
         """Brand-new teacher identity, applying through a single track."""
         track  = TeacherProfile.track_for_type(teacher_type)
         status = self._initial_status_for(track)
@@ -385,8 +395,12 @@ class SignupSerializer(serializers.Serializer):
         # the profile is complete.
         if track == TeacherProfile.TRACK_SKILL:
             self._provision_expert(tp, expert_payload)
+        # Faculty → store any teaching background captured at signup so it's
+        # waiting in the admin review queue with the application.
+        elif track == TeacherProfile.TRACK_ACADEMY:
+            self._provision_faculty(tp, faculty_payload)
 
-    def _add_teacher_track(self, user, track, expert_payload=None):
+    def _add_teacher_track(self, user, track, expert_payload=None, faculty_payload=None):
         """Existing teacher applying for the track they don't yet hold.
         The track they already have keeps working untouched."""
         tp = user.teacher_profile
@@ -405,6 +419,8 @@ class SignupSerializer(serializers.Serializer):
 
         if track == TeacherProfile.TRACK_SKILL:
             self._provision_expert(tp, expert_payload)
+        elif track == TeacherProfile.TRACK_ACADEMY:
+            self._provision_faculty(tp, faculty_payload)
 
     # ── Expert-profile provisioning (guest track) ──────────────────────────
     def _provision_expert(self, teacher_profile, payload):
@@ -445,3 +461,79 @@ class SignupSerializer(serializers.Serializer):
         # List now if (and only if) everything required is already present.
         ep.refresh_listing()
         return ep
+
+    # ── Faculty-application provisioning (academy track) ───────────────────
+    def _provision_faculty(self, teacher_profile, payload):
+        """Apply optional faculty-application background captured at signup to
+        the EXISTING TeacherProfile columns (and one TeacherCourseApplication).
+        These are the same fields the full /form-fillup application writes, so
+        there's no new model and no migration — signup just pre-fills them.
+
+        Mirrors _provision_expert's contract: this is BEST-EFFORT and must NEVER
+        block account creation. A missing/malformed value is dropped, not
+        raised. Personal details and verification documents are completed later
+        from the dashboard (they need file uploads + a verified session).
+        """
+        if not isinstance(payload, dict):
+            return
+        tp = teacher_profile
+        try:
+            from .models import TeacherCourseApplication
+
+            def _valid_choices(model, field_name):
+                f = model._meta.get_field(field_name)
+                return {c[0] for c in (f.choices or [])}
+
+            changed = []
+
+            # CharField choices — only store a value the model actually allows.
+            for key in ("highest_degree", "experience_range", "employment_status"):
+                val = payload.get(key)
+                val = val.strip() if isinstance(val, str) else ""
+                if val and val in _valid_choices(TeacherProfile, key):
+                    setattr(tp, key, val)
+                    changed.append(key)
+
+            # Free-text scalars (truncated to the column width to be safe).
+            for key, maxlen in (("field_of_study", 200),
+                                ("current_institution", 250),
+                                ("current_position", 150)):
+                val = payload.get(key)
+                if isinstance(val, str) and val.strip():
+                    setattr(tp, key, val.strip()[:maxlen])
+                    changed.append(key)
+
+            yr = payload.get("year_of_completion")
+            if yr not in (None, ""):
+                try:
+                    yr = int(yr)
+                    if 1950 <= yr <= 2100:
+                        tp.year_of_completion = yr
+                        changed.append("year_of_completion")
+                except (TypeError, ValueError):
+                    pass
+
+            if "currently_employed" in payload:
+                tp.currently_employed = bool(payload.get("currently_employed"))
+                changed.append("currently_employed")
+
+            if changed:
+                tp.save(update_fields=sorted(set(changed)))
+
+            # One subject application so the review queue shows what they intend
+            # to teach. The dashboard form lets them add more subjects later.
+            ca = payload.get("course_application")
+            if isinstance(ca, dict):
+                subj = ca.get("subject")
+                subj = subj.strip() if isinstance(subj, str) else ""
+                if subj and subj in _valid_choices(TeacherCourseApplication, "subject"):
+                    valid_boards  = {"cbse", "icse", "mbse", "nios", "other"}
+                    valid_classes = {"8", "9", "10", "11", "12"}
+                    boards  = [b for b in (ca.get("boards") or []) if b in valid_boards]
+                    classes = [str(c) for c in (ca.get("classes") or []) if str(c) in valid_classes]
+                    TeacherCourseApplication.objects.create(
+                        teacher_profile=tp, subject=subj, boards=boards, classes=classes,
+                    )
+        except Exception:
+            # Best-effort only — never block signup on optional profile data.
+            return
