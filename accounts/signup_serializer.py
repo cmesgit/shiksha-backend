@@ -487,7 +487,7 @@ class SignupSerializer(serializers.Serializer):
             changed = []
 
             # CharField choices — only store a value the model actually allows.
-            for key in ("highest_degree", "experience_range", "employment_status"):
+            for key in ("highest_degree", "experience_range", "employment_status", "govt_id_type"):
                 val = payload.get(key)
                 val = val.strip() if isinstance(val, str) else ""
                 if val and val in _valid_choices(TeacherProfile, key):
@@ -497,7 +497,8 @@ class SignupSerializer(serializers.Serializer):
             # Free-text scalars (truncated to the column width to be safe).
             for key, maxlen in (("field_of_study", 200),
                                 ("current_institution", 250),
-                                ("current_position", 150)):
+                                ("current_position", 150),
+                                ("id_number", 50)):
                 val = payload.get(key)
                 if isinstance(val, str) and val.strip():
                     setattr(tp, key, val.strip()[:maxlen])
@@ -517,6 +518,13 @@ class SignupSerializer(serializers.Serializer):
                 tp.currently_employed = bool(payload.get("currently_employed"))
                 changed.append("currently_employed")
 
+            certs = payload.get("teaching_certifications")
+            if isinstance(certs, list):
+                tp.teaching_certifications = [
+                    str(c).strip() for c in certs if str(c).strip()
+                ][:20]
+                changed.append("teaching_certifications")
+
             if changed:
                 tp.save(update_fields=sorted(set(changed)))
 
@@ -528,11 +536,14 @@ class SignupSerializer(serializers.Serializer):
                 subj = subj.strip() if isinstance(subj, str) else ""
                 if subj and subj in _valid_choices(TeacherCourseApplication, "subject"):
                     valid_boards  = {"cbse", "icse", "mbse", "nios", "other"}
-                    valid_classes = {"8", "9", "10", "11", "12"}
+                    valid_classes = {"1_5", "6_8", "9_10", "11_12", "ug", "pg"}
+                    valid_streams = {"science", "commerce", "arts", "vocational", "general"}
                     boards  = [b for b in (ca.get("boards") or []) if b in valid_boards]
                     classes = [str(c) for c in (ca.get("classes") or []) if str(c) in valid_classes]
+                    streams = [str(x) for x in (ca.get("streams") or []) if str(x) in valid_streams]
                     TeacherCourseApplication.objects.create(
-                        teacher_profile=tp, subject=subj, boards=boards, classes=classes,
+                        teacher_profile=tp, subject=subj, boards=boards,
+                        classes=classes, streams=streams,
                     )
         except Exception:
             # Best-effort only — never block signup on optional profile data.

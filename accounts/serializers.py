@@ -335,6 +335,7 @@ class TeacherFormFillupSerializer(serializers.Serializer):
     id_number = serializers.CharField(max_length=50)
     id_proof_front = serializers.FileField(required=True)
     id_proof_back = serializers.FileField(required=False, allow_null=True)
+    signed_agreement = serializers.FileField(required=False, allow_null=True)
 
         # --- Course Applications (JSON string) ---
     course_applications = serializers.CharField(required=False, default="[]")
@@ -357,6 +358,11 @@ class TeacherFormFillupSerializer(serializers.Serializer):
             raise ValidationError("ID proof must be under 5MB.")
         return value
 
+    def validate_signed_agreement(self, value):
+        if value and value.size > 10 * 1024 * 1024:
+            raise ValidationError("Signed agreement must be under 10MB.")
+        return value
+
     def validate_course_applications(self, value):
         try:
             data = json.loads(value) if isinstance(value, str) else value
@@ -365,16 +371,15 @@ class TeacherFormFillupSerializer(serializers.Serializer):
         if not isinstance(data, list):
             raise ValidationError("Course applications must be a list.")
         valid_subjects = [c[0] for c in TeacherProfile.SUBJECT_CHOICES]
-        valid_boards = [c[0] for c in TeacherLearnerProfile.BOARD_CHOICES]
-        valid_classes = [c[0] for c in TeacherLearnerProfile.CLASS_CHOICES]
+        valid_boards = [c[0] for c in TeacherProfile.BOARD_CHOICES]
+        valid_classes = [c[0] for c in TeacherProfile.CLASS_CHOICES]
+        valid_streams = [c[0] for c in TeacherProfile.STREAM_CHOICES]
         for i, entry in enumerate(data):
             if not entry.get("subject"):
                 raise ValidationError(f"Entry {i+1}: Subject is required.")
             if entry["subject"] not in valid_subjects:
                 raise ValidationError(f"Entry {i+1}: Invalid subject.")
-            boards = entry.get("boards", [])
-            if not boards:
-                raise ValidationError(f"Entry {i+1}: At least one board is required.")
+            boards = entry.get("boards", [])  # optional — the faculty design omits boards
             for b in boards:
                 if b not in valid_boards:
                     raise ValidationError(f"Entry {i+1}: Invalid board '{b}'.")
@@ -384,8 +389,10 @@ class TeacherFormFillupSerializer(serializers.Serializer):
             for c in classes:
                 if c not in valid_classes:
                     raise ValidationError(f"Entry {i+1}: Invalid class '{c}'.")
-            if ("11" in classes or "12" in classes) and not entry.get("streams"):
-                raise ValidationError(f"Entry {i+1}: Stream required for Class 11-12.")
+            streams = entry.get("streams", [])
+            for st in streams:
+                if st not in valid_streams:
+                    raise ValidationError(f"Entry {i+1}: Invalid stream '{st}'.")
         return data
 
     def validate_skill_applications(self, value):
@@ -452,7 +459,7 @@ class TeacherFormFillupSerializer(serializers.Serializer):
                 setattr(tp, field, validated_data[field])
 
         # File fields on TeacherProfile
-        for field in ["qualification_certificate", "id_proof_front", "id_proof_back"]:
+        for field in ["qualification_certificate", "id_proof_front", "id_proof_back", "signed_agreement"]:
             value = validated_data.get(field)
             if value:
                 setattr(tp, field, value)
