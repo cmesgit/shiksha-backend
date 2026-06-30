@@ -412,6 +412,9 @@ class FormFillupView(APIView):
                 "id_proof_back": (
                     tp.id_proof_back.url if tp and tp.id_proof_back else None
                 ),
+                "signed_agreement": (
+                    tp.signed_agreement.url if tp and tp.signed_agreement else None
+                ),
 
                 # Course Applications
                 "course_applications": [

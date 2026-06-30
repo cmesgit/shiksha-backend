@@ -573,18 +573,26 @@ class TeacherProfile(models.Model):
         ("nios", "NIOS"),
     ]
 
+    # Course-application taxonomy (grouped ranges + UG/PG). Stored in choice-less
+    # JSONFields (TeacherProfile.classes/.streams, TeacherCourseApplication
+    # .classes/.streams) so changing these needs NO migration. They feed the
+    # label maps in the public-profile view and the form-fillup validators. The
+    # student LearnerProfile keeps its own 8-12 CLASS/STREAM choices — do NOT merge.
     CLASS_CHOICES = [
-        ("8", "Class 8"),
-        ("9", "Class 9"),
-        ("10", "Class 10"),
-        ("11", "Class 11"),
-        ("12", "Class 12"),
+        ("1_5", "Class 1–5"),
+        ("6_8", "Class 6–8"),
+        ("9_10", "Class 9–10"),
+        ("11_12", "Class 11–12"),
+        ("ug", "Undergraduate"),
+        ("pg", "Postgraduate"),
     ]
 
     STREAM_CHOICES = [
         ("science", "Science"),
         ("commerce", "Commerce"),
-        ("arts", "Arts"),
+        ("arts", "Arts / Humanities"),
+        ("vocational", "Vocational"),
+        ("general", "General"),
     ]
 
     SUBJECT_CHOICES = [
@@ -711,6 +719,12 @@ class TeacherProfile(models.Model):
     )
     id_proof_back = models.FileField(
         upload_to="teachers/id_proofs/", null=True, blank=True
+    )
+
+    # --- Signed faculty agreement (collected from the dashboard /form-fillup
+    #     after email verification; see FacultySignup flow + 0016 migration) ---
+    signed_agreement = models.FileField(
+        upload_to="teachers/agreements/", null=True, blank=True
     )
 
     # --- Course Application fields ---
