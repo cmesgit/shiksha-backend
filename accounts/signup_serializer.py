@@ -525,6 +525,57 @@ class SignupSerializer(serializers.Serializer):
                 ][:20]
                 changed.append("teaching_certifications")
 
+            # Verification documents. The signup endpoint is JSON-only, so files
+            # arrive base64-encoded inside this payload. Decode and store them on
+            # the same FileFields the /form-fillup upload uses. Best-effort: a
+            # bad/oversized file is skipped, never raised (mirrors the rest of
+            # this method). More/replacement docs can be uploaded from the
+            # dashboard later.
+            import base64, uuid
+            from django.core.files.base import ContentFile
+
+            _ALLOWED_EXT = {"pdf", "jpg", "jpeg", "png"}
+            _EXT_BY_MIME = {"application/pdf": "pdf", "image/jpeg": "jpg",
+                            "image/jpg": "jpg", "image/png": "png"}
+            _MAX_DOC_BYTES = 8 * 1024 * 1024  # 8 MB server-side hard cap
+
+            def _save_doc(field_name, value):
+                try:
+                    name = mime = ""
+                    b64 = ""
+                    if isinstance(value, dict):
+                        name = str(value.get("name") or "").strip()
+                        mime = str(value.get("type") or "").strip().lower()
+                        b64 = value.get("data") or ""
+                    elif isinstance(value, str):
+                        b64 = value
+                        if value.startswith("data:") and "," in value:
+                            header, b64 = value.split(",", 1)
+                            mime = header[5:].split(";")[0].strip().lower()
+                    else:
+                        return
+                    if not b64:
+                        return
+                    raw = base64.b64decode(b64)
+                    if not raw or len(raw) > _MAX_DOC_BYTES:
+                        return
+                    ext = name.rsplit(".", 1)[1].lower() if "." in name else ""
+                    if ext not in _ALLOWED_EXT:
+                        ext = _EXT_BY_MIME.get(mime, "")
+                    if ext not in _ALLOWED_EXT:
+                        return
+                    getattr(tp, field_name).save(
+                        f"{field_name}_{uuid.uuid4().hex[:12]}.{ext}",
+                        ContentFile(raw), save=False,
+                    )
+                    changed.append(field_name)
+                except Exception:
+                    return
+
+            for _doc_field in ("qualification_certificate", "id_proof_front", "id_proof_back"):
+                if payload.get(_doc_field):
+                    _save_doc(_doc_field, payload.get(_doc_field))
+
             if changed:
                 tp.save(update_fields=sorted(set(changed)))
 
