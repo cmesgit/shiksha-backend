@@ -573,18 +573,26 @@ class TeacherProfile(models.Model):
         ("nios", "NIOS"),
     ]
 
+    # Course-application taxonomy (grouped ranges + UG/PG). Stored in choice-less
+    # JSONFields (TeacherProfile.classes/.streams, TeacherCourseApplication
+    # .classes/.streams) so changing these needs NO migration. They feed the
+    # label maps in the public-profile view and the form-fillup validators. The
+    # student LearnerProfile keeps its own 8-12 CLASS/STREAM choices — do NOT merge.
     CLASS_CHOICES = [
-        ("8", "Class 8"),
-        ("9", "Class 9"),
-        ("10", "Class 10"),
-        ("11", "Class 11"),
-        ("12", "Class 12"),
+        ("1_5", "Class 1–5"),
+        ("6_8", "Class 6–8"),
+        ("9_10", "Class 9–10"),
+        ("11_12", "Class 11–12"),
+        ("ug", "Undergraduate"),
+        ("pg", "Postgraduate"),
     ]
 
     STREAM_CHOICES = [
         ("science", "Science"),
         ("commerce", "Commerce"),
-        ("arts", "Arts"),
+        ("arts", "Arts / Humanities"),
+        ("vocational", "Vocational"),
+        ("general", "General"),
     ]
 
     SUBJECT_CHOICES = [
@@ -628,10 +636,12 @@ class TeacherProfile(models.Model):
     TRACK_LOCKED = "locked"
     TRACK_PENDING = "pending"
     TRACK_APPROVED = "approved"
+    TRACK_REJECTED = "rejected"
     TRACK_STATUS_CHOICES = [
         (TRACK_LOCKED, "Locked"),
         (TRACK_PENDING, "Pending review"),
         (TRACK_APPROVED, "Approved"),
+        (TRACK_REJECTED, "Rejected"),
     ]
 
     # The two switchable tracks, by the public name used across the apps.
@@ -678,6 +688,10 @@ class TeacherProfile(models.Model):
     skill_status = models.CharField(
         max_length=10, choices=TRACK_STATUS_CHOICES, default=TRACK_LOCKED
     )
+    # When the academy (faculty) application is rejected, the admin's reason is
+    # stored here so the teacher can see why and re-apply.
+    academy_rejection_reason = models.TextField(blank=True)
+    academy_rejected_at = models.DateTimeField(null=True, blank=True)
 
     # --- Section 1: Educational Qualifications ---
     highest_degree = models.CharField(
@@ -711,6 +725,19 @@ class TeacherProfile(models.Model):
     )
     id_proof_back = models.FileField(
         upload_to="teachers/id_proofs/", null=True, blank=True
+    )
+
+    # --- Signed faculty agreement (collected from the dashboard /form-fillup
+    #     after email verification; see FacultySignup flow + 0016 migration) ---
+    signed_agreement = models.FileField(
+        upload_to="teachers/agreements/", null=True, blank=True
+    )
+    # The exact agreement version this faculty member signed (bound at sign
+    # time so later edits to the letter never change what they agreed to).
+    signed_agreement_version = models.ForeignKey(
+        "accounts.AgreementLetterVersion",
+        on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="signed_by",
     )
 
     # --- Course Application fields ---
@@ -973,3 +1000,55 @@ class TeacherSkillApplication(models.Model):
     def __str__(self):
         return f"{self.teacher_profile.user.email} - {self.skill_name}"
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Agreement letters (admin-editable, immutable version history)
+# ═══════════════════════════════════════════════════════════════════════════
+class AgreementLetter(models.Model):
+    """A named legal document (e.g. the Faculty Agreement).
+
+    The document itself is a stable pointer; its text lives in immutable
+    AgreementLetterVersion rows. Editing never mutates a version — each Save
+    creates a NEW version and repoints ``current_version``. Faculty are bound
+    to the exact version they signed (TeacherProfile.signed_agreement_version),
+    so later edits never change what someone already agreed to.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    key = models.SlugField(max_length=50, unique=True)     # e.g. "faculty"
+    title = models.CharField(max_length=200)
+    current_version = models.ForeignKey(
+        "accounts.AgreementLetterVersion",
+        on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"AgreementLetter<{self.key}>"
+
+
+class AgreementLetterVersion(models.Model):
+    """An immutable snapshot of an agreement's text at a point in time."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    letter = models.ForeignKey(
+        AgreementLetter, on_delete=models.CASCADE, related_name="versions"
+    )
+    version_number = models.PositiveIntegerField()
+    title = models.CharField(max_length=200)
+    body = models.TextField()
+    change_note = models.CharField(max_length=500, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-version_number"]
+        unique_together = ("letter", "version_number")
+        indexes = [models.Index(fields=["letter", "version_number"])]
+
+    def __str__(self):
+        return f"{self.letter.key} v{self.version_number}"

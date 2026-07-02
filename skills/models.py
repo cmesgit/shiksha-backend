@@ -103,6 +103,10 @@ class ExpertProfile(models.Model):
     # Visibility score. Grows while advertised / on completed sessions, and is
     # decayed when an ad-subscription is cancelled or lapses.
     reach_count = models.PositiveIntegerField(default=0)
+    # Admin suspension: hard-off switch. When True the expert is delisted, can't
+    # take new bookings, isn't advertised, and sync_listing() will NOT re-list
+    # them until an admin lifts the suspension.
+    is_suspended = models.BooleanField(default=False)
 
     # ── Offline-class location (for "find a tutor near me") ───────────────
     # Surfaced to learners searching for someone who can teach offline. Exact
@@ -248,7 +252,7 @@ class ExpertProfile(models.Model):
         UN-lists an already-listed profile, so an approved expert who later
         blanks a field keeps their listing while the dashboard nudges them to
         fix it. Returns the resulting ``is_listed``."""
-        if self.is_complete and not self.is_listed:
+        if self.is_complete and not self.is_listed and not self.is_suspended:
             self.is_listed = True
             if save:
                 self.save(update_fields=["is_listed", "updated_at"])

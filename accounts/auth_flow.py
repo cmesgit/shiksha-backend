@@ -121,6 +121,7 @@ def serialize_teacher(teacher, *, active_track=None):
             "academy": teacher.academy_status,  # FACULTY track
             "skill":   teacher.skill_status,    # GUEST track
         },
+        "academy_rejection_reason": teacher.academy_rejection_reason,
         "approved_tracks": teacher.approved_tracks(),
         "pending_tracks":  teacher.pending_tracks(),
         "active_track":    active_track,        # which dashboard is in context
@@ -584,6 +585,7 @@ class EmailCheckView(APIView):
             # track they don't yet hold, but not one already live/in review.
             "teacher_type":  teacher.teacher_type if teacher else None,
             "academy_status": teacher.academy_status if teacher else "locked",
+            "academy_rejection_reason": (teacher.academy_rejection_reason if teacher else ""),
             "skill_status":   teacher.skill_status if teacher else "locked",
             # Explicit add-eligibility so the frontend never re-derives the
             # asymmetric Faculty/Guest rule. For a non-teacher both are True

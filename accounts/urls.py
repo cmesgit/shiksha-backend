@@ -17,6 +17,11 @@ from .auth_flow import (
     EmailCheckView,
 )
 
+from .agreement_views import (
+    AdminAgreementListView, AdminAgreementDetailView, AdminAgreementSaveView,
+    AdminAgreementVersionsView, AdminAgreementVersionDetailView,
+    AdminAgreementRestoreView, PublicAgreementView, ReapplyAcademyView,
+)
 from .views import (
     SignupView,
     LogoutView,
@@ -84,4 +89,14 @@ urlpatterns = [
     path("admin/users/<uuid:user_id>/", AdminUserDetailView.as_view()),
     path("admin/teacher-approvals/", AdminTeacherApprovalListView.as_view()),
     path("admin/teacher-approvals/<int:approval_id>/action/", AdminTeacherApprovalActionView.as_view()),
+    # Agreement letters (admin editor + immutable version history)
+    path("admin/agreements/",                          AdminAgreementListView.as_view()),
+    path("admin/agreements/versions/<uuid:version_id>/",         AdminAgreementVersionDetailView.as_view()),
+    path("admin/agreements/versions/<uuid:version_id>/restore/", AdminAgreementRestoreView.as_view()),
+    path("admin/agreements/<slug:key>/",               AdminAgreementDetailView.as_view()),
+    path("admin/agreements/<slug:key>/save/",          AdminAgreementSaveView.as_view()),
+    path("admin/agreements/<slug:key>/versions/",      AdminAgreementVersionsView.as_view()),
+    # Public: current agreement text for the signup screen
+    path("agreements/<slug:key>/",                     PublicAgreementView.as_view()),
+    path("teacher/reapply-academy/",                   ReapplyAcademyView.as_view()),
 ]

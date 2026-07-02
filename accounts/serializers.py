@@ -335,6 +335,7 @@ class TeacherFormFillupSerializer(serializers.Serializer):
     id_number = serializers.CharField(max_length=50)
     id_proof_front = serializers.FileField(required=True)
     id_proof_back = serializers.FileField(required=False, allow_null=True)
+    signed_agreement = serializers.FileField(required=False, allow_null=True)
 
         # --- Course Applications (JSON string) ---
     course_applications = serializers.CharField(required=False, default="[]")
@@ -357,6 +358,11 @@ class TeacherFormFillupSerializer(serializers.Serializer):
             raise ValidationError("ID proof must be under 5MB.")
         return value
 
+    def validate_signed_agreement(self, value):
+        if value and value.size > 10 * 1024 * 1024:
+            raise ValidationError("Signed agreement must be under 10MB.")
+        return value
+
     def validate_course_applications(self, value):
         try:
             data = json.loads(value) if isinstance(value, str) else value
@@ -365,16 +371,15 @@ class TeacherFormFillupSerializer(serializers.Serializer):
         if not isinstance(data, list):
             raise ValidationError("Course applications must be a list.")
         valid_subjects = [c[0] for c in TeacherProfile.SUBJECT_CHOICES]
-        valid_boards = [c[0] for c in TeacherLearnerProfile.BOARD_CHOICES]
-        valid_classes = [c[0] for c in TeacherLearnerProfile.CLASS_CHOICES]
+        valid_boards = [c[0] for c in TeacherProfile.BOARD_CHOICES]
+        valid_classes = [c[0] for c in TeacherProfile.CLASS_CHOICES]
+        valid_streams = [c[0] for c in TeacherProfile.STREAM_CHOICES]
         for i, entry in enumerate(data):
             if not entry.get("subject"):
                 raise ValidationError(f"Entry {i+1}: Subject is required.")
             if entry["subject"] not in valid_subjects:
                 raise ValidationError(f"Entry {i+1}: Invalid subject.")
-            boards = entry.get("boards", [])
-            if not boards:
-                raise ValidationError(f"Entry {i+1}: At least one board is required.")
+            boards = entry.get("boards", [])  # optional — the faculty design omits boards
             for b in boards:
                 if b not in valid_boards:
                     raise ValidationError(f"Entry {i+1}: Invalid board '{b}'.")
@@ -384,8 +389,10 @@ class TeacherFormFillupSerializer(serializers.Serializer):
             for c in classes:
                 if c not in valid_classes:
                     raise ValidationError(f"Entry {i+1}: Invalid class '{c}'.")
-            if ("11" in classes or "12" in classes) and not entry.get("streams"):
-                raise ValidationError(f"Entry {i+1}: Stream required for Class 11-12.")
+            streams = entry.get("streams", [])
+            for st in streams:
+                if st not in valid_streams:
+                    raise ValidationError(f"Entry {i+1}: Invalid stream '{st}'.")
         return data
 
     def validate_skill_applications(self, value):
@@ -452,7 +459,7 @@ class TeacherFormFillupSerializer(serializers.Serializer):
                 setattr(tp, field, validated_data[field])
 
         # File fields on TeacherProfile
-        for field in ["qualification_certificate", "id_proof_front", "id_proof_back"]:
+        for field in ["qualification_certificate", "id_proof_front", "id_proof_back", "signed_agreement"]:
             value = validated_data.get(field)
             if value:
                 setattr(tp, field, value)
@@ -657,12 +664,25 @@ class TeacherTrackApprovalSerializer(serializers.ModelSerializer):
     track = serializers.SerializerMethodField()
     track_label = serializers.SerializerMethodField()
 
+    # ── Detail + documents (for the admin "View" modal + agreement/ID) ──
+    teacher_type = serializers.CharField(read_only=True)
+    highest_degree = serializers.CharField(read_only=True)
+    field_of_study = serializers.CharField(read_only=True)
+    year_of_completion = serializers.IntegerField(read_only=True)
+    experience_range = serializers.SerializerMethodField()
+    subjects = serializers.SerializerMethodField()
+    id_number = serializers.CharField(read_only=True)
+    documents = serializers.SerializerMethodField()
+
     class Meta:
         from .models import TeacherProfile
         model = TeacherProfile
         fields = (
             "id", "user_id", "user_email", "user_name",
             "requested_at", "track", "track_label",
+            "teacher_type", "highest_degree", "field_of_study",
+            "year_of_completion", "experience_range", "subjects",
+            "id_number", "documents",
         )
 
     def get_user_name(self, obj):
@@ -677,3 +697,30 @@ class TeacherTrackApprovalSerializer(serializers.ModelSerializer):
 
     def get_track_label(self, obj):
         return "Academy (Faculty)"
+
+    def get_experience_range(self, obj):
+        return getattr(obj, "experience_range", "") or ""
+
+    def get_subjects(self, obj):
+        # Best-effort: pull subjects from the latest course application if present.
+        app = getattr(obj, "course_applications", None)
+        if app is not None:
+            latest = app.order_by("-created_at").first() if hasattr(app, "order_by") else None
+            if latest:
+                return getattr(latest, "subject", "") or ""
+        return getattr(obj, "field_of_study", "") or ""
+
+    def _url(self, request, filefield):
+        if not filefield:
+            return None
+        url = filefield.url
+        return request.build_absolute_uri(url) if request else url
+
+    def get_documents(self, obj):
+        request = self.context.get("request")
+        return {
+            "signed_agreement":          self._url(request, obj.signed_agreement),
+            "id_proof_front":            self._url(request, obj.id_proof_front),
+            "id_proof_back":             self._url(request, obj.id_proof_back),
+            "qualification_certificate": self._url(request, obj.qualification_certificate),
+        }

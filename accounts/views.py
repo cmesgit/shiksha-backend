@@ -412,6 +412,9 @@ class FormFillupView(APIView):
                 "id_proof_back": (
                     tp.id_proof_back.url if tp and tp.id_proof_back else None
                 ),
+                "signed_agreement": (
+                    tp.signed_agreement.url if tp and tp.signed_agreement else None
+                ),
 
                 # Course Applications
                 "course_applications": [
@@ -560,6 +563,18 @@ class TeacherProfileView(APIView):
         for field in self.TEACHER_FILE_FIELDS:
             if field in request.FILES:
                 setattr(tp, field, request.FILES[field])
+
+        # Bind the teacher to the CURRENT faculty-agreement version at the moment
+        # they upload their signed copy, so later edits to the letter never
+        # change what they agreed to.
+        if "signed_agreement" in request.FILES and tp.signed_agreement_version_id is None:
+            try:
+                from .models import AgreementLetter
+                letter = AgreementLetter.objects.filter(key="faculty").first()
+                if letter and letter.current_version_id:
+                    tp.signed_agreement_version_id = letter.current_version_id
+            except Exception:
+                pass
 
         tp.save()
 
@@ -1299,7 +1314,7 @@ class AdminTeacherApprovalListView(APIView):
             .select_related("user")
             .order_by("-created_at")
         )
-        return Response(TeacherTrackApprovalSerializer(qs, many=True).data)
+        return Response(TeacherTrackApprovalSerializer(qs, many=True, context={"request": request}).data)
 
 
 class AdminTeacherApprovalActionView(APIView):
@@ -1345,9 +1360,12 @@ class AdminTeacherApprovalActionView(APIView):
             return Response({"detail": "Teacher approved for Academy.", "id": str(tp.pk)})
         else:
             # Reject the academy application; the skill track (if any) is untouched.
-            tp.academy_status = TeacherProfile.TRACK_LOCKED
+            tp.academy_status = TeacherProfile.TRACK_REJECTED
+            tp.academy_rejection_reason = (request.data.get("reason") or "").strip()
+            tp.academy_rejected_at = timezone.now()
             tp.sync_type_from_tracks()
-            tp.save(update_fields=["academy_status", "teacher_type", "is_approved"])
+            tp.save(update_fields=["academy_status", "academy_rejection_reason",
+                                   "academy_rejected_at", "teacher_type", "is_approved"])
 
             # If no track survives, deactivate the teacher role so they fall back
             # to being a plain learner.
