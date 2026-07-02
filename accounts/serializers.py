@@ -664,12 +664,25 @@ class TeacherTrackApprovalSerializer(serializers.ModelSerializer):
     track = serializers.SerializerMethodField()
     track_label = serializers.SerializerMethodField()
 
+    # ── Detail + documents (for the admin "View" modal + agreement/ID) ──
+    teacher_type = serializers.CharField(read_only=True)
+    highest_degree = serializers.CharField(read_only=True)
+    field_of_study = serializers.CharField(read_only=True)
+    year_of_completion = serializers.IntegerField(read_only=True)
+    experience_range = serializers.SerializerMethodField()
+    subjects = serializers.SerializerMethodField()
+    id_number = serializers.CharField(read_only=True)
+    documents = serializers.SerializerMethodField()
+
     class Meta:
         from .models import TeacherProfile
         model = TeacherProfile
         fields = (
             "id", "user_id", "user_email", "user_name",
             "requested_at", "track", "track_label",
+            "teacher_type", "highest_degree", "field_of_study",
+            "year_of_completion", "experience_range", "subjects",
+            "id_number", "documents",
         )
 
     def get_user_name(self, obj):
@@ -684,3 +697,30 @@ class TeacherTrackApprovalSerializer(serializers.ModelSerializer):
 
     def get_track_label(self, obj):
         return "Academy (Faculty)"
+
+    def get_experience_range(self, obj):
+        return getattr(obj, "experience_range", "") or ""
+
+    def get_subjects(self, obj):
+        # Best-effort: pull subjects from the latest course application if present.
+        app = getattr(obj, "course_applications", None)
+        if app is not None:
+            latest = app.order_by("-created_at").first() if hasattr(app, "order_by") else None
+            if latest:
+                return getattr(latest, "subject", "") or ""
+        return getattr(obj, "field_of_study", "") or ""
+
+    def _url(self, request, filefield):
+        if not filefield:
+            return None
+        url = filefield.url
+        return request.build_absolute_uri(url) if request else url
+
+    def get_documents(self, obj):
+        request = self.context.get("request")
+        return {
+            "signed_agreement":          self._url(request, obj.signed_agreement),
+            "id_proof_front":            self._url(request, obj.id_proof_front),
+            "id_proof_back":             self._url(request, obj.id_proof_back),
+            "qualification_certificate": self._url(request, obj.qualification_certificate),
+        }

@@ -539,3 +539,105 @@ class CreateOrderView(APIView):
             "slot_key":      slot_key,
             "scheduled_for": scheduled_for,
         }, status=status.HTTP_201_CREATED)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ADMIN: Skill-expert roster + suspend (delist + block bookings + pause ads)
+# ═══════════════════════════════════════════════════════════════════════════
+def _expert_email(ep):
+    tp = getattr(ep, "teacher_profile", None)
+    user = getattr(tp, "user", None)
+    return getattr(user, "email", "") if user else ""
+
+
+def _sub_summary(ep):
+    sub = getattr(ep, "ad_subscription", None)
+    if not sub:
+        return {"status": "none", "active": False, "period_end": None}
+    return {
+        "status": sub.status,
+        "active": sub.is_currently_active(),
+        "period_end": sub.current_period_end,
+    }
+
+
+def _admin_expert_row(ep):
+    return {
+        "id":           str(ep.id),
+        "name":         ep.display_name(),
+        "email":        _expert_email(ep),
+        "category":     ep.category.name if ep.category else None,
+        "headline":     ep.headline,
+        "rating":       float(ep.rating) if ep.rating is not None else None,
+        "sessions":     ep.sessions_count,
+        "reach":        ep.reach_count,
+        "is_listed":    ep.is_listed,
+        "is_featured":  ep.is_featured,
+        "is_suspended": ep.is_suspended,
+        "subscription": _sub_summary(ep),
+    }
+
+
+class AdminExpertListView(APIView):
+    """GET /skill/admin/experts/  → every expert (incl. suspended), for the admin roster."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        qs = (ExpertProfile.objects
+              .select_related("category", "teacher_profile__user")
+              .order_by("-is_listed", "-rating", "-sessions_count"))
+        return Response([_admin_expert_row(ep) for ep in qs])
+
+
+class AdminExpertDetailView(APIView):
+    """GET /skill/admin/experts/<id>/  → full detail for the expert profile modal."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, expert_id):
+        ep = (ExpertProfile.objects
+              .select_related("category", "teacher_profile__user")
+              .filter(id=expert_id).first())
+        if not ep:
+            raise NotFound("Expert not found.")
+        row = _admin_expert_row(ep)
+        row.update({
+            "bio":          ep.bio,
+            "skill_tags":   ep.skill_tags or [],
+            "availability": ep.availability,
+        })
+        return Response(row)
+
+
+class AdminExpertSuspendView(APIView):
+    """
+    POST /skill/admin/experts/<id>/suspend/   { "action": "suspend" | "unsuspend" }
+
+    Suspend = all three: delist from the marketplace, block new bookings
+    (booking requires is_listed=True), and pause advertising (cancel the ad
+    subscription + unfeature). Unsuspend re-lists if the profile is complete.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, expert_id):
+        ep = ExpertProfile.objects.filter(id=expert_id).first()
+        if not ep:
+            raise NotFound("Expert not found.")
+        action = (request.data.get("action") or "suspend").lower()
+
+        if action == "suspend":
+            ep.is_suspended = True
+            ep.is_listed = False        # delists + blocks new bookings
+            ep.is_featured = False       # stops advertising
+            ep.save(update_fields=["is_suspended", "is_listed", "is_featured", "updated_at"])
+            sub = getattr(ep, "ad_subscription", None)
+            if sub and sub.status not in ("cancelled", "expired"):
+                sub.cancel()             # pauses the ad subscription + decays reach
+        elif action == "unsuspend":
+            ep.is_suspended = False
+            ep.save(update_fields=["is_suspended", "updated_at"])
+            ep.sync_listing(save=True)   # re-list if the profile is complete
+        else:
+            raise ValidationError("action must be 'suspend' or 'unsuspend'.")
+
+        ep.refresh_from_db()
+        return Response({"ok": True, **_admin_expert_row(ep)})

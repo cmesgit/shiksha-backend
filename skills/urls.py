@@ -8,6 +8,7 @@ from .views import (
     CategoryListView, ExpertListView, ExpertDetailView, StudentRegisterView,
     TeacherApplicationCreateView, InterviewSlotListView, ScheduleInterviewView,
     ReviewQueueView, SubmitEvaluationView, SessionRequestView, CreateOrderView,
+    AdminExpertListView, AdminExpertDetailView, AdminExpertSuspendView,   # NEW
 )
 from .course_views import (
     PublicCourseListView, PublicCourseDetailView,
@@ -110,6 +111,9 @@ urlpatterns = [
     # ── Admin ─────────────────────────────────────────────────────────────────
     path("admin/interview-queue/",                               ReviewQueueView.as_view()),
     path("admin/sessions/",                                      AdminSessionListView.as_view()),
+    path("admin/experts/",                                       AdminExpertListView.as_view()),
+    path("admin/experts/<uuid:expert_id>/",                      AdminExpertDetailView.as_view()),
+    path("admin/experts/<uuid:expert_id>/suspend/",              AdminExpertSuspendView.as_view()),
     path("admin/users/<uuid:user_id>/skill-profile/",            AdminUserSkillProfileView.as_view()),
     path("admin/interviews/<uuid:application_id>/evaluation/",   SubmitEvaluationView.as_view()),
     path("admin/courses/",                                       AdminSkillCourseQueueView.as_view()),
