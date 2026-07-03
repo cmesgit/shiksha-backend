@@ -1,3 +1,12 @@
+# PLACEMENT: backend/backend/chat/services.py   (FULL FILE — REPLACE THE WHOLE FILE)
+# DEPLOY:    /app/shiksha-backend/chat/services.py
+#
+# This is your original services.py with ONE function changed:
+# learner_in_course() now gates class-chat on the live subscription (the same
+# rule that gates course content) instead of the Enrollment row, which stayed
+# ACTIVE after a subscription expired. Everything else is byte-identical.
+# Replaces the one-function note from patch set 3. No migration needed.
+
 # PLACEMENT: backend/backend/chat/services.py   (REPLACE THE WHOLE FILE)
 # DEPLOY:    /app/shiksha-backend/chat/services.py
 """
@@ -226,14 +235,34 @@ def participant_roles(participant):
 # to be attached, so a stranger can't join a class they're not part of.
 
 def learner_in_course(lp, course_id):
-    try:
-        from enrollments.models import Enrollment
-        return Enrollment.objects.filter(
-            learner_profile=lp, course_id=course_id, status=Enrollment.STATUS_ACTIVE
-        ).exists()
-    except Exception:
-        return False
+    """A learner may join a course's class-chat iff they hold LIVE access to
+    the course. Access is defined by an active, non-expired subscription — the
+    SAME rule that gates course content (has_active_subscription) — so chat
+    membership never drifts from content access when a subscription lapses
+    (patch set 3: previously this checked the Enrollment row, which stayed
+    ACTIVE after the subscription expired).
 
+    Falls back to the raw ACTIVE-enrollment check only if the subscription
+    helper can't be imported (keeps rooms working during partial deploys).
+    """
+    try:
+        from courses.models import Course
+        from enrollments.services import has_active_subscription
+        course = Course.objects.filter(id=course_id).first()
+        if course is None:
+            return False
+        return has_active_subscription(
+            user=lp.account, course=course, learner_profile=lp
+        )
+    except Exception:
+        try:
+            from enrollments.models import Enrollment
+            return Enrollment.objects.filter(
+                learner_profile=lp, course_id=course_id,
+                status=Enrollment.STATUS_ACTIVE,
+            ).exists()
+        except Exception:
+            return False
 
 def teacher_in_course(tp, course_id):
     try:
