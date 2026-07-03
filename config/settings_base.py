@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     "global_settings",
     "chat",
     "forum",
+    "notifications",
 ]
 
 MIDDLEWARE = [
