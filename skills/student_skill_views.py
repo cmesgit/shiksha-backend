@@ -227,12 +227,24 @@ class StudentSkillDashboardView(APIView):
                     "rate":       s.expert.rate_rupees,
                 })
 
+        # ── Session-based stats ──────────────────────────────────────
+        # The learner Skill Dev dashboard is now 1-on-1 only (no self-paced
+        # courses), so the headline stats are session/tutor based.
+        completed_minutes = sum(s.duration_mins for s in past)
+        session_hours     = round(completed_minutes / 60, 1)
+
         return Response({
             "stats": {
+                # Primary — session/tutor focused (drives the learner dashboard)
+                "tutors_booked":  len(experts_data),
+                "sessions_done":  len(past),
+                "session_hours":  session_hours,
+                "upcoming_count": len(upcoming_data),
+                # Legacy course fields — retained for backward compatibility
+                # with any consumer still reading them.
                 "enrolled_count": len(in_progress),
                 "lessons_done":   total_lessons_done,
                 "hours_learned":  hours_learned,
-                "upcoming_count": len(upcoming_data),
             },
             "skill_courses":      skill_courses,
             "completed_courses":  completed_courses,
