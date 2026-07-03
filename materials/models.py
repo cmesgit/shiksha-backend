@@ -1,3 +1,22 @@
+# PLACEMENT: backend/backend/materials/models.py   (REPLACE THE WHOLE FILE)
+# DEPLOY:    /app/shiksha-backend/materials/models.py
+#
+# WHAT CHANGED vs the previous version
+# ────────────────────────────────────
+# MaterialFile gains `uploaded_by` (nullable FK → User). Without it, the
+# two-step upload flow (POST /files/upload/ → POST /materials/upload/ with
+# file_ids) had no way to verify that the person attaching a temp file is the
+# person who uploaded it — any authenticated user who learned a file's UUID
+# could claim it, or re-parent a file already attached to someone else's
+# material. Views now filter claims on (material IS NULL, uploaded_by = me).
+#
+# Migration required after deploying this file:
+#   python manage.py makemigrations materials
+#   python manage.py migrate materials
+#
+# The field is nullable so existing rows migrate cleanly; the views treat
+# legacy NULL-uploader temp files as claimable by anyone (grandfathered).
+
 import uuid
 from django.db import models
 from django.conf import settings
@@ -45,6 +64,17 @@ class MaterialFile(models.Model):
         related_name="files",
         null=True,
         blank=True
+    )
+
+    # Who uploaded this file (set at temp-upload time). Used to stop other
+    # users from claiming someone else's pending upload. Nullable for rows
+    # created before this field existed.
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_material_files",
     )
 
     file = models.FileField(

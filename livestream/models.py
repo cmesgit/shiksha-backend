@@ -1,3 +1,11 @@
+# PLACEMENT: backend/backend/livestream/models.py   (FULL FILE — REPLACE THE WHOLE FILE)
+# DEPLOY:    /app/shiksha-backend/livestream/models.py
+#
+# This is your original models.py with ONE addition: LiveSession.sync_status()
+# (inserted right after computed_status). Nothing else is changed. It replaces
+# the earlier "add this method" note from patch set 3. No migration needed —
+# no fields changed.
+
 import uuid
 from django.db import models
 from django.conf import settings
@@ -130,6 +138,40 @@ class LiveSession(models.Model):
             return self.STATUS_SCHEDULED
 
         return self.STATUS_WAITING
+
+    def sync_status(self, *, save=True):
+        """Persist the derived status to the stored column.
+
+        computed_status() stays the READ path (pure, derived); this is the
+        WRITE path that keeps the `status` column honest, called by the
+        1-minute Celery sweep (livestream.tasks.sync_open_session_statuses)
+        so the reconnection ladder (RECONNECTING → PAUSED → COMPLETED)
+        advances on a timer instead of only when someone reads the session,
+        and raw `status=` queries agree with what users see.
+
+        Returns (changed: bool, new_status: str). When `changed` is True the
+        caller should broadcast the update. Terminal states (COMPLETED /
+        CANCELLED) are never moved off of.
+        """
+        # Never resurrect a terminal session.
+        if self.status in (self.STATUS_COMPLETED, self.STATUS_CANCELLED):
+            return (False, self.status)
+
+        new_status = self.computed_status()
+        if new_status == self.status:
+            return (False, self.status)
+
+        self.status = new_status
+        # A session that has reached COMPLETED via the ladder should also drop
+        # the reconnect timer so it can't be re-read as RECONNECTING/PAUSED.
+        if new_status == self.STATUS_COMPLETED:
+            self.teacher_left_at = None
+            if save:
+                self.save(update_fields=["status", "teacher_left_at"])
+        elif save:
+            self.save(update_fields=["status"])
+        return (True, new_status)
+
 
 
 class LiveSessionChatMessage(models.Model):

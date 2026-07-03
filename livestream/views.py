@@ -1,573 +1,409 @@
-from django.conf import settings
-from .serializers import (
-    LiveSessionCreateSerializer,
-    LiveSessionListSerializer,
-)
-from .services.token import generate_livekit_token
-from .models import LiveSession, LiveSessionAttendance
-from enrollments.models import Enrollment
-from livekit.api import WebhookReceiver, TokenVerifier
-from rest_framework.response import Response
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import PermissionDenied
-from rest_framework.permissions import IsAuthenticated
-from rest_framework import generics, status
-from django.db.models import Q
+# PLACEMENT: backend/backend/materials/views.py   (REPLACE THE WHOLE FILE)
+# DEPLOY:    /app/shiksha-backend/materials/views.py
+#
+# WHAT CHANGED vs the previous version
+# ────────────────────────────────────
+# The old views were IsAuthenticated-only everywhere. That meant:
+#   • ANY logged-in user (students included) could upload materials to any
+#     chapter, create new chapters via `custom_chapter`, and DELETE any
+#     material on the platform.
+#   • StudentSubjectMaterials had no enrollment check — any account could list
+#     and download every subject's files without paying/enrolling.
+#   • Temp-file claiming (`file_ids`) fetched by bare id: a user could claim
+#     someone else's pending upload, or re-parent a file already attached to
+#     another material (silently detaching it).
+#
+# Fixes in this version:
+#   1. WRITE gate `_can_manage_subject`: staff/superuser OR a SubjectTeacher
+#      row for that subject. Applies to upload + delete (delete additionally
+#      allows the original uploader).
+#   2. READ gates: teacher/staff via the same check; students via the platform
+#      access rule (active learner profile + has_active_subscription), matching
+#      how livestream join gates access. Denies use the same 402 + lock_payload
+#      shape the live-class join returns, so the frontends can reuse the lock UI.
+#   3. Temp-file claiming filters on material__isnull=True AND
+#      uploaded_by ∈ {me, NULL(legacy)}; all ids are validated up front and the
+#      material create + claim happens in one atomic transaction (no orphan
+#      materials on a bad id).
+#   4. Custom chapters are get-or-created case-insensitively (no duplicate
+#      "Chapter 5" rows from repeated uploads).
+#   5. Enrolled-student notifications fire via transaction.on_commit, are
+#      de-duplicated per account, and go through the (now fixed)
+#      push_ws_notification → user_updates_<id> pipeline.
+#   6. Deleting a material also deletes its files from storage (previously the
+#      DB rows cascaded but the bytes stayed on disk forever).
+
+import uuid as uuid_lib
+
 from django.db import transaction
-from django.http import HttpResponse
-from django.views.decorators.csrf import csrf_exempt
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
-import logging
-from datetime import timedelta
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
-from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 
-from livestream.services.session_state import set_session_state
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.parsers import MultiPartParser, FormParser
 
+from courses.models import Subject, Chapter, SubjectTeacher
+from enrollments.services import has_active_subscription, lock_payload
+from accounts.auth_flow import get_active_profile
+from livestream.services.notifications import push_ws_notification
 
-logger = logging.getLogger(__name__)
-
-
-# =========================
-# BROADCAST HELPERS
-# =========================
-
-def broadcast_session_update(session):
-    """Broadcast status change to everyone inside the session room."""
-    channel_layer = get_channel_layer()
-
-    # Update Redis state cache (safe — never breaks if Redis is down)
-    try:
-        set_session_state(session)
-    except Exception:
-        pass
-
-    if not channel_layer:
-        return
-
-    async_to_sync(channel_layer.group_send)(
-        f"session_{session.id}",
-        {
-            "type": "session_update",
-            "data": {
-                "status": session.computed_status(),
-                "teacher_left_at": (
-                    session.teacher_left_at.isoformat()
-                    if session.teacher_left_at else None
-                ),
-            },
-        },
-    )
-
-    # Also notify the session list page
-    broadcast_course_sessions_update(session)
+from .models import StudyMaterial, MaterialFile
+from .serializers import StudyMaterialSerializer
+from .validators import validate_material_file
 
 
-def broadcast_course_sessions_update(session):
-    """Broadcast session changes to the session list page (LiveSessions.jsx)."""
-    channel_layer = get_channel_layer()
-    if not channel_layer:
-        return
-
-    async_to_sync(channel_layer.group_send)(
-        f"course_sessions_{session.course_id}",
-        {
-            "type": "session_list_update",
-            "data": {
-                "id": str(session.id),
-                "title": session.title,
-                "start_time": session.start_time.isoformat(),
-                "end_time": session.end_time.isoformat(),
-                "status": session.status,
-                "teacher_left_at": (
-                    session.teacher_left_at.isoformat()
-                    if session.teacher_left_at else None
-                ),
-                "subject_id": str(session.subject_id),
-                "teacher": session.created_by.email if session.created_by else "",
-            },
-        }
-    )
+# True once the uploaded_by column exists on MaterialFile (post-migration).
+# Lets this file deploy before/after the migration without crashing.
+_HAS_UPLOADER = any(
+    getattr(f, "name", "") == "uploaded_by" for f in MaterialFile._meta.get_fields()
+)
 
 
-# =========================
-# STUDENT SESSION LIST
-# =========================
+# ===============================
+# ACCESS HELPERS
+# ===============================
 
-class StudentLiveSessionListView(generics.ListAPIView):
-    serializer_class = LiveSessionListSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        user = self.request.user
-
-        # Do NOT hard-require the STUDENT *role* here. A teacher account browsing
-        # in learner context has a SELF learner profile but no STUDENT role (see
-        # signup_serializer._setup_teacher, which never adds it), and the sibling
-        # learner lists — private student_sessions and group my_group_sessions —
-        # don't gate on the role either; they scope by ownership/enrollment.
-        # Gating live sessions on has_role("STUDENT") 403'd those users, which the
-        # UI surfaced as "Unable to load sessions" while private & group loaded
-        # fine. Access is already correctly scoped by the active-enrollment filter
-        # below, so a user with no active enrollment just gets an empty list
-        # instead of an error.
-
-        course_id = self.request.query_params.get("course_id")
-        subject_id = self.request.query_params.get("subject_id")
-
-        active_courses = Enrollment.objects.filter(
-            user=user,
-            status=Enrollment.STATUS_ACTIVE
-        ).values_list("course_id", flat=True)
-
-        queryset = (
-            LiveSession.objects
-            .filter(course_id__in=active_courses)
-            .select_related("course", "subject", "created_by")
-        )
-
-        if course_id:
-            queryset = queryset.filter(course_id=course_id)
-
-        if subject_id:
-            queryset = queryset.filter(subject_id=subject_id)
-
-        now = timezone.now()
-        cutoff = now - timedelta(hours=24)
-        queryset = queryset.filter(end_time__gte=cutoff)
-
-        return queryset.order_by("start_time")
+def _can_manage_subject(user, subject):
+    """May this user upload/delete materials for this subject?
+    Staff/superusers always; otherwise only teachers assigned to the subject."""
+    if user.is_staff or user.is_superuser:
+        return True
+    return SubjectTeacher.objects.filter(subject=subject, teacher=user).exists()
 
 
-# =========================
-# TEACHER SESSION LIST
-# =========================
+def _student_read_block(request, subject):
+    """Return an error Response if this request may NOT read the subject's
+    materials as a student, else None.
 
-class TeacherLiveSessionListView(generics.ListAPIView):
-    serializer_class = LiveSessionListSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        user = self.request.user
-        subject_id = self.request.query_params.get("subject_id")
-
-        if not user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
-
-        now = timezone.now()
-        cutoff = now - timedelta(days=90)
-
-        if subject_id:
-            if not user.subject_assignments.filter(subject_id=subject_id).exists():
-                raise PermissionDenied("Not assigned to this subject.")
-
-            return (
-                LiveSession.objects
-                .filter(subject_id=subject_id)
-                .filter(end_time__gte=cutoff)
-                .select_related("course", "subject", "created_by")
-                .order_by("start_time")
-            )
-
-        assigned_subject_ids = user.subject_assignments.values_list(
-            "subject_id", flat=True)
-
-        cutoff = now - timedelta(days=90)
-        return (
-            LiveSession.objects
-            .filter(subject_id__in=assigned_subject_ids)
-            .filter(end_time__gte=cutoff)
-            .select_related("course", "subject", "created_by")
-            .order_by("start_time")
-        )
-
-
-# =========================
-# JOIN SESSION
-# =========================
-
-from django_ratelimit.decorators import ratelimit
-from django.utils.decorators import method_decorator
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@ratelimit(key="user", rate="10/m", method="POST", block=True)
-def join_live_session(request, session_id):
+    Mirrors the livestream join gate: an active learner profile must hold a
+    live subscription for the subject's course. Staff and the subject's
+    teachers pass without a subscription.
+    """
     user = request.user
-    session = get_object_or_404(LiveSession, id=session_id)
-    now = timezone.now()
+    if _can_manage_subject(user, subject):
+        return None
 
-    if session.status == LiveSession.STATUS_CANCELLED:
-        return Response({"detail": "Session was cancelled."}, status=400)
-
-    if session.status == LiveSession.STATUS_COMPLETED:
-        return Response({"detail": "Session has ended."}, status=400)
-
-    if now >= session.end_time:
-        session.status = LiveSession.STATUS_COMPLETED
-        session.save(update_fields=["status"])
-        return Response({"detail": "Session has ended."}, status=400)
-
-    if session.teacher_left_at:
-        diff = now - session.teacher_left_at
-        if diff > timedelta(minutes=60):
-            session.status = LiveSession.STATUS_COMPLETED
-            session.teacher_left_at = None
-            session.save(update_fields=["status", "teacher_left_at"])
-            return Response({"detail": "Session has ended."}, status=400)
-
-    # ── Student ──
-    if user.has_role("STUDENT"):
-        from enrollments.services import has_active_subscription, lock_payload
-        from accounts.auth_flow import get_active_profile
-
-        learner = get_active_profile(request)
-        if learner is None:
-            return Response(
-                {"detail": "Select a learner profile to join.", "lock_reason": "no_learner_profile"},
-                status=403,
-            )
-
-        if not has_active_subscription(user=user, course=session.course, learner_profile=learner):
-            return Response(lock_payload(user=user, course=session.course, learner_profile=learner), status=402)
-
-        # Recheck subscription hasn't expired or been revoked mid-session
-        if session.status in [LiveSession.STATUS_LIVE, LiveSession.STATUS_PAUSED]:
-            if not has_active_subscription(user=user, course=session.course, learner_profile=learner):
-                return Response(lock_payload(user=user, course=session.course, learner_profile=learner), status=402)
-
-        if now < session.start_time - timedelta(minutes=15):
-            return Response({"detail": "Too early"}, status=403)
-
-        if session.teacher_left_at:
-            if now - session.teacher_left_at > timedelta(minutes=60):
-                return Response({"detail": "Session ended"}, status=403)
-
-        is_teacher = False
-
-    # ── Teacher ──
-    elif user.has_role("TEACHER"):
-        if not session.subject.subject_teachers.filter(teacher=user).exists():
-            return Response({"detail": "Not assigned"}, status=403)
-
-        is_creator = str(session.created_by_id) == str(user.id)
-        is_teacher = is_creator
-
-        # Revive session if teacher reconnects within 30 min
-        if is_creator and session.teacher_left_at:
-            if now <= session.teacher_left_at + timedelta(minutes=30):
-                session.teacher_left_at = None
-                session.status = LiveSession.STATUS_LIVE
-                session.save(update_fields=["teacher_left_at", "status"])
-
-    else:
-        return Response({"detail": "Unauthorized"}, status=403)
-
-    token = generate_livekit_token(
-        user=user,
-        session=session,
-        is_teacher=is_teacher,
-    )
-
-    return Response({
-        "livekit_url": settings.LIVEKIT_URL,
-        "token": token,
-        "room": session.room_name,
-        "role": "PRESENTER" if is_teacher else "STUDENT",
-    })
-
-
-# =========================
-# CREATE SESSION
-# =========================
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def create_live_session(request):
-    serializer = LiveSessionCreateSerializer(
-        data=request.data,
-        context={"request": request}
-    )
-
-    if serializer.is_valid():
-        session = serializer.save()
-        broadcast_course_sessions_update(session)
+    learner = get_active_profile(request)
+    if learner is None:
         return Response(
-            {
-                "id": session.id,
-                "room": session.room_name,
-                "status": session.status,
-            },
-            status=status.HTTP_201_CREATED
+            {"detail": "Select a learner profile to view materials.",
+             "lock_reason": "no_learner_profile"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if not has_active_subscription(
+        user=user, course=subject.course, learner_profile=learner
+    ):
+        return Response(
+            lock_payload(user=user, course=subject.course, learner_profile=learner),
+            status=status.HTTP_402_PAYMENT_REQUIRED,
+        )
+    return None
+
+
+def _parse_uuid_list(raw_ids):
+    """Validate a list of uuid strings. Returns (uuids, bad_values)."""
+    good, bad = [], []
+    for raw in raw_ids:
+        try:
+            good.append(uuid_lib.UUID(str(raw)))
+        except (ValueError, TypeError, AttributeError):
+            bad.append(str(raw))
+    return good, bad
+
+
+# ===============================
+# LIST MATERIALS OF A CHAPTER
+# ===============================
+
+class ChapterMaterials(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, chapter_id):
+        chapter = get_object_or_404(
+            Chapter.objects.select_related("subject__course"), id=chapter_id
+        )
+        block = _student_read_block(request, chapter.subject)
+        if block is not None:
+            return block
+
+        materials = (
+            StudyMaterial.objects
+            .filter(chapter=chapter)
+            .prefetch_related("files")
+            .order_by("-created_at")
+        )
+        serializer = StudyMaterialSerializer(
+            materials, many=True, context={"request": request}
+        )
+        return Response(serializer.data)
+
+
+# ===============================
+# UPLOAD STUDY MATERIAL
+# ===============================
+
+class UploadStudyMaterial(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        chapter_id = request.data.get("chapter_id")
+        custom_chapter = (request.data.get("custom_chapter") or "").strip()
+
+        # ── Resolve the target chapter + authorize against its subject ──
+        if chapter_id:
+            chapter = get_object_or_404(
+                Chapter.objects.select_related("subject__course"), id=chapter_id
+            )
+            subject = chapter.subject
+            if not _can_manage_subject(request.user, subject):
+                return Response(
+                    {"detail": "Only teachers of this subject can upload materials."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        elif custom_chapter:
+            subject_id = request.data.get("subject_id")
+            if not subject_id:
+                return Response(
+                    {"detail": "Subject is required for custom chapter"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            subject = get_object_or_404(
+                Subject.objects.select_related("course"), id=subject_id
+            )
+            if not _can_manage_subject(request.user, subject):
+                return Response(
+                    {"detail": "Only teachers of this subject can upload materials."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            # Case-insensitive get-or-create: repeated uploads with the same
+            # custom title reuse one chapter instead of stacking duplicates.
+            chapter = Chapter.objects.filter(
+                subject=subject, title__iexact=custom_chapter
+            ).first()
+            if chapter is None:
+                chapter = Chapter.objects.create(subject=subject, title=custom_chapter)
+        else:
+            return Response(
+                {"detail": "Chapter or custom chapter required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        title = (request.data.get("title") or "").strip()
+        raw_file_ids = request.data.getlist("file_ids")
+
+        if not title:
+            return Response({"detail": "Title is required"}, status=400)
+        if not raw_file_ids:
+            return Response({"detail": "At least one file required"}, status=400)
+
+        file_ids, bad = _parse_uuid_list(raw_file_ids)
+        if bad:
+            return Response(
+                {"detail": f"Invalid file id(s): {', '.join(bad)}"}, status=400
+            )
+        file_ids = list(dict.fromkeys(file_ids))  # de-dupe, keep order
+
+        # ── Claimable = unattached + uploaded by me (NULL = legacy rows) ──
+        claim_qs = MaterialFile.objects.filter(id__in=file_ids, material__isnull=True)
+        if _HAS_UPLOADER:
+            claim_qs = claim_qs.filter(
+                Q(uploaded_by=request.user) | Q(uploaded_by__isnull=True)
+            )
+        claimable_ids = set(claim_qs.values_list("id", flat=True))
+        missing = [str(fid) for fid in file_ids if fid not in claimable_ids]
+        if missing:
+            return Response(
+                {"detail": (
+                    "Some files can't be attached (not found, already attached, "
+                    "or uploaded by another user): " + ", ".join(missing)
+                )},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Create material + claim files atomically ──
+        with transaction.atomic():
+            material = StudyMaterial.objects.create(
+                chapter=chapter,
+                title=title,
+                description=request.data.get("description", ""),
+                uploaded_by=request.user,
+            )
+            MaterialFile.objects.filter(id__in=file_ids).update(material=material)
+
+            # ── Notify enrolled students AFTER the commit succeeds ──
+            course = subject.course
+            chapter_title = chapter.title
+            subject_name = subject.name
+            material_id = str(material.id)
+
+            def _notify():
+                from enrollments.models import Enrollment
+                user_ids = set(
+                    Enrollment.objects.filter(
+                        course=course, status=Enrollment.STATUS_ACTIVE
+                    ).values_list("user_id", flat=True)
+                )
+                for uid in user_ids:
+                    push_ws_notification(uid, {
+                        "type": "material",
+                        "title": f"New study material: {title}",
+                        "chapter": chapter_title,
+                        "subject": subject_name,
+                        "id": material_id,
+                    })
+
+            transaction.on_commit(_notify)
+
+        serializer = StudyMaterialSerializer(material, context={"request": request})
+        return Response(serializer.data, status=201)
+
+
+# ===============================
+# DELETE MATERIAL
+# ===============================
+
+class DeleteStudyMaterial(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, material_id):
+        material = get_object_or_404(
+            StudyMaterial.objects.select_related("chapter__subject"),
+            id=material_id,
         )
 
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        is_owner = material.uploaded_by_id == request.user.id
+        if not (is_owner or _can_manage_subject(request.user, material.chapter.subject)):
+            return Response(
+                {"detail": "You can only delete materials you uploaded, or "
+                           "materials in subjects you teach."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
+        # Remove the bytes from storage, then the rows (CASCADE handles the
+        # MaterialFile rows; storage files are NOT cascaded by Django).
+        for mf in material.files.all():
+            try:
+                mf.file.delete(save=False)
+            except Exception:
+                pass  # a missing blob must not block the delete
+        material.delete()
 
-# =========================
-# CANCEL SESSION
-# =========================
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def cancel_live_session(request, session_id):
-    user = request.user
-    session = get_object_or_404(LiveSession, id=session_id)
-
-    if not user.has_role("TEACHER"):
-        return Response({"detail": "Only teachers can cancel sessions."}, status=403)
-
-    if session.created_by != user:
-        return Response({"detail": "You can only cancel your own sessions."}, status=403)
-
-    if session.status == LiveSession.STATUS_CANCELLED:
-        return Response({"detail": "Session is already cancelled."}, status=400)
-
-    if session.status == LiveSession.STATUS_COMPLETED:
-        return Response({"detail": "Cannot cancel a completed session."}, status=400)
-
-    if timezone.now() >= session.start_time:
-        return Response({"detail": "Cannot cancel a session that has already started. Use End instead."}, status=400)
-
-    session.status = LiveSession.STATUS_CANCELLED
-    session.save(update_fields=["status"])
-    broadcast_course_sessions_update(session)
-
-    return Response({"detail": "Session cancelled successfully."})
-
-
-# =========================
-# END SESSION
-# =========================
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def end_live_session(request, session_id):
-    user = request.user
-    session = get_object_or_404(LiveSession, id=session_id)
-
-    if not user.has_role("TEACHER"):
-        return Response({"detail": "Only teachers can end sessions."}, status=403)
-
-    if str(session.created_by_id) != str(user.id):
-        return Response({"detail": "Only the session creator can end it."}, status=403)
-
-    if session.status == LiveSession.STATUS_COMPLETED:
-        return Response({"detail": "Session already completed."}, status=400)
-
-    if session.status == LiveSession.STATUS_CANCELLED:
-        return Response({"detail": "Session is cancelled."}, status=400)
-
-    session.status = LiveSession.STATUS_COMPLETED
-    session.teacher_left_at = None
-    session.save(update_fields=["status", "teacher_left_at"])
-    broadcast_session_update(session)
-    return Response({"detail": "Session ended.", "status": "COMPLETED"})
-
-
-# =========================
-# PAUSE / RESUME SESSION
-# =========================
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def pause_live_session(request, session_id):
-    user = request.user
-    session = get_object_or_404(LiveSession, id=session_id)
-
-    if not user.has_role("TEACHER"):
-        return Response({"detail": "Only teachers can pause sessions."}, status=403)
-
-    if str(session.created_by_id) != str(user.id):
-        return Response({"detail": "Only the session creator can pause."}, status=403)
-
-    if session.status == LiveSession.STATUS_CANCELLED:
-        return Response({"detail": "Cannot pause a cancelled session."}, status=400)
-
-    if session.status == LiveSession.STATUS_COMPLETED:
-        return Response({"detail": "Cannot pause a completed session."}, status=400)
-
-    if session.status == LiveSession.STATUS_PAUSED and not session.teacher_left_at:
-        # Resume
-        session.status = LiveSession.STATUS_LIVE
-        session.teacher_left_at = None
-        session.save(update_fields=["status", "teacher_left_at"])
-        broadcast_session_update(session)
-        return Response({"detail": "Session resumed.", "status": "LIVE"})
-
-    # Pause — don't set teacher_left_at so the reconnect timer doesn't start
-    session.status = LiveSession.STATUS_PAUSED
-    session.teacher_left_at = None
-    session.save(update_fields=["status", "teacher_left_at"])
-    broadcast_session_update(session)
-    return Response({"detail": "Session paused.", "status": "PAUSED"})
-
-
-# =========================
-# SESSION DETAIL
-# =========================
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def live_session_detail(request, session_id):
-    session = get_object_or_404(LiveSession, id=session_id)
-    user = request.user
-
-    if not user.has_role("TEACHER"):
-        return Response({"detail": "Only teachers allowed."}, status=403)
-
-    if not session.subject.subject_teachers.filter(teacher=user).exists():
-        return Response({"detail": "Not assigned to this subject."}, status=403)
-
-    from livestream.serializers import LiveSessionListSerializer
-    session_data = LiveSessionListSerializer(session, context={"request": request}).data
-
-    attendance = LiveSessionAttendance.objects.filter(session=session).select_related("user")
-    attendance_data = [
-        {
-            "user_name": a.user.get_full_name() if hasattr(a.user, "get_full_name") else "",
-            "user_email": a.user.email,
-            "joined_at": a.joined_at.isoformat() if a.joined_at else None,
-            "left_at": a.left_at.isoformat() if a.left_at else None,
-        }
-        for a in attendance
-    ]
-
-    return Response({"session": session_data, "attendance": attendance_data})
-
-
-# =========================
-# LIVEKIT WEBHOOK
-# =========================
-
-@csrf_exempt
-def livekit_webhook(request):
-    if request.method != "POST":
-        return HttpResponse(status=405)
-
-    receiver = WebhookReceiver(
-        TokenVerifier(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
-    )
-
-    try:
-        event = receiver.receive(
-            request.body.decode("utf-8"),
-            request.headers.get("Authorization"),
+        return Response(
+            {"detail": "Material deleted successfully"},
+            status=status.HTTP_204_NO_CONTENT,
         )
 
-        logger.info(f"LiveKit event: {event.event}")
 
-        handlers = {
-            "participant_joined": _handle_participant_join,
-            "participant_left": _handle_participant_left,
-            "room_started": _handle_room_started,
-            "room_finished": _handle_room_finished,
-        }
+# ===============================
+# LIST MATERIALS OF A SUBJECT (teacher/admin view)
+# ===============================
 
-        handler = handlers.get(event.event)
-        if handler:
-            handler(event)
+class SubjectMaterials(APIView):
+    permission_classes = [IsAuthenticated]
 
-        return HttpResponse(status=200)
+    def get(self, request, subject_id):
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"), id=subject_id
+        )
+        block = _student_read_block(request, subject)
+        if block is not None:
+            return block
 
-    except Exception:
-        logger.exception("Webhook error")
-        return HttpResponse(status=400)
-
-
-@transaction.atomic
-def _handle_participant_join(event):
-    session = LiveSession.objects.filter(room_name=event.room.name).first()
-    if not session:
-        return
-
-    user_id = str(event.participant.identity)
-    User = get_user_model()
-    user = User.objects.filter(id=user_id).first()
-    if not user:
-        return
-
-    LiveSessionAttendance.objects.update_or_create(
-        session=session,
-        user=user,
-        defaults={"joined_at": timezone.now()}
-    )
-
-    session.last_activity_at = timezone.now()
-
-    if str(session.created_by_id) == user_id:
-        session.teacher_left_at = None
-        session.status = LiveSession.STATUS_LIVE
-
-    session.save(update_fields=["teacher_left_at",
-                 "status", "last_activity_at"])
-    broadcast_session_update(session)
-
-    # Notify enrolled students when teacher goes live
-    if str(session.created_by_id) == user_id:
-        from livestream.services.notifications import push_ws_notification
-        students = Enrollment.objects.filter(
-            course=session.course,
-            status=Enrollment.STATUS_ACTIVE
-        ).select_related("user")
-        for enrollment in students:
-            push_ws_notification(enrollment.user.id, {
-                "type": "live_session",
-                "title": f"🔴 {session.title} is now LIVE!",
-                "session_id": str(session.id),
-                "start_time": session.start_time.isoformat(),
-            })
+        materials = (
+            StudyMaterial.objects
+            .filter(chapter__subject=subject)
+            .prefetch_related("files")
+            .order_by("-created_at")
+        )
+        serializer = StudyMaterialSerializer(
+            materials, many=True, context={"request": request}
+        )
+        return Response(serializer.data)
 
 
-@transaction.atomic
-def _handle_participant_left(event):
-    session = LiveSession.objects.filter(room_name=event.room.name).first()
-    if not session:
-        return
+# ===============================
+# STUDENT SUBJECT MATERIALS
+# ===============================
 
-    user_id = str(event.participant.identity)
-    User = get_user_model()
-    user = User.objects.filter(id=user_id).first()
-    if not user:
-        return
+class StudentSubjectMaterials(APIView):
+    permission_classes = [IsAuthenticated]
 
-    attendance = LiveSessionAttendance.objects.filter(
-        session=session,
-        user=user
-    ).first()
+    def get(self, request, subject_id):
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"), id=subject_id
+        )
+        block = _student_read_block(request, subject)
+        if block is not None:
+            return block
 
-    if attendance:
-        attendance.left_at = timezone.now()
-        attendance.save()
-
-    session.last_activity_at = timezone.now()
-
-    if str(session.created_by_id) == user_id:
-        # Only set reconnecting if session was LIVE — don't override manual PAUSED
-        if session.status != LiveSession.STATUS_PAUSED:
-            session.teacher_left_at = timezone.now()
-            session.status = LiveSession.STATUS_RECONNECTING
-        # If manually paused, teacher just left — keep PAUSED, no timer
-
-    session.save(update_fields=["teacher_left_at",
-                 "status", "last_activity_at"])
-    broadcast_session_update(session)
+        materials = (
+            StudyMaterial.objects
+            .filter(chapter__subject=subject)
+            .select_related("chapter")
+            .prefetch_related("files")
+            .order_by("-created_at")
+        )
+        serializer = StudyMaterialSerializer(
+            materials, many=True, context={"request": request}
+        )
+        return Response(serializer.data)
 
 
-def _handle_room_started(event):
-    for session in LiveSession.objects.filter(room_name=event.room.name):
-        session.status = LiveSession.STATUS_LIVE
-        session.save(update_fields=["status"])
-        broadcast_session_update(session)
+# ===============================
+# MATERIAL DETAIL
+# ===============================
+
+class StudyMaterialDetail(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, material_id):
+        material = get_object_or_404(
+            StudyMaterial.objects
+            .select_related("chapter__subject__course")
+            .prefetch_related("files"),
+            id=material_id,
+        )
+        block = _student_read_block(request, material.chapter.subject)
+        if block is not None:
+            return block
+
+        serializer = StudyMaterialSerializer(material, context={"request": request})
+        return Response(serializer.data)
 
 
-def _handle_room_finished(event):
-    for session in LiveSession.objects.filter(room_name=event.room.name):
-        # Complete the session regardless of pause state
-        if session.status != LiveSession.STATUS_CANCELLED:
-            session.status = LiveSession.STATUS_COMPLETED
-            session.teacher_left_at = None
-            session.save(update_fields=["status", "teacher_left_at"])
-            broadcast_session_update(session)
+# ===============================
+# TEMP FILE UPLOAD (validated)
+# ===============================
+
+class UploadTempFile(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        file = request.FILES.get("file")
+        if not file:
+            return Response({"detail": "File required"}, status=400)
+
+        try:
+            validate_material_file(file)
+        except DjangoValidationError as e:
+            return Response(
+                {"detail": " ".join(e.messages)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        create_kwargs = {"file": file, "material": None}
+        if _HAS_UPLOADER:
+            create_kwargs["uploaded_by"] = request.user
+
+        temp = MaterialFile.objects.create(**create_kwargs)
+        return Response({
+            "id": str(temp.id),
+            "file_name": temp.filename(),
+            "file_url": temp.file.url,
+        }, status=201)

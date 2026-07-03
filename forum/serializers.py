@@ -44,6 +44,9 @@ class ForumPostSerializer(serializers.ModelSerializer):
     user_has_upvoted = serializers.SerializerMethodField()
 
     def get_user_has_upvoted(self, obj):
+        annotated = getattr(obj, "user_has_upvoted_annotated", None)
+        if annotated is not None:
+            return annotated
         request = self.context.get("request")
         if request and request.user.is_authenticated:
             return obj.upvotes.filter(user=request.user).exists()
@@ -90,6 +93,9 @@ class CommentSerializer(serializers.ModelSerializer):
     user_has_upvoted = serializers.SerializerMethodField()
 
     def get_user_has_upvoted(self, obj):
+        annotated = getattr(obj, "user_has_upvoted_annotated", None)
+        if annotated is not None:
+            return annotated
         request = self.context.get("request")
         if request and request.user.is_authenticated:
             return obj.upvotes.filter(user=request.user).exists()
