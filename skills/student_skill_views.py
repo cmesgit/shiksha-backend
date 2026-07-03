@@ -269,10 +269,13 @@ class StudentSkillExpertsView(APIView):
     def get(self, request):
         qs = ExpertProfile.objects.filter(is_listed=True).select_related(
             "category", "teacher_profile__user"
-        )
+        ).prefetch_related("categories")
         cat = request.query_params.get("cat")
         if cat:
-            qs = qs.filter(category__slug=cat)
+            from django.db.models import Q as _Q
+            qs = qs.filter(
+                _Q(category__slug=cat) | _Q(categories__slug=cat)
+            ).distinct()
         search = (request.query_params.get("search") or "").strip()
         if search:
             qs = qs.filter(headline__icontains=search)
@@ -312,6 +315,9 @@ class StudentSkillExpertsView(APIView):
                 "rating":     float(ep.rating) if ep.rating else None,
                 "rate":       ep.rate_rupees,
                 "cat":        ep.category.slug if ep.category_id else "",
+                # every subject this expert teaches (labels for chips)
+                "subjects":   [c.label for c in ep.categories.all()]
+                              or ([ep.category.label] if ep.category_id else []),
                 "reply":      "~1h",
                 "skills":     ep.skill_tags or [],
                 # location / offline-teaching signals

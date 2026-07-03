@@ -61,6 +61,12 @@ class ExpertProfile(models.Model):
     category = models.ForeignKey(
         SkillCategory, on_delete=models.SET_NULL, null=True, related_name="experts"
     )
+    # An expert can teach MORE THAN ONE subject. `categories` is the full set;
+    # `category` is kept as the primary subject for backward compatibility and
+    # is always synced to the first entry of `categories`.
+    categories = models.ManyToManyField(
+        SkillCategory, blank=True, related_name="multi_experts"
+    )
 
     headline = models.CharField(max_length=160)                # "Web Developer · ex-Infosys"
     skill_tags = models.JSONField(default=list, blank=True)    # ["React", "Node.js"]
@@ -224,8 +230,12 @@ class ExpertProfile(models.Model):
         from . import profile_ops as ops
         lp = self.teacher_profile.user.default_learner_profile()
 
+        has_subjects = bool(self.category_id) or (
+            self.pk and self.categories.exists()
+        )
         missing = ops.expert_missing(
             category_id=self.category_id,
+            has_subjects=has_subjects,
             subject_description=self.subject_description,
             languages=self.languages,
             bio=self.bio,
