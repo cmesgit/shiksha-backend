@@ -832,3 +832,94 @@ class AdminSubjectDeleteView(APIView):
         subject = get_object_or_404(Subject, id=subject_id)
         subject.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# =========================
+# COURSE CATALOG (student-facing "Browse Courses" shop)
+# =========================
+
+class CourseCatalogView(APIView):
+    """Browsable catalog of every course, for the in-dashboard "Browse Courses"
+    shop. Any authenticated learner can read it — enrollment gates a course's
+    *content*, not its listing.
+
+    Each course carries just enough for a shop card: title, description, price,
+    board/stream, a subject count, a small teacher preview, and an
+    ``is_enrolled`` flag so the UI shows courses the learner already owns as
+    enrolled rather than purchasable. Matches the same "active enrollment for
+    this user" rule that /courses/my/ uses, so the two stay in sync.
+
+    Optional query params:
+        ?q=<text>        title / description search
+        ?board=<uuid>    filter to one board
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = (
+            Course.objects
+            .select_related("board", "stream")
+            .annotate(subject_count=Count("subjects", distinct=True))
+            .order_by("board__name", "title")
+        )
+
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q))
+
+        board_id = request.query_params.get("board")
+        if board_id:
+            qs = qs.filter(board_id=board_id)
+
+        enrolled_ids = set(
+            Enrollment.objects
+            .filter(user=request.user, status=Enrollment.STATUS_ACTIVE)
+            .values_list("course_id", flat=True)
+        )
+
+        # One preview teacher per course (the primary, else any), fetched in a
+        # single pass to avoid an N+1 across the catalog.
+        course_ids = [c.id for c in qs]
+        teacher_by_course = {}
+        if course_ids:
+            links = (
+                SubjectTeacher.objects
+                .filter(subject__course_id__in=course_ids)
+                .select_related("teacher", "subject")
+                .order_by("subject__course_id", "order")
+            )
+            for link in links:
+                cid = link.subject.course_id
+                if cid in teacher_by_course:
+                    continue
+                profile = link.teacher.default_learner_profile()
+                name = (
+                    profile.full_name
+                    if profile and getattr(profile, "full_name", "")
+                    else link.teacher.username
+                )
+                teacher_by_course[cid] = name
+
+        data = [
+            {
+                "id": str(c.id),
+                "title": c.title,
+                "description": c.description,
+                "price": c.price,  # paise (₹1 = 100 paise); 0 = free
+                "subscription_duration_days": c.subscription_duration_days,
+                "board": (
+                    {
+                        "id": str(c.board.id),
+                        "name": c.board.name,
+                        "board_type": c.board.board_type,
+                    }
+                    if c.board else None
+                ),
+                "stream_name": c.stream.name if c.stream else None,
+                "subject_count": c.subject_count,
+                "lead_teacher": teacher_by_course.get(c.id),
+                "is_enrolled": c.id in enrolled_ids,
+            }
+            for c in qs
+        ]
+        return Response(data)

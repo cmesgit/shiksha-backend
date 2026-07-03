@@ -3,25 +3,18 @@
 #
 # WHAT CHANGED vs the previous version
 # ────────────────────────────────────
-# 1. COUNT BUG (visible in the UI): annotate(Count("replies"), Count("upvotes"))
-#    joins two reverse FKs in one query, multiplying the rows — a thread with
-#    4 replies and 3 upvotes reported 12 and 12. Every Count now uses
-#    distinct=True (list, detail, and both post-create re-fetches).
-# 2. FAN-OUT: creating a thread used to insert a Notification row AND queue a
-#    Celery WS push for EVERY user on the platform (1,000 rows + 1,000 tasks
-#    per post at your scale, and it spams every bell). Removed — threads are
-#    discoverable in the forum list. Reply notifications remain (thread author,
-#    plus the parent-comment author on nested replies — new, cheap, useful).
-# 3. MODERATION: titles, bodies, and comments now pass through the same
-#    chat.moderation.check_message gate the chat uses. Rejections return 400
-#    with the same {"category", "reason"} shape the chat error frames use.
-# 4. PAGINATION GUARDS: int(...) no longer 500s on garbage; page_size is
-#    clamped (threads ≤ 50, comments/notifications ≤ 100).
-# 5. MODERATION POWERS: staff can now delete comments (thread delete already
-#    allowed it; comments didn't — moderators couldn't remove abuse).
-# 6. N+1: user_has_upvoted is annotated with Exists() in list views; the
-#    serializer picks up the annotation (see forum/serializers.py) instead of
-#    running one query per row.
+# 1. NOTIFICATIONS EXTRACTED: forum no longer owns a Notification model.
+#    CreateCommentView now calls notifications.services.notify(), which
+#    persists the row in the site-wide table AND pushes over the existing
+#    user_updates_<id> websocket bus in one call. The ws_extra kwarg keeps
+#    emitting the legacy frame keys (type/notification_type/message/
+#    thread_id/title) so the deployed NotificationBell components keep
+#    rendering pushes without any frontend edit.
+# 2. The three notification API views (list / mark-all / mark-one) moved to
+#    notifications/views.py. forum/urls.py still exposes the OLD paths,
+#    pointing at the new Legacy* views — response shapes are identical.
+# 3. Everything else (moderation gate, distinct=True counts, pagination
+#    guards, Exists() annotations, staff comment deletion) is unchanged.
 #
 # API shapes are unchanged; the frontend needs no edits.
 
@@ -32,17 +25,16 @@ from rest_framework import status
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, Q, Exists, OuterRef
 
-from .models import Tag, ForumPost, Reply, PostUpvote, ReplyUpvote, Notification
+from .models import Tag, ForumPost, Reply, PostUpvote, ReplyUpvote
 from .serializers import (
     TagSerializer,
     ForumPostSerializer,
     CreateThreadSerializer,
     CommentSerializer,
     CreateCommentSerializer,
-    NotificationSerializer,
 )
 from django.contrib.auth import get_user_model
-from livestream.services.notifications import push_ws_notification
+from notifications.services import notify
 from chat import moderation
 
 User = get_user_model()
@@ -267,25 +259,34 @@ class CreateCommentView(APIView):
         recipients = set()
         if post.author_id != request.user.id:
             recipients.add(post.author)
-        # …and, on a nested reply, the parent comment's author (new).
+        # …and, on a nested reply, the parent comment's author.
         if reply_to and reply_to.author_id not in (request.user.id, post.author_id):
             recipients.add(reply_to.author)
 
+        message = f'{request.user.username} replied to your thread: "{post.title}"'
         for recipient in recipients:
-            Notification.objects.create(
+            # One call = persisted row + real-time WS push (user_updates_<id>).
+            notify(
                 recipient=recipient,
-                sender=request.user,
-                notification_type="new_reply",
-                message=f'{request.user.username} replied to your thread: "{post.title}"',
-                thread=post,
+                actor=request.user,
+                verb="forum.reply",
+                title=message,
+                body=message,
+                link_url=f"/forum/thread/{post.id}",
+                payload={
+                    "thread_id": post.id,
+                    "title": post.title,
+                    "legacy_type": "new_reply",
+                },
+                # Legacy frame keys for the currently-deployed bells; drop
+                # once the frontends read the canonical shape.
+                ws_extra={
+                    "type": "forum",
+                    "notification_type": "new_reply",
+                    "message": message,
+                    "thread_id": str(post.id),
+                },
             )
-            push_ws_notification(recipient.id, {
-                "type": "forum",
-                "notification_type": "new_reply",
-                "message": f'{request.user.username} replied to your thread: "{post.title}"',
-                "thread_id": str(post.id),
-                "title": post.title,
-            })
 
         reply = Reply.objects.filter(pk=reply.pk).annotate(
             upvote_count=Count("upvotes", distinct=True),
@@ -344,49 +345,3 @@ class ToggleCommentUpvoteView(APIView):
             upvote.delete()
             return Response({"upvoted": False, "upvote_count": reply.upvotes.count()})
         return Response({"upvoted": True, "upvote_count": reply.upvotes.count()})
-
-
-# =====================================================
-# Notification Views
-# =====================================================
-class ListNotificationsView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        notifications = Notification.objects.filter(
-            recipient=request.user
-        ).select_related("sender", "thread")
-
-        page = _int_param(request, "page", 1, 100000)
-        page_size = _int_param(request, "page_size", 8, 100)
-        total = notifications.count()
-        start = (page - 1) * page_size
-
-        serializer = NotificationSerializer(
-            notifications[start:start + page_size], many=True)
-        return Response({
-            "results": serializer.data,
-            "count": total,
-        })
-
-
-class MarkAllNotificationsReadView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        Notification.objects.filter(
-            recipient=request.user, is_read=False
-        ).update(is_read=True)
-        return Response({"detail": "All notifications marked as read."})
-
-
-class MarkNotificationReadView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, notification_id):
-        notification = get_object_or_404(
-            Notification, pk=notification_id, recipient=request.user
-        )
-        notification.is_read = True
-        notification.save()
-        return Response({"detail": "Notification marked as read."})

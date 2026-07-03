@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import MyEnrolledCoursesView, CourseSubjectsView
 from .views import TeacherMyClassesView
+from .views import CourseCatalogView
 from .views import (
     CreateCourseView,
     MyCoursesView,
@@ -62,6 +63,10 @@ urlpatterns = [
     path("",                           CreateCourseView.as_view()),
     path("mine/",                      MyCoursesView.as_view()),
     path("my/",                        MyEnrolledCoursesView.as_view()),
+    # Student-facing browsable catalog for the in-dashboard "Browse Courses" shop.
+    # "catalog" is a static segment, so the <uuid:course_id> route below never
+    # captures it.
+    path("catalog/",                   CourseCatalogView.as_view()),
     path("<uuid:course_id>/public/",   PublicCourseDetailView.as_view()),
     path("<uuid:course_id>/",          UpdateCourseView.as_view()),
     path("<uuid:course_id>/delete/",   DeleteCourseView.as_view()),
