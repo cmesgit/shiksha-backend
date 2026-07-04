@@ -64,6 +64,8 @@ urlpatterns = [
     path("mine/",                      MyCoursesView.as_view()),
     path("my/",                        MyEnrolledCoursesView.as_view()),
     # Student-facing browsable catalog for the in-dashboard "Browse Courses" shop.
+    # Supports ?q=, ?board=, and ?stream= so filters scale as more boards and
+    # streams are added.
     # "catalog" is a static segment, so the <uuid:course_id> route below never
     # captures it.
     path("catalog/",                   CourseCatalogView.as_view()),

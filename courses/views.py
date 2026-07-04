@@ -871,6 +871,10 @@ class CourseCatalogView(APIView):
         if board_id:
             qs = qs.filter(board_id=board_id)
 
+        stream_id = request.query_params.get("stream")
+        if stream_id:
+            qs = qs.filter(stream_id=stream_id)
+
         enrolled_ids = set(
             Enrollment.objects
             .filter(user=request.user, status=Enrollment.STATUS_ACTIVE)
@@ -916,6 +920,10 @@ class CourseCatalogView(APIView):
                     if c.board else None
                 ),
                 "stream_name": c.stream.name if c.stream else None,
+                "stream": (
+                    {"id": str(c.stream.id), "name": c.stream.name}
+                    if c.stream else None
+                ),
                 "subject_count": c.subject_count,
                 "lead_teacher": teacher_by_course.get(c.id),
                 "is_enrolled": c.id in enrolled_ids,
