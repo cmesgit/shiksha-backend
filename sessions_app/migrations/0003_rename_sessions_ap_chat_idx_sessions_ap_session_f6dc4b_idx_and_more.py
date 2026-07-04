@@ -9,30 +9,18 @@ class Migration(migrations.Migration):
         ('sessions_app', '0002_privatesession_active_connections_privatesession_all_left_at'),
     ]
 
+    # NOTE: 0001_initial.py was regenerated at some point after these renames
+    # had already happened on the live database, so it now creates every
+    # index directly under its FINAL name (sessions_ap_teacher_73c4a5_idx,
+    # sessions_ap_session_f6dc4b_idx, etc. — see 0001_initial's AddIndex
+    # calls). That means a fresh migration replay never has the OLD names
+    # this migration tries to rename from, and RenameIndex fails with
+    # "No index named sessions_ap_chat_idx on model ChatMessage".
+    #
+    # On any database where this migration already ran for real, the
+    # rename already happened — emptying the operations here changes
+    # nothing there (Django never re-runs an applied migration). This only
+    # fixes replay onto a fresh database, where the target names already
+    # exist from 0001_initial and there is nothing left to rename.
     operations = [
-        migrations.RenameIndex(
-            model_name='chatmessage',
-            new_name='sessions_ap_session_f6dc4b_idx',
-            old_name='sessions_ap_chat_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='privatesession',
-            new_name='sessions_ap_teacher_73c4a5_idx',
-            old_name='sessions_ap_teacher_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='privatesession',
-            new_name='sessions_ap_request_6d0b17_idx',
-            old_name='sessions_ap_request_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='privatesession',
-            new_name='sessions_ap_status_a89ba6_idx',
-            old_name='sessions_ap_status_idx',
-        ),
-        migrations.RenameIndex(
-            model_name='privatesession',
-            new_name='sessions_ap_schedul_d86d00_idx',
-            old_name='sessions_ap_date_idx',
-        ),
     ]

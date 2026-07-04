@@ -16,13 +16,6 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.CreateModel(
-            name='Tag',
-            fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=50, unique=True)),
-            ],
-        ),
-        migrations.CreateModel(
             name='ForumPost',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
@@ -31,23 +24,6 @@ class Migration(migrations.Migration):
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
                 ('author', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='forum_posts', to=settings.AUTH_USER_MODEL)),
-                ('tags', models.ManyToManyField(blank=True, related_name='posts', to='forum.tag')),
-            ],
-            options={
-                'ordering': ['-created_at'],
-            },
-        ),
-        migrations.CreateModel(
-            name='Notification',
-            fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('notification_type', models.CharField(choices=[('new_thread', 'New Thread'), ('new_reply', 'New Reply'), ('upvote', 'Upvote')], max_length=20)),
-                ('message', models.TextField()),
-                ('is_read', models.BooleanField(default=False)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('recipient', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='forum_notifications', to=settings.AUTH_USER_MODEL)),
-                ('sender', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='sent_notifications', to=settings.AUTH_USER_MODEL)),
-                ('thread', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='notifications', to='forum.forumpost')),
             ],
             options={
                 'ordering': ['-created_at'],
@@ -62,7 +38,6 @@ class Migration(migrations.Migration):
                 ('updated_at', models.DateTimeField(auto_now=True)),
                 ('author', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='forum_replies', to=settings.AUTH_USER_MODEL)),
                 ('post', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='replies', to='forum.forumpost')),
-                ('reply_to', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='children', to='forum.reply')),
             ],
             options={
                 'verbose_name_plural': 'replies',

@@ -1,6 +1,6 @@
 from .serializers import ChapterSerializer
 from .models import Chapter
-from django.db.models import Count, Q
+from django.db.models import Count, Prefetch, Q
 from .models import SubjectTeacher
 from accounts.models import Role
 from rest_framework.views import APIView
@@ -244,6 +244,14 @@ class CourseSubjectsView(APIView):
             Subject.objects
             .filter(course__id=course_id)
             .select_related("course__stream", "course__board")
+            .prefetch_related(
+                Prefetch(
+                    "subject_teachers",
+                    queryset=SubjectTeacher.objects
+                    .select_related("teacher", "teacher__teacher_profile")
+                    .order_by("order"),
+                )
+            )
             .order_by("order")
         )
 

@@ -197,6 +197,7 @@ class AdminEnrollmentRequestListSerializer(serializers.ModelSerializer):
     learner_name = serializers.SerializerMethodField()
     course_title = serializers.CharField(source="course.title", read_only=True)
     course_price = serializers.IntegerField(source="course.price", read_only=True)
+    course_id = serializers.UUIDField(source="course.id", read_only=True)
 
     class Meta:
         model = EnrollmentRequest
@@ -207,6 +208,7 @@ class AdminEnrollmentRequestListSerializer(serializers.ModelSerializer):
             "learner_name",
             "course_title",
             "course_price",
+            "course_id",
             "amount_paid",
             "payment_method",
             "utr_number",

@@ -60,8 +60,11 @@ from .admin_academy_views import (
     AdminCourseBatchesView,
     AdminBatchDetailView,
 )
+# Teacher: the batches they can record progress for.
+from .teacher_batch_views import TeacherMyBatchesView
 urlpatterns = [
     path("teacher/my-classes/",   TeacherMyClassesView.as_view()),
+    path("teacher/my-batches/",   TeacherMyBatchesView.as_view()),
     path("teacher/all-students/", TeacherAllStudentsView.as_view()),
     path("subjects-by-course/",   SubjectsByCourseTitleView.as_view()),
     path("admin/",                AdminCourseListView.as_view()),
