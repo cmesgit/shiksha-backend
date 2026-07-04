@@ -10,6 +10,7 @@ from .auth_flow import (
     MeView,
     ProfileSelectView,
     TeacherContextView,
+    TeacherTrackSwitchView,
     ProfilePinView,
     ProfileListCreateView,
     ProfileDetailView,
@@ -63,6 +64,7 @@ urlpatterns = [
 
     # Teacher context — uses ACCOUNT password (no separate teacher password)
     path("context/teacher/", TeacherContextView.as_view()),
+    path("context/teacher/track/", TeacherTrackSwitchView.as_view()),
     # context/teacher/password/ REMOVED — single-password model
 
     path("verify-email/",        VerifyEmailView.as_view()),

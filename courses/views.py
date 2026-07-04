@@ -9,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from enrollments.models import Enrollment, EnrollmentRequest, Subscription
 from accounts.permissions import IsTeacher, IsAdmin
+from accounts.auth_flow import get_active_profile
 from quizzes.models import Quiz
 from assignments.models import Assignment
 from .models import Course, Subject, Board
@@ -121,12 +122,37 @@ class DeleteCourseView(APIView):
 # =========================
 
 class MyEnrolledCoursesView(APIView):
+    """
+    GET /courses/my/
+
+    FIX: previously filtered by `user=`, which unions every learner
+    profile on the account. CourseContext feeds the whole student app
+    from this endpoint, so a sibling profile's courses (and this
+    endpoint's payment-history block — including UTR numbers) leaked
+    across profiles. Now scoped to the caller's ACTIVE learner profile.
+
+    Teacher/account context (no active learner profile) → [].
+    Legacy Enrollment rows with learner_profile=NULL are attributed to
+    the account's default profile (same convention the enrollments app
+    used for its own backfill), so pre-migration enrollees don't lose
+    their dashboard.
+    """
     permission_classes = [IsAuthenticated]
 
+    def _profile_enrollment_q(self, learner):
+        q = Q(learner_profile=learner)
+        if learner.is_default:
+            q |= Q(learner_profile__isnull=True, user=learner.account)
+        return q
+
     def get(self, request):
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response([])
+
         enrollments = (
             Enrollment.objects
-            .filter(user=request.user, status="ACTIVE")
+            .filter(self._profile_enrollment_q(learner), status="ACTIVE")
             .select_related("course__board")
         )
 
@@ -137,7 +163,7 @@ class MyEnrolledCoursesView(APIView):
         latest_sub_by_course = {}
         for sub in (
             Subscription.objects
-            .filter(user=request.user, course_id__in=course_ids)
+            .filter(learner_profile=learner, course_id__in=course_ids)
             .order_by("course_id", "-expires_at")
         ):
             latest_sub_by_course.setdefault(sub.course_id, sub)
@@ -145,7 +171,7 @@ class MyEnrolledCoursesView(APIView):
         history_by_course = {}
         for req in (
             EnrollmentRequest.objects
-            .filter(user=request.user, course_id__in=course_ids)
+            .filter(learner_profile=learner, course_id__in=course_ids)
             .order_by("-submitted_at")[:50]
         ):
             history_by_course.setdefault(req.course_id, []).append({
@@ -195,11 +221,21 @@ class CourseSubjectsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, course_id):
-        is_enrolled = Enrollment.objects.filter(
-            user=request.user,
-            course__id=course_id,
-            status="ACTIVE"
-        ).exists()
+        learner = get_active_profile(request)
+
+        if learner is not None:
+            profile_q = Q(learner_profile=learner)
+            if learner.is_default:
+                profile_q |= Q(learner_profile__isnull=True, user=learner.account)
+            is_enrolled = Enrollment.objects.filter(
+                Q(course__id=course_id, status="ACTIVE") & profile_q
+            ).exists()
+        else:
+            # Teacher identity without an active learner profile: allow
+            # only if assigned to teach this course's subjects.
+            is_enrolled = SubjectTeacher.objects.filter(
+                subject__course_id=course_id, teacher=request.user
+            ).exists()
 
         if not is_enrolled:
             return Response({"detail": "Not enrolled in this course."}, status=403)
@@ -583,15 +619,26 @@ class TeacherAllStudentsView(APIView):
 
 class MySubjectsView(APIView):
     """
-    Returns subjects for the student's active enrolled course(s).
+    Returns subjects for the ACTIVE PROFILE's enrolled course(s).
     GET /courses/subjects/mine/
+
+    FIX: previously filtered Enrollment by `user=`, unioning every
+    learner profile's courses. Now scoped to the caller's active
+    learner profile (teacher/account context → []).
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response([])
+
+        profile_q = Q(learner_profile=learner)
+        if learner.is_default:
+            profile_q |= Q(learner_profile__isnull=True, user=learner.account)
+
         course_ids = Enrollment.objects.filter(
-            user=request.user,
-            status=Enrollment.STATUS_ACTIVE,
+            profile_q, status=Enrollment.STATUS_ACTIVE,
         ).values_list("course_id", flat=True)
 
         if not course_ids:

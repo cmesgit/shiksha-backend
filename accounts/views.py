@@ -783,11 +783,16 @@ class IsProfileComplete(BasePermission):
 
 class RefreshView(APIView):
     """
-    Rotate the refresh token while preserving the JWT context claims
-    (`context` and `active_profile`) that drive the multi-profile login
-    flow. The old implementation used RefreshToken.for_user() which
-    strips all custom claims, causing the frontend to lose learner/teacher
-    context on every token rotation.
+    Rotate the refresh token while preserving ALL JWT context claims
+    (`context`, `active_profile`, `active_track`) that drive the
+    multi-profile / multi-track login flow.
+
+    FIX: the previous implementation preserved `context` and
+    `active_profile` but silently dropped `active_track` on every
+    rotation. A BOTH-teacher working the Skill Dev side would revert to
+    the Academy dashboard within an hour (the access-token lifetime) —
+    `/me/` started reporting active_track=None, and DashboardEntry
+    routed on that stale claim.
     """
     permission_classes = [AllowAny]
 
@@ -807,6 +812,7 @@ class RefreshView(APIView):
             # --- Preserve context claims from the expiring token ---
             context = old_token.get("context") or CTX_ACCOUNT
             old_profile_id = old_token.get("active_profile")
+            active_track = old_token.get("active_track")   # ← preserved now
 
             profile = None
             if old_profile_id:
@@ -816,7 +822,12 @@ class RefreshView(APIView):
                     .first()
                 )
 
-            new_refresh = build_tokens(user, context=context, profile=profile)
+            new_refresh = build_tokens(
+                user,
+                context=context,
+                profile=profile,
+                active_track=active_track,                  # ← preserved now
+            )
             return set_auth_cookies(Response({"detail": "refreshed"}), new_refresh)
 
         except (TokenError, User.DoesNotExist):

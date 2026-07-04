@@ -1,8 +1,30 @@
+"""
+activity/models.py  ·  FULL REPLACEMENT — profile-isolated feed rows
+────────────────────────────────────────────────────────────────────
+Adds two columns that make notification isolation possible:
+
+  audience         which identity of the account the row is FOR.
+                   The old table couldn't tell a teacher's
+                   "student submitted X" apart from a learner's
+                   "new assignment X" on a one-email BOTH account —
+                   both landed in the same bell.
+
+  learner_profile  which learner profile the row is for (LEARNER
+                   audience only). Two children on one parent email
+                   stop seeing each other's assignments.
+
+Both are nullable/defaulted so the migration is additive and the
+0003 data migration backfills audience from `type` (SUBMISSION rows
+were always teacher-directed; everything else was learner-directed —
+that is exactly how activity/signals.py has always written them).
+"""
+
 import uuid
-from django.db import models
+
 from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
+from django.db import models
 
 
 class Activity(models.Model):
@@ -18,12 +40,39 @@ class Activity(models.Model):
         (TYPE_SUBMISSION, "Submission"),
     ]
 
+    # Which dashboard identity this row belongs to.
+    AUDIENCE_LEARNER = "LEARNER"
+    AUDIENCE_TEACHER = "TEACHER"
+    AUDIENCE_CHOICES = [
+        (AUDIENCE_LEARNER, "Learner"),
+        (AUDIENCE_TEACHER, "Teacher"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="activities"
+        related_name="activities",
+    )
+
+    # NEW — LEARNER rows point at the exact profile that should see them.
+    # NULL means "every learner profile of this account" (legacy rows,
+    # or genuinely account-wide announcements).
+    learner_profile = models.ForeignKey(
+        "accounts.LearnerProfile",
+        on_delete=models.CASCADE,
+        related_name="activities",
+        null=True,
+        blank=True,
+    )
+
+    # NEW — identity scope. Backfilled by migration 0003.
+    audience = models.CharField(
+        max_length=10,
+        choices=AUDIENCE_CHOICES,
+        default=AUDIENCE_LEARNER,
+        db_index=True,
     )
 
     type = models.CharField(max_length=20, choices=TYPE_CHOICES)
@@ -49,6 +98,8 @@ class Activity(models.Model):
             models.Index(fields=["type"]),
             models.Index(fields=["due_date"]),
             models.Index(fields=["subject_id"]),
+            # Feed hot path: (who, which identity, which profile, newest first)
+            models.Index(fields=["user", "audience", "learner_profile", "-created_at"]),
         ]
 
     def __str__(self):
