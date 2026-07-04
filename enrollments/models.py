@@ -123,6 +123,20 @@ class Enrollment(models.Model):
         related_name="enrollments",
     )
 
+    # The batch (cohort) this enrollment belongs to. SET_NULL so deleting a
+    # batch detaches its students rather than removing them. related_name
+    # "enrollments" is what Batch.seats_taken / Batch.is_full and the admin
+    # seat count rely on.
+    batch = models.ForeignKey(
+        "courses.Batch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="enrollments",
+    )
+
+    # Legacy free-text code. Kept in sync with batch.code for backward-compat
+    # (old rosters filtered on this). Prefer `batch` for all new code.
     batch_code = models.CharField(max_length=30, null=True, blank=True)
 
     status = models.CharField(
@@ -138,6 +152,7 @@ class Enrollment(models.Model):
         indexes = [
             models.Index(fields=["learner_profile", "course"]),
             models.Index(fields=["status"]),
+            models.Index(fields=["batch", "status"], name="enroll_batch_status_idx"),
         ]
 
     def __str__(self):

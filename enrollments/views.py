@@ -108,7 +108,7 @@ class AdminBatchRosterView(APIView):
 
     Query params:
       - batch:   Batch UUID (exact)
-      - code:    Batch code, e.g. "A13" (case-insensitive)
+      - code:    Batch code, e.g. "A13" (case-insensitive, legacy)
       - course:  Course UUID
       - status:  ACTIVE (default) / REVOKED
     """
@@ -117,7 +117,7 @@ class AdminBatchRosterView(APIView):
     def get(self, request):
         qs = (
             Enrollment.objects
-            .select_related("user", "learner_profile", "course")
+            .select_related("user", "learner_profile", "course", "batch")
             .order_by("batch_code", "user__email")
         )
 
@@ -126,8 +126,8 @@ class AdminBatchRosterView(APIView):
         course_id = request.query_params.get("course")
         status_filter = request.query_params.get("status", Enrollment.STATUS_ACTIVE).strip().upper()
 
-        if batch_id:  # NOTE: no batch FK; filtering by batch_code only
-            pass  # batch_id filter not supported (no batch FK on Enrollment)
+        if batch_id:
+            qs = qs.filter(batch_id=batch_id)
         if code:
             qs = qs.filter(batch_code__iexact=code.replace(" ", ""))
         if course_id:

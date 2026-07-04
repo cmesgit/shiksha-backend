@@ -244,10 +244,33 @@ class AdminActionSerializer(serializers.Serializer):
 
     action = serializers.ChoiceField(choices=ACTION_CHOICES)
     admin_note = serializers.CharField(required=False, allow_blank=True)
+    # Optional: which batch to place the student in on approval.
+    batch = serializers.UUIDField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        from courses.models import Batch  # local import avoids app-load cycle
+
+        request_obj = self.context.get("request_obj")
+        batch_id = attrs.get("batch")
+
+        if attrs["action"] == "approve" and batch_id:
+            try:
+                batch = Batch.objects.get(pk=batch_id)
+            except Batch.DoesNotExist:
+                raise serializers.ValidationError({"batch": "Batch not found."})
+            if request_obj and batch.course_id != request_obj.course_id:
+                raise serializers.ValidationError(
+                    {"batch": "Batch does not belong to this request's course."}
+                )
+            if not batch.is_active:
+                raise serializers.ValidationError({"batch": "Batch is not active."})
+            attrs["_batch"] = batch
+        return attrs
 
     def save(self, *, request_obj, reviewer):
         action = self.validated_data["action"]
         note = self.validated_data.get("admin_note", "")
+        batch = self.validated_data.get("_batch")
 
         if request_obj.status != EnrollmentRequest.STATUS_PENDING:
             raise serializers.ValidationError("This request has already been reviewed.")
@@ -259,7 +282,29 @@ class AdminActionSerializer(serializers.Serializer):
 
             if action == "approve":
                 request_obj.status = EnrollmentRequest.STATUS_APPROVED
-                Enrollment.objects.get_or_create(
+
+                # Capacity check (row-locked) — only when a capped batch is chosen.
+                if batch is not None:
+                    batch = type(batch).objects.select_for_update().get(pk=batch.pk)
+                    if batch.capacity is not None:
+                        taken = Enrollment.objects.filter(
+                            batch=batch, status=Enrollment.STATUS_ACTIVE
+                        ).count()
+                        # Re-approving someone already in this batch shouldn't be
+                        # blocked; that case is covered because the existing
+                        # enrollment already counts toward `taken`.
+                        already_here = Enrollment.objects.filter(
+                            learner_profile=request_obj.learner_profile,
+                            course=request_obj.course,
+                            batch=batch,
+                        ).exists()
+                        if not already_here and taken >= batch.capacity:
+                            raise serializers.ValidationError(
+                                {"batch": f"Batch '{batch.code}' is full "
+                                          f"({taken}/{batch.capacity})."}
+                            )
+
+                enrollment, _created = Enrollment.objects.get_or_create(
                     learner_profile=request_obj.learner_profile,
                     course=request_obj.course,
                     defaults={
@@ -267,6 +312,18 @@ class AdminActionSerializer(serializers.Serializer):
                         "status": Enrollment.STATUS_ACTIVE,
                     },
                 )
+                # (Re)assign batch + keep the legacy code in sync.
+                update_fields = []
+                if enrollment.status != Enrollment.STATUS_ACTIVE:
+                    enrollment.status = Enrollment.STATUS_ACTIVE
+                    update_fields.append("status")
+                if batch is not None:
+                    enrollment.batch = batch
+                    enrollment.batch_code = batch.code
+                    update_fields += ["batch", "batch_code"]
+                if update_fields:
+                    enrollment.save(update_fields=update_fields)
+
                 _grant_subscription(request_obj)
             else:
                 request_obj.status = EnrollmentRequest.STATUS_REJECTED
@@ -290,6 +347,8 @@ class BatchStudentSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
     course_title = serializers.CharField(source="course.title", read_only=True)
     batch_code = serializers.CharField(read_only=True, default=None)
+    batch_id = serializers.UUIDField(source="batch.id", read_only=True, default=None)
+    batch_name = serializers.CharField(source="batch.name", read_only=True, default=None)
 
     class Meta:
         model = Enrollment
@@ -298,6 +357,8 @@ class BatchStudentSerializer(serializers.ModelSerializer):
             "user_email",
             "user_name",
             "course_title",
+            "batch_id",
+            "batch_name",
             "batch_code",
             "status",
             "enrolled_at",
