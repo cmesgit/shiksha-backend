@@ -35,9 +35,10 @@ class UserUpdateConsumer(AsyncWebsocketConsumer):
     Route:  ws/updates/            (accounts/routing.py — unchanged)
     Group:  user_updates_<user_id>
 
-    Producers group_send() with either:
+    Producers group_send() with one of:
         {"type": "user_update",       "data": {...}}
         {"type": "send_notification", "data": {...}}
+        {"type": "inbox_delta",       "data": {...}}   # M0 — chat.realtime
     """
 
     async def connect(self):
@@ -52,6 +53,10 @@ class UserUpdateConsumer(AsyncWebsocketConsumer):
         self.ctx = self.scope.get("context")                      # learner|teacher|account
         pid = self.scope.get("active_profile_id")
         self.profile_id = str(pid) if pid else None
+        # M2: the precise identity key of this connection, if the token
+        # carries the M1 claim ("L:<uuid>" / "T:<id>"). Lets _wanted() gate
+        # on audience_identity exactly, beyond the coarse audience split.
+        self.identity_key = self.scope.get("identity")
 
         self.group_name = f"user_updates_{self.user.id}"
         await self.channel_layer.group_add(self.group_name, self.channel_name)
@@ -78,6 +83,16 @@ class UserUpdateConsumer(AsyncWebsocketConsumer):
         """Should THIS connection receive this event?"""
         if not isinstance(data, dict):
             return True  # legacy / opaque payloads: current behavior
+
+        # M2 precise gate (Phase 3 §18): when the event names a specific
+        # audience_identity AND this connection knows its own identity key,
+        # they must match exactly. This is stricter than the coarse audience
+        # split below — it separates two teachers, or a future counsellor
+        # identity, on one account, which "TEACHER"/"LEARNER" alone cannot.
+        # A blank event identity (account-wide) skips this and is delivered.
+        event_identity = data.get("audience_identity")
+        if event_identity and self.identity_key:
+            return event_identity == self.identity_key
 
         audience = data.get("audience")
         if audience == "TEACHER" and self.ctx != "teacher":
@@ -108,5 +123,18 @@ class UserUpdateConsumer(AsyncWebsocketConsumer):
             return
         await self.send(text_data=json.dumps({
             "type": "notification",
+            "data": data,
+        }))
+
+    async def inbox_delta(self, event):
+        """M0 (chat.services._fanout_new_message / chat.tasks). Same identity
+        gate as send_notification — chat sends {audience, learner_profile_id}
+        in the same shape notifications already use, so _wanted() needs no
+        changes to cover this new event type."""
+        data = event.get("data")
+        if not self._wanted(data):
+            return
+        await self.send(text_data=json.dumps({
+            "type": "inbox_delta",
             "data": data,
         }))

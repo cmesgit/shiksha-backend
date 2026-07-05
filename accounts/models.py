@@ -1052,3 +1052,124 @@ class AgreementLetterVersion(models.Model):
 
     def __str__(self):
         return f"{self.letter.key} v{self.version_number}"
+
+
+# ===========================================================================
+# IDENTITY REGISTRY  (M1 — Phase 3 architecture §6)
+# ===========================================================================
+#
+# One row per chat-addressable identity on the platform. Formalizes a
+# convention that already existed informally: chat.Participant.identity_key()
+# has always produced strings like "L:<uuid>" / "T:<uuid>" from
+# (kind, learner_profile_id / teacher_profile_id). This table makes that
+# convention a real, queryable registry instead of a string format repeated
+# across chat/models.py, chat/services.py, and chat/consumers.py.
+#
+# WHY A SOFT REFERENCE, NOT A DIRECT FK PER KIND:
+#   Adding a new identity kind (Counsellor, Recruiter, ...) must cost "one new
+#   letter in KIND_CHOICES + one profile model in that vertical's app" — never
+#   a schema change here. So `profile_id` is a plain string, resolved by kind
+#   at read time (see resolve_profile()), the same soft-reference pattern
+#   chat.Conversation already uses for course_id.
+#
+#   IMPORTANT — profile_id is a CharField, not a UUIDField: LearnerProfile's
+#   pk IS a UUID, but TeacherProfile's is a plain BigAutoField integer (found
+#   via testing, not assumption — the two tables were never actually
+#   symmetric here). A UUIDField would silently coerce an integer teacher id
+#   into a fake UUID (e.g. teacher id 1 -> "00000000-...-0001") instead of
+#   erroring, which is exactly the kind of bug that stays invisible until
+#   someone compares it against Participant.identity_key()'s plain "T:1". A
+#   CharField stores whatever str(pk) actually is for either kind, correctly.
+#
+# WHY account IS NULLABLE:
+#   KIND_SYSTEM identities (an announcement bot, "Shiksha Support") are not
+#   tied to any one login.
+#
+# MIGRATION STATUS: additive. chat.Participant / chat.Block gain a nullable
+# `identity` FK alongside their existing polymorphic columns; both are
+# dual-written until Phase M3 removes the old columns. Nothing that reads
+# the old columns today changes behaviour.
+class Identity(models.Model):
+    KIND_LEARNER   = "L"
+    KIND_TEACHER   = "T"
+    KIND_COUNSELOR = "C"   # reserved for the Counselling vertical (Phase 3 §21)
+    KIND_RECRUITER = "R"   # reserved for the Placement vertical (Phase 3 §22)
+    KIND_SYSTEM    = "S"   # announcement / support bot senders
+    KIND_CHOICES = [
+        (KIND_LEARNER, "Learner profile"),
+        (KIND_TEACHER, "Teacher identity"),
+        (KIND_COUNSELOR, "Counsellor identity"),
+        (KIND_RECRUITER, "Recruiter identity"),
+        (KIND_SYSTEM, "System / bot identity"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    kind = models.CharField(max_length=1, choices=KIND_CHOICES, db_index=True)
+
+    # Soft pointer to the concrete profile row, stored as str(pk) — see the
+    # CharField-not-UUIDField note in the module docstring above. Null only
+    # for a KIND_SYSTEM identity with no backing row.
+    profile_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+
+    # Denormalized so inbox/notification rendering never joins out to the
+    # concrete profile table just to show a name and avatar. Kept fresh by
+    # accounts/signals.py on every profile save.
+    display_name = models.CharField(max_length=150, blank=True)
+    avatar_url = models.CharField(max_length=500, blank=True)
+
+    # Null for KIND_SYSTEM only. SET_NULL (not CASCADE): deleting a User must
+    # orphan this row for audit purposes, not silently delete a chat identity
+    # out from under existing conversations — those are cleaned up, if ever,
+    # by an explicit deactivation flow, not a cascade.
+    account = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="identities",
+    )
+
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["kind", "profile_id"],
+                name="uniq_identity_per_profile",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["account"], name="idx_identity_account"),
+        ]
+
+    @property
+    def key(self):
+        """Matches chat.Participant.identity_key()'s existing string format
+        exactly — "L:<uuid>" / "T:<uuid>" — so this table can be looked up
+        by a key string already flowing through the rest of the system
+        without introducing a second format."""
+        return f"{self.kind}:{self.profile_id}"
+
+    @classmethod
+    def kind_for_participant_kind(cls, participant_kind):
+        """Map chat.Participant's "LEARNER"/"TEACHER" strings to this
+        table's single-letter kind. The single-letter form already exists
+        implicitly (it's the first character of identity_key()); this just
+        names the mapping once instead of leaving it to string-slicing at
+        every call site."""
+        return {"LEARNER": cls.KIND_LEARNER, "TEACHER": cls.KIND_TEACHER}[participant_kind]
+
+    def resolve_profile(self):
+        """Fetch the concrete LearnerProfile / TeacherProfile row this
+        identity points to, or None. Mirrors chat.services.resolve_identity()
+        — kept here too since not every consumer of this table wants to
+        import from the chat app."""
+        if self.kind == self.KIND_LEARNER:
+            return LearnerProfile.objects.filter(id=self.profile_id).first()
+        if self.kind == self.KIND_TEACHER:
+            return TeacherProfile.objects.filter(id=self.profile_id).first()
+        return None
+
+    def __str__(self):
+        return f"Identity<{self.key}> {self.display_name}".strip()

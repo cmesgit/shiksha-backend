@@ -11,8 +11,9 @@ settings (CHANNEL_LAYERS).
 URL:  ws/chat/<conversation_id>/
 
 The acting identity is resolved from scope["context"] + scope["active_profile_id"]
-(set by the patched accounts/middleware.py). A connection is only accepted if
-the identity is an actual participant of the conversation.
+(set by the patched accounts/middleware.py), or — for tokens minted after M1
+(Phase 3 §7) — the single scope["identity"] claim directly. A connection is
+only accepted if the identity is an actual participant of the conversation.
 
 Client → server:
   { "type": "message", "body": "...", "client_id": "..." }
@@ -23,13 +24,20 @@ Server → client:
   { "type": "history", "data": [ ...messages ] }
   { "type": "message", "data": { ...message } }
   { "type": "typing",  "data": { "identity": "L:...", "name": "..." } }
-  { "type": "error",   "data": { "category": "profanity"|"political"|"blocked",
+  { "type": "error",   "data": { "category": "policy"|"profanity"|"political"
+                                 |"blocked"|"rate_limited",
                                  "reason": "...", "client_id": "..." } }
 
 The "error" frame is sent ONLY back to the sender (never broadcast). It fires
-when content moderation rejects the text, or when a block exists in either
-direction on a direct thread. Blocking is re-evaluated on every send, so it
-takes effect immediately for an open socket.
+when the M3 structural policy gate refuses the conversation itself (frozen /
+read-only broadcast — category "policy"), when content moderation rejects
+the text, when a block exists in either direction on a direct thread, or
+when the sender has hit the M0 rate limit (chat/redis_utils.py — 10 msgs/10s
+burst, 200/hour). Policy, blocking, and rate limits are all re-evaluated on
+every send, so they take effect immediately for an open socket.
+
+Close codes: 4401 unauthenticated, 4403 not a participant, 4429 too many
+connection attempts (redis_utils.check_connect_rate_limit — 20/min/account).
 """
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -37,6 +45,7 @@ from channels.db import database_sync_to_async
 
 from .models import Conversation, Participant
 from . import services
+from . import redis_utils
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
@@ -46,9 +55,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.user = self.scope.get("user")
         self.context = self.scope.get("context")
         self.active_profile_id = self.scope.get("active_profile_id")
+        self.identity_claim = self.scope.get("identity")  # M1 — may be None for pre-M1 tokens
 
         if not self.user or self.user.is_anonymous:
             await self.close(code=4401)
+            return
+
+        # M0: connect-rate-limit (fail open — see redis_utils docstring).
+        allowed = await database_sync_to_async(redis_utils.check_connect_rate_limit)(
+            f"acct:{self.user.id}"
+        )
+        if not allowed:
+            await self.close(code=4429)
             return
 
         self.me = await database_sync_to_async(self._resolve_participant)()
@@ -77,6 +95,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         if mtype == "message":
             client_id = payload.get("client_id", "")
+            limit_reason = await database_sync_to_async(
+                redis_utils.check_message_rate_limit
+            )(self.me.identity_key())
+            if limit_reason:
+                await self.send(text_data=json.dumps({
+                    "type": "error",
+                    "data": {
+                        "category": "rate_limited",
+                        "reason": limit_reason,
+                        "client_id": client_id,
+                    },
+                }))
+                return
             msg, error = await database_sync_to_async(self._post_checked)(
                 payload.get("body", ""), client_id
             )
@@ -119,7 +150,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not conv:
             return None
         kind, obj = services.active_identity_from_claims(
-            self.user, self.context, self.active_profile_id
+            self.user, self.context, self.active_profile_id, self.identity_claim
         )
         if not kind:
             return None
@@ -140,3 +171,4 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from django.utils import timezone
         self.me.last_read_at = timezone.now()
         self.me.save(update_fields=["last_read_at"])
+        redis_utils.clear_unread(self.me.identity_key(), self.conversation_id)

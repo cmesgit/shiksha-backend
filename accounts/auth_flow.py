@@ -49,6 +49,22 @@ def build_tokens(user, *, context, profile=None, active_track=None):
         refresh["active_profile"] = str(profile.id)
     if active_track is not None:
         refresh["active_track"] = active_track
+
+    # M1 (Phase 3 §7): the identity claim, resolved once here so every
+    # downstream consumer (REST views, WS middleware) can read one claim
+    # instead of re-deriving kind+profile from context on every request.
+    # Deterministic string built from data already in hand — no extra query
+    # for the learner case; teacher_profile is a cheap PK-indexed lookup
+    # that's typically already been made earlier in the same view. Omitted
+    # for CTX_ACCOUNT (profile-picker screen, no identity selected yet),
+    # same as active_profile/active_track above.
+    if context == CTX_LEARNER and profile is not None:
+        refresh["identity"] = f"L:{profile.id}"
+    elif context == CTX_TEACHER:
+        teacher = getattr(user, "teacher_profile", None)
+        if teacher is not None:
+            refresh["identity"] = f"T:{teacher.id}"
+
     return refresh
 
 

@@ -23,6 +23,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             "payload",
             "actor_username",
             "audience_role",
+            "audience_identity",
             "is_read",
             "created_at",
         )

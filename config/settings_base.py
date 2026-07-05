@@ -169,10 +169,17 @@ BUNNY_CDN_HOST = os.getenv("BUNNY_CDN_HOST", "")
 BUNNY_STREAM_URL = os.getenv("BUNNY_STREAM_URL", "https://video.bunnycdn.com")
 BUNNY_EMBED = os.getenv("BUNNY_EMBED", "https://iframe.mediadelivery.net/embed")
 ASGI_APPLICATION = "config.asgi.application"
+# ── Redis DB layout (M0 — Phase 3 §25/§32) ─────────────
+# Previously channels used the implicit default db (0) and Celery used db 1,
+# with no dedicated space for anything else. Made explicit here + a third db
+# reserved for platform use (chat unread counters, rate limiting; presence
+# later) so a maintenance flush of one concern can never touch another.
+REDIS_CHANNELS_URL = os.getenv("REDIS_CHANNELS_URL", "redis://127.0.0.1:6379/0")
+REDIS_PLATFORM_URL = os.getenv("REDIS_PLATFORM_URL", "redis://127.0.0.1:6379/2")
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {"hosts": [("127.0.0.1", 6379)]},
+        "CONFIG": {"hosts": [REDIS_CHANNELS_URL]},
     },
 }
 GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")
@@ -183,8 +190,8 @@ GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")
 # before that table exists / is migrated. Values: free | manual_upi | razorpay
 PAYMENT_PROVIDER = os.getenv("PAYMENT_PROVIDER", "free")
 # ── Celery ──────────────────────────────────────────
-CELERY_BROKER_URL = "redis://127.0.0.1:6379/1"
-CELERY_RESULT_BACKEND = "redis://127.0.0.1:6379/1"
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://127.0.0.1:6379/1")
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://127.0.0.1:6379/1")
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"

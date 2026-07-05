@@ -55,6 +55,33 @@ def _send_email(recipient, subject, body):
         logger.exception("notifications: email failed for user %s", recipient.pk)
 
 
+def _role_from_identity_key(identity_key):
+    """M2: derive the coarse audience_role from a precise identity key, so a
+    caller that passes only audience_identity still populates audience_role
+    for any consumer (or dashboard filter) not yet reading the identity
+    field. "L:..." -> STUDENT, "T:..." -> TEACHER, "C:..." -> COUNSELOR.
+    Unknown/blank -> "" (account-wide). Kept as a plain prefix map rather
+    than importing accounts.Identity, so notifications has no new
+    cross-app import for a one-character lookup."""
+    if not identity_key or ":" not in identity_key:
+        return ""
+    return {
+        "L": "STUDENT",
+        "T": "TEACHER",
+        "C": "COUNSELOR",
+    }.get(identity_key.split(":", 1)[0], "")
+
+
+def _learner_profile_id_from_identity_key(identity_key):
+    """Extract the learner profile id from an "L:<uuid>" key, else None.
+    Fills the WS frame's learner_profile_id so UserUpdateConsumer._wanted()
+    — which already drops learner events not matching the connection's
+    active profile — gates per-child with no consumer change."""
+    if identity_key and identity_key.startswith("L:"):
+        return identity_key.split(":", 1)[1]
+    return None
+
+
 def notify(
     recipient,
     verb,
@@ -64,10 +91,19 @@ def notify(
     link_url="",
     payload=None,
     audience_role="",
+    audience_identity="",
     email=False,
     ws_extra=None,
 ):
     """Create + push one notification. Returns the Notification, or None.
+
+    audience_identity (M2 — Phase 3 §18): an identity key ("L:<uuid>" /
+    "T:<id>") restricting this notification to ONE identity on the account
+    — the precise per-profile scope that fixes the child-A/child-B leak.
+    Blank = account-wide (unchanged behaviour). When given, audience_role
+    is auto-derived from it if the caller didn't pass one explicitly, so
+    every existing consumer/filter keeps working; callers migrate to the
+    precise field verb-by-verb without a flag day.
 
     ws_extra: extra keys merged into the websocket frame's `data` dict.
     Used by the forum to keep emitting the legacy keys
@@ -83,6 +119,11 @@ def notify(
     if actor is not None and getattr(actor, "pk", None) == recipient.pk:
         return None
 
+    # M2: if the caller gave a precise identity but no explicit role, derive
+    # the coarse role so nothing reading only audience_role regresses.
+    if audience_identity and not audience_role:
+        audience_role = _role_from_identity_key(audience_identity)
+
     try:
         notification = Notification.objects.create(
             recipient=recipient,
@@ -93,6 +134,7 @@ def notify(
             link_url=link_url,
             payload=payload or {},
             audience_role=audience_role,
+            audience_identity=audience_identity,
         )
     except Exception:
         logger.exception("notifications: row insert failed (verb=%s)", verb)
@@ -106,8 +148,23 @@ def notify(
         "link_url": link_url,
         "payload": notification.payload,
         "audience_role": audience_role,
+        "audience_identity": audience_identity,
         "created_at": notification.created_at.isoformat(),
     }
+    # M2: map the identity onto the {audience, learner_profile_id} envelope
+    # UserUpdateConsumer._wanted() already filters on — so a per-child
+    # notification is dropped on the wrong child's socket with NO consumer
+    # change. "audience" mirrors audience_role's STUDENT/TEACHER split; the
+    # consumer expects the "TEACHER"/"LEARNER" spelling.
+    if audience_identity:
+        role = _role_from_identity_key(audience_identity)
+        if role == "TEACHER":
+            data["audience"] = "TEACHER"
+        elif role in ("STUDENT", "COUNSELOR"):
+            data["audience"] = "LEARNER" if role == "STUDENT" else role
+        lp_id = _learner_profile_id_from_identity_key(audience_identity)
+        if lp_id:
+            data["learner_profile_id"] = lp_id
     if ws_extra:
         data.update(ws_extra)
     _push_ws(recipient.pk, data)

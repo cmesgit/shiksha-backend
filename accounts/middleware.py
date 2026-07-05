@@ -31,15 +31,19 @@ User = get_user_model()
 
 @database_sync_to_async
 def get_user_from_token(token_key):
-    """Return (user, context, active_profile_id) from an access token."""
+    """Return (user, context, active_profile_id, identity) from an access
+    token. `identity` is the M1 claim (Phase 3 §7) — absent on any token
+    minted before this deploy, which is expected and fine: every consumer
+    of scope["identity"] treats a missing claim as "fall back to the
+    context + active_profile_id resolution," never as an error."""
     try:
         token = AccessToken(token_key)
         user_id = token["user_id"]
         user = User.objects.get(id=user_id)
-        return user, token.get("context"), token.get("active_profile")
+        return user, token.get("context"), token.get("active_profile"), token.get("identity")
     except (InvalidToken, TokenError, User.DoesNotExist) as e:
         logger.warning(f"JWT auth failed: {e}")
-        return AnonymousUser(), None, None
+        return AnonymousUser(), None, None, None
 
 
 class JWTAuthMiddleware(BaseMiddleware):
@@ -52,14 +56,16 @@ class JWTAuthMiddleware(BaseMiddleware):
         token = self._get_token(scope)
 
         if token:
-            user, context, active_profile_id = await get_user_from_token(token)
+            user, context, active_profile_id, identity = await get_user_from_token(token)
             scope["user"] = user
             scope["context"] = context
             scope["active_profile_id"] = active_profile_id
+            scope["identity"] = identity
         else:
             scope["user"] = AnonymousUser()
             scope["context"] = None
             scope["active_profile_id"] = None
+            scope["identity"] = None
 
         return await super().__call__(scope, receive, send)
 

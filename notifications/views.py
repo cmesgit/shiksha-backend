@@ -50,9 +50,11 @@ class ListNotificationsView(APIView):
       page, page_size (≤100)
       unread=1            → only unread rows
       verb_prefix=forum.  → one product area only
-      role=STUDENT        → rows for that dashboard identity + unscoped rows
-                            (send it from each dashboard so a teacher's bell
-                            doesn't fill with learner-side events)
+      role=STUDENT        → rows for that dashboard ROLE + unscoped rows
+                            (coarse; both children are STUDENT)
+      identity=L:<uuid>   → rows for that ONE identity + account-wide rows
+                            (precise per-profile scope — send this from each
+                            dashboard so child A's bell never shows child B's)
     """
 
     permission_classes = [IsAuthenticated]
@@ -71,6 +73,15 @@ class ListNotificationsView(APIView):
         if role:
             qs = qs.filter(audience_role__in=["", role.upper()])
 
+        # M2 (Phase 3 §18): precise per-identity filter. A dashboard sends
+        # its identity key ("L:<uuid>" / "T:<id>") and gets rows scoped to
+        # that identity PLUS account-wide rows (blank audience_identity).
+        # This is what actually keeps child A's bell from showing child B's
+        # notifications; `role` alone can't, since both children are STUDENT.
+        identity = request.query_params.get("identity")
+        if identity:
+            qs = qs.filter(audience_identity__in=["", identity])
+
         page = _int_param(request, "page", 1, 100000)
         page_size = _int_param(request, "page_size", 8, 100)
         total = qs.count()
@@ -87,15 +98,27 @@ class ListNotificationsView(APIView):
 
 
 class UnreadCountView(APIView):
-    """GET /api/notifications/unread-count/ — cheap badge poll."""
+    """GET /api/notifications/unread-count/ — cheap badge poll.
+
+    Honors the same ?identity= / ?role= scoping as the list endpoint, so a
+    per-profile bell shows a per-profile count. Sending neither preserves
+    the old account-wide count exactly.
+    """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        count = Notification.objects.filter(
-            recipient=request.user, is_read=False
-        ).count()
-        return Response({"unread_count": count})
+        qs = Notification.objects.filter(recipient=request.user, is_read=False)
+
+        role = request.query_params.get("role")
+        if role:
+            qs = qs.filter(audience_role__in=["", role.upper()])
+
+        identity = request.query_params.get("identity")
+        if identity:
+            qs = qs.filter(audience_identity__in=["", identity])
+
+        return Response({"unread_count": qs.count()})
 
 
 class MarkAllNotificationsReadView(APIView):
