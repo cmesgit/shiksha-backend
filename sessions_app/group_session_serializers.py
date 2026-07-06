@@ -166,7 +166,7 @@ class GroupSessionCreateSerializer(serializers.Serializer):
     subject_id = serializers.UUIDField()
     scheduled_date = serializers.DateField()
     scheduled_time = serializers.TimeField()
-    duration_minutes = serializers.ChoiceField(choices=[30, 45, 60])
+    duration_minutes = serializers.ChoiceField(choices=[30, 45, 60, 90, 120, 150, 180])
     topic = serializers.CharField(
         required=False, allow_blank=True, default="", max_length=255
     )
