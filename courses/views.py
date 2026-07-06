@@ -303,11 +303,23 @@ class SubjectDashboardView(APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
         else:
-            if not Enrollment.objects.filter(
-                user=user,
-                course=subject.course,
-                status=Enrollment.STATUS_ACTIVE
-            ).exists():
+            # Scope to the caller's ACTIVE learner profile — mirrors
+            # MyEnrolledCoursesView so a course that shows up under "My courses"
+            # can actually be opened. Filtering by `user=` alone missed
+            # enrollments whose row carries a learner_profile (and possibly a
+            # NULL/legacy user), which 403'd genuinely-enrolled learners.
+            learner = get_active_profile(request)
+            enrolled = False
+            if learner is not None:
+                enroll_q = Q(learner_profile=learner)
+                if getattr(learner, "is_default", False):
+                    enroll_q |= Q(learner_profile__isnull=True, user=user)
+                enrolled = Enrollment.objects.filter(
+                    enroll_q,
+                    course=subject.course,
+                    status=Enrollment.STATUS_ACTIVE,
+                ).exists()
+            if not enrolled:
                 return Response(
                     {"detail": "Not enrolled."},
                     status=status.HTTP_403_FORBIDDEN
