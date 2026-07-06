@@ -50,6 +50,7 @@ OFFLINE_MODES = ("home", "travel")
 def expert_missing(
     *,
     category_id=None,
+    has_subjects=False,
     subject_description="",
     languages=None,
     bio="",
@@ -64,7 +65,7 @@ def expert_missing(
     description (and vice-versa)."""
     missing = []
 
-    if not (category_id or (subject_description or "").strip()):
+    if not (category_id or has_subjects or (subject_description or "").strip()):
         missing.append("subject_description")
 
     if not (languages or []):
@@ -189,6 +190,26 @@ def apply_expert_fields(ep, data, *, files=None):
         if data.get("category") and not found:
             raise ValidationError({"category": "Unknown subject/category."})
         ep.category = cat
+        fields.append("category")
+
+    # Multiple subjects: a list of category slugs/ids. The M2M is set here
+    # (the profile row always exists by edit time); `category` is synced to
+    # the first entry so older consumers keep working.
+    if "categories" in data:
+        raw = data.get("categories")
+        if isinstance(raw, str):
+            raw = [x.strip() for x in raw.split(",") if x.strip()]
+        if not isinstance(raw, list):
+            raise ValidationError({"categories": "Must be a list of subject slugs."})
+        cats = []
+        for v in raw:
+            cat, found = _resolve_category(v)
+            if not found:
+                raise ValidationError({"categories": f"Unknown subject: {v}"})
+            if cat:
+                cats.append(cat)
+        ep.categories.set(cats)
+        ep.category = cats[0] if cats else ep.category
         fields.append("category")
 
     if "headline" in data:
@@ -340,6 +361,8 @@ def serialize_expert(ep):
     return {
         # subject / teaching
         "category":            ep.category.slug if ep.category_id else "",
+        "categories":          _all_category_slugs(ep),
+        "subjects":            _all_category_labels(ep),
         "headline":            ep.headline,
         "skill_tags":          ep.skill_tags or [],
         "subject_description": ep.subject_description,
@@ -370,6 +393,29 @@ def serialize_expert(ep):
         "is_listed":           ep.is_listed,
         "is_advertised":       ep.is_advertised(),
         "reach_count":         ep.reach_count,
+        # public stats shown on the "My Course" header
+        "rating":              float(ep.rating) if ep.rating is not None else None,
+        "sessions_count":      ep.sessions_count,
         "is_complete":         comp["is_complete"],
         "missing":             comp["missing"],
     }
+
+
+def _all_categories(ep):
+    """Primary category + M2M categories, de-duplicated, primary first."""
+    seen, out = set(), []
+    if ep.category_id and ep.category:
+        seen.add(ep.category_id); out.append(ep.category)
+    if ep.pk:
+        for c in ep.categories.all():
+            if c.id not in seen:
+                seen.add(c.id); out.append(c)
+    return out
+
+
+def _all_category_slugs(ep):
+    return [c.slug for c in _all_categories(ep)]
+
+
+def _all_category_labels(ep):
+    return [c.label for c in _all_categories(ep)]

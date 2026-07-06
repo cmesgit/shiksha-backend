@@ -1304,9 +1304,9 @@ def instant_create(request):
         )
 
     now = timezone.now()
-    duration_minutes = int(request.data.get("duration_minutes") or 180)
-    if duration_minutes not in {30, 45, 60, 180}:
-        duration_minutes = 180
+    duration_minutes = int(request.data.get("duration_minutes") or 60)
+    if duration_minutes not in {30, 45, 60, 90, 120, 150, 180}:
+        duration_minutes = 60
 
     topic = (request.data.get("topic") or "").strip()[:255]
 

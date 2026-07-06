@@ -1,6 +1,6 @@
 from .serializers import ChapterSerializer
 from .models import Chapter
-from django.db.models import Count, Q
+from django.db.models import Count, Prefetch, Q
 from .models import SubjectTeacher
 from accounts.models import Role
 from rest_framework.views import APIView
@@ -9,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from enrollments.models import Enrollment, EnrollmentRequest, Subscription
 from accounts.permissions import IsTeacher, IsAdmin
+from accounts.auth_flow import get_active_profile
 from quizzes.models import Quiz
 from assignments.models import Assignment
 from .models import Course, Subject, Board
@@ -121,12 +122,37 @@ class DeleteCourseView(APIView):
 # =========================
 
 class MyEnrolledCoursesView(APIView):
+    """
+    GET /courses/my/
+
+    FIX: previously filtered by `user=`, which unions every learner
+    profile on the account. CourseContext feeds the whole student app
+    from this endpoint, so a sibling profile's courses (and this
+    endpoint's payment-history block — including UTR numbers) leaked
+    across profiles. Now scoped to the caller's ACTIVE learner profile.
+
+    Teacher/account context (no active learner profile) → [].
+    Legacy Enrollment rows with learner_profile=NULL are attributed to
+    the account's default profile (same convention the enrollments app
+    used for its own backfill), so pre-migration enrollees don't lose
+    their dashboard.
+    """
     permission_classes = [IsAuthenticated]
 
+    def _profile_enrollment_q(self, learner):
+        q = Q(learner_profile=learner)
+        if learner.is_default:
+            q |= Q(learner_profile__isnull=True, user=learner.account)
+        return q
+
     def get(self, request):
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response([])
+
         enrollments = (
             Enrollment.objects
-            .filter(user=request.user, status="ACTIVE")
+            .filter(self._profile_enrollment_q(learner), status="ACTIVE")
             .select_related("course__board")
         )
 
@@ -137,7 +163,7 @@ class MyEnrolledCoursesView(APIView):
         latest_sub_by_course = {}
         for sub in (
             Subscription.objects
-            .filter(user=request.user, course_id__in=course_ids)
+            .filter(learner_profile=learner, course_id__in=course_ids)
             .order_by("course_id", "-expires_at")
         ):
             latest_sub_by_course.setdefault(sub.course_id, sub)
@@ -145,7 +171,7 @@ class MyEnrolledCoursesView(APIView):
         history_by_course = {}
         for req in (
             EnrollmentRequest.objects
-            .filter(user=request.user, course_id__in=course_ids)
+            .filter(learner_profile=learner, course_id__in=course_ids)
             .order_by("-submitted_at")[:50]
         ):
             history_by_course.setdefault(req.course_id, []).append({
@@ -195,11 +221,21 @@ class CourseSubjectsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, course_id):
-        is_enrolled = Enrollment.objects.filter(
-            user=request.user,
-            course__id=course_id,
-            status="ACTIVE"
-        ).exists()
+        learner = get_active_profile(request)
+
+        if learner is not None:
+            profile_q = Q(learner_profile=learner)
+            if learner.is_default:
+                profile_q |= Q(learner_profile__isnull=True, user=learner.account)
+            is_enrolled = Enrollment.objects.filter(
+                Q(course__id=course_id, status="ACTIVE") & profile_q
+            ).exists()
+        else:
+            # Teacher identity without an active learner profile: allow
+            # only if assigned to teach this course's subjects.
+            is_enrolled = SubjectTeacher.objects.filter(
+                subject__course_id=course_id, teacher=request.user
+            ).exists()
 
         if not is_enrolled:
             return Response({"detail": "Not enrolled in this course."}, status=403)
@@ -208,6 +244,14 @@ class CourseSubjectsView(APIView):
             Subject.objects
             .filter(course__id=course_id)
             .select_related("course__stream", "course__board")
+            .prefetch_related(
+                Prefetch(
+                    "subject_teachers",
+                    queryset=SubjectTeacher.objects
+                    .select_related("teacher", "teacher__teacher_profile")
+                    .order_by("order"),
+                )
+            )
             .order_by("order")
         )
 
@@ -252,22 +296,38 @@ class SubjectDashboardView(APIView):
             id=subject_id
         )
 
-        if user.has_role("TEACHER"):
-            if not subject.subject_teachers.filter(teacher=user).exists():
-                return Response(
-                    {"detail": "Not assigned to this subject."},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-        else:
-            if not Enrollment.objects.filter(
-                user=user,
+        # Check enrollment FIRST, regardless of role. A "TEACHER"-role account
+        # can also be personally enrolled as a learner in a course they don't
+        # teach (a parent/tutor account, or staff auditing their own child's
+        # subject) — the old code branched on role alone, so any TEACHER-role
+        # account hit the teaching-assignment check even when they were
+        # actually here as an enrolled learner, and got 403'd despite having
+        # a perfectly valid ACTIVE enrollment. Enrollment now wins; teaching
+        # assignment is only consulted when there's no active enrollment.
+        learner = get_active_profile(request)
+        enrolled = False
+        if learner is not None:
+            enroll_q = Q(learner_profile=learner)
+            if getattr(learner, "is_default", False):
+                enroll_q |= Q(learner_profile__isnull=True, user=user)
+            enrolled = Enrollment.objects.filter(
+                enroll_q,
                 course=subject.course,
-                status=Enrollment.STATUS_ACTIVE
-            ).exists():
-                return Response(
-                    {"detail": "Not enrolled."},
-                    status=status.HTTP_403_FORBIDDEN
+                status=Enrollment.STATUS_ACTIVE,
+            ).exists()
+
+        if not enrolled:
+            is_assigned_teacher = (
+                user.has_role("TEACHER")
+                and subject.subject_teachers.filter(teacher=user).exists()
+            )
+            if not is_assigned_teacher:
+                detail = (
+                    "Not assigned to this subject."
+                    if user.has_role("TEACHER")
+                    else "Not enrolled."
                 )
+                return Response({"detail": detail}, status=status.HTTP_403_FORBIDDEN)
 
         is_student = user.has_role("STUDENT")
 
@@ -583,15 +643,26 @@ class TeacherAllStudentsView(APIView):
 
 class MySubjectsView(APIView):
     """
-    Returns subjects for the student's active enrolled course(s).
+    Returns subjects for the ACTIVE PROFILE's enrolled course(s).
     GET /courses/subjects/mine/
+
+    FIX: previously filtered Enrollment by `user=`, unioning every
+    learner profile's courses. Now scoped to the caller's active
+    learner profile (teacher/account context → []).
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response([])
+
+        profile_q = Q(learner_profile=learner)
+        if learner.is_default:
+            profile_q |= Q(learner_profile__isnull=True, user=learner.account)
+
         course_ids = Enrollment.objects.filter(
-            user=request.user,
-            status=Enrollment.STATUS_ACTIVE,
+            profile_q, status=Enrollment.STATUS_ACTIVE,
         ).values_list("course_id", flat=True)
 
         if not course_ids:
@@ -832,3 +903,102 @@ class AdminSubjectDeleteView(APIView):
         subject = get_object_or_404(Subject, id=subject_id)
         subject.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# =========================
+# COURSE CATALOG (student-facing "Browse Courses" shop)
+# =========================
+
+class CourseCatalogView(APIView):
+    """Browsable catalog of every course, for the in-dashboard "Browse Courses"
+    shop. Any authenticated learner can read it — enrollment gates a course's
+    *content*, not its listing.
+
+    Each course carries just enough for a shop card: title, description, price,
+    board/stream, a subject count, a small teacher preview, and an
+    ``is_enrolled`` flag so the UI shows courses the learner already owns as
+    enrolled rather than purchasable. Matches the same "active enrollment for
+    this user" rule that /courses/my/ uses, so the two stay in sync.
+
+    Optional query params:
+        ?q=<text>        title / description search
+        ?board=<uuid>    filter to one board
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = (
+            Course.objects
+            .select_related("board", "stream")
+            .annotate(subject_count=Count("subjects", distinct=True))
+            .order_by("board__name", "title")
+        )
+
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q))
+
+        board_id = request.query_params.get("board")
+        if board_id:
+            qs = qs.filter(board_id=board_id)
+
+        stream_id = request.query_params.get("stream")
+        if stream_id:
+            qs = qs.filter(stream_id=stream_id)
+
+        enrolled_ids = set(
+            Enrollment.objects
+            .filter(user=request.user, status=Enrollment.STATUS_ACTIVE)
+            .values_list("course_id", flat=True)
+        )
+
+        # One preview teacher per course (the primary, else any), fetched in a
+        # single pass to avoid an N+1 across the catalog.
+        course_ids = [c.id for c in qs]
+        teacher_by_course = {}
+        if course_ids:
+            links = (
+                SubjectTeacher.objects
+                .filter(subject__course_id__in=course_ids)
+                .select_related("teacher", "subject")
+                .order_by("subject__course_id", "order")
+            )
+            for link in links:
+                cid = link.subject.course_id
+                if cid in teacher_by_course:
+                    continue
+                profile = link.teacher.default_learner_profile()
+                name = (
+                    profile.full_name
+                    if profile and getattr(profile, "full_name", "")
+                    else link.teacher.username
+                )
+                teacher_by_course[cid] = name
+
+        data = [
+            {
+                "id": str(c.id),
+                "title": c.title,
+                "description": c.description,
+                "price": c.price,  # paise (₹1 = 100 paise); 0 = free
+                "subscription_duration_days": c.subscription_duration_days,
+                "board": (
+                    {
+                        "id": str(c.board.id),
+                        "name": c.board.name,
+                        "board_type": c.board.board_type,
+                    }
+                    if c.board else None
+                ),
+                "stream_name": c.stream.name if c.stream else None,
+                "stream": (
+                    {"id": str(c.stream.id), "name": c.stream.name}
+                    if c.stream else None
+                ),
+                "subject_count": c.subject_count,
+                "lead_teacher": teacher_by_course.get(c.id),
+                "is_enrolled": c.id in enrolled_ids,
+            }
+            for c in qs
+        ]
+        return Response(data)

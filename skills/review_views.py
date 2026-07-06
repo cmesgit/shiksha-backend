@@ -122,3 +122,93 @@ class MyReviewableSessionsView(APIView):
             }
             for s in sessions
         ])
+
+
+class StudentMyReviewsView(APIView):
+    """
+    GET /skill/my-reviews/
+    The reviews THIS learner has written, for the "My Reviews" nav page on the
+    Learner Skill Dev dashboard. Each row is editable via MyReviewUpdateView.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        learner = get_active_profile(request)
+        if not learner:
+            raise PermissionDenied("Select a learner profile.")
+
+        reviews = (
+            ExpertReview.objects
+            .filter(learner_profile=learner)
+            .select_related("expert", "session")
+            .order_by("-created_at")
+        )
+
+        data = [
+            {
+                "id":          str(r.id),
+                "rating":      r.rating,
+                "body":        r.body,
+                "created_at":  r.created_at,
+                "expert_id":   str(r.expert_id),
+                "expert_name": r.expert.display_name(),
+                "topic":       (r.session.note[:60] if (r.session_id and r.session.note) else "1-on-1 session"),
+            }
+            for r in reviews
+        ]
+        return Response({"count": len(data), "reviews": data})
+
+
+class MyReviewUpdateView(APIView):
+    """
+    PATCH /skill/my-reviews/<review_id>/   { rating (1-5), body (optional) }
+    Lets a learner edit a review they previously wrote. Recomputes the expert's
+    cached average rating afterwards.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, review_id):
+        learner = get_active_profile(request)
+        if not learner:
+            raise PermissionDenied("Select a learner profile.")
+
+        try:
+            review = ExpertReview.objects.select_related("expert").get(
+                id=review_id, learner_profile=learner
+            )
+        except (ExpertReview.DoesNotExist, ValueError):
+            raise NotFound("Review not found.")
+
+        changed = []
+        if "rating" in request.data:
+            try:
+                rating = int(request.data.get("rating"))
+                if not 1 <= rating <= 5:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValidationError({"rating": "Rating must be 1–5."})
+            review.rating = rating
+            changed.append("rating")
+
+        if "body" in request.data:
+            review.body = (request.data.get("body") or "").strip()
+            changed.append("body")
+
+        if changed:
+            review.save(update_fields=changed)
+
+        # Refresh the expert's cached average rating.
+        ep = review.expert
+        all_ratings = list(
+            ExpertReview.objects.filter(expert=ep, is_public=True).values_list("rating", flat=True)
+        )
+        if all_ratings:
+            ep.rating = round(sum(all_ratings) / len(all_ratings), 2)
+            ep.save(update_fields=["rating"])
+
+        return Response({
+            "id":     str(review.id),
+            "rating": review.rating,
+            "body":   review.body,
+            "ok":     True,
+        })

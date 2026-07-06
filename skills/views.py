@@ -199,7 +199,10 @@ class ExpertListView(APIView):
         )
         cat = request.query_params.get("cat") or request.query_params.get("category")
         if cat:
-            qs = qs.filter(category__slug=cat)
+            from django.db.models import Q
+            qs = qs.filter(
+                Q(category__slug=cat) | Q(categories__slug=cat)
+            ).distinct()
 
         search = (request.query_params.get("search") or "").strip()
         if search:

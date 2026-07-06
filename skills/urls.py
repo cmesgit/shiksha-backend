@@ -25,6 +25,7 @@ from .livekit_views import (
 )
 from .review_views import (
     SubmitReviewView, ExpertReviewListView, MyReviewableSessionsView,
+    StudentMyReviewsView, MyReviewUpdateView,   # NEW — learner's own reviews (My Reviews page)
 )
 from .payment_config_views import SkillPaymentConfigView
 from .subscription_views import (
@@ -67,6 +68,9 @@ urlpatterns = [
     path("my-courses/",                              MySkillCoursesView.as_view()),
     path("my-courses/<uuid:course_id>/progress/",    CourseLectureProgressView.as_view()),
     path("my-reviewable-sessions/",                  MyReviewableSessionsView.as_view()),
+    # NEW: the learner's own submitted reviews (My Reviews nav page) + edit.
+    path("my-reviews/",                              StudentMyReviewsView.as_view()),
+    path("my-reviews/<uuid:review_id>/",             MyReviewUpdateView.as_view()),
     path("sessions/",                                SessionRequestView.as_view()),
     # NEW: detail route must come before the generic join/review routes
     # so Django matches <session_id>/ before trying <session_id>/join/ etc.

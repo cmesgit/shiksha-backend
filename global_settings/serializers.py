@@ -1,19 +1,39 @@
 """
-global_settings/serializers.py  (NEW FILE)
+global_settings/serializers.py  (REPLACE THE WHOLE FILE)
 
 Admin-facing serializer for the GlobalSettings singleton. Powers the payment-mode
 switch (free / manual_upi / razorpay) plus UPI + Razorpay credentials.
 
-Security:
-  * razorpay_key_secret is WRITE-ONLY — it is never returned in GET responses.
-    On read we expose only whether a secret is set (`razorpay_secret_set`), so
-    the admin UI can show "configured" without leaking the value.
-  * `effective_mode` (read-only) shows what's actually in force right now, since
+FREE-LAUNCH SAFETY PIN
+──────────────────────
+The platform currently runs FREE. `manual_upi` and `razorpay` exist as
+placeholders for later automation, but neither is wired end-to-end yet
+(RazorpayProvider.create_intent raises NotImplementedError; no learner-facing
+view creates SkillPaymentRequest). Until they are, this serializer REFUSES any
+save whose *effective* mode would be a paid one — i.e. a paid `payment_mode`
+combined with `free_trial_enabled = False`. An admin can still pre-select a
+paid mode and pre-fill credentials while the free-trial switch stays ON.
+
+To launch a paid mode later: implement it, then flip PAID_MODES_LIVE below (or
+delete the guard) — one line.
+
+Security (unchanged):
+  * razorpay_key_secret is WRITE-ONLY — never returned in GET responses.
+    On read we expose only `razorpay_secret_set` so the UI can show
+    "configured" without leaking the value.
+  * `effective_mode` (read-only) shows what's actually in force, since
     free_trial_enabled overrides payment_mode.
 """
 from rest_framework import serializers
 
 from .models import GlobalSettings
+
+# Flip these to True one at a time as each provider is fully implemented
+# (backend flow + learner UI + verification path).
+PAID_MODES_LIVE = {
+    GlobalSettings.PAYMENT_MANUAL_UPI: False,
+    GlobalSettings.PAYMENT_RAZORPAY:   False,
+}
 
 
 class GlobalSettingsSerializer(serializers.ModelSerializer):
@@ -50,6 +70,19 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
             "free_trial_enabled",
             getattr(self.instance, "free_trial_enabled", True),
         )
+
+        # ── FREE-LAUNCH SAFETY PIN ────────────────────────────────────────
+        # A paid mode may be selected/pre-configured, but it cannot GO LIVE
+        # (free trial off) until it is implemented and flagged live above.
+        if not free and mode in PAID_MODES_LIVE and not PAID_MODES_LIVE[mode]:
+            label = dict(GlobalSettings.PAYMENT_CHOICES).get(mode, mode)
+            raise serializers.ValidationError({
+                "free_trial_enabled": (
+                    f"'{label}' is not available yet — it is a placeholder for a "
+                    "future payments launch. Keep the free-trial switch ON, or "
+                    "select 'Free (no payment)'."
+                )
+            })
 
         # Only enforce credential presence when the mode would actually be LIVE
         # (free_trial off) — otherwise an admin can pre-fill config while still free.

@@ -28,6 +28,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 
 from .models import ExpertProfile, SkillSession
 from .course_models import SkillCourseEnrollment
+from .review_models import ExpertReview
 from . import profile_ops
 
 
@@ -98,21 +99,41 @@ class TeacherDashboardView(APIView):
         taught    = sessions.filter(status=SkillSession.STATUS_COMPLETED).count()
         pending   = sessions.filter(status=SkillSession.STATUS_REQUESTED).count()
         confirmed = sessions.filter(status=SkillSession.STATUS_CONFIRMED).count()
+        # "Total students" = unique learners across every session, not a
+        # completed-session count.
+        total_students = (
+            sessions.values("learner_profile").distinct().count()
+        )
         course_students = SkillCourseEnrollment.objects.filter(
             course__teacher_profile=ep.teacher_profile
         ).count()
 
-        # Today's upcoming sessions
-        today_sessions = (
+        # Reviews — cached average + latest three for the dashboard card.
+        my_reviews    = ExpertReview.objects.filter(expert=ep, is_public=True)
+        reviews_count = my_reviews.count()
+        avg_rating    = float(ep.rating) if ep.rating is not None else None
+        recent_reviews = [
+            {
+                "id":         str(r.id),
+                "rating":     r.rating,
+                "body":       (r.body[:160] if r.body else ""),
+                "reviewer":   (r.learner_profile.display_name
+                               or r.learner_profile.full_name or "Student"),
+                "created_at": r.created_at,
+            }
+            for r in my_reviews.select_related("learner_profile")[:3]
+        ]
+
+        # Upcoming bookings — everything from now onward (not just today),
+        # soonest first. Unscheduled requests sort last.
+        upcoming_qs = (
             sessions
-            .filter(
-                status__in=[SkillSession.STATUS_CONFIRMED, SkillSession.STATUS_REQUESTED],
-                scheduled_for__date=now.date(),
-            )
+            .filter(status__in=[SkillSession.STATUS_CONFIRMED, SkillSession.STATUS_REQUESTED])
+            .exclude(scheduled_for__lt=now)
             .order_by("scheduled_for")
         )
         next_up = []
-        for s in today_sessions:
+        for s in upcoming_qs[:6]:
             name = (s.learner_profile.display_name
                     or s.learner_profile.full_name or "Student")
             is_live = bool(
@@ -168,11 +189,15 @@ class TeacherDashboardView(APIView):
         return Response({
             "stats": {
                 "taught":          taught,
+                "total_students":  total_students,
                 "active":          confirmed,
                 "pending":         pending,
+                "avg_rating":      avg_rating,
+                "reviews_count":   reviews_count,
                 "course_students": course_students,
             },
-            "next_up":      next_up,
+            "next_up":         next_up,
+            "recent_reviews":  recent_reviews,
             "advertising":  advertising,
             "profile_todo": profile_todo,
             "activity":     activity,

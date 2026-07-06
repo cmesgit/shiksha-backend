@@ -5,8 +5,11 @@ chat/views.py — REST endpoints (history, conversation list, starting chats,
 the people directory used to start a NEW chat, and block / unblock).
 
 Live delivery is over the websocket (see consumers.py); REST covers the rest.
-Both paths funnel sends through services.post_message_checked(), so moderation
-and blocking are enforced identically no matter how a message is posted.
+Both paths funnel sends through services.post_message_checked(), so policy,
+moderation, and blocking are enforced identically no matter how a message is
+posted. StartDirectView additionally gates on policy.can_start_dm() (Phase 3
+§10) before a 1:1 conversation is even created — a check-then-create shape,
+the same one CourseRoomView already uses for room membership.
 """
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -19,6 +22,7 @@ from django.db.models import Q
 from accounts.models import LearnerProfile, TeacherProfile
 from .models import Conversation, Participant, Message
 from . import services
+from . import policy
 
 
 def _require_identity(request):
@@ -83,6 +87,12 @@ class StartDirectView(APIView):
         # Don't allow starting a thread with yourself.
         if kind == target_kind and str(getattr(obj, "id", "")) == str(target_id):
             raise ValidationError({"target_id": "You cannot message yourself."})
+
+        # M3 (Phase 3 §10): the DM matrix — same check-then-create shape as
+        # CourseRoomView's can_join_course_room check below.
+        allowed, reason = policy.can_start_dm(kind, obj, target_kind, target)
+        if not allowed:
+            raise PermissionDenied(reason)
 
         conv = services.ensure_direct(kind, obj, target_kind, target)
         me = services.participant_for(conv, kind, obj)
@@ -156,6 +166,7 @@ class MarkReadView(APIView):
             raise PermissionDenied("Not a participant.")
         me.last_read_at = timezone.now()
         me.save(update_fields=["last_read_at"])
+        services.redis_utils.clear_unread(me.identity_key(), conv.id)
         return Response({"detail": "ok", "last_read_at": me.last_read_at.isoformat()})
 
 

@@ -8,6 +8,7 @@ class Migration(migrations.Migration):
     dependencies = [
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
         ("forum", "0001_initial"),
+        ("forum", "0002_initial"),  # creates ForumPost — Notification.thread FKs to it
     ]
 
     operations = [

@@ -49,6 +49,22 @@ def build_tokens(user, *, context, profile=None, active_track=None):
         refresh["active_profile"] = str(profile.id)
     if active_track is not None:
         refresh["active_track"] = active_track
+
+    # M1 (Phase 3 §7): the identity claim, resolved once here so every
+    # downstream consumer (REST views, WS middleware) can read one claim
+    # instead of re-deriving kind+profile from context on every request.
+    # Deterministic string built from data already in hand — no extra query
+    # for the learner case; teacher_profile is a cheap PK-indexed lookup
+    # that's typically already been made earlier in the same view. Omitted
+    # for CTX_ACCOUNT (profile-picker screen, no identity selected yet),
+    # same as active_profile/active_track above.
+    if context == CTX_LEARNER and profile is not None:
+        refresh["identity"] = f"L:{profile.id}"
+    elif context == CTX_TEACHER:
+        teacher = getattr(user, "teacher_profile", None)
+        if teacher is not None:
+            refresh["identity"] = f"T:{teacher.id}"
+
     return refresh
 
 
@@ -290,6 +306,69 @@ class TeacherContextView(APIView):
         else:
             # Default: prefer academy when approved, else the first approved.
             track = teacher.TRACK_ACADEMY if teacher.TRACK_ACADEMY in approved else approved[0]
+
+        refresh = build_tokens(request.user, context=CTX_TEACHER, active_track=track)
+        body = {
+            "context": CTX_TEACHER,
+            "teacher": serialize_teacher(teacher, active_track=track),
+        }
+        return set_auth_cookies(Response(body, status=status.HTTP_200_OK), refresh)
+
+
+class TeacherTrackSwitchView(APIView):
+    """
+    POST { track }
+    Requires an existing TEACHER-context session — no password. Entering
+    teacher mode via TeacherContextView already proved the account
+    password; this only moves between the tracks admin approval has
+    already granted, so a BOTH-teacher can flip Academy⟷Skill from the
+    header without re-authenticating.
+
+    Re-mints cookies with the new `active_track` claim, using the same
+    per-track status gates as TeacherContextView.
+
+    200  { context: "teacher", teacher: { …, active_track } }
+    403  { code: "not_teacher_context" }     # called from a learner/account token
+    403  { code: "track_pending" }           # that track is still in review
+    403  { code: "track_locked" }            # not assigned to that track
+    409  { code: "no_teacher" }
+    400  { track: "Unknown track." }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        token = getattr(request, "auth", None)
+        if not token or token.get("context") != CTX_TEACHER:
+            return Response(
+                {"code": "not_teacher_context",
+                 "detail": "Enter teacher mode first."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        teacher = getattr(request.user, "teacher_profile", None)
+        if not teacher:
+            return Response(
+                {"code": "no_teacher", "detail": "This account has no teacher identity."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        track = request.data.get("track") or ""
+        if track not in (teacher.TRACK_ACADEMY, teacher.TRACK_SKILL):
+            raise ValidationError({"track": "Unknown track."})
+
+        st = teacher.track_status(track)
+        if st == teacher.TRACK_PENDING:
+            return Response(
+                {"code": "track_pending",
+                 "detail": "That track is still in admin review."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if st != teacher.TRACK_APPROVED:
+            return Response(
+                {"code": "track_locked",
+                 "detail": "You haven't been assigned to that track yet."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         refresh = build_tokens(request.user, context=CTX_TEACHER, active_track=track)
         body = {

@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import MyEnrolledCoursesView, CourseSubjectsView
 from .views import TeacherMyClassesView
+from .views import CourseCatalogView
 from .views import (
     CreateCourseView,
     MyCoursesView,
@@ -44,8 +45,26 @@ from .progress_views import (
     ChapterCoverageView,
     MyCourseProgressView,
 )
+# Per-batch coverage progress (teacher ticks chapters for one batch + notes;
+# students see their own batch's coverage).
+from .batch_progress_views import (
+    BatchProgressView,
+    BatchChapterCoverageView,
+    MyBatchProgressView,
+)
+# Admin academy management: subject-teacher assignment + batch CRUD.
+from .admin_academy_views import (
+    AdminTeacherListView,
+    AdminSubjectTeachersView,
+    AdminSubjectTeacherDetailView,
+    AdminCourseBatchesView,
+    AdminBatchDetailView,
+)
+# Teacher: the batches they can record progress for.
+from .teacher_batch_views import TeacherMyBatchesView
 urlpatterns = [
     path("teacher/my-classes/",   TeacherMyClassesView.as_view()),
+    path("teacher/my-batches/",   TeacherMyBatchesView.as_view()),
     path("teacher/all-students/", TeacherAllStudentsView.as_view()),
     path("subjects-by-course/",   SubjectsByCourseTitleView.as_view()),
     path("admin/",                AdminCourseListView.as_view()),
@@ -59,9 +78,31 @@ urlpatterns = [
     path("admin/courses/<uuid:course_id>/subjects/", AdminCourseSubjectsView.as_view()),
     # Admin Subject delete
     path("admin/subjects/<uuid:subject_id>/",      AdminSubjectDeleteView.as_view()),
+    # Admin — teacher assignment (subject ↔ teacher)
+    path("admin/teachers/",                                  AdminTeacherListView.as_view()),
+    path("admin/subjects/<uuid:subject_id>/teachers/",       AdminSubjectTeachersView.as_view()),
+    path("admin/subject-teachers/<int:assignment_id>/",      AdminSubjectTeacherDetailView.as_view()),
+    # Admin — batches
+    path("admin/courses/<uuid:course_id>/batches/",          AdminCourseBatchesView.as_view()),
+    path("admin/batches/<uuid:batch_id>/",                   AdminBatchDetailView.as_view()),
     path("",                           CreateCourseView.as_view()),
     path("mine/",                      MyCoursesView.as_view()),
     path("my/",                        MyEnrolledCoursesView.as_view()),
+    # Student-facing browsable catalog for the in-dashboard "Browse Courses" shop.
+    # Supports ?q=, ?board=, and ?stream= so filters scale as more boards and
+    # streams are added.
+    # "catalog" is a static segment, so the <uuid:course_id> route below never
+    # captures it.
+    path("catalog/",                   CourseCatalogView.as_view()),
+    # PER-BATCH PROGRESS — teacher-ticked chapter coverage, per batch.
+    # "batches" and "my-batch-progress" are static segments, so the bare
+    # <uuid:course_id> routes further down never capture them.
+    path("batches/<uuid:batch_id>/progress/",
+         BatchProgressView.as_view()),
+    path("batches/<uuid:batch_id>/chapters/<uuid:chapter_id>/coverage/",
+         BatchChapterCoverageView.as_view()),
+    path("my-batch-progress/",
+         MyBatchProgressView.as_view()),
     path("<uuid:course_id>/public/",   PublicCourseDetailView.as_view()),
     path("<uuid:course_id>/",          UpdateCourseView.as_view()),
     path("<uuid:course_id>/delete/",   DeleteCourseView.as_view()),

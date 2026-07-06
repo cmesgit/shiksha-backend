@@ -225,10 +225,17 @@ class DashboardActivitySerializer(serializers.ModelSerializer):
     subject  = serializers.SerializerMethodField()   # plain string alias
     message  = serializers.CharField(source="title", read_only=True)
 
+    # ── Web-compat addition ─────────────────────────────────────────────────
+    # Canonical UPPERCASE value (ASSIGNMENT/QUIZ/SESSION/SUBMISSION). The web
+    # dashboards' type filters and label/color maps compare against this
+    # vocabulary — `type` above stays mobile-mapped lowercase so the mobile
+    # app needs zero changes.
+    raw_type = serializers.CharField(source="type", read_only=True)
+
     class Meta:
         model  = Activity
         fields = [
-            "id", "type", "title", "message",      # message = title alias
+            "id", "type", "raw_type", "title", "message",  # message = title alias
             "due_date", "created_at",
             "subject_id", "subject_name",
             "subject",                              # plain string for inbox

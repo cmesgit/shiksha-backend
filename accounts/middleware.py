@@ -1,13 +1,21 @@
-# ============================================================================
-# PATCH 3 — accounts/middleware.py
-# ============================================================================
-# The chat feature needs the ACTIVE PROFILE on the websocket scope (chat
-# identity is per learner profile / per teacher identity, not per account).
-# The current middleware only resolves scope["user"]. Replace the body of
-# JWTAuthMiddleware.__call__ and the token helper so the claims survive.
+# PLACEMENT: backend/backend/accounts/middleware.py   (REPLACE THE WHOLE FILE)
+# DEPLOY:    /app/shiksha-backend/accounts/middleware.py
 #
-# Drop-in replacement for the two relevant pieces:
-# ----------------------------------------------------------------------------
+# WHAT CHANGED vs the previous version
+# ────────────────────────────────────
+# The old middleware read the JWT ONLY from the `access` cookie. Three frontend
+# hooks (useNotificationSocket, GroupSessionClassroomUI, PrivateSessions notify)
+# pass the token as `?token=<jwt>` instead — which was silently ignored, so
+# those sockets connected as AnonymousUser and were closed.
+#
+# Resolution order is now:
+#   1. `access` cookie            (production path — unchanged, still preferred)
+#   2. `?token=` query parameter  (localhost / cross-port dev, native clients)
+#
+# Everything else (claims → scope["context"] / scope["active_profile_id"]) is
+# unchanged, so the chat identity resolution keeps working exactly as before.
+
+from urllib.parse import parse_qs
 
 from channels.middleware import BaseMiddleware
 from channels.db import database_sync_to_async
@@ -23,35 +31,63 @@ User = get_user_model()
 
 @database_sync_to_async
 def get_user_from_token(token_key):
-    """Return (user, context, active_profile_id) from an access token."""
+    """Return (user, context, active_profile_id, identity) from an access
+    token. `identity` is the M1 claim (Phase 3 §7) — absent on any token
+    minted before this deploy, which is expected and fine: every consumer
+    of scope["identity"] treats a missing claim as "fall back to the
+    context + active_profile_id resolution," never as an error."""
     try:
         token = AccessToken(token_key)
         user_id = token["user_id"]
         user = User.objects.get(id=user_id)
-        return user, token.get("context"), token.get("active_profile")
+        return user, token.get("context"), token.get("active_profile"), token.get("identity")
     except (InvalidToken, TokenError, User.DoesNotExist) as e:
         logger.warning(f"JWT auth failed: {e}")
-        return AnonymousUser(), None, None
+        return AnonymousUser(), None, None, None
 
 
 class JWTAuthMiddleware(BaseMiddleware):
-    """JWT auth for Channels; also exposes context + active profile on scope."""
+    """JWT auth for Channels; also exposes context + active profile on scope.
+
+    Token sources, in order: `access` cookie, then `?token=` query param.
+    """
 
     async def __call__(self, scope, receive, send):
-        cookies = self._get_cookies(scope)
-        token = cookies.get("access")
+        token = self._get_token(scope)
 
         if token:
-            user, context, active_profile_id = await get_user_from_token(token)
+            user, context, active_profile_id, identity = await get_user_from_token(token)
             scope["user"] = user
             scope["context"] = context
             scope["active_profile_id"] = active_profile_id
+            scope["identity"] = identity
         else:
             scope["user"] = AnonymousUser()
             scope["context"] = None
             scope["active_profile_id"] = None
+            scope["identity"] = None
 
         return await super().__call__(scope, receive, send)
+
+    # ── token extraction ────────────────────────────────────────────────
+
+    def _get_token(self, scope):
+        # 1) Cookie (primary — matches CookieJWTAuthentication on REST).
+        token = self._get_cookies(scope).get("access")
+        if token:
+            return token
+
+        # 2) ?token= query param (dev / non-cookie clients).
+        try:
+            qs = scope.get("query_string", b"").decode("utf-8", errors="ignore")
+            params = parse_qs(qs)
+            values = params.get("token") or []
+            if values and values[0]:
+                return values[0]
+        except Exception:
+            # Malformed query strings must never crash the handshake.
+            pass
+        return None
 
     def _get_cookies(self, scope):
         cookies = {}

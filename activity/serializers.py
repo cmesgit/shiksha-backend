@@ -1,54 +1,63 @@
 """
-activity/serializers.py  — patched for mobile inbox.tsx compatibility
+activity/serializers.py  ·  FULL REPLACEMENT
+────────────────────────────────────────────
+The old serializer overwrote `type` with the mobile inbox map
+(ASSIGNMENT→'material', SESSION→'session', …). The web dashboards,
+NotificationCard, ActivityItem and both DropdownMenus all compare
+against the UPPERCASE DB values — so every type filter on web has
+been matching nothing, and label/color maps fell through to defaults.
 
-Changes vs original:
-  ActivitySerializer → adds unread, subject (plain string), message alias,
-                       lowercase type mapping
+Fix without breaking the mobile app:
+
+  type       ← unchanged mobile-mapped lowercase (mobile keeps working
+               with zero changes)
+  raw_type   ← NEW: canonical DB value (ASSIGNMENT/QUIZ/SESSION/SUBMISSION)
+  audience   ← NEW: LEARNER | TEACHER   (lets clients sanity-filter)
+  learner_profile_id ← NEW: which profile the row targets (or null)
+
+The rewritten web hook normalizes on `raw_type ?? map(type)`, so both
+old rows (cached responses) and new rows render correctly.
 """
 
 from rest_framework import serializers
+
 from .models import Activity
 
 
 class ActivitySerializer(serializers.ModelSerializer):
-    """
-    Returned by GET /activity/feed/
+    """Returned by GET /activity/feed/ — see module docstring."""
 
-    Mobile inbox.tsx reads:
-      n.id
-      n.type          ← 'recording' | 'material' | 'quiz' | 'session'
-      n.title ?? n.message
-      n.subject       ← plain string (subtitle line)
-      n.unread        ← bool
-      n.created_at ?? n.when
-
-    Activity.type DB values: ASSIGNMENT / QUIZ / SESSION / SUBMISSION
-    """
-
-    # ── Mobile-compat additions ───────────────────────────────────────────────
+    # ── Mobile-compat (unchanged) ─────────────────────────────────────
     unread  = serializers.SerializerMethodField()
-    type    = serializers.SerializerMethodField()   # overrides auto field
-    subject = serializers.SerializerMethodField()   # plain string
+    type    = serializers.SerializerMethodField()   # lowercase mobile map
+    subject = serializers.SerializerMethodField()
     message = serializers.CharField(source="title", read_only=True)
 
+    # ── Canonical additions ───────────────────────────────────────────
+    raw_type = serializers.CharField(source="type", read_only=True)
+    audience = serializers.CharField(read_only=True)
+    learner_profile_id = serializers.SerializerMethodField()
+
     class Meta:
-        model  = Activity
+        model = Activity
         fields = [
             "id",
-            "type",           # lowercased + mapped
+            "type",            # mobile map (legacy consumers)
+            "raw_type",        # canonical UPPERCASE (web consumers)
+            "audience",
+            "learner_profile_id",
             "title",
-            "message",        # alias for title — inbox uses n.title ?? n.message
+            "message",
             "due_date",
             "is_read",
-            "unread",         # inverted is_read — inbox uses n.unread
+            "unread",
             "created_at",
             "subject_id",
             "subject_name",
-            "subject",        # plain string — inbox uses n.subject
+            "subject",
             "object_id",
         ]
 
-    # Activity.TYPE_* → inbox.tsx TONE/FMAP keys
     _TYPE_MAP = {
         Activity.TYPE_SESSION:    "session",
         Activity.TYPE_QUIZ:       "quiz",
@@ -64,3 +73,6 @@ class ActivitySerializer(serializers.ModelSerializer):
 
     def get_subject(self, obj):
         return obj.subject_name or ""
+
+    def get_learner_profile_id(self, obj):
+        return str(obj.learner_profile_id) if obj.learner_profile_id else None
