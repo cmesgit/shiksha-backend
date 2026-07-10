@@ -23,15 +23,18 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status
 from django.shortcuts import get_object_or_404
-from django.db.models import Count, Q, Exists, OuterRef
+from django.db.models import Count, Q, Exists, OuterRef, F
 
-from .models import Tag, ForumPost, Reply, PostUpvote, ReplyUpvote
+from .models import Tag, ForumPost, Reply, PostUpvote, ReplyUpvote, ForumProfile
 from .serializers import (
     TagSerializer,
     ForumPostSerializer,
     CreateThreadSerializer,
     CommentSerializer,
     CreateCommentSerializer,
+    PublicForumProfileSerializer,
+    UpdateForumProfileSerializer,
+    UserReplySerializer,
 )
 from django.contrib.auth import get_user_model
 from notifications.services import notify
@@ -109,6 +112,18 @@ class ListThreadsView(APIView):
         if tag:
             qs = qs.filter(tags__name=tag)
 
+        author = request.query_params.get("author")
+        if author:
+            qs = qs.filter(author__username=author)
+
+        solved = request.query_params.get("solved")
+        if solved == "true":
+            qs = qs.filter(is_solved=True)
+        elif solved == "unanswered":
+            qs = qs.filter(reply_count=0)
+        elif solved == "false":
+            qs = qs.filter(is_solved=False)
+
         date_from = request.query_params.get("date_from")
         date_to = request.query_params.get("date_to")
         if date_from:
@@ -175,11 +190,28 @@ class CreateThreadView(APIView):
         )
 
 
+def _register_view(request, post):
+    """Count one view per browser session per thread, not per request —
+    so refreshing or re-opening the same thread doesn't inflate the count.
+    Capped so the session payload can't grow unbounded over a long visit."""
+    session = request.session
+    seen = session.get("forum_viewed_threads", [])
+    key = str(post.pk)
+    if key in seen:
+        return
+    ForumPost.objects.filter(pk=post.pk).update(view_count=F("view_count") + 1)
+    post.view_count = (post.view_count or 0) + 1
+    seen.append(key)
+    session["forum_viewed_threads"] = seen[-500:]
+    session.modified = True
+
+
 class ThreadDetailView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, thread_id):
         post = get_object_or_404(_annotated_threads(request.user), pk=thread_id)
+        _register_view(request, post)
         return Response(ForumPostSerializer(post, context={"request": request}).data)
 
 
@@ -345,3 +377,129 @@ class ToggleCommentUpvoteView(APIView):
             upvote.delete()
             return Response({"upvoted": False, "upvote_count": reply.upvotes.count()})
         return Response({"upvoted": True, "upvote_count": reply.upvotes.count()})
+
+
+# =====================================================
+# Accept Answer
+# =====================================================
+class AcceptAnswerView(APIView):
+    """Toggle a reply as the accepted answer for its thread. Only the
+    thread's author (or staff) may accept; calling again on the same reply
+    un-accepts it. Marks the thread solved/unsolved to match."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, thread_id, reply_id):
+        post = get_object_or_404(ForumPost, pk=thread_id)
+        if post.author_id != request.user.id and not request.user.is_staff:
+            return Response(
+                {"detail": "Only the thread author can accept an answer."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        reply = get_object_or_404(Reply, pk=reply_id, post=post)
+
+        if post.accepted_reply_id == reply.id:
+            post.accepted_reply = None
+            post.is_solved = False
+            post.save(update_fields=["accepted_reply", "is_solved"])
+            return Response({"accepted_reply_id": None, "is_solved": False})
+
+        post.accepted_reply = reply
+        post.is_solved = True
+        post.save(update_fields=["accepted_reply", "is_solved"])
+
+        if reply.author_id != request.user.id:
+            message = f'{request.user.username} accepted your answer on "{post.title}"'
+            notify(
+                recipient=reply.author,
+                actor=request.user,
+                verb="forum.accepted",
+                title=message,
+                body=message,
+                link_url=f"/forum/{post.id}",
+                payload={
+                    "thread_id": post.id,
+                    "title": post.title,
+                    "legacy_type": "accepted_answer",
+                },
+                ws_extra={
+                    "type": "forum",
+                    "notification_type": "accepted_answer",
+                    "message": message,
+                    "thread_id": str(post.id),
+                },
+            )
+
+        return Response({"accepted_reply_id": reply.id, "is_solved": True})
+
+
+# =====================================================
+# Public Forum Profile
+# =====================================================
+class PublicForumProfileView(APIView):
+    """GET /forum/users/:username/ — a lightweight public profile. Stats are
+    computed on read from existing forum data; nothing here duplicates
+    account-level personal info (name, phone, etc. stay private)."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, username):
+        user = get_object_or_404(User, username=username)
+        profile = getattr(user, "forum_profile", None)
+
+        thread_count = ForumPost.objects.filter(author=user).count()
+        reply_count = Reply.objects.filter(author=user).count()
+        upvotes_received = (
+            PostUpvote.objects.filter(post__author=user).count()
+            + ReplyUpvote.objects.filter(reply__author=user).count()
+        )
+
+        data = {
+            "username": user.username,
+            "joined_at": user.date_joined,
+            "bio": profile.bio if profile else "",
+            "thread_count": thread_count,
+            "reply_count": reply_count,
+            "upvotes_received": upvotes_received,
+            "is_self": bool(request.user.is_authenticated and request.user.id == user.id),
+        }
+        return Response(PublicForumProfileSerializer(data).data)
+
+
+class UpdateForumProfileView(APIView):
+    """PATCH /forum/profile/ — update the caller's own bio."""
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        profile, _ = ForumProfile.objects.get_or_create(user=request.user)
+        serializer = UpdateForumProfileSerializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response({"bio": profile.bio})
+
+
+class ListUserRepliesView(APIView):
+    """GET /forum/users/:username/replies/ — a user's replies, newest first,
+    each carrying its parent thread's id + title so the profile page can
+    link back to the discussion. Mirrors ListThreadsView's pagination."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, username):
+        user = get_object_or_404(User, username=username)
+        qs = Reply.objects.filter(author=user).select_related("post").annotate(
+            upvote_count=Count("upvotes", distinct=True),
+        ).order_by("-created_at")
+
+        if request.user.is_authenticated:
+            qs = qs.annotate(
+                user_has_upvoted_annotated=Exists(
+                    ReplyUpvote.objects.filter(reply=OuterRef("pk"), user=request.user)
+                )
+            )
+
+        page = _int_param(request, "page", 1, 100000)
+        page_size = _int_param(request, "page_size", 10, 50)
+        total = qs.count()
+        start = (page - 1) * page_size
+        replies = qs[start:start + page_size]
+
+        serializer = UserReplySerializer(replies, many=True, context={"request": request})
+        return Response({"results": serializer.data, "count": total})

@@ -28,6 +28,15 @@ class ForumPost(models.Model):
     title = models.CharField(max_length=300)
     content = models.TextField(blank=True, default="")
     tags = models.ManyToManyField(Tag, blank=True, related_name="posts")
+    view_count = models.PositiveIntegerField(default=0)
+    is_solved = models.BooleanField(default=False)
+    accepted_reply = models.ForeignKey(
+        "Reply",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="accepted_for_post",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -106,3 +115,21 @@ class ReplyUpvote(models.Model):
 
     def __str__(self):
         return f"{self.user} upvoted reply on {self.reply.post}"
+
+
+class ForumProfile(models.Model):
+    """A small, forum-owned public profile: just a bio the person can set
+    for themselves. Everything else shown on a profile page (thread count,
+    reply count, upvotes received, member-since) is computed on read from
+    existing forum data, not stored here."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="forum_profile",
+    )
+    bio = models.CharField(max_length=280, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Forum profile for {self.user}"

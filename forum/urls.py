@@ -21,6 +21,10 @@ from .views import (
     DeleteCommentView,
     TogglePostUpvoteView,
     ToggleCommentUpvoteView,
+    AcceptAnswerView,
+    PublicForumProfileView,
+    UpdateForumProfileView,
+    ListUserRepliesView,
 )
 from notifications.views import (
     LegacyListNotificationsView,
@@ -37,6 +41,7 @@ urlpatterns = [
     path("threads/create/", CreateThreadView.as_view(), name="forum-create-thread"),
     path("threads/<int:thread_id>/", ThreadDetailView.as_view(), name="forum-thread-detail"),
     path("threads/<int:thread_id>/delete/", DeleteThreadView.as_view(), name="forum-delete-thread"),
+    path("threads/<int:thread_id>/accept/<int:reply_id>/", AcceptAnswerView.as_view(), name="forum-accept-answer"),
 
     # Comments
     path("threads/<int:thread_id>/comments/", ListCommentsView.as_view(), name="forum-comments"),
@@ -46,6 +51,11 @@ urlpatterns = [
     # Upvotes
     path("threads/<int:thread_id>/upvote/", TogglePostUpvoteView.as_view(), name="forum-toggle-post-upvote"),
     path("comments/<int:comment_id>/upvote/", ToggleCommentUpvoteView.as_view(), name="forum-toggle-comment-upvote"),
+
+    # Public profile
+    path("users/<str:username>/", PublicForumProfileView.as_view(), name="forum-public-profile"),
+    path("users/<str:username>/replies/", ListUserRepliesView.as_view(), name="forum-user-replies"),
+    path("profile/", UpdateForumProfileView.as_view(), name="forum-update-profile"),
 
     # Notifications — LEGACY ALIASES (same URLs, same shapes, new table).
     path("notifications/", LegacyListNotificationsView.as_view(), name="forum-notifications"),
