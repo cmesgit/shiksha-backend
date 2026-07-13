@@ -668,6 +668,12 @@ class TeacherProfile(models.Model):
     qualification = models.CharField(max_length=255, blank=True)
     bio = models.TextField(blank=True)
     photo = models.ImageField(upload_to="teachers/", null=True, blank=True)
+    # SMS-reachable mobile for booking confirmations/cancellations and
+    # session reminders (notifications.phone.phone_for_user). Optional —
+    # faculty signup doesn't collect it yet, so SMS to teachers is
+    # gracefully skipped (SmsLog status "skipped") until the profile UI
+    # asks for it.
+    phone = models.CharField(max_length=20, blank=True, default="")
     rating = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
     is_approved = models.BooleanField(default=False)
 

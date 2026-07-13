@@ -181,3 +181,60 @@ class LegacyListNotificationsView(APIView):
 # Same semantics as before; reuse the canonical implementations.
 LegacyMarkAllNotificationsReadView = MarkAllNotificationsReadView
 LegacyMarkNotificationReadView = MarkNotificationReadView
+
+
+# =====================================================
+# Channel preferences — /api/notifications/preferences/
+# =====================================================
+
+class PreferencesView(APIView):
+    """GET  → current switches + the category vocabulary for the UI.
+    PUT  → partial update ({"sms_enabled": false} alone is valid).
+
+    These gate OPT_OUT-level sends only; REQUIRED (transactional)
+    messages — booking confirmations, cancellations, receipts — are
+    always delivered regardless (see notifications/policy.py)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _payload(self, prefs):
+        from . import policy
+        return {
+            "email_enabled": prefs.email_enabled,
+            "sms_enabled": prefs.sms_enabled,
+            "push_enabled": prefs.push_enabled,
+            "muted_categories": prefs.muted_categories or [],
+            "categories": policy.CATEGORIES,
+        }
+
+    def get(self, request):
+        from .models import NotificationPreference
+        return Response(self._payload(
+            NotificationPreference.for_user(request.user)))
+
+    def put(self, request):
+        from . import policy
+        from .models import NotificationPreference
+
+        prefs = NotificationPreference.for_user(request.user)
+        data = request.data or {}
+
+        for field in ("email_enabled", "sms_enabled", "push_enabled"):
+            if field in data:
+                if not isinstance(data[field], bool):
+                    return Response({"detail": f"{field} must be a boolean."},
+                                    status=400)
+                setattr(prefs, field, data[field])
+
+        if "muted_categories" in data:
+            muted = data["muted_categories"]
+            if (not isinstance(muted, list)
+                    or any(c not in policy.CATEGORIES for c in muted)):
+                return Response(
+                    {"detail": "muted_categories must be a list drawn from "
+                               f"{policy.CATEGORIES}."},
+                    status=400)
+            prefs.muted_categories = muted
+
+        prefs.save()
+        return Response(self._payload(prefs))

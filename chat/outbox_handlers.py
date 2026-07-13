@@ -28,7 +28,7 @@ import logging
 from django.db import transaction
 from django.utils import timezone
 
-from .models import OutboxEvent, Message
+from .models import OutboxEvent, Message, Conversation
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,18 @@ def _handle_message_created(payload):
     sender_name = msg.sender.display_name() if msg.sender else "Unknown"
     preview = msg.body[:140]
 
+    # Stage D (CC-015/CC-022): a message's verb depends on which kind of
+    # conversation it landed in — BROADCAST is an Announcement, SUPPORT is
+    # a ticket reply, everything else is an ordinary chat message. Each has
+    # its own notifications/policy.py row (see that module) so preferences
+    # and channel routing can differ per kind.
+    if conversation.kind == Conversation.KIND_BROADCAST:
+        verb = "announcement.posted"
+    elif conversation.kind == Conversation.KIND_SUPPORT:
+        verb = "support.reply"
+    else:
+        verb = "chat.message"
+
     # Lazy import: same cross-app-boundary discipline chat/services.py
     # already uses for courses/enrollments/skills — notifications doesn't
     # import chat back, so this isn't load-bearing against a real cycle,
@@ -132,7 +144,7 @@ def _handle_message_created(payload):
     from notifications.services import notify
 
     others = conversation.participants.exclude(pk=getattr(msg.sender, "pk", None))
-    for participant in others.select_related("learner_profile", "teacher_profile"):
+    for participant in others.select_related("learner_profile", "teacher_profile", "staff_user"):
         recipient = participant.account()
         if recipient is None:
             logger.warning(
@@ -140,10 +152,16 @@ def _handle_message_created(payload):
                 "account — skipping notify", participant.pk,
             )
             continue
+        title = f"New message from {sender_name}"
+        if verb == "announcement.posted":
+            title = f"New announcement from {sender_name}"
+        elif verb == "support.reply":
+            title = f"New reply from {sender_name} on your support ticket"
+
         notify(
             recipient=recipient,
-            verb="chat.message",  # distinct from the OutboxEvent.event_type
-            title=f"New message from {sender_name}",
+            verb=verb,
+            title=title,
             body=preview,
             link_url=f"/chat/{conversation.id}",
             payload={
@@ -151,4 +169,18 @@ def _handle_message_created(payload):
                 "message_id": str(msg.id),
             },
             audience_identity=participant.identity_key(),
+            # Legacy frame keys for the currently-deployed bells (mirrors
+            # forum/views.py's identical shim) — the dashboards' bell
+            # currently reads activity.Activity for its persisted list and
+            # only recognizes a handful of `type` values for icon/color on
+            # a LIVE push; this at least gives one instead of falling back
+            # to a mislabeled "SESSION". Drop once the frontends read
+            # notifications.Notification directly (see this stage's
+            # Communication Center closure report for the full note).
+            ws_extra={
+                "type": "chat",
+                "notification_type": verb,
+                "message": title,
+                "conversation_id": str(conversation.id),
+            },
         )

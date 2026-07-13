@@ -55,6 +55,73 @@ def _send_email(recipient, subject, body):
         logger.exception("notifications: email failed for user %s", recipient.pk)
 
 
+# ── Multi-channel plumbing (policy-routed email / SMS / push) ───────────
+#
+# Channel decision = policy level (policy.py) × user preference:
+#   REQUIRED  → always send (transactional; prefs ignored)
+#   OPT_OUT   → send unless the user disabled the channel or muted the
+#               verb's category in NotificationPreference
+#   OFF       → never
+# All dispatch is Celery-first with a synchronous fallback, mirroring the
+# WS push above — a dead broker degrades to slower requests, not lost
+# confirmations.
+
+def _channel_wanted(level, enabled, category, muted):
+    from . import policy as _p
+    if level == _p.REQUIRED:
+        return True
+    if level == _p.OPT_OUT:
+        return bool(enabled) and category not in (muted or [])
+    return False
+
+
+def _prefs_for(user):
+    """(email_enabled, sms_enabled, push_enabled, muted_categories) —
+    defaults if the row doesn't exist or the table isn't migrated yet."""
+    try:
+        from .models import NotificationPreference
+        p = NotificationPreference.objects.filter(user=user).first()
+        if p is None:
+            return True, True, True, []
+        return p.email_enabled, p.sms_enabled, p.push_enabled, list(p.muted_categories or [])
+    except Exception:
+        return True, True, True, []
+
+
+def _dispatch_email(recipient, subject, body):
+    try:
+        from .tasks import deliver_email_task
+        deliver_email_task.delay(recipient.email, subject, body)
+    except Exception:
+        _send_email(recipient, subject, body)
+
+
+def _dispatch_sms(recipient, template_key, sms_vars, verb, sms_to,
+                  learner_profile):
+    from .phone import phone_for_user
+    to, source = (sms_to, "explicit") if sms_to else \
+        phone_for_user(recipient, learner_profile=learner_profile)
+    try:
+        from .tasks import deliver_sms_task
+        deliver_sms_task.delay(str(recipient.pk), to, template_key,
+                               sms_vars or {}, verb, source or "")
+    except Exception:
+        from .sms import send_sms
+        send_sms(to=to, template_key=template_key, variables=sms_vars or {},
+                 verb=verb, user=recipient, phone_source=source or "")
+
+
+def _dispatch_push(recipient, title, body, link_url, payload):
+    try:
+        from .push import push_to_users
+        data = {"route": link_url} if link_url else {}
+        if payload:
+            data.update({k: str(v) for k, v in payload.items()})
+        push_to_users(recipient.pk, title, body, data)
+    except Exception:
+        logger.exception("notifications: push failed for user %s", recipient.pk)
+
+
 def _role_from_identity_key(identity_key):
     """M2: derive the coarse audience_role from a precise identity key, so a
     caller that passes only audience_identity still populates audience_role
@@ -92,10 +159,33 @@ def notify(
     payload=None,
     audience_role="",
     audience_identity="",
-    email=False,
+    email=None,
+    sms=None,
+    push=None,
+    sms_vars=None,
+    sms_to=None,
+    learner_profile=None,
     ws_extra=None,
 ):
     """Create + push one notification. Returns the Notification, or None.
+
+    Channels — the verb's row in notifications.policy decides email/SMS/
+    push by default; the explicit tri-state flags override per call:
+        email/sms/push = None   → policy decides (the normal case)
+                         True   → force-send (back-compat: every existing
+                                  ``email=True`` call keeps its old
+                                  unconditional behaviour)
+                         False  → force-suppress for this call
+    sms_vars       — variables for the verb's DLT SMS template (see
+                     settings.SMS_TEMPLATES). SMS is silently skipped
+                     when the policy wants SMS but the template's
+                     variables can't be rendered.
+    sms_to         — explicit E.164 destination; otherwise resolved via
+                     notifications.phone.phone_for_user(recipient,
+                     learner_profile).
+    learner_profile — the LearnerProfile this event is about, so a
+                     dependent child's SMS reaches *that child's*
+                     guardian number.
 
     audience_identity (M2 — Phase 3 §18): an identity key ("L:<uuid>" /
     "T:<id>") restricting this notification to ONE identity on the account
@@ -169,8 +259,32 @@ def notify(
         data.update(ws_extra)
     _push_ws(recipient.pk, data)
 
-    if email:
-        _send_email(recipient, subject=title, body=body or title)
+    # ── Away-from-app channels: policy × preferences × explicit flags ──
+    try:
+        from . import policy as _policy
+        rules = _policy.for_verb(verb)
+        pref_email, pref_sms, pref_push, muted = _prefs_for(recipient)
+        category = rules["category"]
+
+        want_email = email if email is not None else _channel_wanted(
+            rules["email"], pref_email, category, muted)
+        want_sms = sms if sms is not None else _channel_wanted(
+            rules["sms"], pref_sms, category, muted)
+        want_push = push if push is not None else _channel_wanted(
+            rules["push"], pref_push, category, muted)
+
+        if want_email and recipient.email:
+            _dispatch_email(recipient, subject=title, body=body or title)
+        if want_sms:
+            _dispatch_sms(recipient,
+                          template_key=rules.get("sms_template") or verb,
+                          sms_vars=sms_vars, verb=verb, sms_to=sms_to,
+                          learner_profile=learner_profile)
+        if want_push:
+            _dispatch_push(recipient, title, body, link_url,
+                           notification.payload)
+    except Exception:
+        logger.exception("notifications: channel dispatch failed (verb=%s)", verb)
 
     return notification
 

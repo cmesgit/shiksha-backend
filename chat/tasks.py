@@ -35,6 +35,24 @@ def push_inbox_delta_task(self, user_id, data):
         raise self.retry(exc=exc)
 
 
+@app.task(bind=True, max_retries=3, default_retry_delay=5)
+def push_conversation_event_task(self, conversation_id, event_type, data):
+    """Async fan-out of a non-message-send event (reaction, delete,
+    attachment message, admin removal) to a conversation's live group —
+    see chat/realtime.py's push_conversation_event() for the synchronous
+    fallback and why this exists as its own task."""
+    try:
+        channel_layer = get_channel_layer()
+        if not channel_layer:
+            return
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{conversation_id}",
+            {"type": event_type, "data": data},
+        )
+    except Exception as exc:
+        raise self.retry(exc=exc)
+
+
 @app.task
 def relay_outbox_task():
     """Beat-driven drain of chat.models.OutboxEvent — see

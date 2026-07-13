@@ -169,3 +169,74 @@ def check_connect_rate_limit(subject_key):
     except Exception:
         logger.exception("redis_utils: connect rate limit check failed for %s — failing open", subject_key)
         return True
+
+
+# ---------------------------------------------------------------------------
+# Presence (Stage E — CC-006/008/021 online status + last-seen)
+# ---------------------------------------------------------------------------
+#
+# A single string key per identity, holding the ISO timestamp of the last
+# time we heard from them (WS connect, or the client's existing 25s
+# keepalive ping — see chatClient.js's PING_MS — now also refreshes this).
+# TTL-based "online": the key EXPIRES PRESENCE_TTL_SECONDS after the last
+# touch, so an unclean disconnect (killed tab, dead laptop) silently goes
+# "offline" on its own without needing a clean close() to ever fire.
+# last_seen is a SEPARATE, non-expiring key so "online" can lapse while
+# "last seen 2 minutes ago" keeps being answerable — exactly the two facts
+# a DM header/directory card needs.
+
+PRESENCE_TTL_SECONDS = 90
+
+
+def _presence_key(identity_key):
+    return f"presence:online:{identity_key}"
+
+
+def _last_seen_key(identity_key):
+    return f"presence:lastseen:{identity_key}"
+
+
+def touch_presence(identity_key):
+    """Call on WS connect and on every client ping — marks the identity
+    online for PRESENCE_TTL_SECONDS and records "now" as their last-seen
+    time (a person who's currently online is, tautologically, also last
+    seen right now)."""
+    try:
+        from django.utils import timezone
+        now_iso = timezone.now().isoformat()
+        r = get_redis()
+        r.set(_presence_key(identity_key), "1", ex=PRESENCE_TTL_SECONDS)
+        r.set(_last_seen_key(identity_key), now_iso)
+    except Exception:
+        logger.exception("redis_utils: touch_presence failed for %s", identity_key)
+
+
+def mark_offline(identity_key):
+    """Call on a clean WS disconnect — clears the online flag immediately
+    rather than waiting out the TTL, so "Online" doesn't linger for up to
+    90s after someone deliberately closes the tab. last_seen is left as-is
+    (it already reflects "now" from the most recent touch_presence)."""
+    try:
+        get_redis().delete(_presence_key(identity_key))
+    except Exception:
+        logger.exception("redis_utils: mark_offline failed for %s", identity_key)
+
+
+def is_online(identity_key):
+    try:
+        return get_redis().exists(_presence_key(identity_key)) > 0
+    except Exception:
+        logger.exception("redis_utils: is_online check failed for %s — reporting offline", identity_key)
+        return False
+
+
+def get_last_seen(identity_key):
+    """ISO timestamp string, or None if we've never seen this identity
+    connect since the last Redis flush (fails open to None, same as
+    is_online() fails open to False — a cosmetic "last seen" gap, never a
+    crash)."""
+    try:
+        return get_redis().get(_last_seen_key(identity_key))
+    except Exception:
+        logger.exception("redis_utils: get_last_seen failed for %s", identity_key)
+        return None

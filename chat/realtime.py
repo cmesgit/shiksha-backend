@@ -46,3 +46,52 @@ def push_inbox_delta(user_id, data):
             _send_sync(user_id, data)
         except Exception:
             logger.exception("chat.realtime: inbox_delta push failed for user %s", user_id)
+
+
+# ---------------------------------------------------------------------------
+# Conversation-group fan-out (Stage B/C — reactions, deletes, attachments)
+# ---------------------------------------------------------------------------
+#
+# chat/consumers.py's ChatConsumer.receive() handles a "message" frame by
+# calling channel_layer.group_send() directly because it's already inside an
+# async consumer with self.channel_layer to hand. A plain REST view (message
+# attachment upload, react, delete, admin message removal) has neither — it
+# needs the exact same "tell everyone with this thread open" primitive from
+# synchronous view code, which is what this function is for. Every one of
+# services.py's mutation helpers that should be visible live (not just on
+# next refresh) calls this — post_message()/post_attachment_checked() for a
+# new message, toggle_reaction(), soft_delete_message() — so the group_send
+# lives in exactly ONE place regardless of whether the mutation originated
+# over the WS or over REST.
+
+def _send_conversation_event_sync(conversation_id, event_type, data):
+    from asgiref.sync import async_to_sync
+    from channels.layers import get_channel_layer
+
+    channel_layer = get_channel_layer()
+    if channel_layer:
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{conversation_id}",
+            {"type": event_type, "data": data},
+        )
+
+
+def push_conversation_event(conversation_id, event_type, data):
+    """`event_type` is a Channels event name ("chat.message",
+    "chat.reaction", "chat.message_deleted", ...) — consumers.py has one
+    handler method per type (Channels maps "chat.message" -> chat_message(),
+    dots become underscores). Celery-first with the same synchronous
+    fallback as push_inbox_delta() above, for the same reason."""
+    try:
+        from .tasks import push_conversation_event_task
+        push_conversation_event_task.apply_async(
+            args=(str(conversation_id), event_type, data), ignore_result=True,
+        )
+    except Exception:
+        try:
+            _send_conversation_event_sync(conversation_id, event_type, data)
+        except Exception:
+            logger.exception(
+                "chat.realtime: conversation event push failed conv=%s type=%s",
+                conversation_id, event_type,
+            )
