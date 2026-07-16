@@ -25,6 +25,7 @@ from rest_framework import status
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, Q, Exists, OuterRef, F, CharField
 from django.db.models.functions import Cast
+from django.utils import timezone
 
 from .models import (
     Tag, ForumPost, Reply, PostUpvote, ReplyUpvote, ForumProfile,
@@ -82,12 +83,28 @@ def _moderation_error(text):
 
 
 def _ban_error(user):
-    """A banned user cannot write to the forum at all. Returns a Response to
-    send back, or None if the user is clear to proceed."""
+    """A banned OR currently-suspended user cannot write to the forum at
+    all. Returns a Response to send back, or None if the user is clear to
+    proceed. Suspension lifts itself lazily here — no cron job needed."""
     profile, _ = ForumProfile.objects.get_or_create(user=user)
     if profile.is_banned:
         return Response(
             {"detail": "You have been banned from the forum."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if profile.suspended_until and profile.suspended_until > timezone.now():
+        return Response(
+            {"detail": f"Your forum access is suspended until {profile.suspended_until:%d %b %Y}."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return None
+
+
+def _lock_error(post):
+    """A locked thread accepts no new replies/comments."""
+    if post.is_locked:
+        return Response(
+            {"detail": "This thread is locked and no longer accepting replies."},
             status=status.HTTP_403_FORBIDDEN,
         )
     return None
@@ -102,11 +119,22 @@ def _queue_auto_rejected(author, kind, title, content, categories, tags=None, th
     )
 
 
-def _annotated_threads(user):
+def _annotated_threads(user, include_removed=False):
+    """The single base queryset every public listing/detail view builds
+    on. Moderator-removed threads are hidden here by default so hiding a
+    thread from the public site is a one-line change, not an audit across
+    every call site — pass include_removed=True only from the moderator-
+    only thread list (forum/moderation_views.py), which needs to see (and
+    restore) removed threads."""
     qs = (
         ForumPost.objects
         .select_related("author", "author__forum_profile", "space")
         .prefetch_related("tags", "attachments", "author__identities")
+    )
+    if not include_removed:
+        qs = qs.filter(is_removed=False)
+    qs = (
+        qs
         .annotate(
             reply_count=Count("replies", distinct=True),
             answer_count_annotated=Count(
@@ -417,6 +445,9 @@ class CreateCommentView(APIView):
             return banned
 
         post = get_object_or_404(ForumPost, pk=thread_id)
+        locked = _lock_error(post)
+        if locked is not None:
+            return locked
         serializer = CreateCommentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 

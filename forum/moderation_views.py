@@ -20,10 +20,14 @@ from .models import (
 )
 from .permissions import IsForumModerator
 from .utils import author_badge
-from .views import _int_param
+from .views import _int_param, _annotated_threads
 from notifications.services import notify
 
 User = get_user_model()
+
+# Which Report.REASON_CHOICES count as high-severity, for the "High
+# priority" header stat.
+HIGH_SEVERITY_REASONS = {"abusive"}
 
 
 # =====================================================
@@ -71,6 +75,45 @@ def _ban_user(user, note):
     profile.is_banned = True
     profile.ban_reason = note
     profile.save(update_fields=["is_banned", "ban_reason"])
+
+
+def _suspend_user(user, duration_days, note):
+    profile, _ = ForumProfile.objects.get_or_create(user=user)
+    until = timezone.now() + timedelta(days=max(1, int(duration_days or 7)))
+    profile.suspended_until = until
+    profile.save(update_fields=["suspended_until"])
+    return until
+
+
+def _reinstate_user(user):
+    """Clears both a ban and a suspension — used for the single "Reinstate"
+    action, which the moderator UI shows for either state."""
+    profile, _ = ForumProfile.objects.get_or_create(user=user)
+    profile.is_banned = False
+    profile.ban_reason = ""
+    profile.suspended_until = None
+    profile.save(update_fields=["is_banned", "ban_reason", "suspended_until"])
+
+
+def _target_thread(obj):
+    """Resolve the ForumPost a report target belongs to, whether the report
+    is against the thread itself or a reply within it."""
+    if isinstance(obj, ForumPost):
+        return obj
+    if isinstance(obj, Reply):
+        return obj.post
+    return None
+
+
+def _remove_content(obj):
+    """Soft-delete a ForumPost; hard-delete anything else (Reply has no
+    is_removed field — restoring an individual reply was never asked for)."""
+    if isinstance(obj, ForumPost):
+        obj.is_removed = True
+        obj.removed_at = timezone.now()
+        obj.save(update_fields=["is_removed", "removed_at"])
+    else:
+        obj.delete()
 
 
 # =====================================================
@@ -149,13 +192,15 @@ class ModReportDeleteView(APIView):
         report = get_object_or_404(Report, pk=report_id)
         target = report.target
         author = _target_author(target) if target else None
+        # Log before removing — a hard-deleted Reply's pk goes to None
+        # once .delete() runs, so the audit entry must capture it first.
+        _log_action(request.user, ModerationAction.ACTION_DELETE, target_user=author,
+                    target=target, note=request.data.get("note", ""))
         if target is not None:
-            target.delete()
+            _remove_content(target)
         Report.objects.filter(
             content_type_id=report.content_type_id, object_id=report.object_id
         ).update(resolved=True, resolved_at=timezone.now())
-        _log_action(request.user, ModerationAction.ACTION_DELETE, target_user=author,
-                    note=request.data.get("note", ""))
         return Response({"deleted": True})
 
 
@@ -196,6 +241,59 @@ class ModReportBanView(APIView):
         message = "You have been banned from the ShikshaCom forum." + (f" Reason: {note}" if note else "")
         _notify_user(author, request.user, "forum.banned", message, note)
         return Response({"banned": True})
+
+
+class ModReportSuspendView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, report_id):
+        report = get_object_or_404(Report, pk=report_id)
+        author = _target_author(report.target) if report.target else None
+        if author is None:
+            return Response({"detail": "Could not resolve the content's author."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        note = request.data.get("note", "")
+        duration_days = request.data.get("duration_days", 7)
+        until = _suspend_user(author, duration_days, note)
+        report.resolved = True
+        report.resolved_at = timezone.now()
+        report.save(update_fields=["resolved", "resolved_at"])
+        _log_action(request.user, ModerationAction.ACTION_SUSPEND, target_user=author, note=note)
+        message = f"You have been temporarily suspended from the ShikshaCom forum until {until:%d %b %Y}." + (f" Reason: {note}" if note else "")
+        _notify_user(author, request.user, "forum.suspended", message, note)
+        return Response({"suspended": True, "suspended_until": until})
+
+
+class ModReportLockView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, report_id):
+        report = get_object_or_404(Report, pk=report_id)
+        thread = _target_thread(report.target) if report.target else None
+        if thread is None:
+            return Response({"detail": "Could not resolve the report's thread."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        thread.is_locked = True
+        thread.save(update_fields=["is_locked"])
+        _log_action(request.user, ModerationAction.ACTION_LOCK, target=thread,
+                    note=request.data.get("note", ""))
+        return Response({"locked": True})
+
+
+class ModReportUnlockView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, report_id):
+        report = get_object_or_404(Report, pk=report_id)
+        thread = _target_thread(report.target) if report.target else None
+        if thread is None:
+            return Response({"detail": "Could not resolve the report's thread."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        thread.is_locked = False
+        thread.save(update_fields=["is_locked"])
+        _log_action(request.user, ModerationAction.ACTION_UNLOCK, target=thread,
+                    note=request.data.get("note", ""))
+        return Response({"locked": False})
 
 
 # =====================================================
@@ -306,10 +404,19 @@ def _user_forum_stats(user, post_ct, reply_ct):
     ).count()
     profile = getattr(user, "forum_profile", None)
     banned = bool(profile and profile.is_banned)
-    warned = (not banned) and ModerationAction.objects.filter(
+    suspended_until = profile.suspended_until if profile else None
+    suspended = bool(suspended_until and suspended_until > timezone.now())
+    if not suspended:
+        suspended_until = None
+    warned = (not banned and not suspended) and ModerationAction.objects.filter(
         action=ModerationAction.ACTION_WARN, target_user=user).exists()
-    status_label = "banned" if banned else ("warned" if warned else "active")
-    return posts_count, reports_count, status_label
+    status_label = (
+        "banned" if banned else
+        "suspended" if suspended else
+        "warned" if warned else
+        "active"
+    )
+    return posts_count, reports_count, status_label, suspended_until
 
 
 class ModUsersView(APIView):
@@ -334,13 +441,14 @@ class ModUsersView(APIView):
 
         enriched = []
         for u in qs:
-            posts_count, reports_count, status_label = _user_forum_stats(u, post_ct, reply_ct)
+            posts_count, reports_count, status_label, suspended_until = _user_forum_stats(u, post_ct, reply_ct)
             if status_filter != "all" and status_label != status_filter:
                 continue
             enriched.append({
                 "id": str(u.id), "username": u.username, "email": u.email,
                 "initials": author_badge(u)["initials"], "color": author_badge(u)["color"],
                 "posts": posts_count, "reports": reports_count, "status": status_label,
+                "suspended_until": suspended_until,
             })
 
         page = _int_param(request, "page", 1, 100000)
@@ -375,20 +483,171 @@ class ModUserBanView(APIView):
         return Response({"banned": True})
 
 
-class ModUserUnbanView(APIView):
+class ModUserSuspendView(APIView):
     permission_classes = [IsForumModerator]
 
     def post(self, request, user_id):
         user = get_object_or_404(User, pk=user_id)
-        profile, _ = ForumProfile.objects.get_or_create(user=user)
-        profile.is_banned = False
-        profile.ban_reason = ""
-        profile.save(update_fields=["is_banned", "ban_reason"])
+        note = request.data.get("note", "")
+        duration_days = request.data.get("duration_days", 7)
+        until = _suspend_user(user, duration_days, note)
+        _log_action(request.user, ModerationAction.ACTION_SUSPEND, target_user=user, note=note)
+        message = f"You have been temporarily suspended from the ShikshaCom forum until {until:%d %b %Y}." + (f" Reason: {note}" if note else "")
+        _notify_user(user, request.user, "forum.suspended", message, note)
+        return Response({"suspended": True, "suspended_until": until})
+
+
+class ModUserUnbanView(APIView):
+    """Reinstates a user regardless of whether they were banned or
+    suspended — the moderator UI shows this as a single "Reinstate" action."""
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, user_id):
+        user = get_object_or_404(User, pk=user_id)
+        _reinstate_user(user)
         _log_action(request.user, ModerationAction.ACTION_UNBAN, target_user=user,
                     note=request.data.get("note", ""))
-        message = "Your forum ban has been lifted. You can participate again."
+        message = "Your forum access has been fully restored. You can participate again."
         _notify_user(user, request.user, "forum.unbanned", message)
         return Response({"banned": False})
+
+
+# =====================================================
+# Thread Management ("All Threads" tab — lock/unlock, soft delete/restore)
+# =====================================================
+class ModThreadsView(APIView):
+    """Distinct from the public forum-threads/ endpoint: this one includes
+    removed and locked threads, since a moderator needs to see (and
+    restore) them."""
+    permission_classes = [IsForumModerator]
+
+    def get(self, request):
+        qs = _annotated_threads(request.user, include_removed=True).order_by("-created_at")
+        page = _int_param(request, "page", 1, 100000)
+        page_size = _int_param(request, "page_size", 20, 100)
+        total = qs.count()
+        start = (page - 1) * page_size
+        rows = qs[start:start + page_size]
+        results = [{
+            "id": t.id, "title": t.title, "author": t.author.username,
+            "reply_count": t.reply_count, "upvote_count": t.upvote_count,
+            "created_at": t.created_at, "is_locked": t.is_locked, "is_removed": t.is_removed,
+        } for t in rows]
+        return Response({"results": results, "count": total})
+
+
+class ModThreadLockView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, thread_id):
+        thread = get_object_or_404(ForumPost, pk=thread_id)
+        thread.is_locked = True
+        thread.save(update_fields=["is_locked"])
+        _log_action(request.user, ModerationAction.ACTION_LOCK, target=thread,
+                    note=request.data.get("note", ""))
+        return Response({"locked": True})
+
+
+class ModThreadUnlockView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, thread_id):
+        thread = get_object_or_404(ForumPost, pk=thread_id)
+        thread.is_locked = False
+        thread.save(update_fields=["is_locked"])
+        _log_action(request.user, ModerationAction.ACTION_UNLOCK, target=thread,
+                    note=request.data.get("note", ""))
+        return Response({"locked": False})
+
+
+class ModThreadDeleteView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, thread_id):
+        thread = get_object_or_404(ForumPost, pk=thread_id)
+        note = request.data.get("note", "")
+        _log_action(request.user, ModerationAction.ACTION_DELETE, target_user=thread.author,
+                    target=thread, note=note)
+        thread.is_removed = True
+        thread.removed_at = timezone.now()
+        thread.save(update_fields=["is_removed", "removed_at"])
+        return Response({"deleted": True})
+
+
+class ModThreadRestoreView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, thread_id):
+        thread = get_object_or_404(ForumPost, pk=thread_id)
+        thread.is_removed = False
+        thread.removed_at = None
+        thread.save(update_fields=["is_removed", "removed_at"])
+        _log_action(request.user, ModerationAction.ACTION_RESTORE, target_user=thread.author,
+                    target=thread, note=request.data.get("note", ""))
+        return Response({"restored": True})
+
+
+# =====================================================
+# Activity Log
+# =====================================================
+_LOG_META = {
+    ModerationAction.ACTION_DISMISS: ("ok", "Dismissed"),
+    ModerationAction.ACTION_DELETE: ("bad", "Removed"),
+    ModerationAction.ACTION_WARN: ("warn", "Warned"),
+    ModerationAction.ACTION_BAN: ("bad", "Banned"),
+    ModerationAction.ACTION_UNBAN: ("ok", "Reinstated"),
+    ModerationAction.ACTION_RESTORE: ("ok", "Restored"),
+    ModerationAction.ACTION_SUSPEND: ("warn", "Suspended"),
+    ModerationAction.ACTION_LOCK: ("warn", "Locked"),
+    ModerationAction.ACTION_UNLOCK: ("ok", "Unlocked"),
+}
+
+
+def _log_row_text(a, target):
+    label = _LOG_META.get(a.action, ("ok", a.get_action_display()))[1]
+    title = getattr(target, "title", None) if target is not None else None
+    if title:
+        return f"{label} thread “{title}”"
+    if a.target_user:
+        return f"{label} {a.target_user.username}"
+    return label
+
+
+class ModLogView(APIView):
+    """Full paginated audit trail — the Activity Log tab. Distinct from
+    ModAnalyticsView's `recent_actions`, which is a fixed 10-row summary."""
+    permission_classes = [IsForumModerator]
+
+    def get(self, request):
+        qs = ModerationAction.objects.select_related("moderator", "target_user").order_by("-created_at")
+        page = _int_param(request, "page", 1, 100000)
+        page_size = _int_param(request, "page_size", 20, 100)
+        total = qs.count()
+        start = (page - 1) * page_size
+        rows = list(qs[start:start + page_size])
+
+        by_ct = {}
+        for a in rows:
+            if a.content_type_id and a.object_id:
+                by_ct.setdefault(a.content_type_id, []).append(a.object_id)
+        targets = {}
+        for ct_id, ids in by_ct.items():
+            model = ContentType.objects.get(pk=ct_id).model_class()
+            for obj in model.objects.filter(pk__in=ids):
+                targets[(ct_id, obj.pk)] = obj
+
+        results = []
+        for a in rows:
+            target = targets.get((a.content_type_id, a.object_id))
+            action_type, label = _LOG_META.get(a.action, ("ok", a.get_action_display()))
+            results.append({
+                "id": a.id, "action": a.action, "type": action_type, "label": label,
+                "text": _log_row_text(a, target), "note": a.note,
+                "moderator": a.moderator.username if a.moderator else "—",
+                "target_user": a.target_user.username if a.target_user else None,
+                "created_at": a.created_at,
+            })
+        return Response({"results": results, "count": total})
 
 
 # =====================================================
@@ -481,9 +740,20 @@ class ModAnalyticsView(APIView):
             "users_banned": banned_this_month,
         }
 
+        # Header stat cards, shown above the tab bar regardless of active tab.
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        pending_reports = Report.objects.filter(resolved=False)
+        header_stats = {
+            "open_reports": pending_reports.count(),
+            "high_priority": pending_reports.filter(reason__in=HIGH_SEVERITY_REASONS).count(),
+            "banned_users": ForumProfile.objects.filter(is_banned=True).count(),
+            "actions_today": ModerationAction.objects.filter(created_at__gte=today_start).count(),
+        }
+
         return Response({
             "kpis": kpis,
             "reports_by_reason": reports_by_reason,
             "recent_actions": recent_actions,
             "this_month": this_month,
+            "header_stats": header_stats,
         })

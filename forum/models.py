@@ -97,6 +97,13 @@ class ForumPost(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Moderator-only state. Regular self/staff delete (DeleteThreadView) is
+    # still a hard delete — these two only apply to the moderator-panel-
+    # initiated soft-delete/lock actions (forum/moderation_views.py).
+    is_locked = models.BooleanField(default=False)
+    is_removed = models.BooleanField(default=False)
+    removed_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["-created_at"]
 
@@ -196,6 +203,10 @@ class ForumProfile(models.Model):
     bio = models.CharField(max_length=280, blank=True, default="")
     is_banned = models.BooleanField(default=False)
     ban_reason = models.TextField(blank=True, default="")
+    # Temporary suspension — distinct from a permanent ban. Null/past =
+    # not suspended. Lifts itself automatically once the timestamp passes
+    # (checked lazily in _ban_error, no cron job needed).
+    suspended_until = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
@@ -341,6 +352,9 @@ class ModerationAction(models.Model):
     ACTION_BAN = "ban"
     ACTION_UNBAN = "unban"
     ACTION_RESTORE = "restore"
+    ACTION_SUSPEND = "suspend"
+    ACTION_LOCK = "lock"
+    ACTION_UNLOCK = "unlock"
     ACTION_CHOICES = [
         (ACTION_DISMISS, "Dismiss"),
         (ACTION_DELETE, "Delete"),
@@ -348,6 +362,9 @@ class ModerationAction(models.Model):
         (ACTION_BAN, "Ban"),
         (ACTION_UNBAN, "Unban"),
         (ACTION_RESTORE, "Restore"),
+        (ACTION_SUSPEND, "Suspend"),
+        (ACTION_LOCK, "Lock"),
+        (ACTION_UNLOCK, "Unlock"),
     ]
 
     moderator = models.ForeignKey(

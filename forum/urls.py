@@ -44,9 +44,11 @@ from notifications.views import (
 )
 from .moderation_views import (
     ModReportsView, ModReportDismissView, ModReportDeleteView, ModReportWarnView, ModReportBanView,
+    ModReportSuspendView, ModReportLockView, ModReportUnlockView,
     ModAutoRejectedView, ModAutoRejectedDeleteView, ModAutoRejectedRestoreView, ModAutoRejectedBanAuthorView,
-    ModUsersView, ModUserWarnView, ModUserBanView, ModUserUnbanView,
-    ModAnalyticsView,
+    ModUsersView, ModUserWarnView, ModUserBanView, ModUserSuspendView, ModUserUnbanView,
+    ModThreadsView, ModThreadLockView, ModThreadUnlockView, ModThreadDeleteView, ModThreadRestoreView,
+    ModLogView, ModAnalyticsView,
 )
 
 urlpatterns = [
@@ -106,6 +108,9 @@ urlpatterns = [
     path("mod/reports/<int:report_id>/delete/", ModReportDeleteView.as_view(), name="forum-mod-report-delete"),
     path("mod/reports/<int:report_id>/warn/", ModReportWarnView.as_view(), name="forum-mod-report-warn"),
     path("mod/reports/<int:report_id>/ban/", ModReportBanView.as_view(), name="forum-mod-report-ban"),
+    path("mod/reports/<int:report_id>/suspend/", ModReportSuspendView.as_view(), name="forum-mod-report-suspend"),
+    path("mod/reports/<int:report_id>/lock/", ModReportLockView.as_view(), name="forum-mod-report-lock"),
+    path("mod/reports/<int:report_id>/unlock/", ModReportUnlockView.as_view(), name="forum-mod-report-unlock"),
 
     path("mod/auto-rejected/", ModAutoRejectedView.as_view(), name="forum-mod-auto-rejected"),
     path("mod/auto-rejected/<int:submission_id>/delete/", ModAutoRejectedDeleteView.as_view(), name="forum-mod-auto-rejected-delete"),
@@ -115,7 +120,15 @@ urlpatterns = [
     path("mod/users/", ModUsersView.as_view(), name="forum-mod-users"),
     path("mod/users/<uuid:user_id>/warn/", ModUserWarnView.as_view(), name="forum-mod-user-warn"),
     path("mod/users/<uuid:user_id>/ban/", ModUserBanView.as_view(), name="forum-mod-user-ban"),
+    path("mod/users/<uuid:user_id>/suspend/", ModUserSuspendView.as_view(), name="forum-mod-user-suspend"),
     path("mod/users/<uuid:user_id>/unban/", ModUserUnbanView.as_view(), name="forum-mod-user-unban"),
 
+    path("mod/threads/", ModThreadsView.as_view(), name="forum-mod-threads"),
+    path("mod/threads/<int:thread_id>/lock/", ModThreadLockView.as_view(), name="forum-mod-thread-lock"),
+    path("mod/threads/<int:thread_id>/unlock/", ModThreadUnlockView.as_view(), name="forum-mod-thread-unlock"),
+    path("mod/threads/<int:thread_id>/delete/", ModThreadDeleteView.as_view(), name="forum-mod-thread-delete"),
+    path("mod/threads/<int:thread_id>/restore/", ModThreadRestoreView.as_view(), name="forum-mod-thread-restore"),
+
+    path("mod/log/", ModLogView.as_view(), name="forum-mod-log"),
     path("mod/analytics/", ModAnalyticsView.as_view(), name="forum-mod-analytics"),
 ]
