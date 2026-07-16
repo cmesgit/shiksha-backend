@@ -85,6 +85,24 @@ class ExpertProfile(models.Model):
     badges = models.JSONField(default=list, blank=True)        # ["Verified", "Top-rated"]
     photo = models.ImageField(upload_to="skills/experts/", null=True, blank=True)
 
+    # ── Intro video (advertising, not a session recording) ─────────────────
+    # One short Bunny-hosted clip advertising what this expert teaches. Kept
+    # inline on the profile (like `photo`) rather than a separate model —
+    # there is exactly one per expert, with no FK relationships to model.
+    INTRO_VIDEO_STATUS_CHOICES = [
+        (0, "Created"),
+        (1, "Uploaded"),
+        (2, "Processing"),
+        (3, "Transcoding"),
+        (4, "Finished"),
+        (5, "Error"),
+    ]
+    intro_video_bunny_id = models.CharField(max_length=255, blank=True)
+    intro_video_status = models.IntegerField(
+        choices=INTRO_VIDEO_STATUS_CHOICES, null=True, blank=True
+    )
+    intro_video_thumbnail_url = models.URLField(blank=True)
+
     # Rate is stored in paise for consistency with courses/payments.
     hourly_rate = models.PositiveIntegerField(default=0, help_text="Paise (₹1 = 100)")
 
@@ -280,6 +298,16 @@ class ExpertProfile(models.Model):
             "name": self.payment_name or self.display_name(),
             "note": self.payment_note,
         }
+
+    def intro_video_ready(self):
+        return self.intro_video_status == 4  # Finished
+
+    def intro_video_embed_url(self):
+        """Playable Bunny embed URL, or None if there's no finished video."""
+        if not (self.intro_video_bunny_id and self.intro_video_ready()):
+            return None
+        from django.conf import settings
+        return f"{settings.BUNNY_EMBED}/{settings.BUNNY_LIBRARY_ID}/{self.intro_video_bunny_id}"
 
     def __str__(self):
         return f"Expert · {self.display_name()}"

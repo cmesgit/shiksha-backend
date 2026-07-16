@@ -43,6 +43,11 @@ from .teacher_views import (
     TeacherDeclineSessionView, TeacherProfileUpdateView,
     ExpertAvailabilityView,      # NEW — public read of a specific expert's slots
 )
+from .views_intro_video import (
+    CreateIntroVideoSlotView, IntroVideoSignedUploadUrlView,
+    SaveIntroVideoView, IntroVideoStatusView,
+)
+from .cancel_views import StudentCancelSessionView
 
 urlpatterns = [
     # ── Payment mode (free / manual_upi / razorpay) ──────────────────────────
@@ -77,6 +82,7 @@ urlpatterns = [
     path("sessions/<uuid:session_id>/",              SkillSessionDetailView.as_view()),
     path("sessions/<uuid:session_id>/join/",         JoinSessionView.as_view()),
     path("sessions/<uuid:session_id>/review/",       SubmitReviewView.as_view()),
+    path("sessions/<uuid:session_id>/cancel/",       StudentCancelSessionView.as_view()),
     path("payments/create-order/",                   CreateOrderView.as_view()),
 
     # ── Teacher application + screening ──────────────────────────────────────
@@ -107,6 +113,10 @@ urlpatterns = [
     path("teacher/availability/",                            TeacherAvailabilityView.as_view()),
     path("teacher/sessions/<uuid:session_id>/decline/",      TeacherDeclineSessionView.as_view()),
     path("teacher/profile/",                                 TeacherProfileUpdateView.as_view()),
+    path("teacher/intro-video/create/",                      CreateIntroVideoSlotView.as_view()),
+    path("teacher/intro-video/upload-url/",                  IntroVideoSignedUploadUrlView.as_view()),
+    path("teacher/intro-video/save/",                        SaveIntroVideoView.as_view()),
+    path("teacher/intro-video/status/",                      IntroVideoStatusView.as_view()),
 
     # ── Guest-expert advertising subscription ─────────────────────────────────
     path("subscription/",                 ExpertSubscriptionView.as_view()),

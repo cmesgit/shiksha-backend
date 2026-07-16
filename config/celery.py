@@ -25,7 +25,13 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 
 # ── Celery Beat Schedule ──────────────────────────────
-app.conf.beat_schedule = {
+# NOTE: update(), not assignment — config_from_object() above already
+# populated app.conf.beat_schedule from settings.CELERY_BEAT_SCHEDULE
+# (which registers "notifications-session-reminders",
+# config/settings_base.py). A plain `=` here would silently discard that
+# entry, which is exactly what happened before this fix — the "starts in
+# 1h/24h" reminder job never ran.
+app.conf.beat_schedule.update({
     "notify-session-starting-soon": {
         "task": "activity.tasks.notify_session_starting_soon",
         "schedule": crontab(minute="*/15"),
@@ -42,4 +48,4 @@ app.conf.beat_schedule = {
         "task": "enrollments.tasks.expire_subscriptions",
         "schedule": crontab(hour=2, minute=15),  # daily at 02:15
     },
-}
+})

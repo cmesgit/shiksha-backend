@@ -57,6 +57,9 @@ class ExpertCardSerializer(serializers.ModelSerializer):
     featured   = serializers.BooleanField(source="is_featured")
     reach      = serializers.IntegerField(source="reach_count")
 
+    # Intro video (advertising clip, not a session recording)
+    intro_video_embed_url = serializers.SerializerMethodField()
+
     class Meta:
         model = ExpertProfile
         fields = [
@@ -70,6 +73,7 @@ class ExpertCardSerializer(serializers.ModelSerializer):
             "languages", "subject_description",
             # advertising
             "advertised", "featured", "reach",
+            "intro_video_embed_url",
         ]
 
     def get_name(self, obj):
@@ -80,6 +84,9 @@ class ExpertCardSerializer(serializers.ModelSerializer):
 
     def get_advertised(self, obj):
         return obj.is_advertised()
+
+    def get_intro_video_embed_url(self, obj):
+        return obj.intro_video_embed_url()
 
     def get_offline(self, obj):
         return obj.has_offline_class()

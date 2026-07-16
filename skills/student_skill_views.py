@@ -330,6 +330,7 @@ class StudentSkillExpertsView(APIView):
                 ),
                 "languages":  ep.languages or [],
                 "advertised": ep.is_advertised(),
+                "intro_video_embed_url": ep.intro_video_embed_url(),
             })
         return Response(result)
 
@@ -423,5 +424,6 @@ class SkillSessionDetailView(APIView):
                 "rating":             float(expert.rating) if expert.rating else None,
                 "skills":             expert.skill_tags or [],
                 "availability":       expert.availability or "",
+                "intro_video_embed_url": expert.intro_video_embed_url(),
             },
         })
