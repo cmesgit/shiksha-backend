@@ -48,6 +48,7 @@ from .moderation_views import (
     ModAutoRejectedView, ModAutoRejectedDeleteView, ModAutoRejectedRestoreView, ModAutoRejectedBanAuthorView,
     ModUsersView, ModUserWarnView, ModUserBanView, ModUserSuspendView, ModUserUnbanView,
     ModThreadsView, ModThreadLockView, ModThreadUnlockView, ModThreadDeleteView, ModThreadRestoreView,
+    ModCategoriesView, ModCategoryUpdateView, ModCategoryDeleteView, ModCategoryRestoreView,
     ModLogView, ModAnalyticsView,
 )
 
@@ -128,6 +129,11 @@ urlpatterns = [
     path("mod/threads/<int:thread_id>/unlock/", ModThreadUnlockView.as_view(), name="forum-mod-thread-unlock"),
     path("mod/threads/<int:thread_id>/delete/", ModThreadDeleteView.as_view(), name="forum-mod-thread-delete"),
     path("mod/threads/<int:thread_id>/restore/", ModThreadRestoreView.as_view(), name="forum-mod-thread-restore"),
+
+    path("mod/categories/", ModCategoriesView.as_view(), name="forum-mod-categories"),
+    path("mod/categories/<str:category_id>/update/", ModCategoryUpdateView.as_view(), name="forum-mod-category-update"),
+    path("mod/categories/<str:category_id>/delete/", ModCategoryDeleteView.as_view(), name="forum-mod-category-delete"),
+    path("mod/categories/<str:category_id>/restore/", ModCategoryRestoreView.as_view(), name="forum-mod-category-restore"),
 
     path("mod/log/", ModLogView.as_view(), name="forum-mod-log"),
     path("mod/analytics/", ModAnalyticsView.as_view(), name="forum-mod-analytics"),

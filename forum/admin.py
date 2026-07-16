@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import (
     Tag, ForumPost, Reply, PostUpvote, ReplyUpvote, ForumProfile,
-    Space, SavedPost, Follow, Report, Attachment,
+    Space, ForumCategory, SavedPost, Follow, Report, Attachment,
     ModerationAction, AutoRejectedSubmission,
 )
 
@@ -29,6 +29,15 @@ class ReplyAdmin(admin.ModelAdmin):
 class SpaceAdmin(admin.ModelAdmin):
     list_display = ("id", "name", "slug", "topic", "creator", "created_at")
     search_fields = ("name", "slug")
+    prepopulated_fields = {"slug": ("name",)}
+
+
+@admin.register(ForumCategory)
+class ForumCategoryAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "slug", "topic", "order", "is_active")
+    search_fields = ("name", "slug")
+    list_filter = ("is_active",)
+    list_editable = ("order", "is_active")
     prepopulated_fields = {"slug": ("name",)}
 
 

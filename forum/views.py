@@ -29,7 +29,8 @@ from django.utils import timezone
 
 from .models import (
     Tag, ForumPost, Reply, PostUpvote, ReplyUpvote, ForumProfile,
-    Space, SavedPost, Follow, Report, Attachment, AutoRejectedSubmission,
+    Space, ForumCategory, SavedPost, Follow, Report, Attachment,
+    AutoRejectedSubmission,
 )
 from .serializers import (
     TagSerializer,
@@ -43,10 +44,11 @@ from .serializers import (
     UserReplySerializer,
     SpaceSerializer,
     CreateSpaceSerializer,
+    ForumCategorySerializer,
     AttachmentSerializer,
     CreateReportSerializer,
 )
-from .constants import FORUM_TOPICS, FORUM_CATEGORIES, FORUM_CATEGORIES_BY_ID, FORUM_PALETTE
+from .constants import FORUM_TOPICS, FORUM_PALETTE
 from .utils import author_badge
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
@@ -716,28 +718,33 @@ class ListUserRepliesView(APIView):
 
 
 # =====================================================
-# Topics & Categories (fixed taxonomy; counts computed on read)
+# Topics & Categories (categories are moderator-managed DB rows;
+# counts computed on read)
 # =====================================================
-def _category_payload(cat, user):
-    q_count = ForumPost.objects.filter(tags__name__iexact=cat["topic"]).distinct().count()
-    followers = Follow.objects.filter(
-        target_type=Follow.TARGET_CATEGORY, target_key=cat["id"]).count()
-    is_following = False
-    if user and user.is_authenticated:
-        is_following = Follow.objects.filter(
-            user=user, target_type=Follow.TARGET_CATEGORY, target_key=cat["id"]
-        ).exists()
-    return {**cat, "question_count": q_count,
-            "follower_count": followers, "is_following": is_following}
+def _category_payload(cat, request):
+    return ForumCategorySerializer(cat, context={"request": request}).data
+
+
+def _active_categories_qs():
+    return ForumCategory.objects.filter(is_active=True)
 
 
 class ListTopicsView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
+        category_topics = _active_categories_qs().exclude(
+            topic=""
+        ).order_by("order", "name").values_list("topic", flat=True)
+        topics = list(FORUM_TOPICS)
+        for t in category_topics:
+            if t not in topics:
+                topics.append(t)
         return Response({
-            "topics": FORUM_TOPICS,
-            "categories": [_category_payload(c, request.user) for c in FORUM_CATEGORIES],
+            "topics": topics,
+            "categories": ForumCategorySerializer(
+                _active_categories_qs(), many=True, context={"request": request}
+            ).data,
         })
 
 
@@ -745,7 +752,8 @@ class ListCategoriesView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        data = [_category_payload(c, request.user) for c in FORUM_CATEGORIES]
+        cats = _active_categories_qs()
+        data = ForumCategorySerializer(cats, many=True, context={"request": request}).data
         return Response({"results": data, "count": len(data)})
 
 
@@ -753,11 +761,11 @@ class CategoryDetailView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, category_id):
-        cat = FORUM_CATEGORIES_BY_ID.get(category_id)
+        cat = _active_categories_qs().filter(slug=category_id).first()
         if not cat:
             return Response({"detail": "Category not found."}, status=status.HTTP_404_NOT_FOUND)
         qs = _annotated_threads(request.user).filter(
-            tags__name__iexact=cat["topic"]).distinct()
+            tags__name__iexact=cat.topic).distinct()
         sort = request.query_params.get("sort", "latest")
         if sort in ("trending", "popular"):
             qs = qs.order_by("-answer_count_annotated", "-upvote_count", "-created_at")
@@ -770,7 +778,7 @@ class CategoryDetailView(APIView):
         start = (page - 1) * page_size
         posts = qs[start:start + page_size]
         return Response({
-            "category": _category_payload(cat, request.user),
+            "category": _category_payload(cat, request),
             "results": ForumPostSerializer(posts, many=True, context={"request": request}).data,
             "count": total,
         })
@@ -878,7 +886,7 @@ class FollowCategoryView(APIView):
         banned = _ban_error(request.user)
         if banned is not None:
             return banned
-        if category_id not in FORUM_CATEGORIES_BY_ID:
+        if not ForumCategory.objects.filter(slug=category_id, is_active=True).exists():
             return Response({"detail": "Category not found."},
                             status=status.HTTP_404_NOT_FOUND)
         following = _toggle_follow(request.user, Follow.TARGET_CATEGORY, category_id)
@@ -968,8 +976,10 @@ class SearchView(APIView):
 
         tags = [{"label": t.name} for t in Tag.objects.filter(name__icontains=q)[:15]]
         ql = q.lower()
-        cats = [_category_payload(c, request.user) for c in FORUM_CATEGORIES
-                if ql in c["name"].lower() or ql in c["desc"].lower()]
+        matching_cats = _active_categories_qs().filter(
+            Q(name__icontains=ql) | Q(description__icontains=ql)
+        )
+        cats = [_category_payload(c, request) for c in matching_cats]
 
         return Response({
             "query": q,

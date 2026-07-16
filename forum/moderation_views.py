@@ -16,9 +16,10 @@ from rest_framework.views import APIView
 from . import moderation as forum_moderation
 from .models import (
     ForumPost, Reply, ForumProfile, Report, ModerationAction,
-    AutoRejectedSubmission, Tag,
+    AutoRejectedSubmission, Tag, ForumCategory,
 )
 from .permissions import IsForumModerator
+from .serializers import ForumCategorySerializer, CategoryWriteSerializer
 from .utils import author_badge
 from .views import _int_param, _annotated_threads
 from notifications.services import notify
@@ -584,6 +585,77 @@ class ModThreadRestoreView(APIView):
         thread.save(update_fields=["is_removed", "removed_at"])
         _log_action(request.user, ModerationAction.ACTION_RESTORE, target_user=thread.author,
                     target=thread, note=request.data.get("note", ""))
+        return Response({"restored": True})
+
+
+# =====================================================
+# Categories
+# =====================================================
+class ModCategoriesView(APIView):
+    """List (including inactive) and create forum categories."""
+    permission_classes = [IsForumModerator]
+
+    def get(self, request):
+        cats = ForumCategory.objects.all()
+        return Response({
+            "results": ForumCategorySerializer(cats, many=True, context={"request": request}).data,
+            "count": cats.count(),
+        })
+
+    def post(self, request):
+        serializer = CategoryWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        slug = data.get("slug")
+        if slug and ForumCategory.objects.filter(slug=slug).exists():
+            return Response({"detail": "A category with that slug already exists."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        category = ForumCategory.objects.create(**data)
+        return Response(
+            ForumCategorySerializer(category, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ModCategoryUpdateView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, category_id):
+        category = get_object_or_404(ForumCategory, slug=category_id)
+        serializer = CategoryWriteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        slug = data.get("slug")
+        if slug and ForumCategory.objects.filter(slug=slug).exclude(pk=category.pk).exists():
+            return Response({"detail": "A category with that slug already exists."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        for field, value in data.items():
+            setattr(category, field, value)
+        category.save()
+        return Response(ForumCategorySerializer(category, context={"request": request}).data)
+
+
+class ModCategoryDeleteView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, category_id):
+        category = get_object_or_404(ForumCategory, slug=category_id)
+        category.is_active = False
+        category.save(update_fields=["is_active"])
+        _log_action(request.user, ModerationAction.ACTION_DELETE, target=category,
+                    note=request.data.get("note", ""))
+        return Response({"deleted": True})
+
+
+class ModCategoryRestoreView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, category_id):
+        category = get_object_or_404(ForumCategory, slug=category_id)
+        category.is_active = True
+        category.save(update_fields=["is_active"])
+        _log_action(request.user, ModerationAction.ACTION_RESTORE, target=category,
+                    note=request.data.get("note", ""))
         return Response({"restored": True})
 
 

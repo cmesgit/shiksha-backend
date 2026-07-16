@@ -64,6 +64,42 @@ class Space(models.Model):
         return self.name
 
 
+class ForumCategory(models.Model):
+    """A curated, browsable category tile. DB-backed (moderator-managed)
+    replacement for the old hardcoded FORUM_CATEGORIES list — slug is the
+    public id, kept stable across edits so Follow.target_key and existing
+    frontend links (/forum/category/<slug>) don't break."""
+
+    slug = models.SlugField(max_length=140, unique=True)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, default="")
+    initials = models.CharField(max_length=4, blank=True, default="")
+    color = models.CharField(max_length=9, blank=True, default="#125027")
+    topic = models.CharField(max_length=60, blank=True, default="")
+    order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["order", "name"]
+        verbose_name_plural = "forum categories"
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            base = slugify(self.name) or "category"
+            candidate = base
+            i = 2
+            while ForumCategory.objects.filter(slug=candidate).exclude(pk=self.pk).exists():
+                candidate = f"{base}-{i}"
+                i += 1
+            self.slug = candidate
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
 class ForumPost(models.Model):
     KIND_QUESTION = "question"
     KIND_POST = "post"

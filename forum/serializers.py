@@ -8,8 +8,8 @@
 from rest_framework import serializers
 
 from .models import (
-    Tag, ForumPost, Reply, Space, SavedPost, Follow, Report, Attachment,
-    ForumProfile,
+    Tag, ForumPost, Reply, Space, ForumCategory, SavedPost, Follow, Report,
+    Attachment, ForumProfile,
 )
 from .utils import author_badge
 
@@ -81,6 +81,53 @@ class CreateSpaceSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=120)
     description = serializers.CharField(required=False, allow_blank=True, default="")
     topic = serializers.CharField(required=False, allow_blank=True, default="", max_length=60)
+
+
+# =====================================================
+# ForumCategory
+# =====================================================
+class ForumCategorySerializer(serializers.ModelSerializer):
+    id = serializers.CharField(source="slug")
+    desc = serializers.CharField(source="description")
+    question_count = serializers.SerializerMethodField()
+    follower_count = serializers.SerializerMethodField()
+    is_following = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ForumCategory
+        fields = (
+            "id", "name", "desc", "initials", "color", "topic", "order",
+            "question_count", "follower_count", "is_following",
+        )
+
+    def get_question_count(self, obj):
+        return ForumPost.objects.filter(tags__name__iexact=obj.topic).distinct().count()
+
+    def get_follower_count(self, obj):
+        return Follow.objects.filter(
+            target_type=Follow.TARGET_CATEGORY, target_key=obj.slug
+        ).count()
+
+    def get_is_following(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return Follow.objects.filter(
+                user=request.user, target_type=Follow.TARGET_CATEGORY,
+                target_key=obj.slug,
+            ).exists()
+        return False
+
+
+class CategoryWriteSerializer(serializers.Serializer):
+    """Moderator create/update input for ForumCategory."""
+    name = serializers.CharField(max_length=120)
+    slug = serializers.SlugField(max_length=140, required=False, allow_blank=True)
+    description = serializers.CharField(required=False, allow_blank=True, default="")
+    initials = serializers.CharField(required=False, allow_blank=True, default="", max_length=4)
+    color = serializers.CharField(required=False, allow_blank=True, default="#125027", max_length=9)
+    topic = serializers.CharField(required=False, allow_blank=True, default="", max_length=60)
+    order = serializers.IntegerField(required=False, default=0, min_value=0)
+    is_active = serializers.BooleanField(required=False, default=True)
 
 
 # =====================================================
