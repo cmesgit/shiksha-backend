@@ -28,6 +28,7 @@ urlpatterns = [
     # never landed back in the repo — reconcile on deploy).
     path("api/notifications/", include("notifications.urls")),
     path("api/counseling/", include("counseling.urls")),
+    path("api/content/", include("content.urls")),  # ← ADDED (content CMS app)
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
