@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     "chat",
     "forum",
     "notifications",
+    "content",
     # counseling has migrations, seed data and mounted URLs but was
     # missing here (likely a server-side settings edit that never made it
     # back to the repo — see settings.py.save.1). Required by
