@@ -9,3 +9,6 @@ if os.getenv("DJANGO_ENV") == "dev":
     from .settings_dev import *  # noqa: F401,F403
 else:
     from .settings_prod import *  # noqa: F401,F403
+
+
+#testing
