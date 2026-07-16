@@ -9,6 +9,9 @@ MATERIAL_MAX_FILE_SIZE_MB = int(os.getenv("MATERIAL_MAX_FILE_SIZE_MB", "50"))
 # exchanged in a live conversation, not a course's study-material library,
 # so its ceiling is deliberately much smaller than MATERIAL_MAX_FILE_SIZE_MB.
 CHAT_MAX_ATTACHMENT_MB = int(os.getenv("CHAT_MAX_ATTACHMENT_MB", "15"))
+# Forum question/post attachments — a forum upload is closer to a chat
+# attachment than a course material, so it shares the smaller ceiling.
+FORUM_MAX_ATTACHMENT_MB = int(os.getenv("FORUM_MAX_ATTACHMENT_MB", "15"))
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")

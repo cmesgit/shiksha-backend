@@ -23,20 +23,32 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status
 from django.shortcuts import get_object_or_404
-from django.db.models import Count, Q, Exists, OuterRef, F
+from django.db.models import Count, Q, Exists, OuterRef, F, CharField
+from django.db.models.functions import Cast
 
-from .models import Tag, ForumPost, Reply, PostUpvote, ReplyUpvote, ForumProfile
+from .models import (
+    Tag, ForumPost, Reply, PostUpvote, ReplyUpvote, ForumProfile,
+    Space, SavedPost, Follow, Report, Attachment,
+)
 from .serializers import (
     TagSerializer,
     ForumPostSerializer,
     CreateThreadSerializer,
     CommentSerializer,
+    ReplySerializer,
     CreateCommentSerializer,
     PublicForumProfileSerializer,
     UpdateForumProfileSerializer,
     UserReplySerializer,
+    SpaceSerializer,
+    CreateSpaceSerializer,
+    AttachmentSerializer,
+    CreateReportSerializer,
 )
+from .constants import FORUM_TOPICS, FORUM_CATEGORIES, FORUM_CATEGORIES_BY_ID, FORUM_PALETTE
+from .utils import author_badge
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
 from notifications.services import notify
 from chat import moderation
 
@@ -69,17 +81,65 @@ def _moderation_error(text):
 
 
 def _annotated_threads(user):
-    qs = ForumPost.objects.select_related("author").prefetch_related("tags").annotate(
-        reply_count=Count("replies", distinct=True),
-        upvote_count=Count("upvotes", distinct=True),
+    qs = (
+        ForumPost.objects
+        .select_related("author", "author__forum_profile", "space")
+        .prefetch_related("tags", "attachments", "author__identities")
+        .annotate(
+            reply_count=Count("replies", distinct=True),
+            answer_count_annotated=Count(
+                "replies", filter=Q(replies__kind=Reply.KIND_ANSWER), distinct=True),
+            comment_count_annotated=Count(
+                "replies", filter=Q(replies__kind=Reply.KIND_COMMENT), distinct=True),
+            upvote_count=Count("upvotes", distinct=True),
+        )
     )
     if user and user.is_authenticated:
         qs = qs.annotate(
             user_has_upvoted_annotated=Exists(
                 PostUpvote.objects.filter(post=OuterRef("pk"), user=user)
-            )
+            ),
+            is_saved_annotated=Exists(
+                SavedPost.objects.filter(post=OuterRef("pk"), user=user)
+            ),
+            is_following_annotated=Exists(
+                Follow.objects.filter(
+                    user=user, target_type=Follow.TARGET_QUESTION,
+                    target_key=Cast(OuterRef("pk"), output_field=CharField()),
+                )
+            ),
         )
     return qs
+
+
+def _toggle_follow(user, target_type, target_key):
+    """Toggle a Follow row. Returns True if now following, False if removed."""
+    obj, created = Follow.objects.get_or_create(
+        user=user, target_type=target_type, target_key=str(target_key)
+    )
+    if not created:
+        obj.delete()
+        return False
+    return True
+
+
+def _save_attachments(request, post):
+    """Persist any multipart `files` uploaded with a thread. Silently caps each
+    file at FORUM_MAX_ATTACHMENT_MB and ignores oversize files."""
+    from django.conf import settings as dj_settings
+    max_mb = int(getattr(dj_settings, "FORUM_MAX_ATTACHMENT_MB", 15))
+    limit = max_mb * 1024 * 1024
+    files = request.FILES.getlist("files") if hasattr(request, "FILES") else []
+    image_exts = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
+    for f in files[:10]:
+        if f.size > limit:
+            continue
+        name = (f.name or "").lower()
+        kind = Attachment.KIND_IMAGE if name.endswith(image_exts) else Attachment.KIND_FILE
+        Attachment.objects.create(
+            post=post, file=f, kind=kind,
+            original_name=f.name or "", uploaded_by=request.user,
+        )
 
 
 # =====================================================
@@ -108,19 +168,27 @@ class ListThreadsView(APIView):
             qs = qs.filter(Q(title__icontains=search) |
                            Q(content__icontains=search))
 
-        tag = request.query_params.get("tag")
+        tag = request.query_params.get("tag") or request.query_params.get("topic")
         if tag:
-            qs = qs.filter(tags__name=tag)
+            qs = qs.filter(tags__name__iexact=tag)
 
         author = request.query_params.get("author")
         if author:
             qs = qs.filter(author__username=author)
 
+        kind = request.query_params.get("kind")
+        if kind in (ForumPost.KIND_QUESTION, ForumPost.KIND_POST):
+            qs = qs.filter(kind=kind)
+
+        space = request.query_params.get("space")
+        if space:
+            qs = qs.filter(space__slug=space)
+
         solved = request.query_params.get("solved")
         if solved == "true":
             qs = qs.filter(is_solved=True)
         elif solved == "unanswered":
-            qs = qs.filter(reply_count=0)
+            qs = qs.filter(answer_count_annotated=0)
         elif solved == "false":
             qs = qs.filter(is_solved=False)
 
@@ -131,12 +199,15 @@ class ListThreadsView(APIView):
         if date_to:
             qs = qs.filter(created_at__date__lte=date_to)
 
+        # Feed tabs from the redesign map onto the same queryset.
         sort = request.query_params.get("sort", "newest")
-        if sort == "oldest":
+        if sort in ("oldest",):
             qs = qs.order_by("created_at")
-        elif sort == "popular":
-            qs = qs.order_by("-upvote_count", "-created_at")
-        else:
+        elif sort in ("popular", "trending"):
+            qs = qs.order_by("-answer_count_annotated", "-upvote_count", "-created_at")
+        elif sort == "unanswered":
+            qs = qs.filter(answer_count_annotated=0).order_by("-created_at")
+        else:  # newest / latest / foryou
             qs = qs.order_by("-created_at")
 
         page = _int_param(request, "page", 1, 100000)
@@ -159,6 +230,8 @@ class CreateThreadView(APIView):
 
         title = serializer.validated_data["title"]
         body = serializer.validated_data.get("body", "")
+        kind = serializer.validated_data.get("kind", ForumPost.KIND_QUESTION)
+        space_slug = (serializer.validated_data.get("space") or "").strip()
 
         # Same gate the chat uses — a school forum should not be looser
         # than the school chat.
@@ -166,10 +239,16 @@ class CreateThreadView(APIView):
         if blocked is not None:
             return blocked
 
+        space = None
+        if space_slug:
+            space = Space.objects.filter(slug=space_slug).first()
+
         post = ForumPost.objects.create(
             author=request.user,
             title=title,
             content=body,
+            kind=kind,
+            space=space,
         )
 
         tag_names = serializer.validated_data.get("tags", [])
@@ -178,6 +257,9 @@ class CreateThreadView(APIView):
             if clean:
                 tag, _ = Tag.objects.get_or_create(name=clean)
                 post.tags.add(tag)
+
+        # Optional file/image attachments (multipart `files`).
+        _save_attachments(request, post)
 
         # NOTE: the old notify-EVERY-user fan-out (N rows + N Celery tasks per
         # thread) is intentionally gone. Threads are discoverable in the list;
@@ -212,7 +294,36 @@ class ThreadDetailView(APIView):
     def get(self, request, thread_id):
         post = get_object_or_404(_annotated_threads(request.user), pk=thread_id)
         _register_view(request, post)
-        return Response(ForumPostSerializer(post, context={"request": request}).data)
+
+        replies = (
+            Reply.objects.filter(post=post)
+            .select_related("author", "author__forum_profile")
+            .prefetch_related("author__identities")
+            .annotate(upvote_count=Count("upvotes", distinct=True))
+        )
+        if request.user.is_authenticated:
+            replies = replies.annotate(
+                user_has_upvoted_annotated=Exists(
+                    ReplyUpvote.objects.filter(reply=OuterRef("pk"), user=request.user)
+                )
+            )
+
+        answers = [r for r in replies if r.kind == Reply.KIND_ANSWER]
+        # Accepted answer floats to the top, then most-upvoted, then oldest.
+        answers.sort(key=lambda r: (
+            0 if post.accepted_reply_id == r.id else 1,
+            -(r.upvote_count or 0),
+            r.created_at,
+        ))
+        comments = [r for r in replies if r.kind == Reply.KIND_COMMENT]
+        comments.sort(key=lambda r: r.created_at)
+
+        ctx = {"request": request}
+        return Response({
+            **ForumPostSerializer(post, context=ctx).data,
+            "answers": ReplySerializer(answers, many=True, context=ctx).data,
+            "comments": ReplySerializer(comments, many=True, context=ctx).data,
+        })
 
 
 class DeleteThreadView(APIView):
@@ -271,13 +382,15 @@ class CreateCommentView(APIView):
         serializer.is_valid(raise_exception=True)
 
         content = serializer.validated_data["content"]
+        kind = serializer.validated_data.get("kind", Reply.KIND_ANSWER)
         blocked = _moderation_error(content)
         if blocked is not None:
             return blocked
 
+        # Answers are flat; only comments thread under a parent comment.
         reply_to_id = serializer.validated_data.get("reply_to_comment_id")
         reply_to = None
-        if reply_to_id:
+        if reply_to_id and kind == Reply.KIND_COMMENT:
             reply_to = get_object_or_404(Reply, pk=reply_to_id, post=post)
 
         reply = Reply.objects.create(
@@ -285,6 +398,7 @@ class CreateCommentView(APIView):
             author=request.user,
             content=content,
             reply_to=reply_to,
+            kind=kind,
         )
 
         # Notify the thread author…
@@ -452,8 +566,15 @@ class PublicForumProfileView(APIView):
             + ReplyUpvote.objects.filter(reply__author=user).count()
         )
 
+        badge = author_badge(user)
         data = {
             "username": user.username,
+            "display_name": badge["display_name"],
+            "headline": (profile.headline if profile else "") or badge["credential"],
+            "location": profile.location if profile else "",
+            "initials": badge["initials"],
+            "color": badge["color"],
+            "avatar_url": badge["avatar_url"],
             "joined_at": user.date_joined,
             "bio": profile.bio if profile else "",
             "thread_count": thread_count,
@@ -465,7 +586,7 @@ class PublicForumProfileView(APIView):
 
 
 class UpdateForumProfileView(APIView):
-    """PATCH /forum/profile/ — update the caller's own bio."""
+    """PATCH /forum/profile/ — update the caller's own forum profile."""
     permission_classes = [IsAuthenticated]
 
     def patch(self, request):
@@ -473,7 +594,12 @@ class UpdateForumProfileView(APIView):
         serializer = UpdateForumProfileSerializer(profile, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response({"bio": profile.bio})
+        return Response({
+            "display_name": profile.display_name,
+            "headline": profile.headline,
+            "location": profile.location,
+            "bio": profile.bio,
+        })
 
 
 class ListUserRepliesView(APIView):
@@ -503,3 +629,309 @@ class ListUserRepliesView(APIView):
 
         serializer = UserReplySerializer(replies, many=True, context={"request": request})
         return Response({"results": serializer.data, "count": total})
+
+
+# =====================================================
+# Topics & Categories (fixed taxonomy; counts computed on read)
+# =====================================================
+def _category_payload(cat, user):
+    q_count = ForumPost.objects.filter(tags__name__iexact=cat["topic"]).distinct().count()
+    followers = Follow.objects.filter(
+        target_type=Follow.TARGET_CATEGORY, target_key=cat["id"]).count()
+    is_following = False
+    if user and user.is_authenticated:
+        is_following = Follow.objects.filter(
+            user=user, target_type=Follow.TARGET_CATEGORY, target_key=cat["id"]
+        ).exists()
+    return {**cat, "question_count": q_count,
+            "follower_count": followers, "is_following": is_following}
+
+
+class ListTopicsView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        return Response({
+            "topics": FORUM_TOPICS,
+            "categories": [_category_payload(c, request.user) for c in FORUM_CATEGORIES],
+        })
+
+
+class ListCategoriesView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        data = [_category_payload(c, request.user) for c in FORUM_CATEGORIES]
+        return Response({"results": data, "count": len(data)})
+
+
+class CategoryDetailView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, category_id):
+        cat = FORUM_CATEGORIES_BY_ID.get(category_id)
+        if not cat:
+            return Response({"detail": "Category not found."}, status=status.HTTP_404_NOT_FOUND)
+        qs = _annotated_threads(request.user).filter(
+            tags__name__iexact=cat["topic"]).distinct()
+        sort = request.query_params.get("sort", "latest")
+        if sort in ("trending", "popular"):
+            qs = qs.order_by("-answer_count_annotated", "-upvote_count", "-created_at")
+        else:
+            qs = qs.order_by("-created_at")
+
+        page = _int_param(request, "page", 1, 100000)
+        page_size = _int_param(request, "page_size", 10, 50)
+        total = qs.count()
+        start = (page - 1) * page_size
+        posts = qs[start:start + page_size]
+        return Response({
+            "category": _category_payload(cat, request.user),
+            "results": ForumPostSerializer(posts, many=True, context={"request": request}).data,
+            "count": total,
+        })
+
+
+# =====================================================
+# Spaces
+# =====================================================
+def _spaces_qs():
+    return Space.objects.select_related("creator").annotate(
+        question_count_annotated=Count("posts", distinct=True))
+
+
+class ListSpacesView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        spaces = _spaces_qs().order_by("-created_at")
+        data = SpaceSerializer(spaces, many=True, context={"request": request}).data
+        return Response({"results": data, "count": len(data)})
+
+
+class CreateSpaceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = CreateSpaceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        name = serializer.validated_data["name"].strip()
+        if not name:
+            return Response({"detail": "Please enter a Space name."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        desc = serializer.validated_data.get("description", "")
+        blocked = _moderation_error(f"{name}\n{desc}")
+        if blocked is not None:
+            return blocked
+        color = FORUM_PALETTE[Space.objects.count() % len(FORUM_PALETTE)]
+        space = Space.objects.create(
+            name=name, description=desc,
+            topic=serializer.validated_data.get("topic", ""),
+            color=color, creator=request.user,
+        )
+        # The creator is the first member (member == follower).
+        Follow.objects.get_or_create(
+            user=request.user, target_type=Follow.TARGET_SPACE, target_key=space.slug)
+        space = _spaces_qs().get(pk=space.pk)
+        return Response(SpaceSerializer(space, context={"request": request}).data,
+                        status=status.HTTP_201_CREATED)
+
+
+class SpaceDetailView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        space = get_object_or_404(_spaces_qs(), slug=slug)
+        qs = _annotated_threads(request.user).filter(space=space).order_by("-created_at")
+        page = _int_param(request, "page", 1, 100000)
+        page_size = _int_param(request, "page_size", 10, 50)
+        total = qs.count()
+        start = (page - 1) * page_size
+        posts = qs[start:start + page_size]
+        return Response({
+            "space": SpaceSerializer(space, context={"request": request}).data,
+            "results": ForumPostSerializer(posts, many=True, context={"request": request}).data,
+            "count": total,
+        })
+
+
+class FollowSpaceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, slug):
+        space = get_object_or_404(Space, slug=slug)
+        following = _toggle_follow(request.user, Follow.TARGET_SPACE, space.slug)
+        member_count = Follow.objects.filter(
+            target_type=Follow.TARGET_SPACE, target_key=space.slug).count()
+        return Response({"following": following, "member_count": member_count})
+
+
+# =====================================================
+# Follows (question / category) + Saved bookmarks
+# =====================================================
+class FollowThreadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, thread_id):
+        post = get_object_or_404(ForumPost, pk=thread_id)
+        following = _toggle_follow(request.user, Follow.TARGET_QUESTION, post.id)
+        return Response({"following": following})
+
+
+class FollowCategoryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, category_id):
+        if category_id not in FORUM_CATEGORIES_BY_ID:
+            return Response({"detail": "Category not found."},
+                            status=status.HTTP_404_NOT_FOUND)
+        following = _toggle_follow(request.user, Follow.TARGET_CATEGORY, category_id)
+        return Response({"following": following})
+
+
+class ToggleSaveView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, thread_id):
+        post = get_object_or_404(ForumPost, pk=thread_id)
+        obj, created = SavedPost.objects.get_or_create(user=request.user, post=post)
+        if not created:
+            obj.delete()
+            return Response({"saved": False})
+        return Response({"saved": True})
+
+
+class ListSavedView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        saved_ids = list(SavedPost.objects.filter(user=request.user)
+                         .values_list("post_id", flat=True))
+        qs = _annotated_threads(request.user).filter(id__in=saved_ids).order_by("-created_at")
+        page = _int_param(request, "page", 1, 100000)
+        page_size = _int_param(request, "page_size", 10, 50)
+        total = qs.count()
+        start = (page - 1) * page_size
+        posts = qs[start:start + page_size]
+        return Response({
+            "results": ForumPostSerializer(posts, many=True, context={"request": request}).data,
+            "count": total,
+        })
+
+
+# =====================================================
+# Answer queue — questions still needing an answer
+# =====================================================
+class AnswerQueueView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        answered = list(Reply.objects.filter(
+            author=request.user, kind=Reply.KIND_ANSWER
+        ).values_list("post_id", flat=True))
+        qs = (_annotated_threads(request.user)
+              .filter(kind=ForumPost.KIND_QUESTION, answer_count_annotated=0)
+              .exclude(author=request.user)
+              .exclude(id__in=answered)
+              .order_by("-created_at"))
+        page = _int_param(request, "page", 1, 100000)
+        page_size = _int_param(request, "page_size", 10, 50)
+        total = qs.count()
+        start = (page - 1) * page_size
+        posts = qs[start:start + page_size]
+        return Response({
+            "results": ForumPostSerializer(posts, many=True, context={"request": request}).data,
+            "count": total,
+        })
+
+
+# =====================================================
+# Search — questions / people / tags / categories
+# =====================================================
+class SearchView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        q = (request.query_params.get("q") or "").strip()
+        empty = {"query": q, "questions": [], "users": [], "tags": [], "categories": []}
+        if not q:
+            return Response(empty)
+
+        posts = _annotated_threads(request.user).filter(
+            Q(title__icontains=q) | Q(tags__name__icontains=q) | Q(content__icontains=q)
+        ).distinct().order_by("-created_at")[:20]
+
+        users_qs = User.objects.filter(
+            Q(username__icontains=q)
+            | Q(forum_profile__display_name__icontains=q)
+            | Q(first_name__icontains=q) | Q(last_name__icontains=q)
+        ).distinct()[:15]
+
+        tags = [{"label": t.name} for t in Tag.objects.filter(name__icontains=q)[:15]]
+        ql = q.lower()
+        cats = [_category_payload(c, request.user) for c in FORUM_CATEGORIES
+                if ql in c["name"].lower() or ql in c["desc"].lower()]
+
+        return Response({
+            "query": q,
+            "questions": ForumPostSerializer(posts, many=True, context={"request": request}).data,
+            "users": [author_badge(u) for u in users_qs],
+            "tags": tags,
+            "categories": cats,
+        })
+
+
+# =====================================================
+# Report
+# =====================================================
+class CreateReportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = CreateReportSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        target_type = serializer.validated_data["target_type"]
+        target_id = serializer.validated_data["target_id"]
+        if target_type == "question":
+            obj = get_object_or_404(ForumPost, pk=target_id)
+            ct = ContentType.objects.get_for_model(ForumPost)
+        else:  # answer / comment
+            obj = get_object_or_404(Reply, pk=target_id)
+            ct = ContentType.objects.get_for_model(Reply)
+        Report.objects.create(
+            reporter=request.user, content_type=ct, object_id=obj.id,
+            reason=serializer.validated_data["reason"],
+            detail=serializer.validated_data.get("detail", ""),
+        )
+        return Response({"detail": "Reported to moderators — thanks for flagging."},
+                        status=status.HTTP_201_CREATED)
+
+
+# =====================================================
+# Current user's forum context (hydration)
+# =====================================================
+class ForumMeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        u = request.user
+        profile, _ = ForumProfile.objects.get_or_create(user=u)
+        badge = author_badge(u)
+        saved = list(SavedPost.objects.filter(user=u).values_list("post_id", flat=True))
+        following = {"spaces": [], "questions": [], "categories": []}
+        for f in Follow.objects.filter(user=u):
+            if f.target_type == Follow.TARGET_SPACE:
+                following["spaces"].append(f.target_key)
+            elif f.target_type == Follow.TARGET_QUESTION:
+                following["questions"].append(
+                    int(f.target_key) if f.target_key.isdigit() else f.target_key)
+            elif f.target_type == Follow.TARGET_CATEGORY:
+                following["categories"].append(f.target_key)
+        return Response({
+            **badge,
+            "headline": profile.headline or badge["credential"],
+            "location": profile.location,
+            "bio": profile.bio,
+            "saved": saved,
+            "following": following,
+        })
