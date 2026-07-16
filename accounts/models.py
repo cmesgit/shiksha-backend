@@ -271,12 +271,14 @@ class Role(models.Model):
     TEACHER = "TEACHER"
     ADMIN = "ADMIN"
     GUEST = "GUEST"
+    MODERATOR = "MODERATOR"
 
     ROLE_CHOICES = [
         (STUDENT, "Student"),
         (TEACHER, "Teacher"),
         (ADMIN, "Admin"),
         (GUEST, "Guest"),
+        (MODERATOR, "Moderator"),
     ]
 
     name = models.CharField(

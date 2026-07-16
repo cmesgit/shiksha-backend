@@ -2,6 +2,7 @@ from django.contrib import admin
 from .models import (
     Tag, ForumPost, Reply, PostUpvote, ReplyUpvote, ForumProfile,
     Space, SavedPost, Follow, Report, Attachment,
+    ModerationAction, AutoRejectedSubmission,
 )
 
 
@@ -65,5 +66,18 @@ class ReplyUpvoteAdmin(admin.ModelAdmin):
 
 @admin.register(ForumProfile)
 class ForumProfileAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "updated_at")
+    list_display = ("id", "user", "is_banned", "updated_at")
+    list_filter = ("is_banned",)
     search_fields = ("user__username",)
+
+
+@admin.register(ModerationAction)
+class ModerationActionAdmin(admin.ModelAdmin):
+    list_display = ("id", "action", "moderator", "target_user", "content_type", "object_id", "created_at")
+    list_filter = ("action", "created_at")
+
+
+@admin.register(AutoRejectedSubmission)
+class AutoRejectedSubmissionAdmin(admin.ModelAdmin):
+    list_display = ("id", "kind", "author", "status", "categories", "created_at")
+    list_filter = ("kind", "status", "created_at")

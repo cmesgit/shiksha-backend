@@ -194,6 +194,8 @@ class ForumProfile(models.Model):
     headline = models.CharField(max_length=160, blank=True, default="")
     location = models.CharField(max_length=120, blank=True, default="")
     bio = models.CharField(max_length=280, blank=True, default="")
+    is_banned = models.BooleanField(default=False)
+    ban_reason = models.TextField(blank=True, default="")
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
@@ -279,6 +281,7 @@ class Report(models.Model):
     reason = models.CharField(max_length=20, choices=REASON_CHOICES)
     detail = models.TextField(blank=True, default="")
     resolved = models.BooleanField(default=False)
+    resolved_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -325,3 +328,110 @@ class Attachment(models.Model):
 
     def __str__(self):
         return self.original_name or self.file.name
+
+
+class ModerationAction(models.Model):
+    """Audit log for every moderator action — dismiss/delete/warn/ban/unban/
+    restore. Doubles as the source for the Moderator Panel's 'Recent actions'
+    feed and monthly analytics counts, so nothing needs a separate counter."""
+
+    ACTION_DISMISS = "dismiss"
+    ACTION_DELETE = "delete"
+    ACTION_WARN = "warn"
+    ACTION_BAN = "ban"
+    ACTION_UNBAN = "unban"
+    ACTION_RESTORE = "restore"
+    ACTION_CHOICES = [
+        (ACTION_DISMISS, "Dismiss"),
+        (ACTION_DELETE, "Delete"),
+        (ACTION_WARN, "Warn"),
+        (ACTION_BAN, "Ban"),
+        (ACTION_UNBAN, "Unban"),
+        (ACTION_RESTORE, "Restore"),
+    ]
+
+    moderator = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="forum_mod_actions",
+    )
+    action = models.CharField(max_length=10, choices=ACTION_CHOICES)
+    target_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="forum_mod_actions_received",
+    )
+    content_type = models.ForeignKey(
+        ContentType, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    object_id = models.PositiveIntegerField(null=True, blank=True)
+    target = GenericForeignKey("content_type", "object_id")
+    note = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["action", "created_at"]),
+            models.Index(fields=["target_user"]),
+        ]
+
+    def __str__(self):
+        return f"{self.get_action_display()} by {self.moderator} at {self.created_at}"
+
+
+class AutoRejectedSubmission(models.Model):
+    """A question/post/answer/comment that the scanner flagged before it ever
+    became a real ForumPost/Reply. Held here for moderator review; 'restore'
+    creates the real object from these stored fields."""
+
+    KIND_CHOICES = ForumPost.KIND_CHOICES + Reply.KIND_CHOICES
+
+    STATUS_PENDING = "pending"
+    STATUS_DELETED = "deleted"
+    STATUS_RESTORED = "restored"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_DELETED, "Deleted"),
+        (STATUS_RESTORED, "Restored"),
+    ]
+
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="forum_auto_rejected",
+    )
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES)
+    title = models.CharField(max_length=300, blank=True, default="")
+    content = models.TextField(blank=True, default="")
+    thread = models.ForeignKey(
+        ForumPost,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="auto_rejected_children",
+    )
+    tags = models.CharField(max_length=300, blank=True, default="")
+    categories = models.JSONField(default=list)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="forum_reviewed_submissions",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"Auto-rejected {self.kind} by {self.author} ({self.status})"

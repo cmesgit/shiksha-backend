@@ -42,6 +42,12 @@ from notifications.views import (
     LegacyMarkAllNotificationsReadView,
     LegacyMarkNotificationReadView,
 )
+from .moderation_views import (
+    ModReportsView, ModReportDismissView, ModReportDeleteView, ModReportWarnView, ModReportBanView,
+    ModAutoRejectedView, ModAutoRejectedDeleteView, ModAutoRejectedRestoreView, ModAutoRejectedBanAuthorView,
+    ModUsersView, ModUserWarnView, ModUserBanView, ModUserUnbanView,
+    ModAnalyticsView,
+)
 
 urlpatterns = [
     # Current-user context + taxonomy
@@ -91,4 +97,25 @@ urlpatterns = [
     path("notifications/", LegacyListNotificationsView.as_view(), name="forum-notifications"),
     path("notifications/read/", LegacyMarkAllNotificationsReadView.as_view(), name="forum-mark-all-read"),
     path("notifications/<int:notification_id>/read/", LegacyMarkNotificationReadView.as_view(), name="forum-mark-read"),
+
+    # =====================================================
+    # Moderator Panel (IsForumModerator-gated)
+    # =====================================================
+    path("mod/reports/", ModReportsView.as_view(), name="forum-mod-reports"),
+    path("mod/reports/<int:report_id>/dismiss/", ModReportDismissView.as_view(), name="forum-mod-report-dismiss"),
+    path("mod/reports/<int:report_id>/delete/", ModReportDeleteView.as_view(), name="forum-mod-report-delete"),
+    path("mod/reports/<int:report_id>/warn/", ModReportWarnView.as_view(), name="forum-mod-report-warn"),
+    path("mod/reports/<int:report_id>/ban/", ModReportBanView.as_view(), name="forum-mod-report-ban"),
+
+    path("mod/auto-rejected/", ModAutoRejectedView.as_view(), name="forum-mod-auto-rejected"),
+    path("mod/auto-rejected/<int:submission_id>/delete/", ModAutoRejectedDeleteView.as_view(), name="forum-mod-auto-rejected-delete"),
+    path("mod/auto-rejected/<int:submission_id>/restore/", ModAutoRejectedRestoreView.as_view(), name="forum-mod-auto-rejected-restore"),
+    path("mod/auto-rejected/<int:submission_id>/ban-author/", ModAutoRejectedBanAuthorView.as_view(), name="forum-mod-auto-rejected-ban-author"),
+
+    path("mod/users/", ModUsersView.as_view(), name="forum-mod-users"),
+    path("mod/users/<uuid:user_id>/warn/", ModUserWarnView.as_view(), name="forum-mod-user-warn"),
+    path("mod/users/<uuid:user_id>/ban/", ModUserBanView.as_view(), name="forum-mod-user-ban"),
+    path("mod/users/<uuid:user_id>/unban/", ModUserUnbanView.as_view(), name="forum-mod-user-unban"),
+
+    path("mod/analytics/", ModAnalyticsView.as_view(), name="forum-mod-analytics"),
 ]

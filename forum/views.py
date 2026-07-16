@@ -28,7 +28,7 @@ from django.db.models.functions import Cast
 
 from .models import (
     Tag, ForumPost, Reply, PostUpvote, ReplyUpvote, ForumProfile,
-    Space, SavedPost, Follow, Report, Attachment,
+    Space, SavedPost, Follow, Report, Attachment, AutoRejectedSubmission,
 )
 from .serializers import (
     TagSerializer,
@@ -51,6 +51,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from notifications.services import notify
 from chat import moderation
+from . import moderation as forum_moderation
 
 User = get_user_model()
 
@@ -77,6 +78,27 @@ def _moderation_error(text):
     return Response(
         {"category": verdict.category, "reason": verdict.reason},
         status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _ban_error(user):
+    """A banned user cannot write to the forum at all. Returns a Response to
+    send back, or None if the user is clear to proceed."""
+    profile, _ = ForumProfile.objects.get_or_create(user=user)
+    if profile.is_banned:
+        return Response(
+            {"detail": "You have been banned from the forum."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return None
+
+
+def _queue_auto_rejected(author, kind, title, content, categories, tags=None, thread=None):
+    """Persist a scanner-flagged submission instead of creating the real
+    ForumPost/Reply. Returns the created AutoRejectedSubmission."""
+    return AutoRejectedSubmission.objects.create(
+        author=author, kind=kind, title=title or "", content=content or "",
+        thread=thread, tags=",".join(tags or []), categories=categories,
     )
 
 
@@ -225,6 +247,10 @@ class CreateThreadView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
+
         serializer = CreateThreadSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -232,12 +258,22 @@ class CreateThreadView(APIView):
         body = serializer.validated_data.get("body", "")
         kind = serializer.validated_data.get("kind", ForumPost.KIND_QUESTION)
         space_slug = (serializer.validated_data.get("space") or "").strip()
+        tag_names = serializer.validated_data.get("tags", [])
 
-        # Same gate the chat uses — a school forum should not be looser
-        # than the school chat.
-        blocked = _moderation_error(f"{title}\n{body}")
-        if blocked is not None:
-            return blocked
+        # The scanner runs BEFORE the real post is created. A flagged
+        # submission never becomes a visible ForumPost — it's queued for a
+        # moderator to confirm-delete or override-restore (see
+        # AutoRejectedSubmission / forum/moderation_views.py).
+        categories = forum_moderation.scan_content(title, body)
+        if categories:
+            _queue_auto_rejected(
+                request.user, kind, title, body, categories, tags=tag_names,
+            )
+            return Response(
+                {"status": "pending_review",
+                 "detail": "Your submission has been received and is awaiting a routine review before it appears publicly."},
+                status=status.HTTP_200_OK,
+            )
 
         space = None
         if space_slug:
@@ -251,7 +287,6 @@ class CreateThreadView(APIView):
             space=space,
         )
 
-        tag_names = serializer.validated_data.get("tags", [])
         for name in tag_names:
             clean = name.lower().strip()
             if clean:
@@ -377,15 +412,27 @@ class CreateCommentView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, thread_id):
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
+
         post = get_object_or_404(ForumPost, pk=thread_id)
         serializer = CreateCommentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         content = serializer.validated_data["content"]
         kind = serializer.validated_data.get("kind", Reply.KIND_ANSWER)
-        blocked = _moderation_error(content)
-        if blocked is not None:
-            return blocked
+
+        categories = forum_moderation.scan_content("", content)
+        if categories:
+            _queue_auto_rejected(
+                request.user, kind, "", content, categories, thread=post,
+            )
+            return Response(
+                {"status": "pending_review",
+                 "detail": "Your submission has been received and is awaiting a routine review before it appears publicly."},
+                status=status.HTTP_200_OK,
+            )
 
         # Answers are flat; only comments thread under a parent comment.
         reply_to_id = serializer.validated_data.get("reply_to_comment_id")
@@ -469,6 +516,9 @@ class TogglePostUpvoteView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, thread_id):
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
         post = get_object_or_404(ForumPost, pk=thread_id)
         upvote, created = PostUpvote.objects.get_or_create(
             user=request.user, post=post
@@ -483,6 +533,9 @@ class ToggleCommentUpvoteView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, comment_id):
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
         reply = get_object_or_404(Reply, pk=comment_id)
         upvote, created = ReplyUpvote.objects.get_or_create(
             user=request.user, reply=reply
@@ -713,6 +766,9 @@ class CreateSpaceView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
         serializer = CreateSpaceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         name = serializer.validated_data["name"].strip()
@@ -759,6 +815,9 @@ class FollowSpaceView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, slug):
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
         space = get_object_or_404(Space, slug=slug)
         following = _toggle_follow(request.user, Follow.TARGET_SPACE, space.slug)
         member_count = Follow.objects.filter(
@@ -773,6 +832,9 @@ class FollowThreadView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, thread_id):
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
         post = get_object_or_404(ForumPost, pk=thread_id)
         following = _toggle_follow(request.user, Follow.TARGET_QUESTION, post.id)
         return Response({"following": following})
@@ -782,6 +844,9 @@ class FollowCategoryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, category_id):
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
         if category_id not in FORUM_CATEGORIES_BY_ID:
             return Response({"detail": "Category not found."},
                             status=status.HTTP_404_NOT_FOUND)
@@ -793,6 +858,9 @@ class ToggleSaveView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, thread_id):
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
         post = get_object_or_404(ForumPost, pk=thread_id)
         obj, created = SavedPost.objects.get_or_create(user=request.user, post=post)
         if not created:

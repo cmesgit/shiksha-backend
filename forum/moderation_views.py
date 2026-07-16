@@ -1,0 +1,489 @@
+# forum/moderation_views.py — Moderator Panel endpoints (all gated by
+# IsForumModerator: staff or a user with the MODERATOR role). Mounted under
+# /api/forum/mod/... in forum/urls.py.
+
+from datetime import timedelta
+
+from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
+from django.db.models import Count, Q
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from . import moderation as forum_moderation
+from .models import (
+    ForumPost, Reply, ForumProfile, Report, ModerationAction,
+    AutoRejectedSubmission, Tag,
+)
+from .permissions import IsForumModerator
+from .utils import author_badge
+from .views import _int_param
+from notifications.services import notify
+
+User = get_user_model()
+
+
+# =====================================================
+# Shared helpers
+# =====================================================
+
+def _content_label(obj):
+    if isinstance(obj, ForumPost):
+        return "Post" if obj.kind == ForumPost.KIND_POST else "Question"
+    if isinstance(obj, Reply):
+        return "Comment" if obj.kind == Reply.KIND_COMMENT else "Answer"
+    return "Content"
+
+
+def _content_snapshot(obj):
+    if isinstance(obj, ForumPost):
+        return {"title": obj.title, "snippet": (obj.content or "")[:220]}
+    if isinstance(obj, Reply):
+        return {"title": obj.post.title if obj.post_id else "", "snippet": (obj.content or "")[:220]}
+    return {"title": "", "snippet": ""}
+
+
+def _target_author(obj):
+    return getattr(obj, "author", None)
+
+
+def _log_action(moderator, action, target_user=None, target=None, note=""):
+    ct = ContentType.objects.get_for_model(target) if target is not None else None
+    oid = target.pk if target is not None else None
+    ModerationAction.objects.create(
+        moderator=moderator, action=action, target_user=target_user,
+        content_type=ct, object_id=oid, note=note,
+    )
+
+
+def _notify_user(user, actor, verb, message, note=""):
+    notify(
+        recipient=user, actor=actor, verb=verb, title=message, body=message,
+        link_url="/forum", payload={"note": note},
+    )
+
+
+def _ban_user(user, note):
+    profile, _ = ForumProfile.objects.get_or_create(user=user)
+    profile.is_banned = True
+    profile.ban_reason = note
+    profile.save(update_fields=["is_banned", "ban_reason"])
+
+
+# =====================================================
+# Reported Content
+# =====================================================
+class ModReportsView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def get(self, request):
+        reason = request.query_params.get("reason")
+        status_param = request.query_params.get("status", "pending")
+        qs = Report.objects.select_related("reporter", "content_type").order_by("-created_at")
+        if status_param == "resolved":
+            qs = qs.filter(resolved=True)
+        elif status_param != "all":
+            qs = qs.filter(resolved=False)
+        if reason:
+            qs = qs.filter(reason=reason)
+
+        page = _int_param(request, "page", 1, 100000)
+        page_size = _int_param(request, "page_size", 20, 100)
+        total = qs.count()
+        start = (page - 1) * page_size
+        rows = list(qs[start:start + page_size])
+
+        # GenericForeignKey can't select_related, so resolve targets in
+        # batches grouped by content type instead of one query per row.
+        by_ct = {}
+        for r in rows:
+            by_ct.setdefault(r.content_type_id, []).append(r.object_id)
+        targets = {}
+        for ct_id, ids in by_ct.items():
+            model = ContentType.objects.get(pk=ct_id).model_class()
+            related = ("author", "post") if model is Reply else ("author",)
+            for obj in model.objects.select_related(*related).filter(pk__in=ids):
+                targets[(ct_id, obj.pk)] = obj
+
+        results = []
+        for r in rows:
+            target = targets.get((r.content_type_id, r.object_id))
+            if target is None:
+                continue  # underlying content already gone
+            author = _target_author(target)
+            report_count = Report.objects.filter(
+                content_type_id=r.content_type_id, object_id=r.object_id).count()
+            snap = _content_snapshot(target)
+            results.append({
+                "id": r.id, "reason": r.reason, "detail": r.detail,
+                "content_type": _content_label(target),
+                "content_title": snap["title"], "snippet": snap["snippet"],
+                "reporter": author_badge(r.reporter),
+                "author": author_badge(author) if author else None,
+                "report_count": report_count,
+                "resolved": r.resolved, "created_at": r.created_at,
+            })
+        return Response({"results": results, "count": total})
+
+
+class ModReportDismissView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, report_id):
+        report = get_object_or_404(Report, pk=report_id)
+        report.resolved = True
+        report.resolved_at = timezone.now()
+        report.save(update_fields=["resolved", "resolved_at"])
+        _log_action(request.user, ModerationAction.ACTION_DISMISS,
+                    note=request.data.get("note", ""))
+        return Response({"resolved": True})
+
+
+class ModReportDeleteView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, report_id):
+        report = get_object_or_404(Report, pk=report_id)
+        target = report.target
+        author = _target_author(target) if target else None
+        if target is not None:
+            target.delete()
+        Report.objects.filter(
+            content_type_id=report.content_type_id, object_id=report.object_id
+        ).update(resolved=True, resolved_at=timezone.now())
+        _log_action(request.user, ModerationAction.ACTION_DELETE, target_user=author,
+                    note=request.data.get("note", ""))
+        return Response({"deleted": True})
+
+
+class ModReportWarnView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, report_id):
+        report = get_object_or_404(Report, pk=report_id)
+        author = _target_author(report.target) if report.target else None
+        if author is None:
+            return Response({"detail": "Could not resolve the content's author."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        note = request.data.get("note", "")
+        report.resolved = True
+        report.resolved_at = timezone.now()
+        report.save(update_fields=["resolved", "resolved_at"])
+        _log_action(request.user, ModerationAction.ACTION_WARN, target_user=author, note=note)
+        message = "You've received a formal warning from a ShikshaCom moderator." + (f" Note: {note}" if note else "")
+        _notify_user(author, request.user, "forum.warned", message, note)
+        return Response({"warned": True})
+
+
+class ModReportBanView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, report_id):
+        report = get_object_or_404(Report, pk=report_id)
+        author = _target_author(report.target) if report.target else None
+        if author is None:
+            return Response({"detail": "Could not resolve the content's author."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        note = request.data.get("note", "")
+        _ban_user(author, note)
+        report.resolved = True
+        report.resolved_at = timezone.now()
+        report.save(update_fields=["resolved", "resolved_at"])
+        _log_action(request.user, ModerationAction.ACTION_BAN, target_user=author, note=note)
+        message = "You have been banned from the ShikshaCom forum." + (f" Reason: {note}" if note else "")
+        _notify_user(author, request.user, "forum.banned", message, note)
+        return Response({"banned": True})
+
+
+# =====================================================
+# Auto-Rejected Queue
+# =====================================================
+class ModAutoRejectedView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def get(self, request):
+        category = request.query_params.get("category")
+        status_param = request.query_params.get("status", "pending")
+        qs = AutoRejectedSubmission.objects.select_related("author", "thread").order_by("-created_at")
+        if status_param != "all":
+            qs = qs.filter(status=status_param)
+        rows = list(qs)
+        if category:
+            rows = [s for s in rows if category in (s.categories or [])]
+
+        page = _int_param(request, "page", 1, 100000)
+        page_size = _int_param(request, "page_size", 20, 100)
+        total = len(rows)
+        start = (page - 1) * page_size
+        page_rows = rows[start:start + page_size]
+
+        results = [{
+            "id": s.id, "kind": s.kind, "title": s.title, "content": s.content,
+            "tags": [t for t in s.tags.split(",") if t],
+            "categories": [
+                {"key": c, "label": forum_moderation.CATEGORY_LABELS.get(c, c)}
+                for c in (s.categories or [])
+            ],
+            "author": author_badge(s.author),
+            "thread_title": s.thread.title if s.thread_id else None,
+            "status": s.status, "created_at": s.created_at,
+        } for s in page_rows]
+        return Response({"results": results, "count": total})
+
+
+class ModAutoRejectedDeleteView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, submission_id):
+        sub = get_object_or_404(AutoRejectedSubmission, pk=submission_id)
+        sub.status = AutoRejectedSubmission.STATUS_DELETED
+        sub.reviewed_by = request.user
+        sub.reviewed_at = timezone.now()
+        sub.save(update_fields=["status", "reviewed_by", "reviewed_at"])
+        _log_action(request.user, ModerationAction.ACTION_DELETE, target_user=sub.author,
+                    target=sub, note=request.data.get("note", ""))
+        return Response({"status": sub.status})
+
+
+class ModAutoRejectedRestoreView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, submission_id):
+        sub = get_object_or_404(AutoRejectedSubmission, pk=submission_id)
+        if sub.kind in (ForumPost.KIND_QUESTION, ForumPost.KIND_POST):
+            post = ForumPost.objects.create(
+                author=sub.author, title=sub.title, content=sub.content, kind=sub.kind,
+            )
+            for name in [t.strip() for t in sub.tags.split(",") if t.strip()]:
+                tag, _ = Tag.objects.get_or_create(name=name.lower())
+                post.tags.add(tag)
+            created_id = post.id
+        else:
+            if not sub.thread_id:
+                return Response(
+                    {"detail": "The original thread no longer exists."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            reply = Reply.objects.create(
+                post=sub.thread, author=sub.author, content=sub.content, kind=sub.kind,
+            )
+            created_id = reply.id
+
+        sub.status = AutoRejectedSubmission.STATUS_RESTORED
+        sub.reviewed_by = request.user
+        sub.reviewed_at = timezone.now()
+        sub.save(update_fields=["status", "reviewed_by", "reviewed_at"])
+        _log_action(request.user, ModerationAction.ACTION_RESTORE, target_user=sub.author, target=sub)
+        return Response({"status": sub.status, "created_id": created_id})
+
+
+class ModAutoRejectedBanAuthorView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, submission_id):
+        sub = get_object_or_404(AutoRejectedSubmission, pk=submission_id)
+        note = request.data.get("note", "")
+        _ban_user(sub.author, note)
+        _log_action(request.user, ModerationAction.ACTION_BAN, target_user=sub.author, note=note)
+        message = "You have been banned from the ShikshaCom forum." + (f" Reason: {note}" if note else "")
+        _notify_user(sub.author, request.user, "forum.banned", message, note)
+        return Response({"banned": True})
+
+
+# =====================================================
+# User Management
+# =====================================================
+def _user_forum_stats(user, post_ct, reply_ct):
+    post_ids = list(ForumPost.objects.filter(author=user).values_list("id", flat=True))
+    reply_ids = list(Reply.objects.filter(author=user).values_list("id", flat=True))
+    posts_count = len(post_ids) + len(reply_ids)
+    reports_count = Report.objects.filter(
+        Q(content_type=post_ct, object_id__in=post_ids)
+        | Q(content_type=reply_ct, object_id__in=reply_ids)
+    ).count()
+    profile = getattr(user, "forum_profile", None)
+    banned = bool(profile and profile.is_banned)
+    warned = (not banned) and ModerationAction.objects.filter(
+        action=ModerationAction.ACTION_WARN, target_user=user).exists()
+    status_label = "banned" if banned else ("warned" if warned else "active")
+    return posts_count, reports_count, status_label
+
+
+class ModUsersView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def get(self, request):
+        search = (request.query_params.get("search") or "").strip()
+        status_filter = request.query_params.get("status", "all")
+
+        post_ct = ContentType.objects.get_for_model(ForumPost)
+        reply_ct = ContentType.objects.get_for_model(Reply)
+
+        candidate_ids = (
+            set(ForumPost.objects.values_list("author_id", flat=True))
+            | set(Reply.objects.values_list("author_id", flat=True))
+            | set(ForumProfile.objects.values_list("user_id", flat=True))
+        )
+        qs = User.objects.filter(id__in=candidate_ids).select_related("forum_profile")
+        if search:
+            qs = qs.filter(Q(username__icontains=search) | Q(email__icontains=search))
+        qs = qs.order_by("username")
+
+        enriched = []
+        for u in qs:
+            posts_count, reports_count, status_label = _user_forum_stats(u, post_ct, reply_ct)
+            if status_filter != "all" and status_label != status_filter:
+                continue
+            enriched.append({
+                "id": str(u.id), "username": u.username, "email": u.email,
+                "initials": author_badge(u)["initials"], "color": author_badge(u)["color"],
+                "posts": posts_count, "reports": reports_count, "status": status_label,
+            })
+
+        page = _int_param(request, "page", 1, 100000)
+        page_size = _int_param(request, "page_size", 20, 100)
+        total = len(enriched)
+        start = (page - 1) * page_size
+        return Response({"results": enriched[start:start + page_size], "count": total})
+
+
+class ModUserWarnView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, user_id):
+        user = get_object_or_404(User, pk=user_id)
+        note = request.data.get("note", "")
+        _log_action(request.user, ModerationAction.ACTION_WARN, target_user=user, note=note)
+        message = "You've received a formal warning from a ShikshaCom moderator." + (f" Note: {note}" if note else "")
+        _notify_user(user, request.user, "forum.warned", message, note)
+        return Response({"warned": True})
+
+
+class ModUserBanView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, user_id):
+        user = get_object_or_404(User, pk=user_id)
+        note = request.data.get("note", "")
+        _ban_user(user, note)
+        _log_action(request.user, ModerationAction.ACTION_BAN, target_user=user, note=note)
+        message = "You have been banned from the ShikshaCom forum." + (f" Reason: {note}" if note else "")
+        _notify_user(user, request.user, "forum.banned", message, note)
+        return Response({"banned": True})
+
+
+class ModUserUnbanView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def post(self, request, user_id):
+        user = get_object_or_404(User, pk=user_id)
+        profile, _ = ForumProfile.objects.get_or_create(user=user)
+        profile.is_banned = False
+        profile.ban_reason = ""
+        profile.save(update_fields=["is_banned", "ban_reason"])
+        _log_action(request.user, ModerationAction.ACTION_UNBAN, target_user=user,
+                    note=request.data.get("note", ""))
+        message = "Your forum ban has been lifted. You can participate again."
+        _notify_user(user, request.user, "forum.unbanned", message)
+        return Response({"banned": False})
+
+
+# =====================================================
+# Analytics
+# =====================================================
+class ModAnalyticsView(APIView):
+    permission_classes = [IsForumModerator]
+
+    def get(self, request):
+        now = timezone.now()
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        prev_month_end = month_start - timedelta(seconds=1)
+        prev_month_start = prev_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        week_ago = now - timedelta(days=7)
+        month_ago = now - timedelta(days=30)
+
+        def pct_change(cur, prev):
+            if not prev:
+                return None
+            return round((cur - prev) / prev * 100, 1)
+
+        reports_this_month = Report.objects.filter(created_at__gte=month_start).count()
+        reports_prev_month = Report.objects.filter(
+            created_at__gte=prev_month_start, created_at__lt=month_start).count()
+
+        resolution_seconds = [
+            (r.resolved_at - r.created_at).total_seconds()
+            for r in Report.objects.filter(
+                resolved=True, resolved_at__isnull=False, resolved_at__gte=month_start)
+        ]
+        avg_resolution_hours = (
+            sum(resolution_seconds) / len(resolution_seconds) / 3600
+        ) if resolution_seconds else 0
+
+        active_users_7d = User.objects.filter(
+            Q(forum_posts__created_at__gte=week_ago) | Q(forum_replies__created_at__gte=week_ago)
+        ).distinct().count()
+
+        new_posts_7d = ForumPost.objects.filter(created_at__gte=week_ago).count()
+
+        approved_30d = ForumPost.objects.filter(created_at__gte=month_ago).count()
+        rejected_30d = AutoRejectedSubmission.objects.filter(created_at__gte=month_ago).count()
+        approval_rate = (
+            approved_30d / (approved_30d + rejected_30d) * 100
+        ) if (approved_30d + rejected_30d) else 100
+
+        banned_this_month = ModerationAction.objects.filter(
+            action=ModerationAction.ACTION_BAN, created_at__gte=month_start).count()
+        banned_prev_month = ModerationAction.objects.filter(
+            action=ModerationAction.ACTION_BAN,
+            created_at__gte=prev_month_start, created_at__lt=month_start).count()
+
+        kpis = [
+            {"label": "Total reports this month", "value": reports_this_month,
+             "trend": pct_change(reports_this_month, reports_prev_month), "direction": "bad_if_up"},
+            {"label": "Avg. resolution time (hrs)", "value": round(avg_resolution_hours, 1),
+             "trend": None, "direction": "good_if_down"},
+            {"label": "Active users (7d)", "value": active_users_7d,
+             "trend": None, "direction": "good_if_up"},
+            {"label": "New posts (7d)", "value": new_posts_7d,
+             "trend": None, "direction": "good_if_up"},
+            {"label": "Posts approved (%)", "value": round(approval_rate, 1),
+             "trend": None, "direction": "neutral"},
+            {"label": "Banned this month", "value": banned_this_month,
+             "trend": pct_change(banned_this_month, banned_prev_month), "direction": "good_if_down"},
+        ]
+
+        reason_counts = {key: 0 for key, _ in Report.REASON_CHOICES}
+        for row in Report.objects.filter(created_at__gte=month_ago).values("reason").annotate(n=Count("id")):
+            reason_counts[row["reason"]] = row["n"]
+        max_count = max(reason_counts.values()) or 1
+        reports_by_reason = [
+            {"reason": key, "label": label, "count": reason_counts[key],
+             "pct": round(reason_counts[key] / max_count * 100)}
+            for key, label in Report.REASON_CHOICES
+        ]
+
+        recent_actions = [{
+            "id": a.id, "action": a.action,
+            "moderator": a.moderator.username if a.moderator else "—",
+            "target_user": a.target_user.username if a.target_user else None,
+            "note": a.note, "created_at": a.created_at,
+        } for a in ModerationAction.objects.select_related("moderator", "target_user").order_by("-created_at")[:10]]
+
+        this_month = {
+            "reports_resolved": Report.objects.filter(resolved=True, resolved_at__gte=month_start).count(),
+            "posts_approved": ForumPost.objects.filter(created_at__gte=month_start).count(),
+            "users_warned": ModerationAction.objects.filter(
+                action=ModerationAction.ACTION_WARN, created_at__gte=month_start).count(),
+            "users_banned": banned_this_month,
+        }
+
+        return Response({
+            "kpis": kpis,
+            "reports_by_reason": reports_by_reason,
+            "recent_actions": recent_actions,
+            "this_month": this_month,
+        })

@@ -1296,9 +1296,23 @@ class AdminUserDetailView(APIView):
         if not user:
             return Response({"detail": "User not found."}, status=404)
 
-        serializer = AdminUserUpdateSerializer(user, data=request.data, partial=True)
+        # is_moderator isn't a User field — it's a UserRole side-effect, so it
+        # can't go through AdminUserUpdateSerializer's ModelSerializer.save().
+        data = request.data
+        is_moderator = None
+        if "is_moderator" in data:
+            data = {k: v for k, v in data.items() if k != "is_moderator"}
+            is_moderator = bool(request.data.get("is_moderator"))
+
+        serializer = AdminUserUpdateSerializer(user, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+
+        if is_moderator is not None:
+            role, _ = Role.objects.get_or_create(name=Role.MODERATOR)
+            UserRole.objects.update_or_create(
+                user=user, role=role, defaults={"is_active": is_moderator}
+            )
 
         user = (
             User.objects
