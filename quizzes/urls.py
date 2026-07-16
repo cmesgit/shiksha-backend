@@ -3,10 +3,12 @@ from django.urls import path
 from .views import (
     CreateQuizView,
     AddQuestionView,
-    PublishQuizView,
+    BulkAddQuestionsView,
+    SubmitQuizForReviewView,
     StudentDashboardView,
     StartQuizView,
     SubmitQuizView,
+    CheckAnswerView,
     QuizDetailView,
     QuizDetailDraftView,
     QuizResultView,
@@ -17,6 +19,11 @@ from .views import (
     TeacherStudentAttemptsView,
     TeacherSubjectQuizListView,
     TeacherQuizAttemptsView,
+    TeacherQuestionBankView,
+    TeacherBankFiltersView,
+    AdminQuizListView,
+    AdminQuizDetailView,
+    AdminQuizReviewView,
 )
 
 urlpatterns = [
@@ -24,7 +31,10 @@ urlpatterns = [
     # ── Teacher ──────────────────────────────────────────────────────────────
     path("teacher/quizzes/", CreateQuizView.as_view()),
     path("teacher/quizzes/<uuid:pk>/questions/", AddQuestionView.as_view()),
-    path("teacher/quizzes/<uuid:pk>/publish/", PublishQuizView.as_view()),
+    path("teacher/quizzes/<uuid:pk>/questions/bulk/", BulkAddQuestionsView.as_view()),
+    # "publish" kept for backward compatibility; both now submit for admin review.
+    path("teacher/quizzes/<uuid:pk>/publish/", SubmitQuizForReviewView.as_view()),
+    path("teacher/quizzes/<uuid:pk>/submit-for-review/", SubmitQuizForReviewView.as_view()),
     path("teacher/quizzes/<uuid:pk>/delete/", TeacherDeleteQuizView.as_view()),
     path(
         "teacher/subjects/<uuid:subject_id>/quizzes/",
@@ -43,6 +53,10 @@ urlpatterns = [
         TeacherStudentAttemptsView.as_view(),
     ),
 
+    # ── Teacher question bank ("finalized" reusable questions) ───────────────
+    path("teacher/question-bank/", TeacherQuestionBankView.as_view()),
+    path("teacher/question-bank/filters/", TeacherBankFiltersView.as_view()),
+
     # ── Student ───────────────────────────────────────────────────────────────
     path("student/quizzes/", StudentDashboardView.as_view()),
     path("student/quiz-subjects/", StudentQuizSubjectsView.as_view()),
@@ -57,4 +71,11 @@ urlpatterns = [
     path("quizzes/<uuid:pk>/draft/", QuizDetailDraftView.as_view()),
     path("quizzes/<uuid:pk>/start/", StartQuizView.as_view()),
     path("quizzes/<uuid:pk>/result/", QuizResultView.as_view()),
+    # Practice-mode instant feedback (one question at a time)
+    path("quizzes/<uuid:pk>/questions/<uuid:qid>/check/", CheckAnswerView.as_view()),
+
+    # ── Admin: Academy Quizzes (verification queue) ───────────────────────────
+    path("quizzes/admin/", AdminQuizListView.as_view()),
+    path("quizzes/admin/<uuid:pk>/", AdminQuizDetailView.as_view()),
+    path("quizzes/admin/<uuid:pk>/review/", AdminQuizReviewView.as_view()),
 ]
