@@ -107,12 +107,23 @@ def _target_thread(obj):
 
 
 def _remove_content(obj):
-    """Soft-delete a ForumPost; hard-delete anything else (Reply has no
-    is_removed field — restoring an individual reply was never asked for)."""
+    """Soft-delete forum content so it can be restored and so counts/threads
+    stay consistent. Both ForumPost and Reply carry ``is_removed``."""
     if isinstance(obj, ForumPost):
         obj.is_removed = True
         obj.removed_at = timezone.now()
         obj.save(update_fields=["is_removed", "removed_at"])
+    elif isinstance(obj, Reply):
+        obj.is_removed = True
+        obj.removed_at = timezone.now()
+        obj.save(update_fields=["is_removed", "removed_at"])
+        # If this reply was the accepted answer, clear the pointer so the
+        # thread doesn't display a hidden reply as "solved".
+        post = obj.post
+        if post.accepted_reply_id == obj.id:
+            post.accepted_reply = None
+            post.is_solved = False
+            post.save(update_fields=["accepted_reply", "is_solved"])
     else:
         obj.delete()
 

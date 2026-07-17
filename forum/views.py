@@ -21,11 +21,13 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, Q, Exists, OuterRef, F, CharField
-from django.db.models.functions import Cast
+from django.db.models.functions import Cast, TruncDate
 from django.utils import timezone
+from datetime import timedelta
 
 from .models import (
     Tag, ForumPost, Reply, PostUpvote, ReplyUpvote, ForumProfile,
@@ -138,11 +140,16 @@ def _annotated_threads(user, include_removed=False):
     qs = (
         qs
         .annotate(
-            reply_count=Count("replies", distinct=True),
+            reply_count=Count(
+                "replies", filter=Q(replies__is_removed=False), distinct=True),
             answer_count_annotated=Count(
-                "replies", filter=Q(replies__kind=Reply.KIND_ANSWER), distinct=True),
+                "replies",
+                filter=Q(replies__kind=Reply.KIND_ANSWER, replies__is_removed=False),
+                distinct=True),
             comment_count_annotated=Count(
-                "replies", filter=Q(replies__kind=Reply.KIND_COMMENT), distinct=True),
+                "replies",
+                filter=Q(replies__kind=Reply.KIND_COMMENT, replies__is_removed=False),
+                distinct=True),
             upvote_count=Count("upvotes", distinct=True),
         )
     )
@@ -275,6 +282,8 @@ class ListThreadsView(APIView):
 
 class CreateThreadView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "forum_post"
 
     def post(self, request):
         banned = _ban_error(request.user)
@@ -416,7 +425,9 @@ class ListCommentsView(APIView):
 
     def get(self, request, thread_id):
         get_object_or_404(ForumPost, pk=thread_id)
-        qs = Reply.objects.filter(post_id=thread_id).select_related("author").annotate(
+        qs = Reply.objects.filter(
+            post_id=thread_id, is_removed=False
+        ).select_related("author").annotate(
             upvote_count=Count("upvotes", distinct=True),
         )
         if request.user.is_authenticated:
@@ -440,6 +451,8 @@ class ListCommentsView(APIView):
 
 class CreateCommentView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "forum_comment"
 
     def post(self, request, thread_id):
         banned = _ban_error(request.user)
@@ -595,7 +608,7 @@ class AcceptAnswerView(APIView):
                 {"detail": "Only the thread author can accept an answer."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        reply = get_object_or_404(Reply, pk=reply_id, post=post)
+        reply = get_object_or_404(Reply, pk=reply_id, post=post, is_removed=False)
 
         if post.accepted_reply_id == reply.id:
             post.accepted_reply = None
@@ -995,8 +1008,14 @@ class SearchView(APIView):
 # =====================================================
 class CreateReportView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "forum_report"
 
     def post(self, request):
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
+
         serializer = CreateReportSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         target_type = serializer.validated_data["target_type"]
@@ -1007,6 +1026,20 @@ class CreateReportView(APIView):
         else:  # answer / comment
             obj = get_object_or_404(Reply, pk=target_id)
             ct = ContentType.objects.get_for_model(Reply)
+
+        # Can't report your own content, and can't file a second open report
+        # on the same target — both just spam the moderator queue.
+        if getattr(obj, "author_id", None) == request.user.id:
+            return Response({"detail": "You can't report your own content."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if Report.objects.filter(
+            reporter=request.user, content_type=ct, object_id=obj.id, resolved=False
+        ).exists():
+            return Response(
+                {"detail": "You've already reported this — a moderator will review it."},
+                status=status.HTTP_200_OK,
+            )
+
         Report.objects.create(
             reporter=request.user, content_type=ct, object_id=obj.id,
             reason=serializer.validated_data["reason"],
@@ -1036,6 +1069,10 @@ class ForumMeView(APIView):
                     int(f.target_key) if f.target_key.isdigit() else f.target_key)
             elif f.target_type == Follow.TARGET_CATEGORY:
                 following["categories"].append(f.target_key)
+        perms = sorted(u.get_permissions())
+        is_moderator = bool(
+            u.is_staff or "forum.moderate" in perms or u.has_role("MODERATOR")
+        )
         return Response({
             **badge,
             "headline": profile.headline or badge["credential"],
@@ -1043,4 +1080,102 @@ class ForumMeView(APIView):
             "bio": profile.bio,
             "saved": saved,
             "following": following,
+            "is_moderator": is_moderator,
+            "permissions": perms,
+        })
+
+
+class ForumDashboardView(APIView):
+    """Aggregate summary powering the User Dashboard (doc §3): stat cards,
+    recent activity, notifications preview, a 7-day engagement series and a
+    saved-discussions preview — computed server-side to avoid over-fetching."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        u = request.user
+        now = timezone.now()
+        week_start = (now - timedelta(days=6)).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+
+        questions = ForumPost.objects.filter(
+            author=u, kind=ForumPost.KIND_QUESTION, is_removed=False)
+        posts = ForumPost.objects.filter(
+            author=u, kind=ForumPost.KIND_POST, is_removed=False)
+        answers = Reply.objects.filter(
+            author=u, kind=Reply.KIND_ANSWER, is_removed=False)
+
+        questions_asked = questions.count()
+        posts_count = posts.count()
+        answers_given = answers.count()
+        saved_count = SavedPost.objects.filter(user=u).count()
+
+        # Notifications (site-wide notifications app).
+        from notifications.models import Notification
+        notif_qs = Notification.objects.filter(recipient=u).order_by("-created_at")
+        unread = notif_qs.filter(is_read=False).count()
+        notif_preview = [{
+            "id": n.id, "title": n.title, "body": n.body, "verb": n.verb,
+            "link_url": n.link_url, "is_read": n.is_read, "created_at": n.created_at,
+        } for n in notif_qs[:4]]
+
+        # Recent activity: latest questions/posts + answers, merged by time.
+        activity = []
+        for p in ForumPost.objects.filter(
+                author=u, is_removed=False).order_by("-created_at")[:4]:
+            activity.append({
+                "type": "question" if p.kind == ForumPost.KIND_QUESTION else "post",
+                "title": p.title, "thread_id": p.id, "created_at": p.created_at,
+            })
+        for r in answers.select_related("post").order_by("-created_at")[:4]:
+            activity.append({
+                "type": "answer", "title": r.post.title, "thread_id": r.post_id,
+                "created_at": r.created_at,
+            })
+        activity.sort(key=lambda a: a["created_at"], reverse=True)
+        activity = activity[:4]
+
+        # 7-day engagement: upvotes received on the user's replies per day.
+        rows = (
+            ReplyUpvote.objects
+            .filter(reply__author=u, created_at__gte=week_start)
+            .annotate(day=TruncDate("created_at"))
+            .values("day").annotate(n=Count("id"))
+        )
+        by_day = {r["day"]: r["n"] for r in rows}
+        engagement = []
+        for i in range(7):
+            d = (week_start + timedelta(days=i)).date()
+            engagement.append({"date": d.isoformat(), "upvotes": by_day.get(d, 0)})
+
+        # Saved preview (last 3).
+        saved_preview = []
+        saved_rows = (
+            SavedPost.objects.filter(user=u)
+            .select_related("post", "post__author")
+            .order_by("-created_at")[:3]
+        )
+        for s in saved_rows:
+            p = s.post
+            if p.is_removed:
+                continue
+            saved_preview.append({
+                "thread_id": p.id, "title": p.title,
+                "answer_count": p.replies.filter(
+                    kind=Reply.KIND_ANSWER, is_removed=False).count(),
+                "tags": list(p.tags.values_list("name", flat=True)),
+                "created_at": p.created_at,
+            })
+
+        return Response({
+            "stats": {
+                "questions_asked": questions_asked,
+                "posts": posts_count,
+                "answers_given": answers_given,
+                "unread_notifications": unread,
+                "saved": saved_count,
+            },
+            "recent_activity": activity,
+            "notifications_preview": notif_preview,
+            "engagement": engagement,
+            "saved_preview": saved_preview,
         })

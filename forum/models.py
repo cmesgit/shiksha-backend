@@ -191,6 +191,10 @@ class Reply(models.Model):
         related_name="children"
     )
     content = models.TextField()
+    # Soft-delete: moderation hides a reply (keeping thread structure +
+    # accepted-answer integrity) instead of hard-deleting it.
+    is_removed = models.BooleanField(default=False)
+    removed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

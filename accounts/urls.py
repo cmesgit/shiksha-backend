@@ -5,6 +5,17 @@
 
 from django.urls import path
 
+from .rbac_views import (
+    RoleListCreateView,
+    RoleDetailView,
+    RolePermissionsView,
+    PermissionListView,
+    RolesDirectoryView,
+    UserRolesView,
+    UserRoleDeleteView,
+    ModActionsHistoryView,
+)
+
 from .auth_flow import (
     LoginView,
     MeView,
@@ -101,4 +112,14 @@ urlpatterns = [
     # Public: current agreement text for the signup screen
     path("agreements/<slug:key>/",                     PublicAgreementView.as_view()),
     path("teacher/reapply-academy/",                   ReapplyAcademyView.as_view()),
+
+    # RBAC — roles, permissions, assignment, moderator action history
+    path("admin/roles/",                            RoleListCreateView.as_view()),
+    path("admin/roles/<int:role_id>/",              RoleDetailView.as_view()),
+    path("admin/roles/<int:role_id>/permissions/",  RolePermissionsView.as_view()),
+    path("admin/permissions/",                      PermissionListView.as_view()),
+    path("admin/roles-directory/",                  RolesDirectoryView.as_view()),
+    path("admin/users/<uuid:user_id>/roles/",       UserRolesView.as_view()),
+    path("admin/users/<uuid:user_id>/roles/<str:role_name>/", UserRoleDeleteView.as_view()),
+    path("admin/mod-actions/",                       ModActionsHistoryView.as_view()),
 ]

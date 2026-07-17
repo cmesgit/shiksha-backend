@@ -59,6 +59,34 @@ class User(AbstractUser):
             .values_list("role__name", flat=True)
         )
 
+    def get_permissions(self):
+        """Set of permission codenames the user holds through active roles.
+
+        Superusers/staff implicitly hold every permission. The result is
+        cached on the instance for the life of the request to avoid N+1s.
+        """
+        if getattr(self, "_perm_cache", None) is not None:
+            return self._perm_cache
+
+        if self.is_superuser or self.is_staff:
+            from django.apps import apps
+            Permission = apps.get_model("accounts", "Permission")
+            perms = set(Permission.objects.values_list("codename", flat=True))
+        else:
+            perms = set(
+                self.user_roles.filter(is_active=True)
+                .values_list("role__role_permissions__permission__codename", flat=True)
+            )
+            perms.discard(None)
+        self._perm_cache = perms
+        return perms
+
+    def has_permission(self, codename):
+        """True if the user holds ``codename`` (staff/superusers hold all)."""
+        if self.is_superuser or self.is_staff:
+            return True
+        return codename in self.get_permissions()
+
 
 # =====================================================
 # PROFILE (Common for all users)
@@ -367,6 +395,56 @@ class UserRole(models.Model):
 
     def __str__(self):
         return f"{self.user.email} -> {self.role.name}"
+
+
+# =====================================================
+# RBAC — PERMISSION + ROLE↔PERMISSION MAPPING
+# =====================================================
+
+class Permission(models.Model):
+    """A granular, code-checkable capability (e.g. ``forum.moderate``).
+
+    Permissions are grouped into Roles via ``RolePermission``; a user is
+    granted a permission through any active role that holds it. ``codename``
+    is the stable identifier used in code (``user.has_permission(codename)``).
+    """
+
+    codename = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True)
+    # UI grouping for the admin permission matrix (e.g. "Forum", "Roles").
+    category = models.CharField(max_length=60, default="General")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["category", "codename"]
+        indexes = [models.Index(fields=["category"])]
+
+    def __str__(self):
+        return self.codename
+
+
+class RolePermission(models.Model):
+    """Grants a single Permission to a single Role."""
+
+    role = models.ForeignKey(
+        Role,
+        on_delete=models.CASCADE,
+        related_name="role_permissions",
+    )
+    permission = models.ForeignKey(
+        Permission,
+        on_delete=models.CASCADE,
+        related_name="permission_roles",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("role", "permission")
+        indexes = [models.Index(fields=["role"])]
+
+    def __str__(self):
+        return f"{self.role.name} :: {self.permission.codename}"
 
 
 # =====================================================

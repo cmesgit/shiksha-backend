@@ -36,6 +36,7 @@ from .views import (
     SearchView,
     CreateReportView,
     ForumMeView,
+    ForumDashboardView,
 )
 from notifications.views import (
     LegacyListNotificationsView,
@@ -55,6 +56,7 @@ from .moderation_views import (
 urlpatterns = [
     # Current-user context + taxonomy
     path("me/", ForumMeView.as_view(), name="forum-me"),
+    path("dashboard/", ForumDashboardView.as_view(), name="forum-dashboard"),
     path("topics/", ListTopicsView.as_view(), name="forum-topics"),
     path("categories/", ListCategoriesView.as_view(), name="forum-categories"),
     path("categories/<str:category_id>/", CategoryDetailView.as_view(), name="forum-category-detail"),

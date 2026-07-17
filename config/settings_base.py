@@ -145,6 +145,11 @@ REST_FRAMEWORK = {
         "resend_verification": "3/hour",
         "password_reset_request": "5/hour",
         "password_reset_verify": "10/hour",
+        # Forum anti-abuse: cap how fast a single user can create content
+        # or file reports (spam / flood protection).
+        "forum_post": "20/hour",
+        "forum_comment": "60/hour",
+        "forum_report": "30/hour",
     },
 }
 

@@ -444,6 +444,7 @@ class MeView(APIView):
             "username":       user.username,
             "context":        context,
             "roles":          user.get_active_roles(),
+            "permissions":    sorted(user.get_permissions()),
             "active_profile": serialize_profile_card(active) if active else None,
             "profiles":       [serialize_profile_card(p) for p in profiles],
             "teacher":        serialize_teacher(teacher, active_track=active_track),
