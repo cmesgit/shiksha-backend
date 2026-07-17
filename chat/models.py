@@ -55,8 +55,10 @@ import uuid
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 from accounts.models import LearnerProfile, TeacherProfile, Identity
+from .attachments import validate_chat_attachment
 
 
 class Conversation(models.Model):
@@ -122,6 +124,18 @@ class Conversation(models.Model):
                 condition=Q(kind="ROOM"),
                 name="unique_room_per_context",
             ),
+            # Stage D (Announcements, CC-015): one BROADCAST channel per
+            # context, same idea as the ROOM constraint above and kept as a
+            # SEPARATE constraint (rather than widening unique_room_per_context
+            # to cover both kinds) so a course can have both its ROOM
+            # (Discussion) and its BROADCAST (Announcements) — two rows
+            # sharing one (context_type, context_id) pair, distinguished by
+            # kind — without the two constraints fighting each other.
+            models.UniqueConstraint(
+                fields=["context_type", "context_id"],
+                condition=Q(kind="BROADCAST"),
+                name="unique_broadcast_per_context",
+            ),
         ]
         indexes = [
             models.Index(fields=["kind", "context_type", "context_id"]),
@@ -150,9 +164,22 @@ class Conversation(models.Model):
 class Participant(models.Model):
     KIND_LEARNER = "LEARNER"
     KIND_TEACHER = "TEACHER"
+    # M4 (Communication Center closure — Stage D): a non-profile identity for
+    # admin/support-desk staff replying inside a SUPPORT ticket's conversation
+    # (CC-022) or authoring a course BROADCAST on the platform's behalf. Not
+    # a LearnerProfile or TeacherProfile — backed directly by the auth User
+    # (`staff_user` below), gated at the view layer on `request.user.is_staff`
+    # (accounts.permissions.IsAdmin), never self-service like the other two
+    # kinds. Chosen over repurposing KIND_TEACHER so a staff reply is never
+    # mistaken for the learner's own faculty/guest-expert relationships, and
+    # over a parallel messaging system so support tickets reuse the exact
+    # same moderation/serialization/realtime pipeline every other message
+    # already goes through.
+    KIND_STAFF = "STAFF"
     KIND_CHOICES = [
         (KIND_LEARNER, "Learner profile"),
         (KIND_TEACHER, "Teacher identity"),
+        (KIND_STAFF, "Support / admin staff"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -169,9 +196,32 @@ class Participant(models.Model):
         TeacherProfile, null=True, blank=True,
         on_delete=models.CASCADE, related_name="chat_participations",
     )
+    staff_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.CASCADE, related_name="chat_staff_participations",
+    )
 
     last_read_at = models.DateTimeField(null=True, blank=True)
     joined_at = models.DateTimeField(auto_now_add=True)
+
+    # CC-006 conversation-card actions (Communication Center closure — Stage
+    # B). Per-Participant (not per-Conversation), so pinning/archiving/muting
+    # a thread is scoped to the identity that did it — profile isolation is
+    # preserved for free, exactly like last_read_at already is. `archived_at`
+    # doubles as the "Delete" action from CC-006: the spec lists a literal
+    # "Delete", but with profile-isolated participants a destructive delete
+    # would either orphan the other side's copy of the thread or cascade
+    # across identities that never asked for that — see the gap analysis's
+    # own flag on this ("should be per-identity hide/archive, not destructive
+    # delete — the spec doesn't say, the implementation should"). So "Delete"
+    # in the UI calls the same archive endpoint; nothing is ever destroyed.
+    pinned = models.BooleanField(default=False)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    muted_until = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Notifications for this thread are suppressed until this "
+                   "time. Null = not muted.",
+    )
 
     # M1 (Phase 3 §6): dual-written alongside the polymorphic columns above
     # by services._attach_participant(). NOTE: this field, and Block's
@@ -200,18 +250,29 @@ class Participant(models.Model):
                 condition=Q(kind="TEACHER"),
                 name="unique_teacher_per_conversation",
             ),
+            models.UniqueConstraint(
+                fields=["conversation", "staff_user"],
+                condition=Q(kind="STAFF"),
+                name="unique_staff_per_conversation",
+            ),
         ]
         indexes = [
             models.Index(fields=["learner_profile"]),
             models.Index(fields=["teacher_profile"]),
+            models.Index(fields=["staff_user"]),
         ]
 
     # --- identity helpers ---
     def identity_key(self):
-        """Stable string identifying this participant across the system."""
+        """Stable string identifying this participant across the system.
+        "S:<user_id>" for staff deliberately reuses the single-letter "S"
+        accounts.Identity.KIND_SYSTEM already reserves for exactly this
+        ("announcement / support bot senders")."""
         if self.kind == self.KIND_LEARNER:
             return f"L:{self.learner_profile_id}"
-        return f"T:{self.teacher_profile_id}"
+        if self.kind == self.KIND_TEACHER:
+            return f"T:{self.teacher_profile_id}"
+        return f"S:{self.staff_user_id}"
 
     @property
     def account_id(self):
@@ -219,6 +280,8 @@ class Participant(models.Model):
             return self.learner_profile.account_id
         if self.kind == self.KIND_TEACHER and self.teacher_profile_id:
             return self.teacher_profile.user_id
+        if self.kind == self.KIND_STAFF and self.staff_user_id:
+            return self.staff_user_id
         return None
 
     def account(self):
@@ -229,6 +292,8 @@ class Participant(models.Model):
             return self.learner_profile.account
         if self.kind == self.KIND_TEACHER and self.teacher_profile_id:
             return self.teacher_profile.user
+        if self.kind == self.KIND_STAFF and self.staff_user_id:
+            return self.staff_user
         return None
 
     def display_name(self):
@@ -236,6 +301,8 @@ class Participant(models.Model):
             return self.learner_profile.display_name
         if self.kind == self.KIND_TEACHER and self.teacher_profile:
             return self.teacher_profile.user.username or "Teacher"
+        if self.kind == self.KIND_STAFF and self.staff_user:
+            return self.staff_user.get_full_name() or self.staff_user.username or "Support Team"
         return "Unknown"
 
     def avatar(self):
@@ -250,6 +317,19 @@ class Participant(models.Model):
 
 
 class Message(models.Model):
+    TYPE_TEXT = "TEXT"
+    TYPE_IMAGE = "IMAGE"
+    TYPE_FILE = "FILE"
+    TYPE_SYSTEM = "SYSTEM"
+    TYPE_ANNOUNCEMENT = "ANNOUNCEMENT"
+    TYPE_CHOICES = [
+        (TYPE_TEXT, "Text"),
+        (TYPE_IMAGE, "Image attachment"),
+        (TYPE_FILE, "File attachment"),
+        (TYPE_SYSTEM, "System message"),
+        (TYPE_ANNOUNCEMENT, "Announcement"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     conversation = models.ForeignKey(
         Conversation, on_delete=models.CASCADE, related_name="messages"
@@ -259,10 +339,53 @@ class Message(models.Model):
     )
     body = models.TextField()
 
+    # CC-010 (Communication Center closure — Stage C): TEXT is everything
+    # that shipped before this stage. IMAGE/FILE are set the moment a
+    # MessageAttachment is created alongside this row (see
+    # services.post_attachment_checked()) — `body` is then that message's
+    # optional caption, may be blank. SYSTEM is reserved for future
+    # server-authored rows (e.g. "X joined the class"); nothing writes it
+    # yet. ANNOUNCEMENT is set for messages posted into a KIND_BROADCAST
+    # conversation (see services.post_message()) purely so a client can
+    # style/label them without having to also fetch the parent conversation.
+    message_type = models.CharField(max_length=12, choices=TYPE_CHOICES, default=TYPE_TEXT)
+
+    # CC-007/010 reply-to-message (Stage B). SET_NULL (not CASCADE): deleting
+    # the parent message must not cascade-delete every reply to it — the
+    # reply just loses its quoted context (serialize_message() renders
+    # "Original message deleted" when reply_to_id survives but reply_to is
+    # gone... actually SET_NULL means reply_to_id itself becomes NULL, so
+    # the reply degrades to looking like a plain message; see
+    # services.serialize_message()).
+    reply_to = models.ForeignKey(
+        "self", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="replies",
+    )
+
     # Idempotency for at-least-once websocket delivery / optimistic UI.
     client_id = models.CharField(max_length=64, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # Soft delete (Stage B). Never hard-deleted: a moderation trail and
+    # "message deleted" placeholders both need the row to still exist.
+    # `deleted_by` is set for a participant-initiated delete (the sender
+    # removing their own message, or — inside a ROOM only — a TEACHER
+    # participant exercising in-room moderation; see
+    # services.can_delete_message()). `deleted_reason` is populated ONLY for
+    # an admin/moderator removal (services.soft_delete_message() called with
+    # admin_reason=...) — its presence is what lets the frontend show
+    # "Removed by a moderator" instead of the plain "Message deleted" a
+    # self-delete gets, WITHOUT needing a Participant row for the acting
+    # admin (an admin is not, and should not become, a participant of an
+    # arbitrary DIRECT/ROOM conversation just to remove one message from it —
+    # see chat/views.py's AdminRemoveMessageView).
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        Participant, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="deleted_messages",
+    )
+    deleted_reason = models.CharField(max_length=255, blank=True, default="")
 
     class Meta:
         ordering = ["created_at"]
@@ -408,3 +531,289 @@ class OutboxEvent(models.Model):
 
     def __str__(self):
         return f"OutboxEvent<{self.event_type}> #{self.pk}"
+
+
+# ===========================================================================
+# ATTACHMENTS  (Communication Center closure — Stage C · CC-010/012/016)
+# ===========================================================================
+
+def chat_attachment_upload_path(instance, filename):
+    """chat_attachments/<conversation_id>/<uuid>_<original filename> — the
+    uuid prefix avoids same-name collisions inside one conversation without
+    needing a directory-per-message."""
+    return f"chat_attachments/{instance.conversation_id}/{uuid.uuid4().hex}_{filename}"
+
+
+class MessageAttachment(models.Model):
+    """One file per message (OneToOne) — sending three photos is three
+    messages, each carrying one attachment. This is a deliberate
+    simplification versus a many-attachments-per-message model: it keeps
+    the composer, the bubble renderer, and the realtime payload shape all
+    single-item, and matches how most chat products actually render a
+    multi-image send (as a stack of individual bubbles) rather than a
+    single multi-file bubble.
+    """
+    KIND_IMAGE = "IMAGE"
+    KIND_PDF = "PDF"
+    KIND_DOCUMENT = "DOCUMENT"
+    KIND_OTHER = "OTHER"
+    KIND_CHOICES = [
+        (KIND_IMAGE, "Image"),
+        (KIND_PDF, "PDF"),
+        (KIND_DOCUMENT, "Document"),
+        (KIND_OTHER, "Other"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    conversation = models.ForeignKey(
+        Conversation, on_delete=models.CASCADE, related_name="attachments"
+    )
+    message = models.OneToOneField(
+        Message, on_delete=models.CASCADE, related_name="attachment"
+    )
+    uploaded_by = models.ForeignKey(
+        Participant, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="uploaded_attachments",
+    )
+    file = models.FileField(
+        upload_to=chat_attachment_upload_path,
+        validators=[validate_chat_attachment],
+    )
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES, default=KIND_OTHER)
+    original_name = models.CharField(max_length=255, blank=True, default="")
+    content_type = models.CharField(max_length=100, blank=True, default="")
+    size_bytes = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Temporary file sharing: set at upload time to now + CHAT_ATTACHMENT_EXPIRY_DAYS.
+    # A daily sweep (chat.tasks.expire_old_attachments) soft-deletes the
+    # message once this passes.
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["conversation", "created_at"])]
+
+    def filename(self):
+        if self.original_name:
+            return self.original_name
+        if not self.file:
+            return "file"
+        return self.file.name.rsplit("/", 1)[-1]
+
+    def __str__(self):
+        return f"{self.kind} attachment on msg {self.message_id}"
+
+
+# ===========================================================================
+# REACTIONS  (Stage B · CC-007/010/015)
+# ===========================================================================
+
+class MessageReaction(models.Model):
+    """One (message, participant, emoji) row per reaction. A participant can
+    react to the same message with several different emoji, but not the same
+    emoji twice — sending the same emoji again is a client-side TOGGLE
+    (services.toggle_reaction()) that removes this row instead of erroring.
+    The allowed emoji set itself is enforced in services.py
+    (ALLOWED_REACTIONS), not here, so widening it later never needs a
+    migration."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="reactions")
+    participant = models.ForeignKey(
+        Participant, on_delete=models.CASCADE, related_name="reactions_made"
+    )
+    emoji = models.CharField(max_length=8)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["message", "participant", "emoji"],
+                name="unique_reaction_per_participant_emoji",
+            ),
+        ]
+        indexes = [models.Index(fields=["message"])]
+
+    def __str__(self):
+        return f"{self.emoji} on msg {self.message_id}"
+
+
+# ===========================================================================
+# REPORTS  (Stage B/D · CC-006/010/023 — the admin moderation queue)
+# ===========================================================================
+
+class Report(models.Model):
+    REASON_SPAM = "SPAM"
+    REASON_HARASSMENT = "HARASSMENT"
+    REASON_INAPPROPRIATE = "INAPPROPRIATE"
+    REASON_OTHER = "OTHER"
+    REASON_CHOICES = [
+        (REASON_SPAM, "Spam or scam"),
+        (REASON_HARASSMENT, "Harassment or bullying"),
+        (REASON_INAPPROPRIATE, "Inappropriate content"),
+        (REASON_OTHER, "Something else"),
+    ]
+
+    STATUS_OPEN = "OPEN"
+    STATUS_REVIEWED = "REVIEWED"
+    STATUS_ACTION_TAKEN = "ACTION_TAKEN"
+    STATUS_DISMISSED = "DISMISSED"
+    STATUS_CHOICES = [
+        (STATUS_OPEN, "Open"),
+        (STATUS_REVIEWED, "Reviewed"),
+        (STATUS_ACTION_TAKEN, "Action taken"),
+        (STATUS_DISMISSED, "Dismissed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="reports")
+    # Null when the report targets the conversation/person as a whole rather
+    # than one specific message (CC-006's card-level "Report" vs CC-010's
+    # bubble-level "Report").
+    message = models.ForeignKey(
+        Message, null=True, blank=True, on_delete=models.SET_NULL, related_name="reports"
+    )
+    reporter = models.ForeignKey(
+        Participant, null=True, blank=True, on_delete=models.SET_NULL, related_name="reports_filed"
+    )
+    # Who/what this report is ABOUT, as an identity_key ("L:.."/"T:.."/"S:..")
+    # — deliberately separate from `reporter` (who FILED it). This is what
+    # AdminResolveReportView's "suspend_user" action acts on. Populated at
+    # creation time from the reported message's sender, or the DIRECT
+    # thread's other participant when no specific message is targeted.
+    target_identity = models.CharField(max_length=50, blank=True, default="", db_index=True)
+
+    reason = models.CharField(max_length=20, choices=REASON_CHOICES)
+    detail = models.TextField(blank=True, default="")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_OPEN)
+
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="chat_reports_resolved",
+    )
+    resolution_note = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status", "created_at"]),
+            models.Index(fields=["target_identity"]),
+        ]
+
+    def __str__(self):
+        return f"Report<{self.reason}> on conv {self.conversation_id} [{self.status}]"
+
+
+# ===========================================================================
+# CHAT-LEVEL SUSPENSION  (Stage D · CC-023 admin "restrict user")
+# ===========================================================================
+
+class ChatSuspension(models.Model):
+    """A chat-only suspension keyed on identity_key — deliberately NOT a
+    field on accounts.Identity or accounts.User, so this stays a chat-app
+    concern the same way Block does: gated in
+    services.post_message_checked()/is_suspended(), enforced regardless of
+    which endpoint (WS or REST) a send comes through, and lifted independent
+    of any account-wide suspension a different admin tool might add later."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    identity_key = models.CharField(max_length=50, unique=True, db_index=True)
+    reason = models.CharField(max_length=255, blank=True, default="")
+    # Null = indefinite, lifted only by an explicit admin action.
+    suspended_until = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="chat_suspensions_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def is_active(self):
+        return self.suspended_until is None or self.suspended_until > timezone.now()
+
+    def __str__(self):
+        return f"Suspension<{self.identity_key}> until={self.suspended_until or 'indefinite'}"
+
+
+# ===========================================================================
+# PER-IDENTITY COMMUNICATION PREFERENCES  (Stage E · CC-020/021)
+# ===========================================================================
+
+class CommPreference(models.Model):
+    """Privacy toggles, keyed per-IDENTITY (not per-account like
+    notifications.NotificationPreference) so child A and child B on one
+    account can have different online-status/read-receipt settings, the
+    same profile-isolation guarantee the rest of chat already gives for
+    free. Lazily created on first read — see for_identity()."""
+    identity_key = models.CharField(max_length=50, unique=True, db_index=True)
+    show_online_status = models.BooleanField(default=True)
+    show_read_receipts = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def for_identity(cls, identity_key):
+        obj, _ = cls.objects.get_or_create(identity_key=identity_key)
+        return obj
+
+    def __str__(self):
+        return f"CommPreference<{self.identity_key}>"
+
+
+# ===========================================================================
+# ACADEMIC SUPPORT TICKETS  (Stage D · CC-022, wires the reserved SUPPORT kind)
+# ===========================================================================
+
+class SupportTicket(models.Model):
+    CATEGORY_TECHNICAL = "TECHNICAL"
+    CATEGORY_BILLING = "BILLING"
+    CATEGORY_COURSE = "COURSE"
+    CATEGORY_ACCOUNT = "ACCOUNT"
+    CATEGORY_OTHER = "OTHER"
+    CATEGORY_CHOICES = [
+        (CATEGORY_TECHNICAL, "Technical issue"),
+        (CATEGORY_BILLING, "Billing / payments"),
+        (CATEGORY_COURSE, "Course content"),
+        (CATEGORY_ACCOUNT, "Account / access"),
+        (CATEGORY_OTHER, "Other"),
+    ]
+
+    STATUS_OPEN = "OPEN"
+    STATUS_IN_PROGRESS = "IN_PROGRESS"
+    STATUS_RESOLVED = "RESOLVED"
+    STATUS_CLOSED = "CLOSED"
+    STATUS_CHOICES = [
+        (STATUS_OPEN, "Open"),
+        (STATUS_IN_PROGRESS, "In progress"),
+        (STATUS_RESOLVED, "Resolved"),
+        (STATUS_CLOSED, "Closed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    conversation = models.OneToOneField(
+        Conversation, on_delete=models.CASCADE, related_name="support_ticket"
+    )
+    requester_kind = models.CharField(max_length=10, choices=Participant.KIND_CHOICES)
+    requester_learner = models.ForeignKey(
+        LearnerProfile, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="support_tickets",
+    )
+    requester_teacher = models.ForeignKey(
+        TeacherProfile, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="support_tickets",
+    )
+    subject = models.CharField(max_length=200)
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default=CATEGORY_OTHER)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_OPEN)
+    assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="assigned_support_tickets",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        indexes = [models.Index(fields=["status", "updated_at"])]
+
+    def __str__(self):
+        return f"Ticket<{self.subject}> [{self.status}]"

@@ -36,9 +36,12 @@ EXPERT_REQUIRED = (
     "subject_description",   # subject selection + description
     "languages",             # language preference
     "bio",                   # about you
-    "hourly_rate",           # hourly fee
     "class_mode",            # location of class (mode)
     # "class_location" is required ONLY when class_mode is home/travel.
+    # NOTE: "hourly_rate" is intentionally NOT required. Booking is free at
+    # launch (toggled globally from admin via GlobalSettings), so an expert
+    # must be able to get listed without setting a fee. The field still exists
+    # on the model (dormant, defaults 0) for when paid mode is built later.
 )
 PERSONAL_REQUIRED = ("full_name", "date_of_birth", "phone", "profile_photo")
 
@@ -74,12 +77,7 @@ def expert_missing(
     if not (bio or "").strip():
         missing.append("bio")
 
-    try:
-        rate_ok = int(hourly_rate or 0) > 0
-    except (TypeError, ValueError):
-        rate_ok = False
-    if not rate_ok:
-        missing.append("hourly_rate")
+    # hourly_rate is no longer part of completeness — booking is free at launch.
 
     if class_mode not in VALID_MODES:
         missing.append("class_mode")
@@ -398,6 +396,9 @@ def serialize_expert(ep):
         "sessions_count":      ep.sessions_count,
         "is_complete":         comp["is_complete"],
         "missing":             comp["missing"],
+        # intro video (advertising clip, not a listing requirement)
+        "intro_video_status":      ep.intro_video_status,
+        "intro_video_embed_url":  ep.intro_video_embed_url(),
     }
 
 

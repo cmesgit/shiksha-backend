@@ -49,7 +49,7 @@ cycle instead of a cross-app one.
 import logging
 
 from accounts.models import Identity
-from .models import Conversation
+from .models import Conversation, Participant
 
 logger = logging.getLogger(__name__)
 
@@ -175,20 +175,26 @@ def can_start_dm(a_kind, a_obj, b_kind, b_obj):
 # ---------------------------------------------------------------------------
 
 _FROZEN_REASON = "This conversation is closed and no longer accepts new messages."
-_BROADCAST_REASON = "This is a broadcast channel — replies aren't supported here."
+_BROADCAST_REASON = "This is a broadcast channel — only the course's teachers can post here."
+_SUSPENDED_REASON = (
+    "Your ability to send messages has been temporarily restricted by a "
+    "platform moderator."
+)
 
 
 def can_post(conversation, participant):
     """Structural gate wired into services.post_message_checked() BEFORE
-    moderation/blocking. NOT a membership check — the Participant already
-    exists by the time anyone tries to post, which is why this takes the
-    Participant itself rather than the (kind, obj) shape the other two
-    functions above use (they run before a Participant exists at all).
-    `participant` is unused by both current rules (frozen, broadcast) —
-    it's here because a future rule (e.g. a BROADCAST exception for one
-    designated sender) will need to know who's asking, and threading a new
-    parameter through post_message_checked() later is worse than taking it
-    now.
+    moderation/blocking.
+
+    NOT a membership check — the Participant already exists by the time
+    anyone tries to post. Two rules:
+      1. is_frozen        → nobody may post (unchanged from M3).
+      2. kind == BROADCAST → read-only for everyone EXCEPT a TEACHER
+         participant (Stage D / CC-015: Announcements). M3 shipped this as
+         unconditionally read-only with a note that a future rule would need
+         to know who's asking — this is that rule. A LEARNER or STAFF
+         participant of a BROADCAST room (a course's enrolled students; a
+         support agent has no reason to be in one) still cannot post.
 
     Returns (allowed: bool, reason: str).
     """
@@ -196,9 +202,8 @@ def can_post(conversation, participant):
         return False, _FROZEN_REASON
 
     if conversation.kind == Conversation.KIND_BROADCAST:
-        # M3: no concept yet of a designated broadcaster/announcer
-        # participant, so a BROADCAST conversation is read-only for
-        # everyone until a later stage defines who may post into one.
+        if participant is not None and participant.kind == Participant.KIND_TEACHER:
+            return True, ""
         return False, _BROADCAST_REASON
 
     return True, ""

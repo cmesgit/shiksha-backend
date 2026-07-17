@@ -76,6 +76,11 @@ class CounselorProfile(models.Model):
     )
 
     display_name = models.CharField(max_length=120)
+    # SMS-reachable mobile for booking/cancellation SMS + reminders
+    # (notifications.phone.phone_for_user). Optional — blank until the
+    # counselor application/profile form collects it; SMS is skipped
+    # (SmsLog "skipped") when empty.
+    phone = models.CharField(max_length=20, blank=True, default="")
     photo = models.ImageField(upload_to="counselors/photos/", null=True, blank=True)
     bio = models.TextField(blank=True, default="")
     qualifications = models.TextField(blank=True, default="")

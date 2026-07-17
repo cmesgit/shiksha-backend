@@ -52,7 +52,7 @@ from accounts.auth_flow import (
 )
 from accounts.models import Role
 from activity.models import Activity
-from assignments.models import Assignment
+from assignments.models import Assignment, AssignmentSubmission
 from courses.models import Subject, Chapter, SubjectTeacher
 from enrollments.models import Enrollment
 from livestream.models import LiveSession
@@ -65,6 +65,7 @@ from .serializers import (
     DashboardQuizSerializer,
     DashboardActivitySerializer,
     DashboardPrivateSessionSerializer,
+    DashboardGradingItemSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -203,6 +204,24 @@ def _teacher_private_sessions(user, now):
     )
 
 
+def _teacher_grading_queue(user, limit=15):
+    """
+    Assignment submissions on this teacher's assignments awaiting review,
+    newest first. Assignments carry no graded flag, so the queue surfaces
+    real submissions rather than a synthetic 'ungraded' subset — the
+    "Grade" button opens the submissions view where the teacher reviews
+    them. Capped so the dashboard card stays light.
+    """
+    return list(
+        AssignmentSubmission.objects.filter(
+            assignment__chapter__subject__subject_teachers__teacher=user
+        )
+        .select_related("student", "assignment__chapter__subject")
+        .distinct()
+        .order_by("-submitted_at")[:limit]
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Activity feed slices — audience + profile aware
 # ─────────────────────────────────────────────────────────────────────────────
@@ -321,6 +340,9 @@ class DashboardView(APIView):
             private_sessions = _guard(
                 "teacher.private_sessions",
                 lambda: _teacher_private_sessions(user, now), [])
+            grading_queue = _guard(
+                "teacher.grading_queue",
+                lambda: _teacher_grading_queue(user), [])
             notifications = _guard(
                 "teacher.notifications",
                 lambda: _notifications(user, now,
@@ -371,6 +393,7 @@ class DashboardView(APIView):
             private_sessions = _guard(
                 "learner.private_sessions",
                 lambda: _learner_private_sessions(user, now), [])
+            grading_queue = []  # learner dashboards have no grading queue
             notifications = _guard(
                 "learner.notifications",
                 lambda: _notifications(user, now,
@@ -418,6 +441,9 @@ class DashboardView(APIView):
                                        lambda: DashboardQuizSerializer(quizzes, many=True).data, []),
             "private_sessions": _guard("ser.private_sessions",
                                        lambda: DashboardPrivateSessionSerializer(private_sessions, many=True).data, []),
+            "grading_queue":    _guard("ser.grading_queue",
+                                       lambda: DashboardGradingItemSerializer(grading_queue, many=True).data, []),
+            "grading_count":    len(grading_queue),
             "notifications":    notifications_data,
             "schedule":         _guard("ser.schedule",
                                        lambda: DashboardActivitySerializer(schedule, many=True).data, []),

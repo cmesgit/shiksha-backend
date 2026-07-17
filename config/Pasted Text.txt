@@ -1,0 +1,2 @@
+/home/hruaia/Downloads/files (5)/settings_base.py
+/home/hruaia/Downloads/files (5)/urls.py

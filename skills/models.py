@@ -85,6 +85,24 @@ class ExpertProfile(models.Model):
     badges = models.JSONField(default=list, blank=True)        # ["Verified", "Top-rated"]
     photo = models.ImageField(upload_to="skills/experts/", null=True, blank=True)
 
+    # ── Intro video (advertising, not a session recording) ─────────────────
+    # One short Bunny-hosted clip advertising what this expert teaches. Kept
+    # inline on the profile (like `photo`) rather than a separate model —
+    # there is exactly one per expert, with no FK relationships to model.
+    INTRO_VIDEO_STATUS_CHOICES = [
+        (0, "Created"),
+        (1, "Uploaded"),
+        (2, "Processing"),
+        (3, "Transcoding"),
+        (4, "Finished"),
+        (5, "Error"),
+    ]
+    intro_video_bunny_id = models.CharField(max_length=255, blank=True)
+    intro_video_status = models.IntegerField(
+        choices=INTRO_VIDEO_STATUS_CHOICES, null=True, blank=True
+    )
+    intro_video_thumbnail_url = models.URLField(blank=True)
+
     # Rate is stored in paise for consistency with courses/payments.
     hourly_rate = models.PositiveIntegerField(default=0, help_text="Paise (₹1 = 100)")
 
@@ -280,6 +298,16 @@ class ExpertProfile(models.Model):
             "name": self.payment_name or self.display_name(),
             "note": self.payment_note,
         }
+
+    def intro_video_ready(self):
+        return self.intro_video_status == 4  # Finished
+
+    def intro_video_embed_url(self):
+        """Playable Bunny embed URL, or None if there's no finished video."""
+        if not (self.intro_video_bunny_id and self.intro_video_ready()):
+            return None
+        from django.conf import settings
+        return f"{settings.BUNNY_EMBED}/{settings.BUNNY_LIBRARY_ID}/{self.intro_video_bunny_id}"
 
     def __str__(self):
         return f"Expert · {self.display_name()}"
@@ -479,12 +507,14 @@ class SkillSession(models.Model):
     STATUS_REQUESTED = "requested"
     STATUS_PENDING_PAYMENT = "pending_payment"
     STATUS_CONFIRMED = "confirmed"
+    STATUS_NEEDS_RECONFIRMATION = "needs_reconfirmation"
     STATUS_COMPLETED = "completed"
     STATUS_CANCELLED = "cancelled"
     STATUS_CHOICES = [
         (STATUS_REQUESTED, "Requested"),
         (STATUS_PENDING_PAYMENT, "Pending payment"),
         (STATUS_CONFIRMED, "Confirmed"),
+        (STATUS_NEEDS_RECONFIRMATION, "Needs reconfirmation"),
         (STATUS_COMPLETED, "Completed"),
         (STATUS_CANCELLED, "Cancelled"),
     ]
@@ -527,6 +557,16 @@ class SkillSession(models.Model):
         max_length=16, blank=True,
         help_text="Reserved availability slot, e.g. '3-1' (day-slot index).",
     )
+
+    # ── Reschedule proposal (teacher proposes, learner confirms/declines) ──
+    # Mirrors sessions_app.PrivateSession's rescheduled_date/time, but this
+    # model books a slot_key against the expert's weekly grid rather than a
+    # separate date+time pair, so the proposal is a candidate slot_key +
+    # its derived scheduled_for, not two loose date/time fields.
+    proposed_slot_key = models.CharField(max_length=16, blank=True)
+    proposed_scheduled_for = models.DateTimeField(null=True, blank=True)
+    reschedule_reason = models.CharField(max_length=255, blank=True)
+
     amount = models.PositiveIntegerField(default=0, help_text="Paise")
     note = models.TextField(blank=True)            # the contact draft / message
     meeting_url = models.CharField(max_length=300, blank=True)

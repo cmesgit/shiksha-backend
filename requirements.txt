@@ -26,6 +26,7 @@ idna==3.11
 livekit-api==1.1.0
 livekit-protocol==1.1.2
 multidict==6.7.1
+nh3==0.3.6
 oauthlib==3.3.1
 packaging==26.0
 pillow==12.1.0

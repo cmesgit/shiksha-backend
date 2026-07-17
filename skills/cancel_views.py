@@ -17,6 +17,8 @@ from rest_framework import status
 
 from accounts.auth_flow import get_active_profile
 from .models import SkillSession
+from .teacher_views import free_slot
+from .notifications import push_skill_bell
 
 
 CANCELLABLE = (SkillSession.STATUS_REQUESTED, SkillSession.STATUS_PENDING_PAYMENT)
@@ -63,4 +65,9 @@ class StudentCancelSessionView(APIView):
             session.cancelled_at = timezone.now()
             update_fields.append("cancelled_at")
         session.save(update_fields=update_fields)
+        # Release the reserved weekly slot back to the expert's grid — it was
+        # booked at request time, before the expert ever confirmed.
+        if session.slot_key:
+            free_slot(session.expert, session.slot_key)
+        push_skill_bell(session, "cancelled")
         return Response({"status": session.status})

@@ -102,3 +102,111 @@ class Notification(models.Model):
 
     def __str__(self):
         return f"[{self.verb}] → {self.recipient}: {self.title}"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Multi-channel additions (email/SMS/push routing) — see policy.py
+# ═══════════════════════════════════════════════════════════════════════
+
+class NotificationPreference(models.Model):
+    """Per-user switches for the three away-from-app channels.
+
+    · Channel booleans gate OPT_OUT-level sends only. REQUIRED-level
+      (transactional) messages ignore them — see policy.py.
+    · muted_categories: list of policy.CATEGORIES entries the user muted
+      (again, OPT_OUT sends only). Lets someone keep booking emails but
+      silence forum push without four extra boolean columns per category.
+    · Rows are lazily created on first read; absence == all defaults on.
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="notification_preference",
+    )
+    email_enabled = models.BooleanField(default=True)
+    sms_enabled = models.BooleanField(default=True)
+    push_enabled = models.BooleanField(default=True)
+    muted_categories = models.JSONField(default=list, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return (f"prefs<{self.user_id}> email={self.email_enabled} "
+                f"sms={self.sms_enabled} push={self.push_enabled}")
+
+    @classmethod
+    def for_user(cls, user):
+        obj, _ = cls.objects.get_or_create(user=user)
+        return obj
+
+
+class SmsLog(models.Model):
+    """One row per SMS attempt — the DLT audit trail and the support
+    answer to "why didn't the parent get the confirmation SMS"."""
+
+    STATUS_SENT = "sent"
+    STATUS_FAILED = "failed"
+    STATUS_SKIPPED = "skipped"   # no phone / no template / prefs
+    STATUS_CHOICES = [
+        (STATUS_SENT, "Sent"),
+        (STATUS_FAILED, "Failed"),
+        (STATUS_SKIPPED, "Skipped"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="sms_logs",
+    )
+    to = models.CharField(max_length=20, blank=True, default="")
+    phone_source = models.CharField(
+        max_length=40, blank=True, default="",
+        help_text="Where the number came from (learner/father/teacher_profile/…).",
+    )
+    verb = models.CharField(max_length=50, blank=True, default="", db_index=True)
+    template_key = models.CharField(max_length=50, blank=True, default="")
+    body = models.TextField(blank=True, default="")
+    provider = models.CharField(max_length=20, blank=True, default="")
+    provider_message_id = models.CharField(max_length=100, blank=True, default="")
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, db_index=True)
+    error = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["status", "created_at"])]
+
+    def __str__(self):
+        return f"SMS[{self.status}] {self.verb} → {self.to}"
+
+
+class ReminderLog(models.Model):
+    """Dedupe ledger for the Celery-beat session reminder sweep: one row
+    per (source object, offset) means one reminder, ever — the sweep can
+    run every 5 minutes (or crash and rerun) without double-sending."""
+
+    KIND_COUNSELING = "counseling"
+    KIND_PRIVATE = "private_session"
+    KIND_GROUP = "group_session"
+    KIND_CHOICES = [
+        (KIND_COUNSELING, "Counseling appointment"),
+        (KIND_PRIVATE, "Private session"),
+        (KIND_GROUP, "Group session"),
+    ]
+
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES)
+    object_id = models.CharField(max_length=40)   # int pk or UUID, as text
+    offset_minutes = models.PositiveIntegerField()
+    sent_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["kind", "object_id", "offset_minutes"],
+                name="reminder_once_per_object_offset",
+            )
+        ]
+
+    def __str__(self):
+        return f"reminder {self.kind}:{self.object_id} T-{self.offset_minutes}m"

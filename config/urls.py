@@ -22,6 +22,15 @@ urlpatterns = [
     path("api/chat/", include("chat.urls")),
     path("api/admin/", include("global_settings.urls")),
     path("api/forum/", include("forum.urls")),  # ← ADDED
+    path("api/explore/", include("documents.urls")),  # ← ADDED (Explore document library)
+    # Canonical notification API (bell + preferences). The legacy alias
+    # /api/forum/notifications/ above keeps working; this snapshot was
+    # missing both mounts below (likely server-side urls.py edits that
+    # never landed back in the repo — reconcile on deploy).
+    path("api/notifications/", include("notifications.urls")),
+    path("api/counseling/", include("counseling.urls")),
+    path("api/content/", include("content.urls")),  # ← ADDED (content CMS app)
+    path("api/news/", include("news.urls")),  # ← ADDED (GNews proxy)
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -5,6 +5,16 @@ from datetime import timedelta
 from corsheaders.defaults import default_headers
 from dotenv import load_dotenv
 MATERIAL_MAX_FILE_SIZE_MB = int(os.getenv("MATERIAL_MAX_FILE_SIZE_MB", "50"))
+# CC-012 (Communication Center closure — Stage C): a chat attachment is
+# exchanged in a live conversation, not a course's study-material library,
+# so its ceiling is deliberately much smaller than MATERIAL_MAX_FILE_SIZE_MB.
+CHAT_MAX_ATTACHMENT_MB = int(os.getenv("CHAT_MAX_ATTACHMENT_MB", "15"))
+# Temporary file sharing: a chat attachment auto-expires (soft-deletes) this
+# many days after upload — see chat.tasks.expire_old_attachments.
+CHAT_ATTACHMENT_EXPIRY_DAYS = int(os.getenv("CHAT_ATTACHMENT_EXPIRY_DAYS", "7"))
+# Forum question/post attachments — a forum upload is closer to a chat
+# attachment than a course material, so it shares the smaller ceiling.
+FORUM_MAX_ATTACHMENT_MB = int(os.getenv("FORUM_MAX_ATTACHMENT_MB", "15"))
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -52,7 +62,15 @@ INSTALLED_APPS = [
     "global_settings",
     "chat",
     "forum",
+    "documents",
     "notifications",
+    "content",
+    "news",
+    # counseling has migrations, seed data and mounted URLs but was
+    # missing here (likely a server-side settings edit that never made it
+    # back to the repo — see settings.py.save.1). Required by
+    # notifications.tasks.send_session_reminders.
+    "counseling",
 ]
 
 MIDDLEWARE = [
@@ -128,6 +146,14 @@ REST_FRAMEWORK = {
         "resend_verification": "3/hour",
         "password_reset_request": "5/hour",
         "password_reset_verify": "10/hour",
+        # Forum anti-abuse: cap how fast a single user can create content
+        # or file reports (spam / flood protection).
+        "forum_post": "20/hour",
+        "forum_comment": "60/hour",
+        "forum_report": "30/hour",
+        # Explore library anti-abuse.
+        "documents_upload": "30/hour",
+        "documents_report": "30/hour",
     },
 }
 
@@ -197,3 +223,57 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "Asia/Kolkata"
 CELERY_TASK_ALWAYS_EAGER = False
+
+# ── Notifications: SMS / reminders (see notifications/policy.py) ──────────
+# Provider: console (dev, logs only) | msg91 (production, DLT-native)
+#           | twilio (international fallback)
+SMS_PROVIDER = os.getenv("SMS_PROVIDER", "console")
+SMS_DEFAULT_COUNTRY_CODE = "+91"
+
+MSG91_AUTH_KEY = os.getenv("MSG91_AUTH_KEY", "")
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM = os.getenv("TWILIO_FROM", "")
+
+# Every "text" below must MATCH ITS DLT-REGISTERED TEMPLATE 1:1 with
+# {#var#} → {name}. Register on your operator's DLT portal, create the
+# matching Flow on MSG91, and drop each flow id into the env. The console
+# provider renders "text" directly, so dev works with zero registration.
+SMS_TEMPLATES = {
+    "booking_confirmed": {
+        "text": "Your ShikshaCom session {title} is confirmed for {when}. See app for details. -SHIKSHACOM",
+        "msg91_flow_id": os.getenv("MSG91_FLOW_BOOKING_CONFIRMED", ""),
+    },
+    "booking_cancelled": {
+        "text": "Your ShikshaCom session {title} on {when} was cancelled. Open the app to rebook. -SHIKSHACOM",
+        "msg91_flow_id": os.getenv("MSG91_FLOW_BOOKING_CANCELLED", ""),
+    },
+    "booking_rescheduled": {
+        "text": "Your ShikshaCom session {title} was rescheduled to {when}. Confirm in the app. -SHIKSHACOM",
+        "msg91_flow_id": os.getenv("MSG91_FLOW_BOOKING_RESCHEDULED", ""),
+    },
+    "session_reminder": {
+        "text": "Reminder: {title} starts at {when}. Join from the ShikshaCom app. -SHIKSHACOM",
+        "msg91_flow_id": os.getenv("MSG91_FLOW_SESSION_REMINDER", ""),
+    },
+    "payment_receipt": {
+        "text": "ShikshaCom: payment of Rs.{amount} received. Ref {ref}. Receipt emailed. -SHIKSHACOM",
+        "msg91_flow_id": os.getenv("MSG91_FLOW_PAYMENT_RECEIPT", ""),
+    },
+    "enrollment_approved": {
+        "text": "Your ShikshaCom enrollment for {course} is approved. Start learning in the app. -SHIKSHACOM",
+        "msg91_flow_id": os.getenv("MSG91_FLOW_ENROLLMENT_APPROVED", ""),
+    },
+}
+
+# Reminder sweep: offsets (minutes before start) and how often beat runs
+# it. Offsets ≥180 min are treated as the "24h" tier (email+push);
+# smaller ones as the "1h" tier (SMS+push) — see notifications/tasks.py.
+NOTIFY_REMINDER_OFFSETS_MIN = [1440, 60]
+NOTIFY_REMINDER_SWEEP_MINUTES = 5
+
+CELERY_BEAT_SCHEDULE = globals().get("CELERY_BEAT_SCHEDULE", {})
+CELERY_BEAT_SCHEDULE["notifications-session-reminders"] = {
+    "task": "notifications.send_session_reminders",
+    "schedule": NOTIFY_REMINDER_SWEEP_MINUTES * 60,
+}

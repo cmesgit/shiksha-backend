@@ -45,12 +45,8 @@ _SESSION_NOTIFICATIONS = {
         lambda s: (
             s.requested_by, f"📅 {get_user_name(s.teacher)} rescheduled your {s.subject} session"),
     ],
-    "cancelled": [
-        lambda s: (
-            s.teacher,       f"❌ Student cancelled the {s.subject} session"),
-        # requester cancelled themselves — no self-notify
-        lambda s: (s.requested_by,  None),
-    ],
+    # "cancelled" is handled specially in _push_session_bell — who gets
+    # notified depends on WHO cancelled, not just the resulting status.
     "ongoing": [
         lambda s: (s.requested_by,
                    f"🔴 Your {s.subject} session is now live — join now!"),
@@ -65,7 +61,7 @@ _SESSION_NOTIFICATIONS = {
 }
 
 
-def _push_session_bell(session):
+def _push_session_bell(session, cancelled_by=None):
     """
     Create Activity records and push WS bell notifications for a
     private session status change. Only notifies the relevant party
@@ -77,7 +73,24 @@ def _push_session_bell(session):
         from livestream.services.notifications import push_ws_notification
         import datetime
 
-        rules = _SESSION_NOTIFICATIONS.get(session.status, [])
+        if session.status == "cancelled":
+            # Who gets notified depends on who cancelled — a static status
+            # → recipient mapping can't tell student-cancel from
+            # teacher-cancel, since both set the same "cancelled" status.
+            if cancelled_by == "teacher":
+                rules = [lambda s: (
+                    s.requested_by,
+                    f"❌ {get_user_name(s.teacher)} cancelled the {s.subject} session",
+                )]
+            elif cancelled_by == "student":
+                rules = [lambda s: (
+                    s.teacher,
+                    f"❌ {get_user_name(s.requested_by)} cancelled the {s.subject} session",
+                )]
+            else:
+                rules = []
+        else:
+            rules = _SESSION_NOTIFICATIONS.get(session.status, [])
         content_type = ContentType.objects.get_for_model(session)
         scheduled_dt = datetime.datetime.combine(
             session.scheduled_date,
@@ -117,7 +130,7 @@ def _push_session_bell(session):
         pass  # never let bell errors break the main response
 
 
-def _broadcast_session_update(session):
+def _broadcast_session_update(session, cancelled_by=None):
     """
     1. Push real-time session_update to all participants (drives card refresh).
     2. Push bell notification to the relevant recipient (drives notification bell).
@@ -142,7 +155,7 @@ def _broadcast_session_update(session):
                 pass
 
     # ── 2. Notification bell ───────────────────────────────────
-    _push_session_bell(session)
+    _push_session_bell(session, cancelled_by=cancelled_by)
 
 
 def _session_qs():
@@ -289,7 +302,7 @@ def cancel_session(request, session_id):
     session.status = "cancelled"
     session.cancel_reason = request.data.get("reason", "")
     session.save()
-    _broadcast_session_update(session)
+    _broadcast_session_update(session, cancelled_by="student")
     return Response(PrivateSessionSerializer(session).data)
 
 
@@ -551,7 +564,7 @@ def teacher_cancel_session(request, session_id):
     session.status = "cancelled"
     session.cancel_reason = request.data.get("reason", "Cancelled by teacher.")
     session.save()
-    _broadcast_session_update(session)
+    _broadcast_session_update(session, cancelled_by="teacher")
     return Response(PrivateSessionSerializer(session).data)
 
 

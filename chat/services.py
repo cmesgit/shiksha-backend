@@ -46,18 +46,34 @@ This module also owns:
   • The lookups chat/policy.py's DM matrix needs — this module still owns
     every actual DB query; policy.py owns only the yes/no decision logic.
 """
+from datetime import timedelta
+
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 import logging
 
 from accounts.models import LearnerProfile, TeacherProfile, Identity
-from .models import Conversation, Participant, Message, Block, OutboxEvent
+from .models import (
+    Conversation, Participant, Message, Block, OutboxEvent,
+    MessageAttachment, MessageReaction, Report, ChatSuspension,
+    CommPreference, SupportTicket,
+)
+from . import attachments as attachment_rules
 from . import moderation
 from . import redis_utils
 from . import realtime
 from . import policy
 
 logger = logging.getLogger(__name__)
+
+# Stage B (CC-007/010/015): the fixed, safe reaction set. A plain CharField
+# on MessageReaction.emoji has no DB-level constraint on purpose (see that
+# model's docstring) — this is the one place that decides what's actually
+# reachable, so widening the palette later is a one-line change, not a
+# migration.
+ALLOWED_REACTIONS = {"👍", "❤️", "😂", "😮", "😢", "🙏"}
 
 
 # ---------------------------------------------------------------------------
@@ -156,15 +172,24 @@ def _identity_key(kind, obj):
 
 
 def identity_key_for_ids(kind, obj_id):
-    return f"L:{obj_id}" if kind == Participant.KIND_LEARNER else f"T:{obj_id}"
+    if kind == Participant.KIND_LEARNER:
+        return f"L:{obj_id}"
+    if kind == Participant.KIND_TEACHER:
+        return f"T:{obj_id}"
+    return f"S:{obj_id}"
 
 
 def resolve_identity(kind, obj_id):
-    """Fetch the LearnerProfile / TeacherProfile for a (kind, id) pair, or None."""
+    """Fetch the LearnerProfile / TeacherProfile / staff User for a
+    (kind, id) pair, or None."""
     if kind == Participant.KIND_TEACHER:
         return TeacherProfile.objects.filter(id=obj_id).first()
     if kind == Participant.KIND_LEARNER:
         return LearnerProfile.objects.filter(id=obj_id, is_active=True).first()
+    if kind == Participant.KIND_STAFF:
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        return User.objects.filter(id=obj_id, is_staff=True).first()
     return None
 
 
@@ -254,11 +279,43 @@ def ensure_course_room(course_id, title=""):
     return ensure_room("course", str(course_id), title)
 
 
+@transaction.atomic
+def ensure_broadcast_room(context_type, context_id, title=""):
+    """Get or create the unique BROADCAST (read-only-for-non-teachers)
+    conversation for (context_type, context_id) — the Announcements channel
+    for e.g. a course (Stage D · CC-015). Sibling of ensure_room() above;
+    kept as its OWN function rather than a `kind=` parameter on ensure_room()
+    so that function's existing "behaviour is unchanged for its one caller"
+    guarantee stays literally true, and so the two kinds can never collide
+    on Conversation's `unique_room_per_context` / `unique_broadcast_per_context`
+    constraints (one context can legitimately have both a ROOM and a
+    BROADCAST — Discussion and Announcements are different channels)."""
+    conv, created = Conversation.objects.get_or_create(
+        context_type=context_type,
+        context_id=context_id,
+        kind=Conversation.KIND_BROADCAST,
+        defaults={"title": title},
+    )
+    if not created and title and conv.title != title:
+        conv.title = title
+        conv.save(update_fields=["title"])
+    return conv
+
+
+def ensure_course_announcements(course_id, title=""):
+    """Thin wrapper mirroring ensure_course_room() — the one call site
+    (chat/views.py's CourseAnnouncementsView) always has a course id, never
+    a raw context_id."""
+    return ensure_broadcast_room("course", str(course_id), title or "Announcements")
+
+
 def participant_for(conversation, kind, obj):
     """Return the Participant row for this identity in a conversation, or None."""
     qs = conversation.participants.filter(kind=kind)
     if kind == Participant.KIND_LEARNER:
         return qs.filter(learner_profile=obj).first()
+    if kind == Participant.KIND_STAFF:
+        return qs.filter(staff_user=obj).first()
     return qs.filter(teacher_profile=obj).first()
 
 
@@ -345,6 +402,8 @@ def participant_roles(participant):
         return _teacher_roles(participant.teacher_profile)
     if participant.kind == Participant.KIND_LEARNER and participant.learner_profile:
         return _learner_roles(participant.learner_profile)
+    if participant.kind == Participant.KIND_STAFF:
+        return ["staff"]
     return []
 
 
@@ -551,7 +610,7 @@ def my_blocks(kind, obj):
 # ---------------------------------------------------------------------------
 
 @transaction.atomic
-def post_message(conversation, sender_participant, body, client_id=""):
+def post_message(conversation, sender_participant, body, client_id="", reply_to=None, message_type=None):
     """Raw save. Assumes the body has already passed the gate below."""
     body = (body or "").strip()
     if not body:
@@ -572,27 +631,25 @@ def post_message(conversation, sender_participant, body, client_id=""):
         if existing:
             return existing
 
+    if message_type is None:
+        # Stage D (CC-015): a message posted into a BROADCAST room is an
+        # Announcement by definition — tagging it here means the frontend
+        # can style/label it without a second fetch of the parent
+        # conversation just to learn its kind.
+        message_type = (
+            Message.TYPE_ANNOUNCEMENT if conversation.kind == Conversation.KIND_BROADCAST
+            else Message.TYPE_TEXT
+        )
+
     msg = Message.objects.create(
         conversation=conversation,
         sender=sender_participant,
         body=body[:4000],
         client_id=client_id,
+        reply_to=reply_to,
+        message_type=message_type,
     )
-    conversation.last_message_at = timezone.now()
-    conversation.save(update_fields=["last_message_at"])
-
-    # M3 (Phase 3 §11): SAME transaction as the Message above — the whole
-    # point of the outbox pattern. See OutboxEvent's docstring and
-    # chat/outbox_handlers.py for what drains this.
-    OutboxEvent.objects.create(
-        event_type=OutboxEvent.EVENT_MESSAGE_CREATED,
-        payload={
-            "conversation_id": str(conversation.id),
-            "message_id": str(msg.id),
-        },
-    )
-
-    _fanout_new_message(conversation, sender_participant, msg)
+    _finalize_new_message(conversation, sender_participant, msg)
     return msg
 
 
@@ -649,7 +706,57 @@ def _fanout_new_message(conversation, sender_participant, msg):
         })
 
 
-def post_message_checked(conversation, sender_participant, body, client_id=""):
+def _finalize_new_message(conversation, sender_participant, msg):
+    """The common tail of every new-message path — post_message() above for
+    a plain text send, _create_attachment_message() below for an attachment.
+    Stamps last_message_at, writes the OutboxEvent (Phase 3 §11 — the
+    offline notification pipeline; chat/outbox_handlers.py drains this and
+    decides email/SMS/push per notifications/policy.py), runs the M0
+    per-participant unread bump + inbox_delta (_fanout_new_message() above),
+    and — Stage C addition — broadcasts the message itself to the
+    conversation's own live group.
+
+    That last part used to be consumers.py's job, done only for a
+    WS-originated send. Centralizing it here means an attachment uploaded
+    over REST fans out to every open thread exactly like a typed message
+    does, with no special case anywhere else — see consumers.py's receive()
+    "message" branch, which no longer group_sends on success itself, and
+    chat/views.py's ConversationAttachmentUploadView, which never has to
+    remember to either.
+    """
+    conversation.last_message_at = timezone.now()
+    conversation.save(update_fields=["last_message_at"])
+
+    OutboxEvent.objects.create(
+        event_type=OutboxEvent.EVENT_MESSAGE_CREATED,
+        payload={
+            "conversation_id": str(conversation.id),
+            "message_id": str(msg.id),
+        },
+    )
+
+    _fanout_new_message(conversation, sender_participant, msg)
+    realtime.push_conversation_event(conversation.id, "chat.message", serialize_message(msg))
+
+
+SUSPENDED_REASON = (
+    "Your ability to send messages has been temporarily restricted by a "
+    "platform moderator."
+)
+
+
+def is_suspended(participant):
+    """Stage D (CC-023): true iff this identity currently has an active
+    ChatSuspension. Deliberately a plain DB read with no try/except —
+    unlike the Redis helpers in this module (which fail OPEN on purpose;
+    see redis_utils.py's module docstring), a query failure here should
+    surface as a 500, not silently let a suspended sender's message
+    through."""
+    suspension = ChatSuspension.objects.filter(identity_key=participant.identity_key()).first()
+    return bool(suspension and suspension.is_active())
+
+
+def post_message_checked(conversation, sender_participant, body, client_id="", reply_to_id=None):
     """
     The one gate every message passes through.
 
@@ -663,6 +770,12 @@ def post_message_checked(conversation, sender_participant, body, client_id=""):
     text = (body or "").strip()
     if not text:
         return None, None
+
+    # -1) suspension gate (Stage D · CC-023) — checked first, so a
+    # suspended sender is refused identically no matter which conversation
+    # or endpoint (WS send, REST attachment, ticket reply) they try.
+    if is_suspended(sender_participant):
+        return None, {"category": "suspended", "reason": SUSPENDED_REASON}
 
     # 0) structural policy gate (Phase 3 §10) — frozen conversation,
     # read-only broadcast. Runs BEFORE moderation: a message into a closed
@@ -689,12 +802,616 @@ def post_message_checked(conversation, sender_participant, body, client_id=""):
                     "reason": "Messaging with this person is turned off.",
                 }
 
-    msg = post_message(conversation, sender_participant, text, client_id)
+    # 3) reply target (Stage B · CC-007/010) — best-effort: an invalid,
+    # already-deleted, or missing reply_to_id is silently dropped rather
+    # than refusing the whole send.
+    reply_to = None
+    if reply_to_id:
+        reply_to = conversation.messages.filter(id=reply_to_id, deleted_at__isnull=True).first()
+
+    msg = post_message(conversation, sender_participant, text, client_id, reply_to=reply_to)
     return msg, None
 
 
+def post_attachment_checked(conversation, sender_participant, django_file, caption="", reply_to_id=None):
+    """Attachment counterpart to post_message_checked() (Stage C · CC-012).
+    Same gate ORDER (suspension → structural policy → moderation-of-the-
+    caption → block → CC-012's own size/type validation), and the same
+    (message, error) return shape, so chat/views.py's
+    ConversationAttachmentUploadView handles a rejection exactly like every
+    other rejected send — no attachment-specific error branch needed on
+    the frontend beyond reading `category`."""
+    if is_suspended(sender_participant):
+        return None, {"category": "suspended", "reason": SUSPENDED_REASON}
+
+    allowed, reason = policy.can_post(conversation, sender_participant)
+    if not allowed:
+        return None, {"category": "policy", "reason": reason}
+
+    caption = (caption or "").strip()
+    if caption:
+        verdict = moderation.check_message(caption)
+        if not verdict.ok:
+            return None, {"category": verdict.category, "reason": verdict.reason}
+
+    if conversation.kind == Conversation.KIND_DIRECT:
+        other = other_participant(conversation, sender_participant)
+        if other is not None:
+            a_kind, a_id = sender_participant.kind, _participant_obj_id(sender_participant)
+            b_kind, b_id = other.kind, _participant_obj_id(other)
+            if is_blocked_between(a_kind, a_id, b_kind, b_id):
+                return None, {
+                    "category": "blocked",
+                    "reason": "Messaging with this person is turned off.",
+                }
+
+    meta, err = attachment_rules.classify_and_validate(django_file)
+    if err:
+        return None, {"category": "attachment", "reason": err}
+
+    reply_to = None
+    if reply_to_id:
+        reply_to = conversation.messages.filter(id=reply_to_id, deleted_at__isnull=True).first()
+
+    msg = _create_attachment_message(conversation, sender_participant, django_file, meta, caption, reply_to)
+    return msg, None
+
+
+@transaction.atomic
+def _create_attachment_message(conversation, sender_participant, django_file, meta, caption, reply_to):
+    message_type = Message.TYPE_IMAGE if meta["kind"] == MessageAttachment.KIND_IMAGE else Message.TYPE_FILE
+    msg = Message.objects.create(
+        conversation=conversation, sender=sender_participant, body=caption[:4000],
+        reply_to=reply_to, message_type=message_type,
+    )
+    from django.conf import settings
+    MessageAttachment.objects.create(
+        conversation=conversation, message=msg, uploaded_by=sender_participant,
+        file=django_file, kind=meta["kind"], original_name=meta["name"],
+        content_type=meta["content_type"], size_bytes=meta["size"],
+        expires_at=timezone.now() + timedelta(days=settings.CHAT_ATTACHMENT_EXPIRY_DAYS),
+    )
+    _finalize_new_message(conversation, sender_participant, msg)
+    return msg
+
+
+# ---------------------------------------------------------------------------
+# Reactions  (Stage B · CC-007/010/015)
+# ---------------------------------------------------------------------------
+
+def toggle_reaction(msg, participant, emoji):
+    """Add or remove one (message, participant, emoji) row — sending the
+    same emoji twice is a toggle-off, not an error (see MessageReaction's
+    docstring). Returns (action, summary): action is "added"/"removed";
+    summary is the same list-of-{emoji,count,identities} shape
+    serialize_message() embeds, so the REST response and the realtime
+    broadcast payload can share one code path."""
+    existing = MessageReaction.objects.filter(message=msg, participant=participant, emoji=emoji).first()
+    if existing:
+        existing.delete()
+        action = "removed"
+    else:
+        MessageReaction.objects.create(message=msg, participant=participant, emoji=emoji)
+        action = "added"
+    return action, _reaction_summary(msg)
+
+
+def _reaction_summary(msg):
+    out = {}
+    for r in msg.reactions.select_related("participant").all():
+        entry = out.setdefault(r.emoji, {"emoji": r.emoji, "count": 0, "identities": []})
+        entry["count"] += 1
+        entry["identities"].append(r.participant.identity_key() if r.participant else None)
+    return list(out.values())
+
+
+# ---------------------------------------------------------------------------
+# Soft delete  (Stage B · CC-006/010)
+# ---------------------------------------------------------------------------
+
+def can_delete_message(participant, msg):
+    """Who may soft-delete a message:
+      • the sender, always;
+      • inside a ROOM only, a TEACHER participant (in-class moderation —
+        e.g. removing an off-topic message from a course's Discussion tab).
+    Admin/moderator removal is a SEPARATE path — soft_delete_message()
+    called with admin_reason=... from an IsAdmin-gated view — that never
+    calls this check at all; see that function's docstring for why."""
+    if msg.deleted_at:
+        return False
+    if msg.sender_id == participant.id:
+        return True
+    if msg.conversation.kind == Conversation.KIND_ROOM and participant.kind == Participant.KIND_TEACHER:
+        return True
+    return False
+
+
+def soft_delete_message(msg, participant=None, admin_reason=""):
+    """`participant` set (admin_reason blank) → an ordinary self/in-room-
+    teacher delete; the tombstone reads "Message deleted". `admin_reason`
+    set (participant left None) → a moderator removal via the Reports queue
+    or AdminRemoveMessageView; the tombstone reads "Removed by a
+    moderator". The two are mutually exclusive by convention, not by a DB
+    constraint — every call site in this codebase only ever sets one."""
+    msg.deleted_at = timezone.now()
+    msg.deleted_by = participant
+    msg.deleted_reason = admin_reason
+    msg.save(update_fields=["deleted_at", "deleted_by", "deleted_reason"])
+
+
+# ---------------------------------------------------------------------------
+# Chat-level suspension  (Stage D · CC-023)
+# ---------------------------------------------------------------------------
+
+def suspend_identity(identity_key, reason, created_by, until=None):
+    suspended_until = None
+    if until:
+        suspended_until = until if hasattr(until, "tzinfo") else parse_datetime(str(until))
+    obj, _ = ChatSuspension.objects.update_or_create(
+        identity_key=identity_key,
+        defaults={
+            "reason": (reason or "")[:255],
+            "created_by": created_by,
+            "suspended_until": suspended_until,
+        },
+    )
+    return obj
+
+
+def lift_suspension(identity_key):
+    return ChatSuspension.objects.filter(identity_key=identity_key).delete()
+
+
+# ---------------------------------------------------------------------------
+# Staff participants  (Stage D · CC-022 support tickets)
+# ---------------------------------------------------------------------------
+
+def _get_staff_identity(user):
+    """Best-effort accounts.Identity row for a staff/admin user — reuses the
+    KIND_SYSTEM letter that model already reserves for exactly this
+    ("announcement / support bot senders"). Never raises: a missing
+    Identity row just leaves the Participant's `identity` dual-write FK
+    unset; `staff_user` remains the source of truth either way, the same
+    fallback shape _get_identity() already uses for learner/teacher rows."""
+    try:
+        identity, _ = Identity.objects.get_or_create(
+            kind=Identity.KIND_SYSTEM,
+            profile_id=str(user.id),
+            defaults={
+                "display_name": user.get_full_name() or user.username or "Support",
+                "account": user,
+            },
+        )
+        return identity
+    except Exception:
+        logger.exception(
+            "chat.services: staff identity lookup/create failed for user=%s",
+            getattr(user, "id", None),
+        )
+        return None
+
+
+def attach_staff_participant(conversation, user):
+    """Get-or-create the STAFF Participant for `user` in `conversation` —
+    used only for SUPPORT tickets (see chat/views.py's
+    SupportTicketReplyView / _ticket_and_participant()). Deliberately NOT
+    used for ad-hoc admin actions on an arbitrary DIRECT/ROOM conversation
+    (e.g. removing a reported message) — see soft_delete_message()'s
+    docstring for why an admin acting on a conversation they aren't part of
+    should never become a Participant of it."""
+    identity = _get_staff_identity(user)
+    return Participant.objects.get_or_create(
+        conversation=conversation, kind=Participant.KIND_STAFF, staff_user=user,
+        defaults={"identity": identity},
+    )[0]
+
+
+# ---------------------------------------------------------------------------
+# Academic support tickets  (Stage D · CC-022)
+# ---------------------------------------------------------------------------
+
+@transaction.atomic
+def create_support_ticket(kind, obj, subject, category, body):
+    """Returns (ticket, error) — error uses the same {"category","reason"}
+    shape as every other rejected send, checked BEFORE any row exists so a
+    moderation-rejected first message never leaves behind an empty ticket."""
+    text = (body or "").strip()
+    if not text:
+        return None, {"category": "empty", "reason": "Describe your issue before submitting."}
+    verdict = moderation.check_message(text)
+    if not verdict.ok:
+        return None, {"category": verdict.category, "reason": verdict.reason}
+
+    conv = Conversation.objects.create(kind=Conversation.KIND_SUPPORT, title=subject[:200])
+    requester = _attach_participant(conv, kind, obj)
+    ticket = SupportTicket.objects.create(
+        conversation=conv,
+        requester_kind=kind,
+        requester_learner=obj if kind == Participant.KIND_LEARNER else None,
+        requester_teacher=obj if kind == Participant.KIND_TEACHER else None,
+        subject=subject[:200],
+        category=category,
+    )
+    post_message(conv, requester, text)
+    return ticket, None
+
+
+def serialize_ticket(ticket):
+    last = (
+        ticket.conversation.messages.filter(deleted_at__isnull=True)
+        .order_by("-created_at").select_related("sender").first()
+    )
+    if ticket.requester_kind == Participant.KIND_LEARNER and ticket.requester_learner:
+        requester_name = ticket.requester_learner.display_name
+    elif ticket.requester_kind == Participant.KIND_TEACHER and ticket.requester_teacher:
+        requester_name = teacher_display_name(ticket.requester_teacher)
+    else:
+        requester_name = "Unknown"
+    requester_identity = identity_key_for_ids(
+        ticket.requester_kind,
+        ticket.requester_learner_id if ticket.requester_kind == Participant.KIND_LEARNER else ticket.requester_teacher_id,
+    )
+    return {
+        "id": str(ticket.id),
+        "conversation_id": str(ticket.conversation_id),
+        "subject": ticket.subject,
+        "category": ticket.category,
+        "status": ticket.status,
+        "requester_name": requester_name,
+        # Lets a requester-side UI (student/teacher SupportView) render
+        # "mine" vs "staff" without needing its own viewer-identity plumbed
+        # through — every message NOT from this identity is a staff reply.
+        "requester_identity": requester_identity,
+        "assignee": (
+            (ticket.assignee.get_full_name() or ticket.assignee.username)
+            if ticket.assignee else None
+        ),
+        "assignee_id": str(ticket.assignee_id) if ticket.assignee_id else None,
+        "created_at": ticket.created_at.isoformat(),
+        "updated_at": ticket.updated_at.isoformat(),
+        "closed_at": ticket.closed_at.isoformat() if ticket.closed_at else None,
+        "last_message": serialize_message(last) if last else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Admin platform broadcast  (Stage D · CC-023)
+# ---------------------------------------------------------------------------
+
+def send_admin_broadcast(audience, title, body, link_url, actor):
+    """A platform-wide blast is a pure notifications.services.notify_many()
+    fanout, NOT a Conversation — unlike the per-course Announcements feature
+    (ensure_course_announcements() above), "all students" has no single
+    context to hang a BROADCAST room off, and creating one Participant row
+    per recipient for a one-off announcement would be a lot of write
+    amplification for something nobody replies within anyway. Returns the
+    recipient count."""
+    from django.contrib.auth import get_user_model
+    from notifications.services import notify_many
+
+    User = get_user_model()
+    qs = User.objects.filter(is_active=True)
+    if audience == "all_students":
+        qs = qs.filter(learner_profiles__isnull=False).distinct()
+    elif audience == "all_teachers":
+        qs = qs.filter(teacher_profile__isnull=False)
+    # audience == "all" (or anything unrecognized) → every active user.
+
+    users = list(qs)
+    notify_many(
+        users,
+        verb="announcement.posted",
+        title=title,
+        body=body,
+        actor=actor,
+        link_url=link_url or "",
+    )
+    return len(users)
+
+
+# ---------------------------------------------------------------------------
+# Course Hub composition  (Stage C · CC-013/014/016)
+# ---------------------------------------------------------------------------
+# The data for Resources and Assignments already exists (materials.StudyMaterial,
+# assignments.Assignment) — this is purely a read-side composition over it, the
+# same lazy-import-and-never-raise discipline learner_in_course() etc. above
+# already use for cross-app lookups.
+
+def course_resources(course_id):
+    try:
+        from materials.models import StudyMaterial
+        items = (
+            StudyMaterial.objects
+            .filter(chapter__subject__course_id=course_id)
+            .select_related("chapter")
+            .prefetch_related("files")
+            .order_by("-created_at")[:100]
+        )
+        out = []
+        for m in items:
+            files = [
+                {"id": str(f.id), "name": f.filename(), "url": (f.file.url if f.file else None)}
+                for f in m.files.all()
+            ]
+            out.append({
+                "id": str(m.id),
+                "title": m.title,
+                "chapter": m.chapter.title,
+                "created_at": m.created_at.isoformat(),
+                "files": files,
+            })
+        return out
+    except Exception:
+        logger.exception("chat.services: course_resources failed for course_id=%s", course_id)
+        return []
+
+
+def course_assignments_summary(course_id):
+    try:
+        from assignments.models import Assignment
+        items = (
+            Assignment.objects
+            .filter(chapter__subject__course_id=course_id)
+            .select_related("chapter")
+            .prefetch_related("files")
+            .order_by("-due_date")[:100]
+        )
+        out = []
+        for a in items:
+            files = [
+                {"id": str(f.id), "name": f.original_filename or "file",
+                 "url": (f.file.url if f.file else None)}
+                for f in a.files.all()
+            ]
+            out.append({
+                "id": str(a.id),
+                "title": a.title,
+                "chapter": a.chapter.title,
+                "due_date": a.due_date.isoformat() if a.due_date else None,
+                "is_expired": a.is_expired,
+                "files": files,
+            })
+        return out
+    except Exception:
+        logger.exception("chat.services: course_assignments_summary failed for course_id=%s", course_id)
+        return []
+
+
+def _course_badge(course_id):
+    """Best-effort {id, title} for a ROOM/BROADCAST's course context —
+    checks both the academy `courses` app and the `skills` marketplace,
+    since a course room's context_id can come from either (course_room_track()
+    above does the identical double-check for the same reason)."""
+    if not course_id:
+        return None
+    try:
+        from courses.models import Course
+        c = Course.objects.filter(id=course_id).only("id", "title").first()
+        if c:
+            return {"id": str(c.id), "title": c.title}
+    except Exception:
+        pass
+    try:
+        from skills.course_models import SkillCourse
+        c = SkillCourse.objects.filter(id=course_id).first()
+        if c:
+            return {"id": str(c.id), "title": getattr(c, "title", "") or "Course"}
+    except Exception:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Directory  (people you can start a chat with — CC-002/018)
+# ---------------------------------------------------------------------------
+
+def teacher_display_name(tp):
+    """Mirror ExpertProfile/Participant naming so the directory matches the
+    rest of the app: prefer the teacher's SELF learner-profile name, then
+    username/email. Never raises."""
+    try:
+        u = tp.user
+        lp = u.default_learner_profile()
+        if lp:
+            name = f"{(lp.first_name or '').strip()} {(lp.last_name or '').strip()}".strip()
+            if name:
+                return name
+            if getattr(lp, "full_name", ""):
+                return lp.full_name
+            if getattr(lp, "display_name", ""):
+                return lp.display_name
+        return u.username or u.email
+    except Exception:
+        return "Teacher"
+
+
+def role_label(roles):
+    if "faculty" in roles and "guest" in roles:
+        return "Faculty · Guest expert"
+    if "guest" in roles:
+        return "Guest expert"
+    if "faculty" in roles:
+        return "Faculty"
+    if "staff" in roles:
+        return "Support Team"
+    return "Teacher"
+
+
+def directory_entries(kind, obj, q=""):
+    """The "start a new chat" people directory — listed guest experts +
+    approved faculty teachers, deduped and role-merged. Factored out of
+    chat/views.py's DirectoryView (unchanged behaviour) so
+    GlobalSearchView's "people" results can share it instead of
+    reimplementing the same ~60 lines."""
+    q = (q or "").strip().lower()
+    entries = {}
+
+    try:
+        from skills.models import ExpertProfile
+        experts = (
+            ExpertProfile.objects
+            .filter(is_listed=True)
+            .select_related("teacher_profile", "teacher_profile__user")
+        )
+        for ep in experts:
+            tp = ep.teacher_profile
+            if not tp:
+                continue
+            roles = _teacher_roles(tp)
+            avatar = None
+            try:
+                if ep.photo:
+                    avatar = ep.photo.url
+                elif tp.photo:
+                    avatar = tp.photo.url
+            except Exception:
+                avatar = None
+            entries[str(tp.id)] = {
+                "target_kind": Participant.KIND_TEACHER,
+                "target_id": str(tp.id),
+                "name": teacher_display_name(tp),
+                "roles": roles,
+                "role_label": role_label(roles),
+                "subtitle": (ep.headline or role_label(roles)),
+                "avatar": avatar,
+            }
+    except Exception:
+        pass
+
+    try:
+        faculty = (
+            TeacherProfile.objects
+            .filter(academy_status=TeacherProfile.TRACK_APPROVED)
+            .select_related("user")
+        )
+        for tp in faculty:
+            key = str(tp.id)
+            if key in entries:
+                if "faculty" not in entries[key]["roles"]:
+                    entries[key]["roles"].append("faculty")
+                    entries[key]["role_label"] = role_label(entries[key]["roles"])
+                continue
+            roles = _teacher_roles(tp)
+            avatar = None
+            try:
+                if tp.photo:
+                    avatar = tp.photo.url
+            except Exception:
+                avatar = None
+            entries[key] = {
+                "target_kind": Participant.KIND_TEACHER,
+                "target_id": key,
+                "name": teacher_display_name(tp),
+                "roles": roles,
+                "role_label": role_label(roles),
+                "subtitle": role_label(roles),
+                "avatar": avatar,
+            }
+    except Exception:
+        pass
+
+    if kind == Participant.KIND_TEACHER:
+        entries.pop(str(getattr(obj, "id", "")), None)
+
+    out = list(entries.values())
+    if q:
+        out = [e for e in out if q in e["name"].lower() or q in (e["subtitle"] or "").lower()]
+    out.sort(key=lambda e: e["name"].lower())
+    return out
+
+
+def build_profile(kind, obj_id):
+    """CC-019 User Profile. Deliberately asymmetric with privacy in mind,
+    matching directory_entries()'s existing stance ("we only surface the
+    public-facing teacher identities"): a TEACHER profile is rich (bio,
+    headline, photo, the courses/skills they teach) since that's already
+    public-facing marketing material elsewhere in the product; a LEARNER
+    profile is name/avatar/roles only — a classmate should be identifiable
+    in a room, not browsable. Returns None if the target doesn't exist.
+    """
+    if kind == Participant.KIND_TEACHER:
+        tp = TeacherProfile.objects.filter(id=obj_id).select_related("user").first()
+        if not tp:
+            return None
+        roles = _teacher_roles(tp)
+        bio, headline, photo = "", "", None
+        try:
+            if tp.photo:
+                photo = tp.photo.url
+        except Exception:
+            pass
+        try:
+            ep = getattr(tp, "expert_profile", None)
+            if ep:
+                headline = ep.headline or headline
+                bio = ep.bio or bio
+                if not photo and ep.photo:
+                    photo = ep.photo.url
+        except Exception:
+            pass
+        if not bio:
+            bio = getattr(tp, "bio", "") or ""
+        courses = []
+        try:
+            from courses.models import SubjectTeacher
+            courses = list(
+                SubjectTeacher.objects.filter(teacher=tp.user)
+                .select_related("subject", "subject__course")
+                .values_list("subject__course__title", flat=True)
+                .distinct()
+            )
+        except Exception:
+            pass
+        return {
+            "kind": "TEACHER",
+            "id": str(tp.id),
+            "name": teacher_display_name(tp),
+            "avatar": photo,
+            "roles": roles,
+            "role_label": role_label(roles),
+            "headline": headline,
+            "bio": bio,
+            "courses": [c for c in courses if c],
+        }
+    if kind == Participant.KIND_LEARNER:
+        lp = LearnerProfile.objects.filter(id=obj_id, is_active=True).first()
+        if not lp:
+            return None
+        return {
+            "kind": "LEARNER", "id": str(lp.id), "name": lp.display_name,
+            "avatar": lp.avatar_value(), "roles": _learner_roles(lp),
+            "role_label": "Student", "headline": "", "bio": "", "courses": [],
+        }
+    return None
+
+
+def serialize_report(report):
+    return {
+        "id": str(report.id),
+        "conversation_id": str(report.conversation_id),
+        "message_id": str(report.message_id) if report.message_id else None,
+        "message_preview": (report.message.body[:200] if (report.message and not report.message.deleted_at) else None),
+        "reporter_name": (report.reporter.display_name() if report.reporter else "Unknown"),
+        "target_identity": report.target_identity,
+        "reason": report.reason,
+        "detail": report.detail,
+        "status": report.status,
+        "resolution_note": report.resolution_note,
+        "resolved_by": (
+            (report.resolved_by.get_full_name() or report.resolved_by.username)
+            if report.resolved_by else None
+        ),
+        "created_at": report.created_at.isoformat(),
+        "resolved_at": report.resolved_at.isoformat() if report.resolved_at else None,
+    }
+
+
 def _participant_obj_id(p):
-    return p.learner_profile_id if p.kind == Participant.KIND_LEARNER else p.teacher_profile_id
+    if p.kind == Participant.KIND_LEARNER:
+        return p.learner_profile_id
+    if p.kind == Participant.KIND_TEACHER:
+        return p.teacher_profile_id
+    return p.staff_user_id
 
 
 # ---------------------------------------------------------------------------
@@ -702,12 +1419,16 @@ def _participant_obj_id(p):
 # ---------------------------------------------------------------------------
 
 def serialize_message(msg):
-    return {
+    deleted = msg.deleted_at is not None
+    data = {
         "id": str(msg.id),
         "conversation_id": str(msg.conversation_id),
-        "body": msg.body,
+        "body": "" if deleted else msg.body,
+        "message_type": msg.message_type,
         "client_id": msg.client_id,
         "created_at": msg.created_at.isoformat(),
+        "deleted": deleted,
+        "deleted_reason": msg.deleted_reason if deleted else "",
         "sender": {
             "id": str(msg.sender_id) if msg.sender_id else None,
             "name": msg.sender.display_name() if msg.sender else "Unknown",
@@ -715,10 +1436,46 @@ def serialize_message(msg):
             "identity": msg.sender.identity_key() if msg.sender else None,
         },
     }
+    if deleted:
+        # A deleted message is a tombstone only — no reply preview,
+        # attachment, or reactions leak through it (CC-006's own note on
+        # "delete" vs "hide" applies at the message level too: the row
+        # survives for moderation history, but nothing it carried renders).
+        data["reply_to"] = None
+        data["attachment"] = None
+        data["reactions"] = []
+        return data
+
+    if msg.reply_to_id:
+        rt = msg.reply_to
+        data["reply_to"] = None if rt is None else {
+            "id": str(rt.id),
+            "body_preview": ("Message deleted" if rt.deleted_at else rt.body[:140]),
+            "sender_name": rt.sender.display_name() if rt.sender else "Unknown",
+        }
+    else:
+        data["reply_to"] = None
+
+    # Reverse OneToOne — Django's RelatedObjectDoesNotExist subclasses
+    # AttributeError specifically so getattr(..., None) works here without
+    # a try/except.
+    attachment = getattr(msg, "attachment", None)
+    data["attachment"] = None if attachment is None else {
+        "id": str(attachment.id),
+        "url": attachment.file.url if attachment.file else None,
+        "name": attachment.filename(),
+        "size": attachment.size_bytes,
+        "content_type": attachment.content_type,
+        "kind": attachment.kind,
+        "expires_at": attachment.expires_at.isoformat() if attachment.expires_at else None,
+    }
+
+    data["reactions"] = _reaction_summary(msg) if msg.pk else []
+    return data
 
 
-def _participant_dict(p):
-    return {
+def _participant_dict(p, include_presence=False, include_last_read=False):
+    d = {
         "id": str(p.id),
         "name": p.display_name(),
         "avatar": p.avatar(),
@@ -726,10 +1483,29 @@ def _participant_dict(p):
         "kind": p.kind,
         "roles": participant_roles(p),
     }
+    if include_presence or include_last_read:
+        pref = CommPreference.for_identity(p.identity_key())
+        if include_presence:
+            if pref.show_online_status:
+                d["online"] = redis_utils.is_online(p.identity_key())
+                d["last_seen"] = redis_utils.get_last_seen(p.identity_key())
+            else:
+                d["online"] = None
+                d["last_seen"] = None
+        if include_last_read:
+            d["last_read_at"] = (
+                p.last_read_at.isoformat()
+                if (pref.show_read_receipts and p.last_read_at) else None
+            )
+    return d
 
 
 def serialize_conversation(conv, me_participant=None):
-    parts = list(conv.participants.all())
+    parts = list(
+        conv.participants
+        .select_related("learner_profile", "teacher_profile", "staff_user")
+        .all()
+    )
     others = [p for p in parts if not (me_participant and p.id == me_participant.id)]
 
     unread = 0
@@ -739,43 +1515,90 @@ def serialize_conversation(conv, me_participant=None):
             rebuild_fn=lambda: _unread_from_db(conv, me_participant),
         )
 
-    last = conv.messages.last()
+    last = (
+        conv.messages.filter(deleted_at__isnull=True)
+        .order_by("-created_at")
+        .select_related("sender", "reply_to", "reply_to__sender", "attachment")
+        .first()
+    )
 
-    # Counterpart + blocking state only apply to DIRECT threads.
+    # Counterpart + blocking state + category all key off the DIRECT
+    # thread's single counterpart; ROOM/BROADCAST/SUPPORT derive category
+    # from the conversation's own kind instead (see CC-004's category
+    # taxonomy — this is the "cheap fix, big UX unlock" the gap analysis
+    # flagged: teacher_type/roles already existed, the serializer just
+    # didn't expose a single category field the frontend could switch on).
     counterpart = None
     blocking = {"i_blocked": False, "blocked_me": False}
     can_block_flag = False
-    if conv.kind == Conversation.KIND_DIRECT and me_participant and others:
+    category = "other"
+    course_badge = None
+
+    if conv.kind == Conversation.KIND_ROOM and conv.context_type == "course":
+        category = "courses"
+        course_badge = _course_badge(conv.context_id)
+    elif conv.kind == Conversation.KIND_BROADCAST:
+        category = "announcements"
+        if conv.context_type == "course":
+            course_badge = _course_badge(conv.context_id)
+    elif conv.kind == Conversation.KIND_SUPPORT:
+        category = "support"
+    elif conv.kind == Conversation.KIND_DIRECT and others:
         cp = others[0]
-        counterpart = _participant_dict(cp)
-        a_kind, a_id = me_participant.kind, _participant_obj_id(me_participant)
-        b_kind, b_id = cp.kind, _participant_obj_id(cp)
-        i_blocked, blocked_me = block_state(a_kind, a_id, b_kind, b_id)
-        blocking = {"i_blocked": i_blocked, "blocked_me": blocked_me}
-        can_block_flag = can_block(me_participant.kind, cp.kind)
+        counterpart = _participant_dict(cp, include_presence=True, include_last_read=True)
+        if me_participant:
+            a_kind, a_id = me_participant.kind, _participant_obj_id(me_participant)
+            b_kind, b_id = cp.kind, _participant_obj_id(cp)
+            i_blocked, blocked_me = block_state(a_kind, a_id, b_kind, b_id)
+            blocking = {"i_blocked": i_blocked, "blocked_me": blocked_me}
+            can_block_flag = can_block(me_participant.kind, cp.kind)
+        if cp.kind == Participant.KIND_TEACHER:
+            roles = participant_roles(cp)
+            category = "guest_experts" if ("guest" in roles and "faculty" not in roles) else "faculty"
+        elif cp.kind == Participant.KIND_STAFF:
+            category = "support"
+        else:
+            category = "students"
 
     is_course_room = conv.kind == Conversation.KIND_ROOM and conv.context_type == "course"
     track = course_room_track(conv.course_id) if is_course_room else None
 
+    me_dict = None
+    pinned = False
+    archived = False
+    muted_until_iso = None
+    can_post_flag = False
+    if me_participant:
+        me_dict = {
+            "id": str(me_participant.id),
+            "identity": me_participant.identity_key(),
+            "kind": me_participant.kind,
+            "roles": participant_roles(me_participant),
+        }
+        pinned = bool(me_participant.pinned)
+        archived = me_participant.archived_at is not None
+        if me_participant.muted_until and me_participant.muted_until > timezone.now():
+            muted_until_iso = me_participant.muted_until.isoformat()
+        can_post_flag = policy.can_post(conv, me_participant)[0]
+
     return {
         "id": str(conv.id),
         "kind": conv.kind,
+        "category": category,
         "track": track,
         "title": conv.title or (others[0].display_name() if others else ""),
         "course_id": str(conv.course_id) if conv.course_id else None,
+        "course": course_badge,
+        "participant_count": len(parts),
         "participants": [_participant_dict(p) for p in parts],
-        "me": (
-            {
-                "id": str(me_participant.id),
-                "identity": me_participant.identity_key(),
-                "kind": me_participant.kind,
-                "roles": participant_roles(me_participant),
-            }
-            if me_participant else None
-        ),
+        "me": me_dict,
+        "pinned": pinned,
+        "archived": archived,
+        "muted_until": muted_until_iso,
         "counterpart": counterpart,
         "blocking": blocking,
         "can_block": can_block_flag,
+        "can_post": can_post_flag,
         "last_message": serialize_message(last) if last else None,
         "last_message_at": conv.last_message_at.isoformat() if conv.last_message_at else None,
         "unread": unread,

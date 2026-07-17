@@ -352,6 +352,7 @@ class CreateAppointmentView(APIView):
             )
 
         label = _appointment_label(appt)
+        sms_when = timezone.localtime(appt.scheduled_at).strftime("%I:%M %p, %d %b")
         notify(
             recipient=counselor.user,
             actor=request.user,
@@ -362,6 +363,7 @@ class CreateAppointmentView(APIView):
             payload={"appointment_id": appt.id},
             audience_role="COUNSELOR",
             email=True,
+            sms_vars={"title": f"with {lp.display_name}"[:30], "when": sms_when},
         )
         notify(
             recipient=request.user,
@@ -372,6 +374,8 @@ class CreateAppointmentView(APIView):
             payload={"appointment_id": appt.id},
             audience_role="STUDENT",
             email=True,
+            sms_vars={"title": f"with {counselor.display_name}"[:30], "when": sms_when},
+            learner_profile=lp,
         )
 
         return Response(
@@ -435,6 +439,7 @@ class CancelAppointmentView(APIView):
         appt.save(update_fields=["status", "cancel_reason", "cancelled_by"])
 
         label = _appointment_label(appt)
+        sms_when = timezone.localtime(appt.scheduled_at).strftime("%I:%M %p, %d %b")
         if is_counselor:
             notify(
                 recipient=appt.booked_by,
@@ -447,6 +452,9 @@ class CancelAppointmentView(APIView):
                 payload={"appointment_id": appt.id},
                 audience_role="STUDENT",
                 email=True,
+                sms_vars={"title": f"with {appt.counselor.display_name}"[:30],
+                          "when": sms_when},
+                learner_profile=appt.learner_profile,
             )
         else:
             notify(
@@ -458,6 +466,8 @@ class CancelAppointmentView(APIView):
                 link_url="/counselor/appointments",
                 payload={"appointment_id": appt.id},
                 audience_role="COUNSELOR",
+                sms_vars={"title": f"with {appt.learner_profile.display_name}"[:30],
+                          "when": sms_when},
             )
         return Response({"detail": "Appointment cancelled.", "status": appt.status})
 

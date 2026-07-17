@@ -36,7 +36,8 @@ class QuestionCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Question
-        fields = ["id", "text", "marks", "order", "choices", "explanation"]
+        fields = ["id", "text", "marks", "order", "choices",
+                  "explanation", "topic", "difficulty"]
         read_only_fields = ["id"]
 
     def validate(self, attrs):
@@ -62,11 +63,33 @@ class QuestionCreateSerializer(serializers.ModelSerializer):
         return question
 
 
+class BulkQuestionCreateSerializer(serializers.Serializer):
+    """Accepts a list of questions (same shape as QuestionCreateSerializer)
+    so the bulk-paste importer and the "add from bank" drawer can create
+    many questions on a draft quiz in a single request."""
+    questions = QuestionCreateSerializer(many=True)
+
+    @transaction.atomic
+    def create(self, validated_data):
+        quiz = self.context["quiz"]
+        created = []
+        start_order = quiz.questions.count()
+        for i, q_data in enumerate(validated_data["questions"]):
+            choices_data = q_data.pop("choices")
+            q_data.setdefault("order", start_order + i)
+            question = Question.objects.create(quiz=quiz, **q_data)
+            Choice.objects.bulk_create([
+                Choice(question=question, **choice) for choice in choices_data
+            ])
+            created.append(question)
+        return created
+
+
 class QuizCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quiz
         fields = ["id", "subject", "title",
-                  "description", "time_limit_minutes"]
+                  "description", "time_limit_minutes", "quiz_type"]
         read_only_fields = ["id"]
 
     def validate_subject(self, subject):
@@ -100,7 +123,7 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
         fields = [
             "id", "title", "subject_name", "course_title", "teacher_name",
             "created_at", "total_marks", "questions_count", "time_limit_minutes",
-            "status", "score", "is_published", "attempts_count",
+            "status", "score", "is_published", "attempts_count", "quiz_type",
         ]
 
     def get_status(self, obj):
@@ -191,11 +214,19 @@ class QuizSubmitSerializer(serializers.Serializer):
             if choice.is_correct:
                 score += question.marks
 
+            time_spent = item.get("time_spent") or item.get("time_spent_seconds") or 0
+            try:
+                time_spent = max(0, int(time_spent))
+            except (TypeError, ValueError):
+                time_spent = 0
+
             StudentAnswer.objects.create(
                 attempt=attempt,
                 question=question,
                 selected_choice=choice,
                 is_correct=choice.is_correct,
+                time_spent_seconds=time_spent,
+                marked_for_review=bool(item.get("marked_for_review", False)),
             )
 
         attempt.score = score
@@ -210,7 +241,7 @@ class QuestionPublicSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Question
-        fields = ["id", "text", "marks", "order", "choices"]
+        fields = ["id", "text", "marks", "order", "choices", "topic", "difficulty"]
         # NOTE: explanation is intentionally omitted from the public serializer
         # so students don't see it before submitting
 
@@ -221,7 +252,8 @@ class QuestionTeacherSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Question
-        fields = ["id", "text", "marks", "order", "choices", "explanation"]
+        fields = ["id", "text", "marks", "order", "choices",
+                  "explanation", "topic", "difficulty"]
 
 
 class QuizDetailSerializer(serializers.ModelSerializer):
@@ -238,6 +270,7 @@ class QuizDetailSerializer(serializers.ModelSerializer):
         fields = [
             "id", "title", "description", "subject_name", "course_title",
             "teacher_name", "created_at", "time_limit_minutes", "questions",
+            "quiz_type",
         ]
 
     def get_questions(self, obj):
@@ -256,13 +289,16 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
     teacher_name = serializers.CharField(
         source="created_by.email", read_only=True)
     questions = serializers.SerializerMethodField()
+    is_editable = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Quiz
         fields = [
             "id", "title", "description", "subject_name", "course_title",
             "teacher_name", "created_at", "time_limit_minutes",
-            "is_published", "questions",
+            "is_published", "questions", "quiz_type", "review_status",
+            "review_note", "reviewed_at", "submitted_for_review_at",
+            "is_editable",
         ]
 
     def get_questions(self, obj):
@@ -278,6 +314,32 @@ class QuestionResultSerializer(serializers.Serializer):
     is_correct = serializers.BooleanField()
     explanation = serializers.CharField(
         allow_blank=True, default="No explanation")
+    topic = serializers.CharField(allow_blank=True, default="")
+    difficulty = serializers.CharField(default="medium")
+    time_spent_seconds = serializers.IntegerField(default=0)
+    marked_for_review = serializers.BooleanField(default=False)
+
+
+class TopicBreakdownSerializer(serializers.Serializer):
+    topic = serializers.CharField()
+    correct = serializers.IntegerField()
+    total = serializers.IntegerField()
+    pct = serializers.FloatField()
+
+
+class DifficultyBreakdownSerializer(serializers.Serializer):
+    difficulty = serializers.CharField()
+    correct = serializers.IntegerField()
+    total = serializers.IntegerField()
+    pct = serializers.FloatField()
+
+
+class ScoreTrendPointSerializer(serializers.Serializer):
+    quiz_id = serializers.UUIDField()
+    quiz_title = serializers.CharField()
+    submitted_at = serializers.DateTimeField()
+    pct = serializers.FloatField()
+    class_avg_pct = serializers.FloatField()
 
 
 class QuizResultSerializer(serializers.Serializer):
@@ -285,11 +347,21 @@ class QuizResultSerializer(serializers.Serializer):
     title = serializers.CharField()
     subject_name = serializers.CharField()
     teacher_name = serializers.CharField()
+    quiz_type = serializers.CharField(default="mock")
     total_marks = serializers.IntegerField()
     score = serializers.IntegerField()
     submitted_at = serializers.DateTimeField()
     attempt_number = serializers.IntegerField(default=1)
     questions = QuestionResultSerializer(many=True)
+
+    # ── analytics (results + analytics screen) ──────────────────────────
+    class_avg_percent = serializers.FloatField(default=0)
+    percentile = serializers.FloatField(default=0)
+    topic_breakdown = TopicBreakdownSerializer(many=True, default=list)
+    difficulty_breakdown = DifficultyBreakdownSerializer(many=True, default=list)
+    score_trend = ScoreTrendPointSerializer(many=True, default=list)
+    wrong_question_ids = serializers.ListField(
+        child=serializers.UUIDField(), default=list)
 
 
 class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
@@ -326,7 +398,8 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
             "id", "title", "created_at", "subject_name", "course_title",
             "is_published", "questions_count",
             "total_attempts", "submission_rate", "average_score",
-            "highest_score", "lowest_score",
+            "highest_score", "lowest_score", "quiz_type", "review_status",
+            "review_note",
         ]
 
 
@@ -339,3 +412,91 @@ class TeacherQuizStudentSummarySerializer(serializers.Serializer):
     average_score = serializers.FloatField()
     total_marks = serializers.IntegerField()
     attempts_count = serializers.IntegerField()
+
+
+# =====================================================
+# QUESTION BANK (teacher: "mine" / "school" reusable questions)
+# =====================================================
+
+class BankQuestionSerializer(serializers.ModelSerializer):
+    """A question surfaced in the teacher question bank. The bank is not a
+    separate table — it's a filtered view over questions that already
+    belong to a *finalized* (admin-approved) quiz, so what you reuse has
+    already been vetted."""
+    choices = ChoiceAdminSerializer(many=True, read_only=True)
+    quiz_id = serializers.UUIDField(source="quiz.id", read_only=True)
+    quiz_title = serializers.CharField(source="quiz.title", read_only=True)
+    subject_id = serializers.UUIDField(source="quiz.subject.id", read_only=True)
+    subject_name = serializers.CharField(source="quiz.subject.name", read_only=True)
+    author_name = serializers.CharField(
+        source="quiz.created_by.email", read_only=True)
+    author_id = serializers.UUIDField(source="quiz.created_by.id", read_only=True)
+
+    class Meta:
+        model = Question
+        fields = [
+            "id", "text", "marks", "explanation", "topic", "difficulty",
+            "choices", "quiz_id", "quiz_title", "subject_id", "subject_name",
+            "author_name", "author_id", "created_at",
+        ]
+
+
+# =====================================================
+# ADMIN — academy quiz verification
+# =====================================================
+
+class AdminQuizListSerializer(serializers.ModelSerializer):
+    subject_name = serializers.CharField(source="subject.name", read_only=True)
+    course_title = serializers.CharField(
+        source="subject.course.title", read_only=True)
+    teacher_name = serializers.CharField(
+        source="created_by.email", read_only=True)
+    questions_count = serializers.IntegerField(read_only=True)
+    attempts_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Quiz
+        fields = [
+            "id", "title", "subject_name", "course_title", "teacher_name",
+            "quiz_type", "review_status", "is_published", "questions_count",
+            "attempts_count", "total_marks", "created_at",
+            "submitted_for_review_at", "reviewed_at",
+        ]
+
+
+class AdminQuizDetailSerializer(serializers.ModelSerializer):
+    subject_name = serializers.CharField(source="subject.name", read_only=True)
+    course_title = serializers.CharField(
+        source="subject.course.title", read_only=True)
+    teacher_name = serializers.CharField(
+        source="created_by.email", read_only=True)
+    reviewed_by_name = serializers.CharField(
+        source="reviewed_by.email", read_only=True, default=None)
+    questions = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Quiz
+        fields = [
+            "id", "title", "description", "subject_name", "course_title",
+            "teacher_name", "quiz_type", "review_status", "review_note",
+            "is_published", "total_marks", "time_limit_minutes",
+            "created_at", "submitted_for_review_at", "reviewed_at",
+            "reviewed_by_name", "questions",
+        ]
+
+    def get_questions(self, obj):
+        questions = obj.questions.all().order_by("order")
+        return QuestionTeacherSerializer(questions, many=True).data
+
+
+class AdminQuizReviewActionSerializer(serializers.Serializer):
+    ACTION_APPROVE = "approve"
+    ACTION_REJECT = "reject"
+
+    action = serializers.ChoiceField(choices=[ACTION_APPROVE, ACTION_REJECT])
+    reason = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate(self, attrs):
+        if attrs["action"] == self.ACTION_REJECT and not attrs.get("reason", "").strip():
+            raise ValidationError("A reason is required when rejecting a quiz.")
+        return attrs

@@ -259,3 +259,58 @@ class DashboardActivitySerializer(serializers.ModelSerializer):
     def get_subject(self, obj):
         # Plain string for inbox subtitle line
         return obj.subject_name or ""
+
+
+class DashboardGradingItemSerializer(serializers.Serializer):
+    """
+    A single item in the teacher's grading queue: an assignment submission
+    awaiting review. Real rows (assignments track no graded flag, so the
+    queue surfaces actual submissions on the teacher's assignments, newest
+    first) — the "Grade" button deep-links to the submissions view.
+    """
+    id            = serializers.SerializerMethodField()
+    student       = serializers.SerializerMethodField()
+    title         = serializers.SerializerMethodField()
+    subject       = serializers.SerializerMethodField()
+    subject_id    = serializers.SerializerMethodField()
+    assignment_id = serializers.SerializerMethodField()
+    submitted_at  = serializers.DateTimeField()
+
+    def get_id(self, obj):
+        return str(obj.id)
+
+    def get_student(self, obj):
+        u = getattr(obj, "student", None)
+        if not u:
+            return "Student"
+        full = (u.get_full_name() or "").strip() if hasattr(u, "get_full_name") else ""
+        if full:
+            return full
+        if getattr(u, "username", ""):
+            return u.username
+        email = getattr(u, "email", "") or ""
+        return email.split("@")[0] if email else "Student"
+
+    def get_title(self, obj):
+        try:
+            return obj.assignment.title
+        except Exception:
+            return ""
+
+    def get_subject(self, obj):
+        try:
+            return obj.assignment.chapter.subject.name
+        except Exception:
+            return ""
+
+    def get_subject_id(self, obj):
+        try:
+            return str(obj.assignment.chapter.subject_id)
+        except Exception:
+            return None
+
+    def get_assignment_id(self, obj):
+        try:
+            return str(obj.assignment_id)
+        except Exception:
+            return None

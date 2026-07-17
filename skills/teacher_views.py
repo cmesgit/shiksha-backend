@@ -30,6 +30,7 @@ from .models import ExpertProfile, SkillSession
 from .course_models import SkillCourseEnrollment
 from .review_models import ExpertReview
 from . import profile_ops
+from .notifications import push_skill_bell
 
 
 def _get_expert(user):
@@ -344,11 +345,17 @@ class TeacherDeclineSessionView(APIView):
             raise ValidationError(
                 f"Cannot decline a session with status '{sess.status}'."
             )
+        if sess.status == SkillSession.STATUS_CONFIRMED and sess.started_at:
+            raise ValidationError(
+                "This session is already live — use 'Mark done' once it's "
+                "finished, not decline."
+            )
         sess.status = SkillSession.STATUS_CANCELLED
         sess.save(update_fields=["status", "updated_at"])
         # Release the reserved availability slot back to the expert's grid.
         if sess.slot_key:
             free_slot(ep, sess.slot_key)
+        push_skill_bell(sess, "declined")
         return Response({"ok": True, "status": sess.status})
 
 
