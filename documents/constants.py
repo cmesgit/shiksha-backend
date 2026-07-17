@@ -46,12 +46,12 @@ TREND_CHIPS = [
 # Default category tiles seeded on first migration (slug, name, icon, color,
 # blurb). Mirrors the delivered Explore.html "Browse by category" grid.
 DEFAULT_CATEGORIES = [
-    ("research-papers", "Research Papers", "📄", "#2f6bd8", "Peer-reviewed studies & journals"),
-    ("books", "Books", "📚", "#125027", "Textbooks & reference reads"),
+    ("research-papers", "Research Papers", "📄", "#125027", "Peer-reviewed studies & journals"),
+    ("books", "Books", "📚", "#004a33", "Textbooks & reference reads"),
     ("articles", "Articles", "📰", "#0f8f7e", "Explainers & short reads"),
-    ("notes", "Notes", "📝", "#e07900", "Handwritten & typed notes"),
+    ("notes", "Notes", "📝", "#2f6bd8", "Handwritten & typed notes"),
     ("study-materials", "Study Materials", "📘", "#1b9c85", "Guides, summaries & kits"),
-    ("presentations", "Presentations", "📊", "#6b58d3", "Slide decks & seminars"),
-    ("assignments", "Assignments", "✍️", "#004a33", "Solved & sample submissions"),
+    ("presentations", "Presentations", "📊", "#ff8f01", "Slide decks & seminars"),
+    ("assignments", "Assignments", "✍️", "#6b58d3", "Solved & sample submissions"),
     ("question-papers", "Question Papers", "❓", "#c2410c", "Previous years & mock tests"),
 ]
