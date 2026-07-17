@@ -9,6 +9,9 @@ MATERIAL_MAX_FILE_SIZE_MB = int(os.getenv("MATERIAL_MAX_FILE_SIZE_MB", "50"))
 # exchanged in a live conversation, not a course's study-material library,
 # so its ceiling is deliberately much smaller than MATERIAL_MAX_FILE_SIZE_MB.
 CHAT_MAX_ATTACHMENT_MB = int(os.getenv("CHAT_MAX_ATTACHMENT_MB", "15"))
+# Temporary file sharing: a chat attachment auto-expires (soft-deletes) this
+# many days after upload — see chat.tasks.expire_old_attachments.
+CHAT_ATTACHMENT_EXPIRY_DAYS = int(os.getenv("CHAT_ATTACHMENT_EXPIRY_DAYS", "7"))
 # Forum question/post attachments — a forum upload is closer to a chat
 # attachment than a course material, so it shares the smaller ceiling.
 FORUM_MAX_ATTACHMENT_MB = int(os.getenv("FORUM_MAX_ATTACHMENT_MB", "15"))

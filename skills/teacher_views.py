@@ -30,6 +30,7 @@ from .models import ExpertProfile, SkillSession
 from .course_models import SkillCourseEnrollment
 from .review_models import ExpertReview
 from . import profile_ops
+from .notifications import push_skill_bell
 
 
 def _get_expert(user):
@@ -354,6 +355,7 @@ class TeacherDeclineSessionView(APIView):
         # Release the reserved availability slot back to the expert's grid.
         if sess.slot_key:
             free_slot(ep, sess.slot_key)
+        push_skill_bell(sess, "declined")
         return Response({"ok": True, "status": sess.status})
 
 

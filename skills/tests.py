@@ -199,3 +199,147 @@ class SkillSessionCancelDeclineTests(TestCase):
         self.assertEqual(r.status_code, 400)
         session.refresh_from_db()
         self.assertEqual(session.status, SkillSession.STATUS_CONFIRMED)
+
+    def test_decline_creates_a_bell_notification_for_the_student(self):
+        from activity.models import Activity
+
+        session = SkillSession.objects.create(
+            expert=self.expert, learner_profile=self.learner_profile,
+            contact_mode="session", slot_key="0-1",
+            status=SkillSession.STATUS_REQUESTED,
+        )
+        client = self.client_for(self.teacher_user)
+        r = client.post(f"/api/skill/teacher/sessions/{session.id}/decline/")
+        self.assertEqual(r.status_code, 200)
+
+        activity = Activity.objects.filter(
+            user=self.student_user, type=Activity.TYPE_SESSION, object_id=session.id,
+        ).first()
+        self.assertIsNotNone(activity)
+        self.assertEqual(activity.learner_profile_id, self.learner_profile.id)
+
+
+class SkillSessionRescheduleTests(TestCase):
+    """Covers the Phase-2 reschedule flow: expert proposes a new slot,
+    learner confirms or declines."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.teacher_role = Role.objects.create(name="TEACHER")
+        cls.student_role = Role.objects.create(name="STUDENT")
+
+        cls.teacher_user = User.objects.create_user(
+            username="expert3", email="expert3@test.com", password="testpass123",
+        )
+        UserRole.objects.create(
+            user=cls.teacher_user, role=cls.teacher_role, is_active=True, is_primary=True,
+        )
+        cls.teacher_profile = TeacherProfile.objects.create(
+            user=cls.teacher_user, teacher_type=TeacherProfile.TYPE_GUEST,
+        )
+        cls.expert = ExpertProfile.objects.create(
+            teacher_profile=cls.teacher_profile,
+            headline="Violin teacher",
+            is_listed=True,
+            availability_slots={"open": ["0-1", "1-2"], "booked": ["0-1"]},
+        )
+
+        cls.student_user = User.objects.create_user(
+            username="learner3", email="learner3@test.com", password="testpass123",
+        )
+        UserRole.objects.create(
+            user=cls.student_user, role=cls.student_role, is_active=True, is_primary=True,
+        )
+        cls.learner_profile = LearnerProfile.objects.create(
+            account=cls.student_user, display_name="Test Learner 3",
+            first_name="Test", last_name="Learner3", is_default=True,
+        )
+
+    def client_for(self, user, active_profile=None):
+        client = APIClient()
+        token = {"active_profile": str(active_profile.id)} if active_profile else None
+        client.force_authenticate(user=user, token=token)
+        return client
+
+    def make_session(self, **overrides):
+        defaults = dict(
+            expert=self.expert, learner_profile=self.learner_profile,
+            contact_mode="session", slot_key="0-1",
+            status=SkillSession.STATUS_CONFIRMED,
+        )
+        defaults.update(overrides)
+        return SkillSession.objects.create(**defaults)
+
+    def test_teacher_can_propose_a_reschedule(self):
+        session = self.make_session()
+        client = self.client_for(self.teacher_user)
+        r = client.post(
+            f"/api/skill/teacher/sessions/{session.id}/reschedule/",
+            {"slot_key": "1-2", "reason": "Traffic"},
+        )
+        self.assertEqual(r.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.status, SkillSession.STATUS_NEEDS_RECONFIRMATION)
+        self.assertEqual(session.proposed_slot_key, "1-2")
+        self.assertIsNotNone(session.proposed_scheduled_for)
+
+    def test_teacher_cannot_propose_a_slot_that_isnt_open(self):
+        session = self.make_session()
+        client = self.client_for(self.teacher_user)
+        r = client.post(
+            f"/api/skill/teacher/sessions/{session.id}/reschedule/",
+            {"slot_key": "5-5"},  # never marked open
+        )
+        self.assertEqual(r.status_code, 400)
+        session.refresh_from_db()
+        self.assertEqual(session.status, SkillSession.STATUS_CONFIRMED)
+
+    def test_teacher_cannot_reschedule_a_live_session(self):
+        from django.utils import timezone
+
+        session = self.make_session(started_at=timezone.now())
+        client = self.client_for(self.teacher_user)
+        r = client.post(
+            f"/api/skill/teacher/sessions/{session.id}/reschedule/",
+            {"slot_key": "1-2"},
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_student_confirm_reschedule_swaps_the_slot(self):
+        session = self.make_session(
+            status=SkillSession.STATUS_NEEDS_RECONFIRMATION,
+            proposed_slot_key="1-2",
+        )
+        client = self.client_for(self.student_user, active_profile=self.learner_profile)
+        r = client.post(f"/api/skill/sessions/{session.id}/confirm-reschedule/")
+        self.assertEqual(r.status_code, 200)
+
+        session.refresh_from_db()
+        self.assertEqual(session.status, SkillSession.STATUS_CONFIRMED)
+        self.assertEqual(session.slot_key, "1-2")
+        self.assertEqual(session.proposed_slot_key, "")
+
+        self.expert.refresh_from_db()
+        booked = self.expert.availability_slots.get("booked", [])
+        self.assertIn("1-2", booked)
+        self.assertNotIn("0-1", booked)
+
+    def test_student_decline_reschedule_cancels_and_frees_the_old_slot(self):
+        session = self.make_session(
+            status=SkillSession.STATUS_NEEDS_RECONFIRMATION,
+            proposed_slot_key="1-2",
+        )
+        client = self.client_for(self.student_user, active_profile=self.learner_profile)
+        r = client.post(f"/api/skill/sessions/{session.id}/decline-reschedule/")
+        self.assertEqual(r.status_code, 200)
+
+        session.refresh_from_db()
+        self.assertEqual(session.status, SkillSession.STATUS_CANCELLED)
+        self.expert.refresh_from_db()
+        self.assertNotIn("0-1", self.expert.availability_slots.get("booked", []))
+
+    def test_cannot_confirm_reschedule_when_not_awaiting_one(self):
+        session = self.make_session(status=SkillSession.STATUS_CONFIRMED)
+        client = self.client_for(self.student_user, active_profile=self.learner_profile)
+        r = client.post(f"/api/skill/sessions/{session.id}/confirm-reschedule/")
+        self.assertEqual(r.status_code, 400)

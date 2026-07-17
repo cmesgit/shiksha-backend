@@ -584,6 +584,10 @@ class MessageAttachment(models.Model):
     content_type = models.CharField(max_length=100, blank=True, default="")
     size_bytes = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+    # Temporary file sharing: set at upload time to now + CHAT_ATTACHMENT_EXPIRY_DAYS.
+    # A daily sweep (chat.tasks.expire_old_attachments) soft-deletes the
+    # message once this passes.
+    expires_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [models.Index(fields=["conversation", "created_at"])]

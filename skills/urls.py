@@ -48,6 +48,10 @@ from .views_intro_video import (
     SaveIntroVideoView, IntroVideoStatusView,
 )
 from .cancel_views import StudentCancelSessionView
+from .reschedule_views import (
+    TeacherRescheduleSessionView, StudentConfirmRescheduleView,
+    StudentDeclineRescheduleView,
+)
 
 urlpatterns = [
     # ── Payment mode (free / manual_upi / razorpay) ──────────────────────────
@@ -83,6 +87,8 @@ urlpatterns = [
     path("sessions/<uuid:session_id>/join/",         JoinSessionView.as_view()),
     path("sessions/<uuid:session_id>/review/",       SubmitReviewView.as_view()),
     path("sessions/<uuid:session_id>/cancel/",       StudentCancelSessionView.as_view()),
+    path("sessions/<uuid:session_id>/confirm-reschedule/", StudentConfirmRescheduleView.as_view()),
+    path("sessions/<uuid:session_id>/decline-reschedule/", StudentDeclineRescheduleView.as_view()),
     path("payments/create-order/",                   CreateOrderView.as_view()),
 
     # ── Teacher application + screening ──────────────────────────────────────
@@ -112,6 +118,7 @@ urlpatterns = [
     path("teacher/earnings/",                                TeacherEarningsView.as_view()),
     path("teacher/availability/",                            TeacherAvailabilityView.as_view()),
     path("teacher/sessions/<uuid:session_id>/decline/",      TeacherDeclineSessionView.as_view()),
+    path("teacher/sessions/<uuid:session_id>/reschedule/",   TeacherRescheduleSessionView.as_view()),
     path("teacher/profile/",                                 TeacherProfileUpdateView.as_view()),
     path("teacher/intro-video/create/",                      CreateIntroVideoSlotView.as_view()),
     path("teacher/intro-video/upload-url/",                  IntroVideoSignedUploadUrlView.as_view()),

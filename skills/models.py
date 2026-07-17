@@ -507,12 +507,14 @@ class SkillSession(models.Model):
     STATUS_REQUESTED = "requested"
     STATUS_PENDING_PAYMENT = "pending_payment"
     STATUS_CONFIRMED = "confirmed"
+    STATUS_NEEDS_RECONFIRMATION = "needs_reconfirmation"
     STATUS_COMPLETED = "completed"
     STATUS_CANCELLED = "cancelled"
     STATUS_CHOICES = [
         (STATUS_REQUESTED, "Requested"),
         (STATUS_PENDING_PAYMENT, "Pending payment"),
         (STATUS_CONFIRMED, "Confirmed"),
+        (STATUS_NEEDS_RECONFIRMATION, "Needs reconfirmation"),
         (STATUS_COMPLETED, "Completed"),
         (STATUS_CANCELLED, "Cancelled"),
     ]
@@ -555,6 +557,16 @@ class SkillSession(models.Model):
         max_length=16, blank=True,
         help_text="Reserved availability slot, e.g. '3-1' (day-slot index).",
     )
+
+    # ── Reschedule proposal (teacher proposes, learner confirms/declines) ──
+    # Mirrors sessions_app.PrivateSession's rescheduled_date/time, but this
+    # model books a slot_key against the expert's weekly grid rather than a
+    # separate date+time pair, so the proposal is a candidate slot_key +
+    # its derived scheduled_for, not two loose date/time fields.
+    proposed_slot_key = models.CharField(max_length=16, blank=True)
+    proposed_scheduled_for = models.DateTimeField(null=True, blank=True)
+    reschedule_reason = models.CharField(max_length=255, blank=True)
+
     amount = models.PositiveIntegerField(default=0, help_text="Paise")
     note = models.TextField(blank=True)            # the contact draft / message
     meeting_url = models.CharField(max_length=300, blank=True)

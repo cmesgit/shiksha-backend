@@ -54,6 +54,42 @@ def push_conversation_event_task(self, conversation_id, event_type, data):
 
 
 @app.task
+def expire_old_attachments():
+    """Beat-driven sweep for temporary file sharing: soft-deletes the message
+    behind any MessageAttachment whose expires_at has passed. Reuses the same
+    soft-delete-and-broadcast mechanism as an admin/moderator removal
+    (participant=None is already a supported "system actor" call shape —
+    see AdminResolveReportView) rather than a new mechanism. Per-row
+    try/except so one bad row can't abort the whole sweep."""
+    from django.utils import timezone
+    from . import services, realtime
+    from .models import MessageAttachment
+
+    expired = 0
+    qs = (
+        MessageAttachment.objects
+        .filter(expires_at__lte=timezone.now(), message__deleted_at__isnull=True)
+        .select_related("message")
+    )
+    for attachment in qs:
+        try:
+            services.soft_delete_message(
+                attachment.message, participant=None, admin_reason="expired",
+            )
+            realtime.push_conversation_event(
+                attachment.conversation_id, "chat.message_deleted",
+                {"id": str(attachment.message_id)},
+            )
+            expired += 1
+        except Exception:
+            logger.exception(
+                "chat.tasks: expire_old_attachments failed for attachment %s",
+                attachment.id,
+            )
+    return {"expired": expired}
+
+
+@app.task
 def relay_outbox_task():
     """Beat-driven drain of chat.models.OutboxEvent — see
     chat/outbox_handlers.py for the actual work. No bind/retry here: retry

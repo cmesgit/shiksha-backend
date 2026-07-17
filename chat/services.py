@@ -864,10 +864,12 @@ def _create_attachment_message(conversation, sender_participant, django_file, me
         conversation=conversation, sender=sender_participant, body=caption[:4000],
         reply_to=reply_to, message_type=message_type,
     )
+    from django.conf import settings
     MessageAttachment.objects.create(
         conversation=conversation, message=msg, uploaded_by=sender_participant,
         file=django_file, kind=meta["kind"], original_name=meta["name"],
         content_type=meta["content_type"], size_bytes=meta["size"],
+        expires_at=timezone.now() + timedelta(days=settings.CHAT_ATTACHMENT_EXPIRY_DAYS),
     )
     _finalize_new_message(conversation, sender_participant, msg)
     return msg
@@ -1465,6 +1467,7 @@ def serialize_message(msg):
         "size": attachment.size_bytes,
         "content_type": attachment.content_type,
         "kind": attachment.kind,
+        "expires_at": attachment.expires_at.isoformat() if attachment.expires_at else None,
     }
 
     data["reactions"] = _reaction_summary(msg) if msg.pk else []

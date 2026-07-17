@@ -408,6 +408,7 @@ class ConversationAttachmentUploadView(APIView):
             "size": a.size_bytes,
             "uploaded_by": a.uploaded_by.display_name() if a.uploaded_by else "Unknown",
             "created_at": a.created_at.isoformat(),
+            "expires_at": a.expires_at.isoformat() if a.expires_at else None,
         } for a in items])
 
     def post(self, request, conversation_id):

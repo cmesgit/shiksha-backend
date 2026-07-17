@@ -27,6 +27,7 @@ from rest_framework import status as drf_status
 
 from accounts.auth_flow import get_active_profile
 from .models import SkillSession, ExpertProfile
+from .notifications import push_skill_bell
 
 
 def _make_token(identity: str, room_name: str, *, can_publish: bool = True) -> str:
@@ -170,6 +171,7 @@ class TeacherConfirmSessionView(APIView):
         if scheduled_for:
             sess.scheduled_for = scheduled_for
         sess.save(update_fields=["status","scheduled_for","updated_at"])
+        push_skill_bell(sess, "confirmed")
         return Response({"detail": "Session confirmed.", "id": str(sess.id)})
 
 
@@ -194,6 +196,7 @@ class TeacherCompleteSessionView(APIView):
         if sess.slot_key:
             from .teacher_views import free_slot
             free_slot(ep, sess.slot_key)
+        push_skill_bell(sess, "completed")
         return Response({"detail": "Session marked complete."})
 
 

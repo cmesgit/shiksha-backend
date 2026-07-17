@@ -48,4 +48,8 @@ app.conf.beat_schedule.update({
         "task": "enrollments.tasks.expire_subscriptions",
         "schedule": crontab(hour=2, minute=15),  # daily at 02:15
     },
+    "expire-chat-attachments": {
+        "task": "chat.tasks.expire_old_attachments",
+        "schedule": crontab(hour=3, minute=30),  # daily, off-peak
+    },
 })
