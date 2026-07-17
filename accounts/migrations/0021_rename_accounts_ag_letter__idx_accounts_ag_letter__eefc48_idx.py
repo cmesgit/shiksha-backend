@@ -9,10 +9,10 @@ class Migration(migrations.Migration):
         ('accounts', '0020_academy_rejection'),
     ]
 
-    operations = [
-        migrations.RenameIndex(
-            model_name='agreementletterversion',
-            new_name='accounts_ag_letter__eefc48_idx',
-            old_name='accounts_ag_letter__idx',
-        ),
-    ]
+    # No-op: this was a duplicate of prod's 0022_rename_accounts_ag_letter__idx_
+    # accounts_ag_letter__eefc48_idx, which performs the identical RenameIndex and
+    # is the one applied on prod. Both branches independently generated the same
+    # rename; keeping both would double-rename (the second fails: index already
+    # renamed). Prod's 0022 does the real DB rename (in the graph for fresh installs
+    # too); this node is kept only to preserve dependency history.
+    operations = []
