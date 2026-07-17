@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     "global_settings",
     "chat",
     "forum",
+    "documents",
     "notifications",
     "content",
     "news",
@@ -150,6 +151,9 @@ REST_FRAMEWORK = {
         "forum_post": "20/hour",
         "forum_comment": "60/hour",
         "forum_report": "30/hour",
+        # Explore library anti-abuse.
+        "documents_upload": "30/hour",
+        "documents_report": "30/hour",
     },
 }
 

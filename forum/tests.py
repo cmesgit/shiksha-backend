@@ -24,11 +24,16 @@ class RBACModelTests(TestCase):
         self.admin_role = Role.objects.get(name="ADMIN")
 
     def test_seed_created_permissions_and_mappings(self):
-        self.assertEqual(Permission.objects.count(), 13)
+        # Scoped to the Forum/Roles categories so later seeds (e.g. the
+        # documents app's Explore perms) don't perturb these baseline counts.
         self.assertEqual(
-            RolePermission.objects.filter(role=self.mod_role).count(), 10)
+            Permission.objects.filter(category__in=["Forum", "Roles"]).count(), 13)
         self.assertEqual(
-            RolePermission.objects.filter(role=self.admin_role).count(), 13)
+            RolePermission.objects.filter(
+                role=self.mod_role, permission__category="Forum").count(), 10)
+        self.assertEqual(
+            RolePermission.objects.filter(
+                role=self.admin_role, permission__category__in=["Forum", "Roles"]).count(), 13)
 
     def test_has_permission_for_moderator(self):
         u = User.objects.create(email="m@t.com", username="m")
@@ -40,7 +45,8 @@ class RBACModelTests(TestCase):
     def test_staff_holds_all_permissions(self):
         s = User.objects.create(email="s@t.com", username="s", is_staff=True)
         self.assertTrue(s.has_permission("roles.manage"))
-        self.assertEqual(len(s.get_permissions()), 13)
+        # Staff implicitly hold every seeded permission (forum + roles + docs …).
+        self.assertEqual(len(s.get_permissions()), Permission.objects.count())
 
     def test_plain_user_holds_none(self):
         p = User.objects.create(email="p@t.com", username="p")
