@@ -196,12 +196,23 @@ class PermissionTest(BaseTestCase):
 # ===================================================================
 
 class RequestSessionTest(BaseTestCase):
+    """The request endpoint takes a `subject_id` (UUID) and validates that the
+    target teacher actually teaches that subject (via courses.SubjectTeacher),
+    so each test sets up a Physics subject taught by the fixture teacher.
+    `student_ids` are resolved as User PKs — the same UUIDs the frontend's
+    subject-students endpoint returns."""
+
+    def setUp(self):
+        from courses.models import Course, Subject, SubjectTeacher
+        course = Course.objects.create(title="Test Course")
+        self.subject = Subject.objects.create(course=course, name="Physics")
+        SubjectTeacher.objects.create(subject=self.subject, teacher=self.teacher)
 
     def test_student_can_request_session(self):
         client = self.get_client(self.student)
         res = client.post("/api/sessions/request/", {
             "teacher_id": str(self.teacher.id),
-            "subject": "Physics",
+            "subject_id": str(self.subject.id),
             "scheduled_date": str(date.today() + timedelta(days=2)),
             "scheduled_time": "10:00",
             "duration_minutes": 45,
@@ -219,7 +230,7 @@ class RequestSessionTest(BaseTestCase):
         client = self.get_client(self.student)
         res = client.post("/api/sessions/request/", {
             "teacher_id": str(self.teacher.id),
-            "subject": "Physics",
+            "subject_id": str(self.subject.id),
             "scheduled_date": str(date.today() + timedelta(days=2)),
             "scheduled_time": "10:00",
         }, format="json")
@@ -232,12 +243,12 @@ class RequestSessionTest(BaseTestCase):
         client = self.get_client(self.student)
         res = client.post("/api/sessions/request/", {
             "teacher_id": str(self.teacher.id),
-            "subject": "Physics",
+            "subject_id": str(self.subject.id),
             "scheduled_date": str(date.today() + timedelta(days=2)),
             "scheduled_time": "10:00",
             "session_type": "group",
             "group_strength": 2,
-            "student_ids": ["STU002"],
+            "student_ids": [str(self.student2.id)],
         }, format="json")
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
         session = PrivateSession.objects.get(pk=res.data["id"])
@@ -246,8 +257,8 @@ class RequestSessionTest(BaseTestCase):
     def test_request_invalid_teacher(self):
         client = self.get_client(self.student)
         res = client.post("/api/sessions/request/", {
-            "teacher_id": str(self.student.id),  # student, not teacher
-            "subject": "Physics",
+            "teacher_id": str(self.student.id),  # doesn't teach this subject
+            "subject_id": str(self.subject.id),
             "scheduled_date": str(date.today() + timedelta(days=2)),
             "scheduled_time": "10:00",
         }, format="json")
@@ -482,7 +493,8 @@ class SessionLifecycleTest(BaseTestCase):
         client = self.get_client(self.teacher)
         res = client.post(f"/api/sessions/{session.id}/start/")
         self.assertEqual(res.data["status"], "ongoing")
-        self.assertTrue(res.data["room_name"].startswith("private-"))
+        # start_session sets room_name = f"private_{session.id}".
+        self.assertTrue(res.data["room_name"].startswith("private_"))
         self.assertIsNotNone(res.data["started_at"])
 
     def test_cannot_start_pending(self):
@@ -536,8 +548,10 @@ class SessionDetailTest(BaseTestCase):
 
     def test_participant_can_view(self):
         session = self.create_session()
+        # Detail access requires an *accepted* participant (the view filters
+        # on status="accepted"); a still-pending invitee can't view yet.
         SessionParticipant.objects.create(
-            session=session, user=self.student2, role="student"
+            session=session, user=self.student2, role="student", status="accepted"
         )
         client = self.get_client(self.student2)
         res = client.get(f"/api/sessions/{session.id}/")

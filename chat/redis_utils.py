@@ -43,7 +43,14 @@ def get_redis():
     so one client is the right lifetime — not one per call)."""
     global _client
     if _client is None:
-        _client = redis.Redis.from_url(settings.REDIS_PLATFORM_URL, decode_responses=True)
+        if getattr(settings, "REDIS_USE_FAKE", False):
+            # Test/CI path: an in-process fake with real Redis semantics
+            # (HINCRBY, pipelines, TTL/EXPIRE) so the suite needs no running
+            # redis-server. Never used in production.
+            import fakeredis
+            _client = fakeredis.FakeStrictRedis(decode_responses=True)
+        else:
+            _client = redis.Redis.from_url(settings.REDIS_PLATFORM_URL, decode_responses=True)
     return _client
 
 

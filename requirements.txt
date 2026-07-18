@@ -7,12 +7,14 @@ certifi==2026.2.25
 cffi==2.0.0
 charset-normalizer==3.4.5
 cryptography==46.0.6
+daphne==4.2.2
 Django==6.0.1
 django-cors-headers==4.4.0
 django-extensions==4.1
 django-ratelimit==4.1.0
 djangorestframework==3.16.1
 djangorestframework_simplejwt==5.5.1
+fakeredis==2.36.2
 frozenlist==1.8.0
 google-api-core==2.30.0
 google-api-python-client==2.193.0
