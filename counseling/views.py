@@ -87,15 +87,25 @@ class IsApprovedCounselor(BasePermission):
         return True
 
 
-def _resolve_learner_profile(user, learner_profile_id=None):
-    """The learner profile the request acts for — the account's default,
-    or a specific one (self OR dependent) that MUST belong to this account.
+def _resolve_learner_profile(request, learner_profile_id=None):
+    """The learner profile the request acts for. Precedence:
+      1. an explicitly-requested profile (self OR dependent) — MUST belong to
+         this account;
+      2. the ACTIVE profile from the session token — counselling is
+         profile-level, so a booking/intake/assessment belongs to whichever
+         learner profile is currently in context (not always the default);
+      3. the account default, as a fallback for non-learner contexts / no token.
     Returns None when nothing matches (never someone else's profile)."""
     from accounts.models import LearnerProfile
+    from accounts.auth_flow import get_active_profile
 
+    user = request.user
     owned = LearnerProfile.objects.filter(account=user, is_active=True)
     if learner_profile_id:
         return owned.filter(pk=learner_profile_id).first()
+    active = get_active_profile(request)
+    if active is not None:
+        return active
     if hasattr(user, "default_learner_profile"):
         lp = user.default_learner_profile()
         if lp is not None:
@@ -234,7 +244,7 @@ class IntakeView(APIView):
 
     def _intake(self, request):
         lp = _resolve_learner_profile(
-            request.user,
+            request,
             request.query_params.get("learner_profile_id")
             or request.data.get("learner_profile_id"),
         )
@@ -278,7 +288,7 @@ class MatchView(APIView):
 
     def get(self, request):
         lp = _resolve_learner_profile(
-            request.user, request.query_params.get("learner_profile_id")
+            request, request.query_params.get("learner_profile_id")
         )
         if lp is None:
             return Response(
@@ -313,7 +323,7 @@ class CreateAppointmentView(APIView):
             CounselorProfile, pk=data["counselor_id"],
             status=CounselorProfile.STATUS_APPROVED, is_listed=True,
         )
-        lp = _resolve_learner_profile(request.user, data.get("learner_profile_id"))
+        lp = _resolve_learner_profile(request, data.get("learner_profile_id"))
         if lp is None:
             return Response(
                 {"detail": "No learner profile on this account."},

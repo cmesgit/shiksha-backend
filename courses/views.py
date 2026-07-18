@@ -927,11 +927,17 @@ class CourseCatalogView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # Only published courses that have at least one open (active) batch are
+        # purchasable — this keeps DRAFT/half-built courses and courses with no
+        # running cohort out of the buy flow. Owned courses still appear via
+        # /courses/my/ regardless of status.
         qs = (
             Course.objects
+            .filter(status=Course.STATUS_PUBLISHED, batches__is_active=True)
             .select_related("board", "stream")
             .annotate(subject_count=Count("subjects", distinct=True))
             .order_by("board__name", "title")
+            .distinct()
         )
 
         q = (request.query_params.get("q") or "").strip()

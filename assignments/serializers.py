@@ -1,7 +1,8 @@
 from rest_framework import serializers
 from django.utils import timezone
 from .models import Assignment, AssignmentFile, AssignmentSubmission
-from courses.models import Chapter
+from courses.models import Chapter, Batch
+from courses.services import is_teacher_of
 import os
 
 
@@ -177,6 +178,13 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
         source="chapter",
         write_only=True,
     )
+    # Due dates are cohort-relative, so a batch is required for new
+    # assignments (legacy batch=NULL rows stay valid — write-side only).
+    batch_id = serializers.PrimaryKeyRelatedField(
+        queryset=Batch.objects.all(),
+        source="batch",
+        write_only=True,
+    )
 
     # Optional idempotency key from the frontend form session
     idempotency_key = serializers.UUIDField(required=False, allow_null=True)
@@ -185,6 +193,7 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
         model = Assignment
         fields = (
             "chapter_id",
+            "batch_id",
             "title",
             "description",
             "due_date",
@@ -198,18 +207,32 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"due_date": "Due date must be today or in the future."}
             )
+
+        chapter = attrs.get("chapter")
+        batch = attrs.get("batch")
+        user = self.context["request"].user
+
+        # Triangle guard: the batch and the chapter's subject share a course.
+        if chapter and batch and chapter.subject.course_id != batch.course_id:
+            raise serializers.ValidationError(
+                {"batch_id": "Batch and chapter belong to different courses."}
+            )
+
+        # Authz: assigned to this (batch, subject) via the new roster, or the
+        # legacy course-wide SubjectTeacher (dual-read safety net for Phase 3).
+        if chapter and batch:
+            assigned = (
+                is_teacher_of(user, batch, chapter.subject)
+                or chapter.subject.subject_teachers.filter(teacher=user).exists()
+            )
+            if not assigned:
+                raise serializers.ValidationError(
+                    {"non_field_errors": ["You are not assigned to this subject."]}
+                )
         return attrs
 
     def validate_attachment(self, value):
         return validate_assignment_file(value)
-
-    def validate_chapter(self, chapter):
-        user = self.context["request"].user
-        if not chapter.subject.subject_teachers.filter(teacher=user).exists():
-            raise serializers.ValidationError(
-                "You are not assigned to this subject."
-            )
-        return chapter
 
 
 class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):

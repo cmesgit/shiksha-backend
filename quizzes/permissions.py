@@ -2,6 +2,8 @@ from rest_framework.permissions import BasePermission
 from django.utils import timezone
 from enrollments.models import Enrollment, Subscription
 from .models import SubjectTeacher, Quiz, QuizAttempt
+from courses.models import Subject
+from courses.services import teaches_subject
 
 
 # -------------------------------------------------------
@@ -34,10 +36,8 @@ class IsAssignedSubjectTeacher(BasePermission):
         if not subject_id:
             return False
 
-        return SubjectTeacher.objects.filter(
-            subject_id=subject_id,
-            teacher=request.user
-        ).exists()
+        subject = Subject.objects.filter(id=subject_id).first()
+        return bool(subject and teaches_subject(request.user, subject))
 
 
 # -------------------------------------------------------

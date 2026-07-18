@@ -24,6 +24,19 @@ class Assignment(models.Model):
         db_index=True
     )
 
+    # Delivery scope. NULL = visible to every batch of the course (legacy
+    # rows); set = this batch only. Due dates are cohort-relative, so new
+    # assignments should always carry a batch (enforced in the serializer,
+    # not the DB, so legacy rows stay valid). SET_NULL: deleting a batch
+    # demotes its assignments to course-wide instead of destroying them.
+    batch = models.ForeignKey(
+        "courses.Batch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assignments",
+    )
+
     title = models.CharField(max_length=255)
 
     description = models.TextField(blank=True)
@@ -62,6 +75,7 @@ class Assignment(models.Model):
         indexes = [
             models.Index(fields=["chapter"]),
             models.Index(fields=["due_date"]),
+            models.Index(fields=["batch", "due_date"]),
         ]
 
     def __str__(self):

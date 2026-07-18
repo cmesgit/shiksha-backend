@@ -109,6 +109,11 @@ DATABASES = {
         'PASSWORD': os.getenv('DB_PASSWORD'),
         'HOST': os.getenv('DB_HOST'),
         'PORT': os.getenv('DB_PORT'),
+        # Reuse connections across requests instead of reconnecting each time.
+        # Health checks guard against handing a request a connection Postgres
+        # already dropped (e.g. after a restart or idle timeout).
+        'CONN_MAX_AGE': int(os.getenv('DB_CONN_MAX_AGE', '60')),
+        'CONN_HEALTH_CHECKS': True,
     }
 }
 
@@ -206,6 +211,18 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {"hosts": [REDIS_CHANNELS_URL]},
+    },
+}
+# Default cache on the platform Redis db. DRF throttling uses this cache, so
+# rate limits are now shared across uvicorn workers instead of per-process
+# LocMem counters that reset on every restart. KEY_PREFIX keeps Django's
+# cache keys out of the way of the raw platform keys (chat unread counters)
+# that share db2.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": REDIS_PLATFORM_URL,
+        "KEY_PREFIX": "djcache",
     },
 }
 GNEWS_API_KEY = os.getenv("GNEWS_API_KEY")

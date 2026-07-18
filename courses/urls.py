@@ -59,12 +59,15 @@ from .admin_academy_views import (
     AdminSubjectTeacherDetailView,
     AdminCourseBatchesView,
     AdminBatchDetailView,
+    AdminBatchTeachingAssignmentsView,
+    AdminTeachingAssignmentDetailView,
 )
 # Teacher: the batches they can record progress for.
-from .teacher_batch_views import TeacherMyBatchesView
+from .teacher_batch_views import TeacherMyBatchesView, TeacherSubjectBatchesView
 urlpatterns = [
     path("teacher/my-classes/",   TeacherMyClassesView.as_view()),
     path("teacher/my-batches/",   TeacherMyBatchesView.as_view()),
+    path("subjects/<uuid:subject_id>/batches/", TeacherSubjectBatchesView.as_view()),
     path("teacher/all-students/", TeacherAllStudentsView.as_view()),
     path("subjects-by-course/",   SubjectsByCourseTitleView.as_view()),
     path("admin/",                AdminCourseListView.as_view()),
@@ -85,6 +88,9 @@ urlpatterns = [
     # Admin — batches
     path("admin/courses/<uuid:course_id>/batches/",          AdminCourseBatchesView.as_view()),
     path("admin/batches/<uuid:batch_id>/",                   AdminBatchDetailView.as_view()),
+    # Admin — staffing matrix (per-batch teaching assignments)
+    path("admin/batches/<uuid:batch_id>/teaching-assignments/", AdminBatchTeachingAssignmentsView.as_view()),
+    path("admin/teaching-assignments/<uuid:assignment_id>/",    AdminTeachingAssignmentDetailView.as_view()),
     path("",                           CreateCourseView.as_view()),
     path("mine/",                      MyCoursesView.as_view()),
     path("my/",                        MyEnrolledCoursesView.as_view()),

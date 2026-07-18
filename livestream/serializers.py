@@ -6,13 +6,17 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from .models import LiveSession
-from courses.models import Subject
+from courses.models import Subject, Batch
+from courses.services import is_teacher_of
 
 IST = ZoneInfo("Asia/Kolkata")
 
 
 class LiveSessionCreateSerializer(serializers.ModelSerializer):
     subject_id = serializers.UUIDField(write_only=True)
+    # A live class is a batch's timetable entry, so a batch is required for
+    # new sessions (legacy batch=NULL rows stay valid — this is write-side only).
+    batch_id = serializers.UUIDField(write_only=True)
     force_live = serializers.BooleanField(
         write_only=True, required=False, default=False)
 
@@ -25,6 +29,7 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
             "start_time",
             "end_time",
             "subject_id",
+            "batch_id",
             "force_live",
         ]
         read_only_fields = ["id"]
@@ -47,7 +52,26 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
                 {"subject_id": ["Invalid subject."]}
             )
 
-        if not subject.subject_teachers.filter(teacher=user).exists():
+        try:
+            batch = Batch.objects.get(id=data["batch_id"])
+        except Batch.DoesNotExist:
+            raise serializers.ValidationError(
+                {"batch_id": ["Invalid batch."]}
+            )
+
+        # Triangle guard: the subject and the batch must be the same course.
+        if subject.course_id != batch.course_id:
+            raise serializers.ValidationError(
+                {"batch_id": ["Batch and subject belong to different courses."]}
+            )
+
+        # Authz: assigned to this (batch, subject) via the new roster, or the
+        # legacy course-wide SubjectTeacher (dual-read safety net for Phase 3).
+        assigned = (
+            is_teacher_of(user, batch, subject)
+            or subject.subject_teachers.filter(teacher=user).exists()
+        )
+        if not assigned:
             raise serializers.ValidationError(
                 {"non_field_errors": ["You are not assigned to this subject."]}
             )
@@ -77,8 +101,10 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
                 {"start_time": ["Cannot schedule a session in the past."]}
             )
 
+        # Overlap is scoped to this batch+subject: two different batches may
+        # legitimately hold the same subject at the same time.
         overlap_exists = LiveSession.objects.filter(
-            subject=subject
+            subject=subject, batch=batch,
         ).exclude(
             status__in=[LiveSession.STATUS_CANCELLED,
                         LiveSession.STATUS_COMPLETED]
@@ -95,19 +121,23 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
             )
 
         self._validated_subject = subject
+        self._validated_batch = batch
         return data
 
     def create(self, validated_data):
         subject = self._validated_subject
+        batch = self._validated_batch
         user = self.context["request"].user
 
         validated_data.pop("subject_id", None)
+        validated_data.pop("batch_id", None)
 
         room_name = f"session_{uuid.uuid4().hex}"
 
         return LiveSession.objects.create(
             subject=subject,
             course=subject.course,
+            batch=batch,
             room_name=room_name,
             created_by=user,
             **validated_data

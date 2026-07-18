@@ -25,6 +25,19 @@ class SessionRecording(models.Model):
         related_name="recordings"
     )
 
+    # Delivery scope, inherited from the source LiveSession when the Bunny
+    # video lands: the batch that attended the class sees its recording;
+    # other batches don't. Admin clears this to share a recording
+    # course-wide. NULL also covers legacy rows. SET_NULL: deleting a batch
+    # demotes its recordings to course-wide instead of destroying them.
+    batch = models.ForeignKey(
+        "courses.Batch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="recordings",
+    )
+
     title = models.CharField(max_length=255)
 
     description = models.TextField(blank=True)

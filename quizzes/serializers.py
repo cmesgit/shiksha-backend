@@ -8,6 +8,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import ValidationError, PermissionDenied
 
 from courses.models import SubjectTeacher
+from courses.services import teaches_subject
 from enrollments.models import Enrollment
 
 from .models import (
@@ -96,7 +97,7 @@ class QuizCreateSerializer(serializers.ModelSerializer):
         user = self.context["request"].user
         if not user.has_role("TEACHER"):
             raise PermissionDenied("Only teachers allowed.")
-        if not SubjectTeacher.objects.filter(subject=subject, teacher=user).exists():
+        if not teaches_subject(user, subject):
             raise PermissionDenied("You are not assigned to this subject.")
         return subject
 

@@ -5,6 +5,7 @@ from .serializers import (
 )
 from .services.token import generate_livekit_token
 from .models import LiveSession, LiveSessionAttendance
+from courses.services import teaches_subject
 from enrollments.models import Enrollment
 from livekit.api import WebhookReceiver, TokenVerifier
 from rest_framework.response import Response
@@ -117,14 +118,24 @@ class StudentLiveSessionListView(generics.ListAPIView):
         course_id = self.request.query_params.get("course_id")
         subject_id = self.request.query_params.get("subject_id")
 
-        active_courses = Enrollment.objects.filter(
+        active_enrollments = Enrollment.objects.filter(
             user=user,
             status=Enrollment.STATUS_ACTIVE
-        ).values_list("course_id", flat=True)
+        )
+        active_courses = active_enrollments.values_list("course_id", flat=True)
+        # Batches the student belongs to. A session is visible if it is
+        # course-wide (batch IS NULL) or belongs to one of these batches, so a
+        # morning batch never sees the evening batch's timetable. A student
+        # with no batch assigned sees only course-wide sessions (safe).
+        active_batch_ids = list(
+            active_enrollments.exclude(batch__isnull=True)
+            .values_list("batch_id", flat=True)
+        )
 
         queryset = (
             LiveSession.objects
             .filter(course_id__in=active_courses)
+            .filter(Q(batch__isnull=True) | Q(batch_id__in=active_batch_ids))
             .select_related("course", "subject", "created_by")
         )
 
@@ -249,7 +260,7 @@ def join_live_session(request, session_id):
 
     # ── Teacher ──
     elif user.has_role("TEACHER"):
-        if not session.subject.subject_teachers.filter(teacher=user).exists():
+        if not teaches_subject(user, session.subject):
             return Response({"detail": "Not assigned"}, status=403)
 
         is_creator = str(session.created_by_id) == str(user.id)
@@ -418,7 +429,7 @@ def live_session_detail(request, session_id):
     if not user.has_role("TEACHER"):
         return Response({"detail": "Only teachers allowed."}, status=403)
 
-    if not session.subject.subject_teachers.filter(teacher=user).exists():
+    if not teaches_subject(user, session.subject):
         return Response({"detail": "Not assigned to this subject."}, status=403)
 
     from livestream.serializers import LiveSessionListSerializer

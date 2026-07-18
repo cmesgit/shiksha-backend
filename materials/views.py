@@ -154,10 +154,21 @@ class StudentSubjectMaterials(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, subject_id):
-        subject = get_object_or_404(Subject, id=subject_id)
+        from django.db.models import Q
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"), id=subject_id)
+        # Batch isolation: course-wide materials (batch IS NULL) + this
+        # student's own batch's materials. Materials default to course-wide,
+        # so this only ever hides genuinely batch-specific handouts.
+        enrollment = Enrollment.objects.filter(
+            user=request.user, course_id=subject.course_id,
+            status=Enrollment.STATUS_ACTIVE,
+        ).first()
+        batch_id = enrollment.batch_id if enrollment else None
         materials = (
             StudyMaterial.objects
             .filter(chapter__subject=subject)
+            .filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
             .select_related("chapter")
             .prefetch_related("files")
             .order_by("-created_at")

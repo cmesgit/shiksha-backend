@@ -10,12 +10,14 @@ Route (added in courses/urls.py):
 """
 
 from django.db.models import Count, Q
+from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Batch, Chapter, Course, SubjectTeacher
+from .models import Batch, Chapter, Course, Subject, SubjectTeacher
 from .models_batch_progress import BatchChapterProgress
+from .services import teaches_subject
 
 
 class TeacherMyBatchesView(APIView):
@@ -90,3 +92,40 @@ class TeacherMyBatchesView(APIView):
             })
         out.sort(key=lambda x: x["course_title"] or "")
         return Response(out)
+
+
+class TeacherSubjectBatchesView(APIView):
+    """Active batches a teacher can schedule content for, for one subject.
+
+    Backs the batch picker on the teacher's create-live-session and
+    create-assignment forms (which only know the subject from the URL). Returns
+    the subject's course's active batches when the teacher teaches that subject.
+
+    Route (added in courses/urls.py):
+        GET  courses/subjects/<subject_id>/batches/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, subject_id):
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"), id=subject_id)
+
+        if not (request.user.is_staff or teaches_subject(request.user, subject)):
+            return Response(
+                {"detail": "You are not assigned to this subject."},
+                status=403,
+            )
+
+        batches = (
+            Batch.objects.filter(course_id=subject.course_id, is_active=True)
+            .order_by("-year", "code")
+        )
+        return Response([
+            {
+                "id": str(b.id),
+                "name": b.name,
+                "code": b.code,
+                "year": b.year,
+            }
+            for b in batches
+        ])

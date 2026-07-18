@@ -51,6 +51,19 @@ class LiveSession(models.Model):
         related_name="live_sessions",
     )
 
+    # Delivery scope. NULL = visible to every batch of the course (legacy /
+    # course-wide); set = this batch's timetable entry only. New sessions
+    # should always carry a batch (enforced in the serializer, not the DB,
+    # so legacy rows stay valid). SET_NULL: deleting a batch demotes its
+    # sessions to course-wide instead of destroying them.
+    batch = models.ForeignKey(
+        "courses.Batch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="live_sessions",
+    )
+
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
 
@@ -86,6 +99,7 @@ class LiveSession(models.Model):
             models.Index(fields=["teacher_left_at"]),
             models.Index(fields=["course", "start_time"]),
             models.Index(fields=["subject", "start_time"]),
+            models.Index(fields=["batch", "start_time"]),
         ]
 
     def __str__(self):

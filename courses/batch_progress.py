@@ -20,18 +20,27 @@ per-chapter ``note``)::
     }
 """
 
-from .models import SubjectTeacher
+from .models import SubjectTeacher, TeachingAssignment
 from .models_batch_progress import BatchChapterProgress
+from .services import is_teacher_of
 
 
 # --------------------------------------------------------------------------- #
 # Permissions
 # --------------------------------------------------------------------------- #
 def can_view_batch_progress(user, batch):
-    """Admin/staff, or any teacher assigned to a subject in the batch's course."""
+    """Admin/staff, or a teacher with an active assignment in this batch.
+
+    Prefers the new per-batch TeachingAssignment roster; falls back to the
+    legacy course-wide SubjectTeacher during the migration window (dropped in
+    Phase 5 with SubjectTeacher)."""
     if not (user and user.is_authenticated):
         return False
     if user.is_staff:
+        return True
+    if TeachingAssignment.objects.filter(
+        batch=batch, teacher=user, is_active=True
+    ).exists():
         return True
     return SubjectTeacher.objects.filter(
         subject__course_id=batch.course_id, teacher=user
@@ -39,16 +48,16 @@ def can_view_batch_progress(user, batch):
 
 
 def can_edit_chapter_for_batch(user, chapter, batch):
-    """Admin/staff, or a teacher assigned to *this chapter's* subject.
+    """Admin/staff, or the teacher of this chapter's subject *in this batch*.
 
-    We deliberately gate on the subject (matching the existing course-level
-    permission model) rather than inventing a teacher↔batch link that the
-    schema does not have. A teacher assigned to a subject may record that
-    subject's chapters for any batch of the course.
-    """
+    Now that a teacher↔batch link exists (TeachingAssignment), this gates on
+    the specific (batch, subject). Falls back to the legacy course-wide
+    SubjectTeacher during the migration window (dropped in Phase 5)."""
     if not (user and user.is_authenticated):
         return False
     if user.is_staff:
+        return True
+    if is_teacher_of(user, batch, chapter.subject):
         return True
     return SubjectTeacher.objects.filter(
         subject_id=chapter.subject_id, teacher=user

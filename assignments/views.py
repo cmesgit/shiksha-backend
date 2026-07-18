@@ -1,7 +1,7 @@
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from django.db.models import Prefetch, Count, Case, When, Value, CharField
+from django.db.models import Prefetch, Count, Case, When, Value, CharField, Q
 from django.db import IntegrityError
 from django.http import HttpResponse
 
@@ -183,6 +183,15 @@ class CourseAssignmentsView(generics.ListAPIView):
                 raise PermissionDenied("Your subscription for this course has expired.")
             queryset = Assignment.objects.filter(
                 chapter__subject__course__id=course_id)
+            # Batch isolation: show course-wide assignments (batch IS NULL) plus
+            # this student's own batch's assignments. Due dates are cohort-
+            # relative, so a later batch must not inherit an earlier one's.
+            enrollment = Enrollment.objects.filter(
+                user=user, course_id=course_id, status=Enrollment.STATUS_ACTIVE,
+            ).first()
+            batch_id = enrollment.batch_id if enrollment else None
+            queryset = queryset.filter(
+                Q(batch__isnull=True) | Q(batch_id=batch_id))
 
         return (
             queryset

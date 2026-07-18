@@ -43,6 +43,18 @@ class Quiz(models.Model):
         related_name="quizzes",
     )
 
+    # Delivery scope. NULL = evergreen (practice quizzes / question banks,
+    # visible to every batch of the course); set = scoped to one batch
+    # (e.g. "Batch A13 weekly test"). SET_NULL: deleting a batch demotes
+    # its quizzes to course-wide instead of destroying them.
+    batch = models.ForeignKey(
+        "courses.Batch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="quizzes",
+    )
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -84,6 +96,7 @@ class Quiz(models.Model):
             models.Index(fields=["subject"]),
             models.Index(fields=["is_published"]),
             models.Index(fields=["review_status"]),
+            models.Index(fields=["batch", "is_published"]),
         ]
 
     def __str__(self):

@@ -16,6 +16,7 @@ from django.db import models
 from django.db.models import Count, Avg, Max, Min, Q
 
 from courses.models import Subject, SubjectTeacher
+from courses.services import teaches_subject
 
 from .models import Quiz, QuizAttempt, Question, Choice, StudentAnswer
 from .serializers import (
@@ -241,7 +242,7 @@ class TeacherSubjectQuizListView(generics.ListAPIView):
             id=subject_id
         )
 
-        if not subject.subject_teachers.filter(teacher=user).exists():
+        if not teaches_subject(user, subject):
             raise PermissionDenied("Not assigned to this subject.")
 
         enrolled_count_subquery = (
