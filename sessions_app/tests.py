@@ -94,10 +94,28 @@ class BaseTestCase(TestCase):
             password="testpass123",
         )
 
-    def get_client(self, user):
-        """Return an authenticated APIClient for the given user."""
+    def get_client(self, user, profile=None, context=None):
+        """Return an authenticated APIClient carrying a JWT-like context token.
+
+        Student endpoints resolve the active learner profile from the token
+        (`get_active_profile`) and teacher endpoints require `context=="teacher"`
+        (`IsTeacherContext`), the same way `build_tokens` does in production. By
+        default the context is inferred from the user's role (teacher → teacher,
+        else learner + default profile); override with `context=`/`profile=`.
+        """
         client = APIClient()
-        client.force_authenticate(user=user)
+        if context is None:
+            context = "teacher" if user.has_role("TEACHER") else "learner"
+        token = {"context": context}
+        if context == "learner":
+            if profile is None:
+                profile = (
+                    user.learner_profiles.filter(is_default=True).first()
+                    or user.learner_profiles.first()
+                )
+            if profile is not None:
+                token["active_profile"] = str(profile.id)
+        client.force_authenticate(user=user, token=token)
         return client
 
     def create_session(self, **overrides):
@@ -655,3 +673,140 @@ class SerializerHelperTest(BaseTestCase):
         self.assertEqual(get_student_id(self.student), "STU001")
         self.assertIsNone(get_student_id(self.teacher))
         self.assertIsNone(get_student_id(self.outsider))
+
+# ===================================================================
+# MULTI-PROFILE ISOLATION  (two children on ONE account)
+# ===================================================================
+
+class ProfileIsolationTest(TestCase):
+    """A private session belongs to the booking learner_profile, not the whole
+    account, so two children on one account never see or act on each other's
+    tutoring sessions."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.student_role = Role.objects.create(name="STUDENT")
+        cls.teacher_role = Role.objects.create(name="TEACHER")
+
+        cls.teacher = User.objects.create_user(
+            username="tara", email="tara@test.com", password="x",
+            first_name="Tara", last_name="Teach",
+        )
+        UserRole.objects.create(
+            user=cls.teacher, role=cls.teacher_role,
+            is_active=True, is_primary=True,
+        )
+
+        # ONE account with TWO children.
+        cls.account = User.objects.create_user(
+            username="parent", email="parent@test.com", password="x",
+        )
+        UserRole.objects.create(
+            user=cls.account, role=cls.student_role,
+            is_active=True, is_primary=True,
+        )
+        cls.child_a = LearnerProfile.objects.create(
+            account=cls.account, display_name="Aria",
+            full_name="Aria Kid", is_default=True,
+        )
+        cls.child_b = LearnerProfile.objects.create(
+            account=cls.account, display_name="Bina",
+            full_name="Bina Kid", is_default=False,
+        )
+
+    def _mk(self, profile, subject="Mathematics", status_="approved"):
+        s = PrivateSession.objects.create(
+            teacher=self.teacher, requested_by=self.account,
+            learner_profile=profile, subject=subject,
+            scheduled_date=date.today() + timedelta(days=1),
+            scheduled_time=time(14, 0), status=status_,
+        )
+        SessionParticipant.objects.create(
+            session=s, user=self.account, role="student", status="accepted",
+        )
+        return s
+
+    def _client(self, profile=None, context="learner"):
+        c = APIClient()
+        token = {"context": context}
+        if profile is not None:
+            token["active_profile"] = str(profile.id)
+        c.force_authenticate(user=self.account, token=token)
+        return c
+
+    def test_list_scoped_to_active_profile(self):
+        self._mk(self.child_a)
+        self._mk(self.child_b)
+        res = self._client(self.child_a).get("/api/sessions/student/?tab=scheduled")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data), 1)
+        self.assertEqual(res.data[0]["learner_profile_id"], str(self.child_a.id))
+        self.assertEqual(res.data[0]["student_name"], "Aria Kid")
+
+    def test_sibling_cannot_cancel_others_session(self):
+        s = self._mk(self.child_a, status_="pending")
+        res = self._client(self.child_b).post(f"/api/sessions/{s.id}/cancel/", {}, format="json")
+        self.assertEqual(res.status_code, 404)
+        s.refresh_from_db()
+        self.assertEqual(s.status, "pending")
+
+    def test_owner_can_cancel_own_session(self):
+        s = self._mk(self.child_a, status_="pending")
+        res = self._client(self.child_a).post(f"/api/sessions/{s.id}/cancel/", {}, format="json")
+        self.assertEqual(res.status_code, 200)
+        s.refresh_from_db()
+        self.assertEqual(s.status, "cancelled")
+
+    def test_legacy_null_row_shows_only_for_default_profile(self):
+        legacy = self._mk(self.child_a)
+        legacy.learner_profile = None
+        legacy.save(update_fields=["learner_profile"])
+        res_a = self._client(self.child_a).get("/api/sessions/student/?tab=scheduled")
+        self.assertEqual(len(res_a.data), 1)  # default profile still sees it
+        res_b = self._client(self.child_b).get("/api/sessions/student/?tab=scheduled")
+        self.assertEqual(len(res_b.data), 0)  # non-default does not
+
+    def test_no_profile_selected_returns_403(self):
+        res = self._client(profile=None, context="account").get(
+            "/api/sessions/student/?tab=scheduled"
+        )
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.data["lock_reason"], "no_learner_profile")
+
+
+# ===================================================================
+# TEACHER-CONTEXT ENFORCEMENT  (outstanding #1)
+# ===================================================================
+
+class TeacherContextEnforcementTest(BaseTestCase):
+    """Teacher endpoints require BOTH the TEACHER role AND a teacher-context
+    token. A learner-context token on a teacher's account (e.g. a child on a
+    shared device) must be rejected even though has_role('TEACHER') passes."""
+
+    def _client(self, user, context):
+        c = APIClient()
+        c.force_authenticate(user=user, token={"context": context})
+        return c
+
+    def test_teacher_context_allowed(self):
+        res = self._client(self.teacher, "teacher").get("/api/sessions/teacher/sessions/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_learner_context_on_teacher_account_blocked(self):
+        res = self._client(self.teacher, "learner").get("/api/sessions/teacher/sessions/")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_account_context_blocked(self):
+        res = self._client(self.teacher, "account").get("/api/sessions/teacher/sessions/")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_missing_token_blocked(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token=None)
+        res = c.get("/api/sessions/teacher/sessions/")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_non_teacher_in_teacher_context_blocked(self):
+        # A student who somehow carries a teacher-context token still lacks the role.
+        res = self._client(self.student, "teacher").get("/api/sessions/teacher/sessions/")
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)

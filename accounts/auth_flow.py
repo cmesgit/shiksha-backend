@@ -38,6 +38,31 @@ CTX_LEARNER = "learner"
 CTX_TEACHER = "teacher"
 
 
+def verify_account_password(request):
+    """Re-authenticate the account holder for sensitive profile actions
+    (PIN set / change / reset / remove, profile deletion).
+
+    The account password is the single source of truth, so this doubles as the
+    "forgot PIN" mechanism: a parent who forgot a profile's PIN proves the
+    account password and resets it — no old PIN needed. It also closes the
+    bypass where any authenticated session on the account (e.g. a child's
+    learner-context token) could strip a PIN or delete a profile.
+
+    Raises 400 with a stable `code` on missing / wrong password.
+    """
+    # Read only from the request body — never a query param, since passwords in
+    # URLs leak into access logs. DELETE requests must send a JSON body.
+    password = request.data.get("password") or ""
+    if not password:
+        raise ValidationError(
+            {"password": "Account password is required.", "code": "password_required"}
+        )
+    if not request.user.check_password(password):
+        raise ValidationError(
+            {"password": "Incorrect account password.", "code": "bad_password"}
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Token & cookie helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,6 +146,36 @@ def serialize_profile_card(p):
         "pin_code":         p.pin_code or "",
         "profile_photo":    p.profile_photo.url if p.profile_photo else "",
     }
+
+
+# Academic + guardian fields live on LearnerProfile but were historically only
+# reachable for the ACTIVE profile via StudentProfileView. `serialize_profile_card`
+# (used by login / /me/ / the switcher) stays lean; this fuller view is returned
+# by ProfileDetailView GET/PATCH so a parent can view+edit any child's details
+# from Manage profile.
+_PROFILE_EXTRA_TEXT_FIELDS = (
+    "father_name", "father_phone", "mother_name", "mother_phone",
+    "guardian_name", "guardian_phone", "parent_guardian_email",
+    "board_other", "school_name", "academic_year", "reason_not_studying",
+)
+_PROFILE_CHOICE_FIELDS = {
+    "currently_studying": "CURRENTLY_STUDYING_CHOICES",
+    "current_class":      "CLASS_CHOICES",
+    "stream":             "STREAM_CHOICES",
+    "board":              "BOARD_CHOICES",
+    "highest_education":  "HIGHEST_EDUCATION_CHOICES",
+}
+
+
+def serialize_profile_detail(p):
+    """Full editable field set for one profile (card + academic + guardian)."""
+    data = serialize_profile_card(p)
+    data["student_id"] = p.student_id or ""
+    for f in _PROFILE_EXTRA_TEXT_FIELDS:
+        data[f] = getattr(p, f, "") or ""
+    for f in _PROFILE_CHOICE_FIELDS:
+        data[f] = getattr(p, f, "") or ""
+    return data
 
 
 def serialize_teacher(teacher, *, active_track=None):
@@ -386,6 +441,14 @@ class ProfilePinView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        """Set / change / reset / remove a profile's switch-PIN.
+
+        Requires the ACCOUNT password (re-auth). This is also the "forgot PIN"
+        path — resetting does NOT need the old PIN, only the account password —
+        and it prevents any session on the account (e.g. a child) from silently
+        stripping or overwriting another profile's PIN. Send an empty `pin` to
+        remove the PIN.
+        """
         profile_id = request.data.get("profile_id")
         new_pin    = request.data.get("pin")
 
@@ -396,6 +459,8 @@ class ProfilePinView(APIView):
         )
         if not profile:
             raise PermissionDenied("Profile not found for this account.")
+
+        verify_account_password(request)
 
         if new_pin and (not str(new_pin).isdigit() or not (4 <= len(str(new_pin)) <= 6)):
             raise ValidationError({"pin": "PIN must be 4–6 digits."})
@@ -527,6 +592,10 @@ class ProfileDetailView(APIView):
             raise ValidationError("Profile not found.")
         return profile
 
+    def get(self, request, profile_id):
+        profile = self._get_profile(request, profile_id)
+        return Response(serialize_profile_detail(profile))
+
     def patch(self, request, profile_id):
         profile = self._get_profile(request, profile_id)
         data    = request.data
@@ -568,14 +637,45 @@ class ProfileDetailView(APIView):
             else:
                 profile.date_of_birth = None
 
+        # Academic + guardian fields — parents edit a child's full profile from
+        # Manage profile. Same validation as StudentProfileView: model `choices`
+        # are NOT enforced by .save(), so validate choices + max lengths here.
+        errors = {}
+        for f in _PROFILE_EXTRA_TEXT_FIELDS:
+            if f not in data:
+                continue
+            val = data.get(f)
+            val = val.strip() if isinstance(val, str) else (val or "")
+            max_len = LearnerProfile._meta.get_field(f).max_length
+            if max_len and isinstance(val, str) and len(val) > max_len:
+                errors[f] = f"Max {max_len} characters."
+                continue
+            setattr(profile, f, val)
+        for f, choices_attr in _PROFILE_CHOICE_FIELDS.items():
+            if f not in data:
+                continue
+            val = (data.get(f) or "")
+            val = val.strip() if isinstance(val, str) else val
+            allowed = {c[0] for c in getattr(LearnerProfile, choices_attr)}
+            if val and val not in allowed:
+                errors[f] = "Invalid choice."
+                continue
+            setattr(profile, f, val)
+        if errors:
+            raise ValidationError(errors)
+
         if "profile_photo" in request.FILES:
             profile.profile_photo = request.FILES["profile_photo"]
 
+        # PIN changes are NOT accepted here: they require account-password
+        # re-auth and go through ProfilePinView (/accounts/profiles/pin/).
+        # Accepting a bare `pin` on this generic edit would reopen the bypass
+        # where any session on the account strips/overwrites a profile's PIN.
         if "pin" in data:
-            new_pin = data["pin"]
-            if new_pin and (not str(new_pin).isdigit() or not (4 <= len(str(new_pin)) <= 6)):
-                raise ValidationError({"pin": "PIN must be 4–6 digits."})
-            profile.set_pin(str(new_pin) if new_pin else "")
+            raise ValidationError({
+                "pin": "Change the PIN from the PIN screen (account password required).",
+                "code": "pin_requires_password",
+            })
 
         if "avatar_emoji" in data:
             profile.avatar_emoji = data["avatar_emoji"]
@@ -585,14 +685,54 @@ class ProfileDetailView(APIView):
             profile.avatar_emoji = ""
 
         profile.save()
-        return Response(serialize_profile_card(profile))
+        return Response(serialize_profile_detail(profile))
 
     def delete(self, request, profile_id):
         profile      = self._get_profile(request, profile_id)
+
+        # Deleting a profile requires account-password re-auth — otherwise any
+        # session on the account (e.g. a child) could remove other profiles.
+        verify_account_password(request)
+
         active_count = request.user.learner_profiles.filter(is_active=True).count()
         if active_count <= 1:
             raise ValidationError("Cannot delete the only profile on this account.")
 
+        # Block deletion while the profile holds an active, unexpired paid
+        # subscription. `get_active_profile` only ever resolves `is_active=True`
+        # profiles, so soft-deleting one with a live subscription would strand
+        # that access with no way back in — there's no reactivation endpoint.
+        from django.utils import timezone
+        from enrollments.models import Subscription
+
+        live_subs = list(
+            Subscription.objects
+            .filter(
+                learner_profile=profile,
+                status=Subscription.STATUS_ACTIVE,
+                expires_at__gt=timezone.now(),
+            )
+            .select_related("course")
+        )
+        if live_subs:
+            course_titles = [s.course.title for s in live_subs]
+            raise ValidationError({
+                "detail": (
+                    f"\"{profile.display_name}\" has an active subscription "
+                    f"({', '.join(course_titles)}). Cancel it first, or wait "
+                    "for it to expire, before removing this profile."
+                ),
+                "code": "active_subscription",
+                "courses": course_titles,
+            })
+
+        # Pre-existing bug fixed here: when deleting the DEFAULT profile with a
+        # sibling present, setting the sibling's is_default=True BEFORE this
+        # profile's own is_default=False transiently put two rows on the same
+        # account at is_default=True — tripping the DB's own
+        # one_default_learner_per_account constraint. Clear this profile's
+        # is_default (and is_active) FIRST, then promote the sibling.
+        next_profile = None
         if profile.is_default:
             next_profile = (
                 request.user.learner_profiles
@@ -601,13 +741,16 @@ class ProfileDetailView(APIView):
                 .order_by("created_at")
                 .first()
             )
+
+        from django.db import transaction
+        with transaction.atomic():
+            profile.is_active  = False
+            profile.is_default = False
+            profile.save(update_fields=["is_active", "is_default"])
+
             if next_profile:
                 next_profile.is_default = True
                 next_profile.save(update_fields=["is_default"])
-
-        profile.is_active  = False
-        profile.is_default = False
-        profile.save(update_fields=["is_active", "is_default"])
         return Response({"detail": "Profile removed."}, status=status.HTTP_200_OK)
 
 
@@ -616,18 +759,19 @@ class ProfileDetailView(APIView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ProfileEmailLookupView(APIView):
-    permission_classes = [AllowAny]
+    """Return the AUTHENTICATED account's own profiles.
+
+    Was AllowAny + keyed on an arbitrary `email`, which leaked any account's
+    children's display names + relationships to anyone (enumeration + child
+    privacy leak). It now requires authentication and only ever reflects the
+    caller's own account — the `email` param is ignored. The login screen no
+    longer calls this pre-auth; the post-login /me/ response already carries the
+    profile list.
+    """
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        from .models import User
-        email = (request.data.get("email") or "").strip().lower()
-        if not email:
-            return Response({"profiles": [], "has_teacher": False})
-        try:
-            user = User.objects.get(email__iexact=email)
-        except User.DoesNotExist:
-            return Response({"profiles": [], "has_teacher": False})
-
+        user = request.user
         profiles = list(
             user.learner_profiles
             .filter(is_active=True)

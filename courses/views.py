@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from enrollments.models import Enrollment, EnrollmentRequest, Subscription
-from accounts.permissions import IsTeacher, IsAdmin
+from accounts.permissions import IsTeacherContext, IsAdmin
 from accounts.auth_flow import get_active_profile
 from quizzes.models import Quiz
 from assignments.models import Assignment
@@ -44,7 +44,7 @@ class PublicCourseDetailView(APIView):
 
 
 class CreateCourseView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def post(self, request):
         serializer = CourseSerializer(data=request.data)
@@ -61,7 +61,7 @@ class CreateCourseView(APIView):
 # =========================
 
 class MyCoursesView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def get(self, request):
         courses = Course.objects.filter(
@@ -77,7 +77,7 @@ class MyCoursesView(APIView):
 # =========================
 
 class UpdateCourseView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def patch(self, request, course_id):
         course = get_object_or_404(
@@ -103,7 +103,7 @@ class UpdateCourseView(APIView):
 # =========================
 
 class DeleteCourseView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def delete(self, request, course_id):
         course = get_object_or_404(

@@ -16,6 +16,8 @@ from enrollments.models import Enrollment
 
 from courses.models import Chapter
 from accounts.models import Role
+from accounts.permissions import require_teacher_context, IsTeacherContext
+from accounts.auth_flow import get_active_profile
 
 from .models import Assignment, AssignmentFile, AssignmentSubmission
 from .serializers import (
@@ -53,10 +55,16 @@ class AssignmentDetailView(generics.RetrieveAPIView):
     lookup_url_kwarg = "assignment_id"
 
     def get_queryset(self):
-        user = self.request.user
+        # The "already submitted" card must reflect the ACTIVE LEARNER
+        # PROFILE, not any submission by the account. In teacher context
+        # (no active profile) the prefetch is empty, which is correct —
+        # teachers read submissions through their own roster views.
+        learner = get_active_profile(self.request)
         submission_prefetch = Prefetch(
             "submissions",
-            queryset=AssignmentSubmission.objects.filter(student=user),
+            queryset=AssignmentSubmission.objects.filter(learner_profile=learner)
+            if learner is not None
+            else AssignmentSubmission.objects.none(),
             to_attr="user_submission_list",
         )
         return (
@@ -137,10 +145,13 @@ class SubmitAssignmentView(APIView):
         if not file:
             return Response({"detail": "File required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Keyed on (assignment, learner_profile): re-submitting replaces only
+        # THIS learner's file. Previously the key was (assignment, account),
+        # so one child's upload silently overwrote a sibling's.
         AssignmentSubmission.objects.update_or_create(
             assignment=assignment,
-            student=request.user,
-            defaults={"submitted_file": file},
+            learner_profile=learner,
+            defaults={"submitted_file": file, "student": request.user},
         )
 
         return Response({"detail": "Submission successful."}, status=status.HTTP_200_OK)
@@ -157,10 +168,13 @@ class CourseAssignmentsView(generics.ListAPIView):
     def get_queryset(self):
         course_id = self.kwargs["course_id"]
         user = self.request.user
+        learner = get_active_profile(self.request)
 
         submission_prefetch = Prefetch(
             "submissions",
-            queryset=AssignmentSubmission.objects.filter(student=user),
+            queryset=AssignmentSubmission.objects.filter(learner_profile=learner)
+            if learner is not None
+            else AssignmentSubmission.objects.none(),
             to_attr="user_submission_list",
         )
 
@@ -172,13 +186,11 @@ class CourseAssignmentsView(generics.ListAPIView):
         else:
             from courses.models import Course
             from enrollments.services import has_active_subscription
-            from accounts.auth_flow import get_active_profile
 
             try:
                 course_obj = Course.objects.get(pk=course_id)
             except Course.DoesNotExist:
                 raise PermissionDenied("Course not found.")
-            learner = get_active_profile(self.request)
             if not has_active_subscription(user=user, course=course_obj, learner_profile=learner):
                 raise PermissionDenied("Your subscription for this course has expired.")
             queryset = Assignment.objects.filter(
@@ -186,8 +198,11 @@ class CourseAssignmentsView(generics.ListAPIView):
             # Batch isolation: show course-wide assignments (batch IS NULL) plus
             # this student's own batch's assignments. Due dates are cohort-
             # relative, so a later batch must not inherit an earlier one's.
+            # The batch is the ACTIVE PROFILE's — two children in the same
+            # course can sit in different batches.
             enrollment = Enrollment.objects.filter(
-                user=user, course_id=course_id, status=Enrollment.STATUS_ACTIVE,
+                learner_profile=learner, course_id=course_id,
+                status=Enrollment.STATUS_ACTIVE,
             ).first()
             batch_id = enrollment.batch_id if enrollment else None
             queryset = queryset.filter(
@@ -222,8 +237,7 @@ class TeacherCreateAssignmentView(APIView):
     def post(self, request):
         user = request.user
 
-        if not user.has_role(Role.TEACHER):
-            return Response({"detail": "Only teachers allowed."}, status=status.HTTP_403_FORBIDDEN)
+        require_teacher_context(request)
 
         # ── Idempotency check ────────────────────────────────────────
         # Frontend sends a per-session UUID so accidental double-clicks
@@ -290,8 +304,7 @@ class TeacherUpdateAssignmentView(APIView):
     def patch(self, request, assignment_id):
         user = request.user
 
-        if not user.has_role(Role.TEACHER):
-            raise PermissionDenied("Only teachers allowed.")
+        require_teacher_context(request)
 
         assignment = get_object_or_404(
             Assignment.objects.select_related(
@@ -344,8 +357,7 @@ class TeacherDeleteAssignmentFileView(APIView):
     def delete(self, request, assignment_id, file_id):
         user = request.user
 
-        if not user.has_role(Role.TEACHER):
-            raise PermissionDenied("Only teachers allowed.")
+        require_teacher_context(request)
 
         assignment = get_object_or_404(
             Assignment.objects.select_related("chapter__subject"),
@@ -372,8 +384,7 @@ class TeacherDeleteAssignmentView(APIView):
     def delete(self, request, assignment_id):
         user = request.user
 
-        if not user.has_role(Role.TEACHER):
-            raise PermissionDenied("Only teachers allowed.")
+        require_teacher_context(request)
 
         assignment = get_object_or_404(
             Assignment.objects.select_related("chapter__subject"),
@@ -398,14 +409,11 @@ class TeacherDeleteAssignmentView(APIView):
 
 class TeacherSubjectAssignmentsView(generics.ListAPIView):
     serializer_class = TeacherAssignmentListSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def get_queryset(self):
         user = self.request.user
         subject_id = self.kwargs["subject_id"]
-
-        if not user.has_role(Role.TEACHER):
-            raise PermissionDenied("Only teachers allowed.")
 
         subject = get_object_or_404(Subject, id=subject_id)
 
@@ -428,14 +436,11 @@ class TeacherSubjectAssignmentsView(generics.ListAPIView):
 
 class TeacherAssignmentSubmissionsView(generics.ListAPIView):
     serializer_class = TeacherSubmissionListSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def get_queryset(self):
         user = self.request.user
         assignment_id = self.kwargs["assignment_id"]
-
-        if not user.has_role(Role.TEACHER):
-            raise PermissionDenied("Only teachers allowed.")
 
         assignment = get_object_or_404(
             Assignment.objects.select_related("chapter__subject"),
@@ -447,7 +452,7 @@ class TeacherAssignmentSubmissionsView(generics.ListAPIView):
         return (
             AssignmentSubmission.objects
             .filter(assignment=assignment)
-            .select_related("student", "assignment")
+            .select_related("student", "learner_profile", "assignment")
             .annotate(
                 submission_status=Case(
                     When(submitted_at__gt=assignment.due_date, then=Value("Late")),
@@ -468,10 +473,13 @@ class SubjectAssignmentsView(APIView):
 
     def get(self, request, subject_id):
         user = request.user
+        learner = get_active_profile(request)
 
         submission_prefetch = Prefetch(
             "submissions",
-            queryset=AssignmentSubmission.objects.filter(student=user),
+            queryset=AssignmentSubmission.objects.filter(learner_profile=learner)
+            if learner is not None
+            else AssignmentSubmission.objects.none(),
             to_attr="user_submission_list",
         )
 
@@ -525,8 +533,7 @@ class DownloadAllSubmissionsView(APIView):
     def get(self, request, assignment_id):
         user = request.user
 
-        if not user.has_role(Role.TEACHER):
-            raise PermissionDenied("Only teachers allowed.")
+        require_teacher_context(request)
 
         assignment = get_object_or_404(
             Assignment.objects.select_related("chapter__subject"),
@@ -538,16 +545,34 @@ class DownloadAllSubmissionsView(APIView):
         submissions = (
             AssignmentSubmission.objects
             .filter(assignment=assignment)
-            .select_related("student")
+            .select_related("student", "learner_profile")
         )
 
         buffer = BytesIO()
+        used_names = set()
         with zipfile.ZipFile(buffer, "w") as zf:
             for sub in submissions:
                 if sub.submitted_file:
-                    lp = sub.student.default_learner_profile()
-                    student_name = (lp.full_name if lp and lp.full_name else sub.student.email)
+                    # Name by the learner who submitted it — on a shared
+                    # family account the default profile would mislabel a
+                    # sibling's work.
+                    lp = sub.learner_profile or sub.student.default_learner_profile()
+                    student_name = (
+                        (lp.full_name or lp.display_name) if lp else sub.student.email
+                    ) or sub.student.email
                     filename = f"{student_name}_{sub.submitted_file.name.split('/')[-1]}"
+                    # Two learners can now legitimately upload files with the
+                    # same name; ZipFile silently accepts duplicate entries,
+                    # so dedupe explicitly.
+                    if filename in used_names:
+                        stem, dot, ext = filename.rpartition(".")
+                        base = stem if dot else filename
+                        suffix = f".{ext}" if dot else ""
+                        n = 2
+                        while f"{base}_{n}{suffix}" in used_names:
+                            n += 1
+                        filename = f"{base}_{n}{suffix}"
+                    used_names.add(filename)
                     zf.writestr(filename, sub.submitted_file.read())
 
         response = HttpResponse(

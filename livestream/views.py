@@ -6,6 +6,7 @@ from .serializers import (
 from .services.token import generate_livekit_token
 from .models import LiveSession, LiveSessionAttendance
 from courses.services import teaches_subject
+from accounts.permissions import require_teacher_context, IsTeacherContext
 from enrollments.models import Enrollment
 from livekit.api import WebhookReceiver, TokenVerifier
 from rest_framework.response import Response
@@ -158,14 +159,11 @@ class StudentLiveSessionListView(generics.ListAPIView):
 
 class TeacherLiveSessionListView(generics.ListAPIView):
     serializer_class = LiveSessionListSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def get_queryset(self):
         user = self.request.user
         subject_id = self.request.query_params.get("subject_id")
-
-        if not user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
 
         now = timezone.now()
         cutoff = now - timedelta(days=90)
@@ -327,8 +325,7 @@ def cancel_live_session(request, session_id):
     user = request.user
     session = get_object_or_404(LiveSession, id=session_id)
 
-    if not user.has_role("TEACHER"):
-        return Response({"detail": "Only teachers can cancel sessions."}, status=403)
+    require_teacher_context(request)
 
     if session.created_by != user:
         return Response({"detail": "You can only cancel your own sessions."}, status=403)
@@ -359,8 +356,7 @@ def end_live_session(request, session_id):
     user = request.user
     session = get_object_or_404(LiveSession, id=session_id)
 
-    if not user.has_role("TEACHER"):
-        return Response({"detail": "Only teachers can end sessions."}, status=403)
+    require_teacher_context(request)
 
     if str(session.created_by_id) != str(user.id):
         return Response({"detail": "Only the session creator can end it."}, status=403)
@@ -388,8 +384,7 @@ def pause_live_session(request, session_id):
     user = request.user
     session = get_object_or_404(LiveSession, id=session_id)
 
-    if not user.has_role("TEACHER"):
-        return Response({"detail": "Only teachers can pause sessions."}, status=403)
+    require_teacher_context(request)
 
     if str(session.created_by_id) != str(user.id):
         return Response({"detail": "Only the session creator can pause."}, status=403)
@@ -426,8 +421,7 @@ def live_session_detail(request, session_id):
     session = get_object_or_404(LiveSession, id=session_id)
     user = request.user
 
-    if not user.has_role("TEACHER"):
-        return Response({"detail": "Only teachers allowed."}, status=403)
+    require_teacher_context(request)
 
     if not teaches_subject(user, session.subject):
         return Response({"detail": "Not assigned to this subject."}, status=403)

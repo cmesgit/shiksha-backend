@@ -41,6 +41,28 @@ def get_student_id(user):
     return getattr(lp, "student_id", None) if lp else None
 
 
+def session_student_name(obj):
+    """Name of the learner the session is for.
+
+    Prefers the booking `learner_profile` (so two children on one account are
+    distinguishable); falls back to the account's default profile for legacy
+    rows created before per-profile attribution.
+    """
+    lp = getattr(obj, "learner_profile", None)
+    if lp is not None:
+        name = (lp.full_name or "").strip() or lp.display_name
+        if name:
+            return name
+    return get_user_name(obj.requested_by)
+
+
+def session_student_id(obj):
+    lp = getattr(obj, "learner_profile", None)
+    if lp is not None:
+        return getattr(lp, "student_id", None) or get_student_id(obj.requested_by)
+    return get_student_id(obj.requested_by)
+
+
 def calculate_duration_minutes(obj):
     if obj.started_at and obj.ended_at:
         delta = obj.ended_at - obj.started_at
@@ -82,6 +104,7 @@ class SessionListSerializer(serializers.ModelSerializer):
     student_id = serializers.SerializerMethodField()
     teacher_id = serializers.SerializerMethodField()
     requested_by_id = serializers.SerializerMethodField()
+    learner_profile_id = serializers.SerializerMethodField()
     actual_duration_minutes = serializers.SerializerMethodField()
 
     class Meta:
@@ -103,6 +126,7 @@ class SessionListSerializer(serializers.ModelSerializer):
             "student_name",
             "student_id",
             "requested_by_id",
+            "learner_profile_id",
             "created_at",
         ]
 
@@ -110,10 +134,13 @@ class SessionListSerializer(serializers.ModelSerializer):
         return get_user_name(obj.teacher)
 
     def get_student_name(self, obj):
-        return get_user_name(obj.requested_by)
+        return session_student_name(obj)
 
     def get_student_id(self, obj):
-        return get_student_id(obj.requested_by)
+        return session_student_id(obj)
+
+    def get_learner_profile_id(self, obj):
+        return str(obj.learner_profile_id) if obj.learner_profile_id else None
 
     def get_teacher_id(self, obj):
         return str(obj.teacher_id) if obj.teacher_id else None
@@ -135,6 +162,7 @@ class PrivateSessionSerializer(serializers.ModelSerializer):
     student_id = serializers.SerializerMethodField()
     teacher_id = serializers.SerializerMethodField()
     requested_by_id = serializers.SerializerMethodField()
+    learner_profile_id = serializers.SerializerMethodField()
     participants = ParticipantSerializer(many=True, read_only=True)
     actual_duration_minutes = serializers.SerializerMethodField()
 
@@ -161,6 +189,7 @@ class PrivateSessionSerializer(serializers.ModelSerializer):
             "student_name",
             "student_id",
             "requested_by_id",
+            "learner_profile_id",
             "participants",
             "created_at",
             "updated_at",
@@ -173,10 +202,13 @@ class PrivateSessionSerializer(serializers.ModelSerializer):
         return get_user_name(obj.teacher)
 
     def get_student_name(self, obj):
-        return get_user_name(obj.requested_by)
+        return session_student_name(obj)
 
     def get_student_id(self, obj):
-        return get_student_id(obj.requested_by)
+        return session_student_id(obj)
+
+    def get_learner_profile_id(self, obj):
+        return str(obj.learner_profile_id) if obj.learner_profile_id else None
 
     def get_teacher_id(self, obj):
         return str(obj.teacher_id) if obj.teacher_id else None

@@ -10,7 +10,7 @@ from .models_recordings import SessionRecording
 from .serializers_recordings import SessionRecordingSerializer
 from .models import Subject
 from .services import teaches_subject
-from accounts.permissions import IsTeacher
+from accounts.permissions import IsTeacherContext
 
 
 class SubjectRecordingsView(APIView):
@@ -40,7 +40,7 @@ class SubjectRecordingsView(APIView):
 
 
 class CreateRecordingView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def post(self, request, subject_id):
         subject = get_object_or_404(Subject, id=subject_id)
@@ -51,7 +51,7 @@ class CreateRecordingView(APIView):
 
 
 class DeleteRecordingView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def delete(self, request, recording_id):
         recording = get_object_or_404(SessionRecording, id=recording_id)
@@ -62,7 +62,7 @@ class DeleteRecordingView(APIView):
 
 
 class CreateVideoSlotView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def post(self, request):
         title = request.data.get("title")
@@ -78,7 +78,7 @@ class CreateVideoSlotView(APIView):
 
 
 class SignedUploadUrlView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def post(self, request):
         video_id = request.data.get("video_id")
@@ -95,7 +95,7 @@ class SignedUploadUrlView(APIView):
 
 
 class SaveRecordingView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def post(self, request, subject_id):
         subject = get_object_or_404(Subject, id=subject_id)

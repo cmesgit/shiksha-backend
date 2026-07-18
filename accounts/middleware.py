@@ -17,6 +17,7 @@
 
 from urllib.parse import parse_qs
 
+from django.conf import settings
 from channels.middleware import BaseMiddleware
 from channels.db import database_sync_to_async
 from rest_framework_simplejwt.tokens import AccessToken
@@ -77,7 +78,15 @@ class JWTAuthMiddleware(BaseMiddleware):
         if token:
             return token
 
-        # 2) ?token= query param (dev / non-cookie clients).
+        # 2) ?token= query param — LOCAL DEV ONLY (settings.DEBUG). A token in
+        # the URL ends up in server/proxy access logs, so this must never be
+        # honored on a deployed environment (dev droplet or prod both run with
+        # DEBUG=False). No frontend code currently populates this in a way
+        # that reaches deployed hosts (nothing writes the access token into
+        # local/session storage), so restricting this is a no-op for existing
+        # traffic and only closes a future log-leakage footgun.
+        if not settings.DEBUG:
+            return None
         try:
             qs = scope.get("query_string", b"").decode("utf-8", errors="ignore")
             params = parse_qs(qs)

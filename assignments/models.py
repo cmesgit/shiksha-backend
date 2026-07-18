@@ -1,6 +1,7 @@
 import uuid
 import os
 from django.db import models
+from django.db.models import Q
 from django.conf import settings
 from django.utils import timezone
 
@@ -149,11 +150,25 @@ class AssignmentSubmission(models.Model):
         db_index=True
     )
 
+    # The ACCOUNT that submitted (kept for audit; matches the
+    # user/learner_profile dual-keying already used by enrollments).
     student = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="assignment_submissions",
         db_index=True
+    )
+
+    # The LEARNER PROFILE the submission belongs to. Without this, two
+    # children on one account overwrite each other's uploads (the old
+    # unique(assignment, student) rule). Nullable only for legacy rows —
+    # backfill with `manage.py backfill_activity_profiles`.
+    learner_profile = models.ForeignKey(
+        "accounts.LearnerProfile",
+        on_delete=models.CASCADE,
+        related_name="assignment_submissions",
+        null=True,
+        blank=True,
     )
 
     submitted_file = models.FileField(upload_to="assignments/submissions/")
@@ -162,13 +177,23 @@ class AssignmentSubmission(models.Model):
 
     class Meta:
         constraints = [
+            # One submission per LEARNER PROFILE per assignment.
+            models.UniqueConstraint(
+                fields=["assignment", "learner_profile"],
+                condition=Q(learner_profile__isnull=False),
+                name="uniq_submission_per_profile",
+            ),
+            # Legacy rows (pre-profile) keep the old account-level rule
+            # until backfill_activity_profiles runs.
             models.UniqueConstraint(
                 fields=["assignment", "student"],
-                name="unique_assignment_submission"
-            )
+                condition=Q(learner_profile__isnull=True),
+                name="uniq_submission_legacy_account",
+            ),
         ]
         indexes = [
             models.Index(fields=["assignment", "student"]),
+            models.Index(fields=["assignment", "learner_profile"]),
             models.Index(fields=["submitted_at"]),
         ]
         ordering = ["-submitted_at"]

@@ -10,7 +10,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 
-from accounts.permissions import IsEmailVerified, IsAdmin
+from accounts.permissions import IsEmailVerified, IsAdmin, require_teacher_context, IsTeacherContext
+from accounts.auth_flow import get_active_profile
 from enrollments.models import Enrollment
 from django.db import models
 from django.db.models import Count, Avg, Max, Min, Q
@@ -36,6 +37,21 @@ from .serializers import (
 )
 
 
+def _attempt_learner_name(attempt):
+    """Display name for the learner who took an attempt.
+
+    Prefers the attempt's OWN learner_profile (so a teacher sees which
+    child on a shared account took it); falls back to the account's
+    default profile for legacy rows, then to the username.
+    """
+    lp = attempt.learner_profile or attempt.student.default_learner_profile()
+    if lp:
+        name = (lp.full_name or "").strip() or (lp.display_name or "").strip()
+        if name:
+            return name
+    return attempt.student.username or attempt.student.email
+
+
 # =====================================================
 # TEACHER VIEWS
 # =====================================================
@@ -44,8 +60,7 @@ class CreateQuizView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not request.user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
+        require_teacher_context(request)
 
         serializer = QuizCreateSerializer(
             data=request.data,
@@ -64,8 +79,7 @@ class AddQuestionView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        if not request.user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
+        require_teacher_context(request)
 
         quiz = get_object_or_404(Quiz, pk=pk)
 
@@ -103,8 +117,7 @@ class BulkAddQuestionsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        if not request.user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
+        require_teacher_context(request)
 
         quiz = get_object_or_404(Quiz, pk=pk)
 
@@ -143,8 +156,7 @@ class SubmitQuizForReviewView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk):
-        if not request.user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
+        require_teacher_context(request)
 
         quiz = get_object_or_404(Quiz, pk=pk)
 
@@ -195,8 +207,7 @@ class TeacherDeleteQuizView(APIView):
             pk=pk
         )
 
-        if not request.user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
+        require_teacher_context(request)
 
         if quiz.created_by != request.user:
             raise PermissionDenied("You did not create this quiz.")
@@ -228,14 +239,11 @@ class TeacherDeleteQuizView(APIView):
 
 class TeacherSubjectQuizListView(generics.ListAPIView):
     serializer_class = TeacherQuizAnalyticsSerializer
-    permission_classes = [IsAuthenticated, IsEmailVerified]
+    permission_classes = [IsAuthenticated, IsEmailVerified, IsTeacherContext]
 
     def get_queryset(self):
         user = self.request.user
         subject_id = self.kwargs["subject_id"]
-
-        if not user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
 
         subject = get_object_or_404(
             Subject.objects.select_related("course"),
@@ -279,13 +287,22 @@ class StudentDashboardView(APIView):
 
         user = request.user
 
+        # Everything on this dashboard is per LEARNER PROFILE: which courses
+        # are unlocked, which quizzes were attempted, and the scores shown.
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response(
+                {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
+                status=403,
+            )
+
         from django.utils import timezone as _tz
         from enrollments.models import Subscription as _Sub
 
         quizzes = (
             Quiz.objects
             .filter(
-                subject__course__subscriptions__user=user,
+                subject__course__subscriptions__learner_profile=learner,
                 subject__course__subscriptions__status=_Sub.STATUS_ACTIVE,
                 subject__course__subscriptions__expires_at__gt=_tz.now(),
                 is_published=True,
@@ -297,14 +314,14 @@ class StudentDashboardView(APIView):
                 Prefetch(
                     "attempts",
                     queryset=QuizAttempt.objects.filter(
-                        student=user
+                        learner_profile=learner
                     ).order_by("-attempt_number"),
                     to_attr="user_attempts",
                 ),
                 Prefetch(
                     "attempts",
                     queryset=QuizAttempt.objects.filter(
-                        student=user,
+                        learner_profile=learner,
                         status=QuizAttempt.STATUS_SUBMITTED,
                     ).order_by("-attempt_number"),
                     to_attr="user_submitted_attempts",
@@ -318,7 +335,7 @@ class StudentDashboardView(APIView):
 
         submitted_ids = set(
             QuizAttempt.objects.filter(
-                student=user,
+                learner_profile=learner,
                 status=QuizAttempt.STATUS_SUBMITTED,
             ).values_list("quiz_id", flat=True).distinct()
         )
@@ -372,10 +389,13 @@ class StartQuizView(APIView):
                 status=402,
             )
 
-        # ── Key fix: reuse an existing PENDING attempt instead of creating a new one ──
+        # ── Reuse an existing PENDING attempt instead of creating a new one ──
+        # Scoped to the ACTIVE LEARNER PROFILE: without this, a sibling on
+        # the same account would resume (and submit into) another child's
+        # in-flight attempt.
         existing_pending = QuizAttempt.objects.filter(
             quiz=quiz,
-            student=request.user,
+            learner_profile=learner,
             status=QuizAttempt.STATUS_PENDING,
         ).order_by("-attempt_number").first()
 
@@ -387,10 +407,11 @@ class StartQuizView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        # Create a new attempt (first attempt or re-attempt after submitting)
+        # Create a new attempt (first attempt or re-attempt after submitting).
+        # Attempt numbering is per profile — each child counts from 1.
         last_attempt = QuizAttempt.objects.filter(
             quiz=quiz,
-            student=request.user
+            learner_profile=learner
         ).order_by("-attempt_number").first()
 
         new_attempt_number = (
@@ -399,6 +420,7 @@ class StartQuizView(APIView):
         new_attempt = QuizAttempt.objects.create(
             quiz=quiz,
             student=request.user,
+            learner_profile=learner,
             attempt_number=new_attempt_number
         )
 
@@ -465,8 +487,15 @@ class CheckAnswerView(APIView):
         choice_id = request.data.get("selected_choice")
         choice = get_object_or_404(Choice, pk=choice_id, question=question)
 
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response(
+                {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
+                status=403,
+            )
+
         attempt = QuizAttempt.objects.filter(
-            quiz=quiz, student=request.user, status=QuizAttempt.STATUS_PENDING,
+            quiz=quiz, learner_profile=learner, status=QuizAttempt.STATUS_PENDING,
         ).order_by("-attempt_number").first()
         if not attempt:
             raise ValidationError("Start the quiz first.")
@@ -549,8 +578,7 @@ class QuizDetailDraftView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
 
     def get(self, request, pk):
-        if not request.user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers can preview drafts.")
+        require_teacher_context(request)
 
         # Allow fetching whether published or not
         quiz = get_object_or_404(
@@ -583,7 +611,16 @@ class QuizResultView(APIView):
             pk=pk,
         )
 
-        # Support ?attempt=<id> to view a specific attempt
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response(
+                {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
+                status=403,
+            )
+
+        # Support ?attempt=<id> to view a specific attempt — the active
+        # profile's own attempts only, so one child can't open a sibling's
+        # results by guessing an attempt id.
         attempt_id = request.query_params.get("attempt")
 
         if attempt_id:
@@ -595,7 +632,7 @@ class QuizResultView(APIView):
                 ),
                 id=attempt_id,
                 quiz=quiz,
-                student=request.user,
+                learner_profile=learner,
                 status=QuizAttempt.STATUS_SUBMITTED,
             )
         else:
@@ -603,7 +640,7 @@ class QuizResultView(APIView):
                 QuizAttempt.objects
                 .filter(
                     quiz=quiz,
-                    student=request.user,
+                    learner_profile=learner,
                     status=QuizAttempt.STATUS_SUBMITTED,
                 )
                 .prefetch_related(
@@ -684,12 +721,12 @@ class QuizResultView(APIView):
             better_count = sum(1 for s in all_scores if s > attempt.score)
             percentile = round(better_count * 100.0 / len(all_scores), 1)
 
-        # ── score trend: this student's last 8 submitted attempts in the
-        # same subject (across quizzes), plus the class average for each ──
+        # ── score trend: this LEARNER PROFILE's last 8 submitted attempts in
+        # the same subject (across quizzes), plus the class average for each ──
         recent_attempts = list(
             QuizAttempt.objects
             .filter(
-                student=request.user,
+                learner_profile=learner,
                 status=QuizAttempt.STATUS_SUBMITTED,
                 quiz__subject=quiz.subject,
             )
@@ -794,14 +831,21 @@ class StudentQuizAttemptsView(APIView):
     def get(self, request, pk):
         quiz = get_object_or_404(Quiz, pk=pk, is_published=True)
 
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response(
+                {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
+                status=403,
+            )
+
         attempts = (
             QuizAttempt.objects
             .filter(
                 quiz=quiz,
-                student=request.user,
+                learner_profile=learner,
                 status=QuizAttempt.STATUS_SUBMITTED,
             )
-            .select_related("student")
+            .select_related("student", "learner_profile")
             .order_by("attempt_number")
         )
 
@@ -809,11 +853,7 @@ class StudentQuizAttemptsView(APIView):
             {
                 "id": a.id,
                 "attempt_number": a.attempt_number,
-                "student_name": (
-                    (lambda p: p.full_name if p and p.full_name else a.student.username)(
-                        a.student.default_learner_profile()
-                    )
-                ),
+                "student_name": _attempt_learner_name(a),
                 "submitted_at": a.submitted_at,
                 "score": a.score,
                 "total_marks": quiz.total_marks,
@@ -831,8 +871,7 @@ class TeacherQuizAttemptsView(APIView):
     def get(self, request, pk):
         user = request.user
 
-        if not user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
+        require_teacher_context(request)
 
         quiz = get_object_or_404(
             Quiz.objects.select_related("subject"),
@@ -892,16 +931,13 @@ class TeacherQuizAttemptsView(APIView):
 
 
 class TeacherStudentAttemptsView(generics.ListAPIView):
-    permission_classes = [IsAuthenticated, IsEmailVerified]
+    permission_classes = [IsAuthenticated, IsEmailVerified, IsTeacherContext]
     serializer_class = TeacherQuizAttemptSerializer
 
     def get_queryset(self):
         user = self.request.user
         quiz_id = self.kwargs["quiz_id"]
         student_id = self.kwargs["student_id"]
-
-        if not user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
 
         quiz = get_object_or_404(
             Quiz.objects.select_related("subject"),
@@ -961,7 +997,7 @@ class TeacherQuizAttemptDetailView(APIView):
             })
 
         return Response({
-            "student_name": (lambda p: p.full_name if p else attempt.student.username)(attempt.student.default_learner_profile()),
+            "student_name": _attempt_learner_name(attempt),
             "score": attempt.score,
             "total": attempt.quiz.total_marks,
             "submitted_at": attempt.submitted_at,
@@ -986,13 +1022,10 @@ class TeacherQuestionBankView(generics.ListAPIView):
                        subject(s) as the requester (their "school library").
     """
     serializer_class = BankQuestionSerializer
-    permission_classes = [IsAuthenticated, IsEmailVerified]
+    permission_classes = [IsAuthenticated, IsEmailVerified, IsTeacherContext]
 
     def get_queryset(self):
         user = self.request.user
-        if not user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
-
         scope = self.request.query_params.get("scope", "mine")
         subject_id = self.request.query_params.get("subject")
         topic = self.request.query_params.get("topic", "").strip()
@@ -1044,8 +1077,7 @@ class TeacherBankFiltersView(APIView):
 
     def get(self, request):
         user = request.user
-        if not user.has_role("TEACHER"):
-            raise PermissionDenied("Only teachers allowed.")
+        require_teacher_context(request)
 
         assigned_subject_ids = SubjectTeacher.objects.filter(
             teacher=user

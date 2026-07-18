@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError, PermissionDenied
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 
@@ -362,9 +362,14 @@ class FormFillupView(APIView):
     def get(self, request):
         user = request.user
         is_teacher = self._is_teacher(user)
-        profile = _profile_target(request)
 
         if is_teacher:
+            # The teacher form's personal fields live on the SELF profile —
+            # the same place TeacherFormFillupSerializer.update() writes.
+            # Reading the ACTIVE profile here pre-filled a child's personal
+            # data into the teacher application when a child profile was
+            # selected, and submitting then copied it onto the SELF profile.
+            profile = user.default_learner_profile() or _profile_target(request)
             tp = getattr(user, "teacher_profile", None)
 
             data = {
@@ -445,6 +450,7 @@ class FormFillupView(APIView):
 
             }
         else:
+            profile = _profile_target(request)
             data = {
                 "form_type": "student",
                 "email": user.email,
@@ -531,7 +537,21 @@ class TeacherProfileView(APIView):
 
     def patch(self, request):
         user = request.user
-        profile = _profile_target(request)
+
+        # Only actual teachers may touch the teacher profile. Without this
+        # check, get_or_create below would SPAWN a teacher identity on any
+        # student account that calls the endpoint (which then changes the
+        # login flow into the profile picker with a phantom teacher tile).
+        if not user.has_role("TEACHER"):
+            raise PermissionDenied("Only teachers can edit the teacher profile.")
+
+        # Teacher personal data lives on the account's DEFAULT (SELF) learner
+        # profile — same convention as TeacherFormFillupSerializer.update().
+        # Using the ACTIVE profile here would let a teacher browsing in a
+        # child's learner context overwrite that child's name/phone/photo.
+        profile = user.default_learner_profile()
+        if profile is None:
+            raise ValidationError("Account has no learner profile to store personal data on.")
         tp, _ = TeacherProfile.objects.get_or_create(user=user)
 
         data = request.data
@@ -582,7 +602,10 @@ class TeacherProfileView(APIView):
 
     def get(self, request):
         user = request.user
-        profile = _profile_target(request)
+        # Read from the SELF profile — mirrors patch() above. In a child's
+        # learner context this view must still show the TEACHER's own name
+        # and photo, not the child's.
+        profile = user.default_learner_profile() or _profile_target(request)
         tp = getattr(user, "teacher_profile", None)
 
         # Active courses & subjects via SubjectTeacher
@@ -664,16 +687,57 @@ class StudentProfileView(APIView):
         "highest_education", "reason_not_studying",
     }
 
+    # Model `choices` are NOT enforced by .save() — only by full_clean() or
+    # forms/serializers. Validate here so garbage values can't be written.
+    CHOICE_FIELDS = {
+        "gender": "GENDER_CHOICES",
+        "currently_studying": "CURRENTLY_STUDYING_CHOICES",
+        "current_class": "CLASS_CHOICES",
+        "stream": "STREAM_CHOICES",
+        "board": "BOARD_CHOICES",
+        "highest_education": "HIGHEST_EDUCATION_CHOICES",
+    }
+
     def patch(self, request):
         profile = _profile_target(request)
         data = request.data
 
+        errors = {}
         for field in self.PROFILE_FIELDS:
-            if field in data:
-                value = data[field]
-                if field == "date_of_birth" and value in ("", None):
+            if field not in data:
+                continue
+            value = data[field]
+
+            if field == "date_of_birth":
+                if value in ("", None):
                     continue
-                setattr(profile, field, value)
+                from datetime import date
+                try:
+                    y, m, d = (int(x) for x in str(value).split("-"))
+                    value = date(y, m, d)
+                except Exception:
+                    errors[field] = "Use YYYY-MM-DD."
+                    continue
+
+            elif field in self.CHOICE_FIELDS:
+                value = (value or "").strip() if isinstance(value, str) else value
+                allowed = {
+                    c[0] for c in getattr(LearnerProfile, self.CHOICE_FIELDS[field])
+                }
+                if value and value not in allowed:
+                    errors[field] = "Invalid choice."
+                    continue
+
+            elif isinstance(value, str):
+                max_len = LearnerProfile._meta.get_field(field).max_length
+                if max_len and len(value) > max_len:
+                    errors[field] = f"Max {max_len} characters."
+                    continue
+
+            setattr(profile, field, value)
+
+        if errors:
+            raise ValidationError(errors)
 
         if "profile_photo" in request.FILES:
             profile.profile_photo = request.FILES["profile_photo"]
@@ -828,7 +892,20 @@ class RefreshView(APIView):
                 profile=profile,
                 active_track=active_track,                  # ← preserved now
             )
-            return set_auth_cookies(Response({"detail": "refreshed"}), new_refresh)
+            response = set_auth_cookies(Response({"detail": "refreshed"}), new_refresh)
+
+            # Blacklist the OLD refresh token so it can't be replayed after
+            # rotation (e.g. if it leaked before this request). `build_tokens`
+            # mints an entirely new token rather than rotating this one in
+            # place, so nothing does this automatically — SIMPLE_JWT's
+            # BLACKLIST_AFTER_ROTATION only fires inside simplejwt's own
+            # TokenRefreshView, which this custom view doesn't use.
+            try:
+                old_token.blacklist()
+            except TokenError:
+                pass  # already blacklisted / no outstanding record — fine
+
+            return response
 
         except (TokenError, User.DoesNotExist):
             return Response(status=status.HTTP_401_UNAUTHORIZED)

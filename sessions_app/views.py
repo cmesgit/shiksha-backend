@@ -14,10 +14,12 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from accounts.auth_flow import get_active_profile
 from sessions_app.services.private_token import generate_private_token
 
 from .models import PrivateSession, SessionParticipant, SessionRescheduleHistory, ChatMessage
-from .permissions import IsTeacher, IsStudent
+from .permissions import IsStudent
+from accounts.permissions import IsTeacherContext
 from .serializers import (
     SessionListSerializer,
     PrivateSessionSerializer,
@@ -163,7 +165,46 @@ def _session_qs():
     return PrivateSession.objects.select_related(
         "teacher",
         "requested_by",
+        "learner_profile",
     )
+
+
+_NO_PROFILE = Response(
+    {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
+    status=status.HTTP_403_FORBIDDEN,
+)
+
+
+def _owned_by_profile(user, learner):
+    """Sessions the given learner profile booked on this account.
+
+    Dual-keyed on (requested_by=account, learner_profile). Legacy rows created
+    before per-profile attribution have learner_profile=NULL; surface those only
+    to the account's DEFAULT profile so nothing disappears before the backfill
+    runs (mirrors the learner_profile__isnull fallbacks in courses/views.py).
+    """
+    q = Q(requested_by=user, learner_profile=learner)
+    if getattr(learner, "is_default", False):
+        q |= Q(requested_by=user, learner_profile__isnull=True)
+    return q
+
+
+def _get_owned_session(request, session_id):
+    """Fetch a session the ACTIVE learner profile owns, or an error Response.
+
+    Returns (session, None) on success or (None, Response) so a sibling on the
+    same account can no longer cancel / reconfirm another child's session.
+    """
+    learner = get_active_profile(request)
+    if learner is None:
+        return None, _NO_PROFILE
+    try:
+        session = _session_qs().get(_owned_by_profile(request.user, learner), pk=session_id)
+    except PrivateSession.DoesNotExist:
+        return None, Response(
+            {"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND
+        )
+    return session, None
 
 
 # ===================================================================
@@ -174,6 +215,10 @@ def _session_qs():
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsStudent])
 def request_session(request):
+    learner = get_active_profile(request)
+    if learner is None:
+        return _NO_PROFILE
+
     ser = SessionRequestSerializer(data=request.data)
     ser.is_valid(raise_exception=True)
     d = ser.validated_data
@@ -202,6 +247,7 @@ def request_session(request):
     session = PrivateSession.objects.create(
         teacher=teacher,
         requested_by=request.user,
+        learner_profile=learner,
         subject=subject_obj.name,
         scheduled_date=d["scheduled_date"],
         scheduled_time=d["scheduled_time"],
@@ -254,8 +300,19 @@ def student_sessions(request):
     search = request.query_params.get("search", "").strip()
     user = request.user
 
+    learner = get_active_profile(request)
+    if learner is None:
+        return _NO_PROFILE
+
+    # Sessions this profile booked (dual-keyed), OR group sessions ANOTHER
+    # account invited this account to. The booker is also stored as a
+    # participant, so the participant branch must exclude self-booked rows —
+    # otherwise it re-broadens to every session on the account and defeats the
+    # per-profile scoping. External invites target an account (not a profile),
+    # so they remain account-level by nature (see SessionParticipant follow-up).
     qs = _session_qs().filter(
-        Q(requested_by=user) | Q(participants__user=user)
+        _owned_by_profile(user, learner)
+        | (Q(participants__user=user) & ~Q(requested_by=user))
     ).distinct()
 
     if tab == "scheduled":
@@ -287,11 +344,9 @@ def student_sessions(request):
 @permission_classes([IsAuthenticated, IsStudent])
 def cancel_session(request, session_id):
     """Student cancels a pending or approved session they requested."""
-    try:
-        session = PrivateSession.objects.get(
-            pk=session_id, requested_by=request.user)
-    except PrivateSession.DoesNotExist:
-        return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+    session, err = _get_owned_session(request, session_id)
+    if err:
+        return err
 
     if session.status not in ("pending", "approved", "needs_reconfirmation"):
         return Response(
@@ -310,11 +365,9 @@ def cancel_session(request, session_id):
 @permission_classes([IsAuthenticated, IsStudent])
 def confirm_reschedule(request, session_id):
     """Student confirms a teacher's reschedule proposal."""
-    try:
-        session = PrivateSession.objects.get(
-            pk=session_id, requested_by=request.user)
-    except PrivateSession.DoesNotExist:
-        return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+    session, err = _get_owned_session(request, session_id)
+    if err:
+        return err
 
     if session.status != "needs_reconfirmation":
         return Response(
@@ -336,11 +389,9 @@ def confirm_reschedule(request, session_id):
 @permission_classes([IsAuthenticated, IsStudent])
 def decline_reschedule(request, session_id):
     """Student declines a teacher's reschedule proposal → session is declined."""
-    try:
-        session = PrivateSession.objects.get(
-            pk=session_id, requested_by=request.user)
-    except PrivateSession.DoesNotExist:
-        return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+    session, err = _get_owned_session(request, session_id)
+    if err:
+        return err
 
     if session.status != "needs_reconfirmation":
         return Response(
@@ -411,7 +462,7 @@ def _apply_search(qs, search):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated, IsTeacher])
+@permission_classes([IsAuthenticated, IsTeacherContext])
 def teacher_sessions(request):
     """Teacher's approved / ongoing sessions."""
     search = request.query_params.get("search", "").strip()
@@ -423,7 +474,7 @@ def teacher_sessions(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated, IsTeacher])
+@permission_classes([IsAuthenticated, IsTeacherContext])
 def teacher_requests(request):
     """Pending requests awaiting teacher action."""
     search = request.query_params.get("search", "").strip()
@@ -433,7 +484,7 @@ def teacher_requests(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated, IsTeacher])
+@permission_classes([IsAuthenticated, IsTeacherContext])
 def teacher_history(request):
     """Teacher's completed / cancelled / declined sessions."""
     search = request.query_params.get("search", "").strip()
@@ -449,7 +500,7 @@ def teacher_history(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsTeacher])
+@permission_classes([IsAuthenticated, IsTeacherContext])
 def accept_request(request, session_id):
     """Teacher accepts a pending session request."""
     try:
@@ -478,7 +529,7 @@ def accept_request(request, session_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsTeacher])
+@permission_classes([IsAuthenticated, IsTeacherContext])
 def decline_request(request, session_id):
     """Teacher declines a pending session request."""
     try:
@@ -501,7 +552,7 @@ def decline_request(request, session_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsTeacher])
+@permission_classes([IsAuthenticated, IsTeacherContext])
 def reschedule_request(request, session_id):
     """Teacher proposes a new date/time for a pending or approved session."""
     try:
@@ -546,7 +597,7 @@ def reschedule_request(request, session_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsTeacher])
+@permission_classes([IsAuthenticated, IsTeacherContext])
 def teacher_cancel_session(request, session_id):
     """Teacher cancels a pending, approved, or needs_reconfirmation session."""
     try:
@@ -569,7 +620,7 @@ def teacher_cancel_session(request, session_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsTeacher])
+@permission_classes([IsAuthenticated, IsTeacherContext])
 def start_session(request, session_id):
     """Teacher starts an approved session."""
     try:
@@ -613,7 +664,7 @@ def _end_session_internal(session, reason="ended"):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, IsTeacher])
+@permission_classes([IsAuthenticated, IsTeacherContext])
 def end_session(request, session_id):
     """Teacher ends an ongoing session."""
     try:

@@ -331,8 +331,9 @@ class TeacherSubmissionListSerializer(serializers.ModelSerializer):
         source="student.id",               read_only=True)
     student_email = serializers.EmailField(
         source="student.email",            read_only=True)
-    student_name = serializers.CharField(
-        source="student.username", read_only=True)
+    student_name = serializers.SerializerMethodField()
+    learner_profile_id = serializers.UUIDField(
+        source="learner_profile.id", read_only=True, default=None)
     submission_status = serializers.CharField(read_only=True)
 
     class Meta:
@@ -342,7 +343,18 @@ class TeacherSubmissionListSerializer(serializers.ModelSerializer):
             "student_id",
             "student_email",
             "student_name",
+            "learner_profile_id",
             "submitted_file",
             "submitted_at",
             "submission_status",
         )
+
+    def get_student_name(self, obj):
+        # The learner who actually submitted — on a shared family account the
+        # account username can't distinguish between children.
+        lp = obj.learner_profile or obj.student.default_learner_profile()
+        if lp:
+            name = (lp.full_name or "").strip() or (lp.display_name or "").strip()
+            if name:
+                return name
+        return obj.student.username or obj.student.email

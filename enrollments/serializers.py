@@ -171,6 +171,8 @@ class EnrollmentRequestCreateSerializer(serializers.ModelSerializer):
 class MyEnrollmentRequestSerializer(serializers.ModelSerializer):
     course = CourseBriefSerializer(read_only=True)
     receipt = serializers.ImageField(read_only=True)
+    learner_name = serializers.SerializerMethodField()
+    learner_profile_id = serializers.SerializerMethodField()
 
     class Meta:
         model = EnrollmentRequest
@@ -186,7 +188,18 @@ class MyEnrollmentRequestSerializer(serializers.ModelSerializer):
             "admin_note",
             "submitted_at",
             "reviewed_at",
+            "learner_name",
+            "learner_profile_id",
         )
+
+    def get_learner_name(self, obj):
+        lp = obj.learner_profile
+        if lp is None:
+            return ""
+        return (lp.full_name or "").strip() or lp.display_name
+
+    def get_learner_profile_id(self, obj):
+        return str(obj.learner_profile_id) if obj.learner_profile_id else None
 
 
 # -------- Admin-facing --------

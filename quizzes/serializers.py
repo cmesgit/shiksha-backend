@@ -181,13 +181,20 @@ class QuizSubmitSerializer(serializers.Serializer):
 
     @transaction.atomic
     def save(self, **kwargs):
+        from accounts.auth_flow import get_active_profile
+
         quiz = self.context["quiz"]
         user = self.context["request"].user
         submitted_answers = self.validated_data["answers"]
 
+        # Finalize the ACTIVE PROFILE's attempt — never a sibling's.
+        learner = get_active_profile(self.context["request"])
+        if learner is None:
+            raise ValidationError("Select a learner profile first.")
+
         attempt = QuizAttempt.objects.select_for_update().filter(
             quiz=quiz,
-            student=user,
+            learner_profile=learner,
             status=QuizAttempt.STATUS_PENDING,
         ).order_by("-attempt_number").first()
 
@@ -369,8 +376,9 @@ class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
     student_id = serializers.UUIDField(source="student.id", read_only=True)
     student_email = serializers.EmailField(
         source="student.email", read_only=True)
-    student_name = serializers.CharField(
-        source="student.username", read_only=True)
+    student_name = serializers.SerializerMethodField()
+    learner_profile_id = serializers.UUIDField(
+        source="learner_profile.id", read_only=True, default=None)
     total_marks = serializers.IntegerField(
         source="quiz.total_marks", read_only=True)
 
@@ -378,8 +386,19 @@ class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
         model = QuizAttempt
         fields = [
             "id", "student_id", "student_email", "student_name",
+            "learner_profile_id",
             "score", "total_marks", "submitted_at", "attempt_number",
         ]
+
+    def get_student_name(self, obj):
+        # The learner who actually took it — on a shared family account the
+        # account username can't distinguish between children.
+        lp = obj.learner_profile or obj.student.default_learner_profile()
+        if lp:
+            name = (lp.full_name or "").strip() or (lp.display_name or "").strip()
+            if name:
+                return name
+        return obj.student.username or obj.student.email
 
 
 class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
