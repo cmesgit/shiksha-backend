@@ -2,13 +2,15 @@
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 import json
+import logging
 import redis
 from django.utils import timezone
 
 from livestream.services.session_state import get_session_state, set_session_state
-from .models import LiveSession
+from .models import LiveSession, LiveSessionChatMessage
 from enrollments.models import Enrollment
 
+logger = logging.getLogger(__name__)
 r = redis.Redis(host="127.0.0.1", port=6379, db=0)
 
 
@@ -22,6 +24,18 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
         self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
         self.group_name = f"session_{self.session_id}"
         self.user = self.scope["user"]
+
+        # Auth gate — reject anonymous and anyone not entitled to this session
+        # (mirrors CourseSessionConsumer; the previous version accepted anyone,
+        # so any presence-based metric built on this consumer was untrusted).
+        if getattr(self.user, "is_anonymous", True):
+            await self.close()
+            return
+
+        authorized = await database_sync_to_async(self._is_authorized)()
+        if not authorized:
+            await self.close()
+            return
 
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
@@ -104,13 +118,65 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
             }
         )
 
+    def _is_authorized(self):
+        """Teacher of the session's subject, or a user with an active enrollment
+        in the course. Admins/staff are always allowed."""
+        try:
+            session = LiveSession.objects.select_related("subject", "course").get(
+                id=self.session_id
+            )
+        except LiveSession.DoesNotExist:
+            return False
+
+        user = self.user
+        if getattr(user, "is_staff", False):
+            return True
+
+        # Session creator / assigned teacher
+        if str(session.created_by_id) == str(user.id):
+            return True
+        try:
+            from courses.services import teaches_subject
+            if user.has_role("TEACHER") and teaches_subject(user, session.subject):
+                return True
+        except Exception:
+            pass
+
+        # Active enrollment in the course
+        return Enrollment.objects.filter(
+            user=user, course_id=session.course_id, status=Enrollment.STATUS_ACTIVE
+        ).exists()
+
     def get_chat_history(self):
+        # Redis fast-path (last 100, 24h TTL).
         try:
             key = f"chat:{self.session_id}"
             messages = r.lrange(key, 0, 99)
-            return [json.loads(m) for m in messages]
-        except Exception as e:
-            print(f"get_chat_history error: {e}")
+            if messages:
+                return [json.loads(m) for m in messages]
+        except Exception:
+            logger.warning("get_chat_history redis error", exc_info=True)
+
+        # Fallback to the durable DB rows when Redis is empty/expired, so
+        # history survives past the 24h/100-message Redis window.
+        try:
+            rows = (
+                LiveSessionChatMessage.objects.filter(session_id=self.session_id)
+                .order_by("created_at")[:100]
+            )
+            return [
+                {
+                    "sender": m.sender_name,
+                    "text": m.text,
+                    "role": "TEACHER" if m.is_teacher else "STUDENT",
+                    "isTeacher": m.is_teacher,
+                    "time": m.created_at.isoformat(),
+                    "sender_id": str(m.user_id) if m.user_id else None,
+                }
+                for m in rows
+            ]
+        except Exception:
+            logger.warning("get_chat_history db error", exc_info=True)
             return []
 
     def save_chat_message(self, message):
@@ -119,11 +185,10 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
             key = f"chat:{self.session_id}"
             r.rpush(key, json.dumps(message))
             r.expire(key, 86400)
-        except Exception as e:
-            print(f"save_chat_message redis error: {e}")
-        # Also save to DB (persistent)
+        except Exception:
+            logger.warning("save_chat_message redis error", exc_info=True)
+        # Also save to DB (persistent). Best-effort, but logged (not swallowed).
         try:
-            from livestream.models import LiveSession, LiveSessionChatMessage
             from django.contrib.auth import get_user_model
             User = get_user_model()
             session = LiveSession.objects.get(id=self.session_id)
@@ -135,8 +200,8 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
                 text=message.get("text", ""),
                 is_teacher=message.get("isTeacher", False),
             )
-        except Exception as e:
-            print(f"save_chat_message db error: {e}")
+        except Exception:
+            logger.error("save_chat_message db error", exc_info=True)
 
     @database_sync_to_async
     def get_user_name(self, user):

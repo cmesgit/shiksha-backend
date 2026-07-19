@@ -187,6 +187,194 @@ class AdminTeacherListView(APIView):
 
 
 # --------------------------------------------------------------------------- #
+# Teachers directory (rich) + detail — backs the admin "Teachers" screen
+# --------------------------------------------------------------------------- #
+def _class_range(levels):
+    lv = sorted({int(x) for x in levels if x is not None})
+    if not lv:
+        return None
+    return f"{lv[0]}" if len(lv) == 1 else f"{lv[0]}–{lv[-1]}"
+
+
+def _weekly_hours_map(teacher_ids):
+    """teacher_id -> hours taught in the last 7 days (one grouped query)."""
+    from datetime import timedelta
+
+    from django.db.models import DurationField, ExpressionWrapper, F, Sum
+
+    from livestream.models import LiveSession
+
+    since = timezone.now() - timedelta(days=7)
+    rows = (
+        LiveSession.objects.filter(created_by_id__in=teacher_ids, start_time__gte=since)
+        .exclude(status=LiveSession.STATUS_CANCELLED)
+        .values("created_by_id")
+        .annotate(total=Sum(ExpressionWrapper(F("end_time") - F("start_time"), output_field=DurationField())))
+    )
+    out = {}
+    for r in rows:
+        total = r["total"]
+        out[r["created_by_id"]] = round(total.total_seconds() / 3600, 1) if total else 0.0
+    return out
+
+
+def _assignments_map(teacher_ids):
+    """teacher_id -> {subjects:set, class_levels:set} from active TeachingAssignment."""
+    tas = (
+        TeachingAssignment.objects.filter(teacher_id__in=teacher_ids, is_active=True)
+        .select_related("subject", "subject__course")
+    )
+    out = {}
+    for ta in tas:
+        d = out.setdefault(ta.teacher_id, {"subjects": set(), "levels": set()})
+        if ta.subject_id:
+            d["subjects"].add(ta.subject.name)
+            lvl = getattr(ta.subject.course, "class_level", None)
+            if lvl is not None:
+                d["levels"].add(lvl)
+    return out
+
+
+def _skill_map(teacher_ids):
+    """teacher_id -> {sessions_count, earnings(paise), categories:[label]} or absent."""
+    from django.db.models import Sum
+
+    from skills.models import ExpertProfile, SkillSession
+
+    experts = (
+        ExpertProfile.objects.filter(teacher_profile__user_id__in=teacher_ids)
+        .select_related("teacher_profile")
+        .prefetch_related("categories")
+    )
+    out = {}
+    for ep in experts:
+        out[ep.teacher_profile.user_id] = {
+            "sessions_count": ep.sessions_count,
+            "categories": [c.label for c in ep.categories.all()],
+            "earnings": 0,
+            "rating": float(ep.rating) if ep.rating is not None else None,
+        }
+    if out:
+        earn = (
+            SkillSession.objects.filter(
+                expert__teacher_profile__user_id__in=teacher_ids,
+                status=SkillSession.STATUS_COMPLETED,
+            )
+            .values("expert__teacher_profile__user_id")
+            .annotate(total=Sum("amount"))
+        )
+        for r in earn:
+            uid = r["expert__teacher_profile__user_id"]
+            if uid in out:
+                out[uid]["earnings"] = r["total"] or 0
+    return out
+
+
+def _teacher_row(user, request, hours_map, asg_map, skill_map):
+    data = teacher_brief(user, request=request)
+    profile = getattr(user, "teacher_profile", None)
+    tracks = []
+    if profile and getattr(profile, "academy_status", None) == "approved":
+        tracks.append("academy")
+    if user.id in skill_map or (profile and getattr(profile, "skill_status", None) == "approved"):
+        tracks.append("skill")
+    asg = asg_map.get(user.id, {"subjects": set(), "levels": set()})
+    data.update({
+        "tracks": tracks or ["academy"],
+        "subjects": sorted(asg["subjects"]),
+        "class_range": _class_range(asg["levels"]),
+        "weekly_hours": hours_map.get(user.id, 0.0),
+        "since": user.date_joined.isoformat() if user.date_joined else None,
+        "skill": skill_map.get(user.id),
+    })
+    return data
+
+
+class AdminTeacherDirectoryView(APIView):
+    """Rich teacher directory for the admin Teachers screen.
+
+    GET /courses/admin/teacher-directory/?q=&track=academy|skill
+    Distinct from the lean AdminTeacherListView (the assign picker) so that
+    screen's contract stays stable.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        q = request.query_params.get("q", "").strip()
+        track = request.query_params.get("track", "").strip().lower()
+        qs = (
+            User.objects.filter(
+                teacher_profile__is_approved=True,
+                user_roles__role__name="TEACHER",
+                user_roles__is_active=True,
+            )
+            .select_related("teacher_profile")
+            .distinct()
+        )
+        if q:
+            qs = qs.filter(
+                Q(email__icontains=q) | Q(username__icontains=q)
+                | Q(first_name__icontains=q) | Q(last_name__icontains=q)
+            )
+        users = list(qs[:200])
+        ids = [u.id for u in users]
+        hours_map = _weekly_hours_map(ids)
+        asg_map = _assignments_map(ids)
+        skill_map = _skill_map(ids)
+        rows = [_teacher_row(u, request, hours_map, asg_map, skill_map) for u in users]
+        if track in ("academy", "skill"):
+            rows = [r for r in rows if track in r["tracks"]]
+        return Response({"data": rows})
+
+
+class AdminTeacherDetailView(APIView):
+    """GET /courses/admin/teachers/<uuid:user_id>/ — one teacher + assignments +
+    recent activity."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, user_id):
+        user = get_object_or_404(
+            User.objects.select_related("teacher_profile"), id=user_id
+        )
+        hours_map = _weekly_hours_map([user.id])
+        asg_map = _assignments_map([user.id])
+        skill_map = _skill_map([user.id])
+        data = _teacher_row(user, request, hours_map, asg_map, skill_map)
+
+        # Assignment roster (active)
+        assignments = [
+            {
+                "batch": ta.batch.name if ta.batch_id else None,
+                "batch_code": ta.batch.code if ta.batch_id else None,
+                "subject": ta.subject.name if ta.subject_id else None,
+                "role": ta.role,
+            }
+            for ta in TeachingAssignment.objects.filter(teacher=user, is_active=True)
+            .select_related("batch", "subject")
+        ]
+        data["assignments"] = assignments
+
+        # Recent activity — last few live classes taught
+        from livestream.models import LiveSession
+
+        recent = (
+            LiveSession.objects.filter(created_by=user)
+            .select_related("subject")
+            .order_by("-start_time")[:10]
+        )
+        data["recent_activity"] = [
+            {
+                "type": "live",
+                "text": f"{s.title} · {s.subject.name if s.subject_id else ''}",
+                "when": (s.actual_started_at or s.start_time).isoformat() if (s.actual_started_at or s.start_time) else None,
+                "status": s.computed_status(),
+            }
+            for s in recent
+        ]
+        return Response(data)
+
+
+# --------------------------------------------------------------------------- #
 # Subject <-> teacher assignment
 # --------------------------------------------------------------------------- #
 class AdminSubjectTeachersView(APIView):

@@ -71,6 +71,98 @@ def sync_open_session_statuses():
     return {"transitioned": changed}
 
 
+def _livekit_room_identities(room_name):
+    """Return the set of participant identities LiveKit reports for a room, or
+    None if LiveKit is unreachable / not configured / the room doesn't exist.
+    Identity == str(user.id) (see services/token.py). Best-effort: any failure
+    falls back to our own durable attendance data upstream."""
+    try:
+        from django.conf import settings
+        from asgiref.sync import async_to_sync
+        from livekit import api as lk_api
+
+        async def _fetch():
+            client = lk_api.LiveKitAPI(
+                settings.LIVEKIT_URL,
+                settings.LIVEKIT_API_KEY,
+                settings.LIVEKIT_API_SECRET,
+            )
+            try:
+                resp = await client.room.list_participants(
+                    lk_api.ListParticipantsRequest(room=room_name)
+                )
+                return {p.identity for p in resp.participants}
+            finally:
+                await client.aclose()
+
+        return async_to_sync(_fetch)()
+    except Exception:
+        return None
+
+
+@app.task
+def sample_live_viewers():
+    """Every minute: snapshot concurrent viewers for open sessions and reconcile
+    missed leaves.
+
+    For each live/open session:
+      • If LiveKit is reachable, use its authoritative participant list to (a)
+        close attendance intervals for users no longer in the room (catches a
+        dropped participant_left webhook), and (b) record the viewer count.
+      • Otherwise fall back to our durable open-interval count.
+    Updates LiveSession.peak_viewers and writes a LiveSessionViewerSample.
+
+    Schedule (config/celery.py beat): crontab(minute="*/1").
+    """
+    from django.utils import timezone
+    from livestream.models import LiveSession, LiveSessionViewerSample
+    from livestream.services import attendance as attendance_svc
+
+    now = timezone.now()
+    open_qs = LiveSession.objects.filter(
+        status__in=[
+            LiveSession.STATUS_LIVE,
+            LiveSession.STATUS_RECONNECTING,
+            LiveSession.STATUS_WAITING,
+            LiveSession.STATUS_PAUSED,
+        ],
+        end_time__gte=now,
+    )
+
+    sampled = 0
+    for session in open_qs:
+        identities = _livekit_room_identities(session.room_name)
+
+        if identities is not None:
+            # Reconcile: anyone with an open interval but absent from the room
+            # left without a webhook — close their interval defensively.
+            from livestream.models import LiveSessionAttendanceInterval
+            open_user_ids = (
+                LiveSessionAttendanceInterval.objects
+                .filter(session=session, left_at__isnull=True)
+                .values_list("user_id", flat=True)
+                .distinct()
+            )
+            present = {str(i) for i in identities}
+            for uid in list(open_user_ids):
+                if str(uid) not in present:
+                    from django.contrib.auth import get_user_model
+                    u = get_user_model().objects.filter(id=uid).first()
+                    if u:
+                        attendance_svc.close_intervals(session, u, when=now, reconcile=True)
+            count = len(identities)
+        else:
+            count = attendance_svc.current_watching(session)
+
+        LiveSessionViewerSample.objects.create(session=session, viewers=count)
+        if count > session.peak_viewers:
+            session.peak_viewers = count
+            session.save(update_fields=["peak_viewers"])
+        sampled += 1
+
+    return {"sampled": sampled}
+
+
 @app.task
 def auto_complete_expired_sessions():
     """Safety-net cleanup (every 5 min): close sessions past end_time or with a

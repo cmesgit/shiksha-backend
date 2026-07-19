@@ -1,0 +1,287 @@
+"""Admin-facing livestream endpoints (is_staff-gated).
+
+Backs the LMS Admin Console screens: Live Streams hub, Livestream Monitor,
+Recordings library, and the Overview "Live now" feed. Read-mostly, plus admin
+chat-post and force-end. Also hosts the authenticated client health-telemetry
+ingest that feeds the Monitor's stream-health panel.
+"""
+import json
+import logging
+
+import redis
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+from django.utils import timezone
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status as http_status
+from django.shortcuts import get_object_or_404
+
+from accounts.permissions import IsAdmin
+from .models import (
+    LiveSession,
+    LiveSessionChatMessage,
+    LiveSessionViewerSample,
+    StreamHealthSample,
+)
+from .services import attendance as attendance_svc
+from .views import broadcast_session_update
+
+logger = logging.getLogger(__name__)
+_r = redis.Redis(host="127.0.0.1", port=6379, db=0)
+
+LIVE_STATES = [
+    LiveSession.STATUS_LIVE,
+    LiveSession.STATUS_WAITING,
+    LiveSession.STATUS_PAUSED,
+    LiveSession.STATUS_RECONNECTING,
+]
+
+
+def _stream_row(s):
+    return {
+        "id": str(s.id),
+        "title": s.title,
+        "status": s.computed_status(),
+        "course_name": s.course.title if s.course_id else "",
+        "subject_name": s.subject.name if s.subject_id else "",
+        "batch_code": (s.batch.code if s.batch_id and s.batch else None),
+        "batch_name": (s.batch.name if s.batch_id and s.batch else None),
+        "teacher": s.created_by.email if s.created_by_id else "",
+        "start_time": s.start_time.isoformat() if s.start_time else None,
+        "end_time": s.end_time.isoformat() if s.end_time else None,
+        "actual_started_at": s.actual_started_at.isoformat() if s.actual_started_at else None,
+        "actual_ended_at": s.actual_ended_at.isoformat() if s.actual_ended_at else None,
+        "peak_viewers": s.peak_viewers,
+        "watching": attendance_svc.current_watching(s),
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsAdmin])
+def admin_stream_list(request):
+    """GET /livestream/admin/streams/?status=live|scheduled|all"""
+    status_q = (request.query_params.get("status") or "all").lower()
+    now = timezone.now()
+    qs = LiveSession.objects.select_related("course", "subject", "batch", "created_by")
+
+    if status_q == "live":
+        qs = qs.filter(status__in=LIVE_STATES, end_time__gte=now)
+    elif status_q == "scheduled":
+        qs = qs.filter(status=LiveSession.STATUS_SCHEDULED, start_time__gte=now)
+    else:
+        # Default: everything currently relevant (live + upcoming + recent).
+        from datetime import timedelta
+        qs = qs.filter(end_time__gte=now - timedelta(hours=6))
+
+    qs = qs.order_by("-status", "start_time")[:200]
+    return Response({"data": [_stream_row(s) for s in qs]})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsAdmin])
+def admin_live_now(request):
+    """GET /livestream/admin/live-now/ — Overview 'Live now' feed."""
+    now = timezone.now()
+    qs = (
+        LiveSession.objects.select_related("course", "subject", "batch", "created_by")
+        .filter(status__in=[LiveSession.STATUS_LIVE, LiveSession.STATUS_RECONNECTING], end_time__gte=now)
+        .order_by("start_time")[:50]
+    )
+    return Response({"data": [_stream_row(s) for s in qs]})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsAdmin])
+def admin_stream_detail(request, session_id):
+    """GET /livestream/admin/streams/<id>/ — full monitor payload."""
+    s = get_object_or_404(
+        LiveSession.objects.select_related("course", "subject", "batch", "created_by"),
+        id=session_id,
+    )
+
+    attendance = [
+        {
+            "user_name": (a.user.get_full_name() if a.user_id and hasattr(a.user, "get_full_name") else ""),
+            "user_email": a.user.email if a.user_id else "",
+            "joined_at": a.joined_at.isoformat() if a.joined_at else None,
+            "left_at": a.left_at.isoformat() if a.left_at else None,
+            "total_seconds": a.total_seconds,
+            "online": a.left_at is None and a.joined_at is not None,
+        }
+        for a in s.attendances.select_related("user").all()
+    ]
+
+    chat = [
+        {
+            "sender": m.sender_name,
+            "text": m.text,
+            "isTeacher": m.is_teacher,
+            "time": m.created_at.isoformat(),
+        }
+        for m in s.chat_messages.all().order_by("created_at")[:200]
+    ]
+
+    presenter_health = s.health_samples.filter(is_presenter=True).order_by("-ts").first()
+    latest_health = presenter_health or s.health_samples.order_by("-ts").first()
+    health = None
+    if latest_health:
+        health = {
+            "bitrate_kbps": latest_health.bitrate_kbps,
+            "fps": latest_health.fps,
+            "latency_ms": latest_health.latency_ms,
+            "packet_loss": latest_health.packet_loss,
+            "quality": latest_health.quality,
+            "ts": latest_health.ts.isoformat(),
+        }
+
+    viewer_samples = [
+        {"ts": v.ts.isoformat(), "viewers": v.viewers}
+        for v in s.viewer_samples.order_by("ts")[:500]
+    ]
+
+    return Response({
+        "stream": _stream_row(s),
+        "attendance": attendance,
+        "chat": chat,
+        "health": health,
+        "viewer_samples": viewer_samples,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsAdmin])
+def admin_stream_chat(request, session_id):
+    """POST /livestream/admin/streams/<id>/chat/ {text} — admin posts to the room."""
+    s = get_object_or_404(LiveSession, id=session_id)
+    text = (request.data.get("text") or "").strip()
+    if not text:
+        return Response({"detail": "text required"}, status=http_status.HTTP_400_BAD_REQUEST)
+
+    sender_name = "Admin"
+    msg = LiveSessionChatMessage.objects.create(
+        session=s, user=request.user, sender_name=sender_name, text=text, is_teacher=False,
+    )
+    payload = {
+        "sender": sender_name,
+        "text": text,
+        "role": "ADMIN",
+        "isTeacher": False,
+        "time": msg.created_at.isoformat(),
+        "sender_id": str(request.user.id),
+    }
+    # Mirror the consumer: push to Redis fast-path + broadcast to the room.
+    try:
+        key = f"chat:{s.id}"
+        _r.rpush(key, json.dumps(payload))
+        _r.expire(key, 86400)
+    except Exception:
+        logger.warning("admin chat: redis push failed", exc_info=True)
+    try:
+        cl = get_channel_layer()
+        if cl:
+            async_to_sync(cl.group_send)(f"session_{s.id}", {"type": "chat_message", "data": payload})
+    except Exception:
+        logger.warning("admin chat: broadcast failed", exc_info=True)
+
+    return Response(payload, status=http_status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsAdmin])
+def admin_stream_end(request, session_id):
+    """POST /livestream/admin/streams/<id>/end/ — admin force-ends a stream."""
+    s = get_object_or_404(LiveSession, id=session_id)
+    if s.status in (LiveSession.STATUS_COMPLETED, LiveSession.STATUS_CANCELLED):
+        return Response({"detail": "Session already closed.", "status": s.status}, status=400)
+
+    now = timezone.now()
+    attendance_svc.close_all_open(s, when=now)
+    s.status = LiveSession.STATUS_COMPLETED
+    s.teacher_left_at = None
+    if s.actual_ended_at is None:
+        s.actual_ended_at = now
+    s.save(update_fields=["status", "teacher_left_at", "actual_ended_at"])
+    broadcast_session_update(s)
+    return Response({"detail": "Session ended.", "status": "COMPLETED"})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsAdmin])
+def admin_recordings(request):
+    """GET /livestream/admin/recordings/?course=&batch=&q= — recordings library."""
+    from courses.models_recordings import SessionRecording
+
+    qs = SessionRecording.objects.select_related(
+        "subject", "subject__course", "batch", "uploaded_by", "live_session"
+    )
+    course = request.query_params.get("course")
+    batch = request.query_params.get("batch")
+    q = request.query_params.get("q")
+    if course:
+        qs = qs.filter(subject__course_id=course)
+    if batch:
+        qs = qs.filter(batch_id=batch)
+    if q:
+        qs = qs.filter(title__icontains=q)
+
+    data = [
+        {
+            "id": str(r.id),
+            "title": r.title,
+            "subject_name": r.subject.name if r.subject_id else "",
+            "course_name": (r.subject.course.title if r.subject_id and r.subject.course_id else ""),
+            "batch_name": r.batch.name if r.batch_id and r.batch else None,
+            "session_date": r.session_date.isoformat() if r.session_date else None,
+            "duration_seconds": r.duration_seconds,
+            "status": r.get_status_display(),
+            "thumbnail_url": r.thumbnail_url,
+            "is_published": r.is_published,
+            "live_session_id": str(r.live_session_id) if r.live_session_id else None,
+            "uploaded_by": r.uploaded_by.email if r.uploaded_by_id else "",
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in qs.order_by("-created_at")[:300]
+    ]
+    return Response({"data": data})
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Client health telemetry ingest (authenticated participants, not admin-only).
+# LiveKit doesn't push quality stats via webhook, so presenter/viewer clients
+# POST periodic samples here — the durable capture path for stream health.
+# ─────────────────────────────────────────────────────────────────────────
+def _to_int(v):
+    try:
+        return int(round(float(v)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def ingest_health(request, session_id):
+    """POST /livestream/sessions/<id>/health/ {bitrate_kbps,fps,latency_ms,packet_loss,quality,is_presenter}"""
+    s = get_object_or_404(LiveSession, id=session_id)
+    is_presenter = bool(request.data.get("is_presenter")) or (
+        str(s.created_by_id) == str(request.user.id)
+    )
+    StreamHealthSample.objects.create(
+        session=s,
+        user=request.user,
+        bitrate_kbps=_to_int(request.data.get("bitrate_kbps")),
+        fps=_to_int(request.data.get("fps")),
+        latency_ms=_to_int(request.data.get("latency_ms")),
+        packet_loss=_to_float(request.data.get("packet_loss")),
+        quality=(request.data.get("quality") or "")[:20],
+        is_presenter=is_presenter,
+    )
+    return Response({"ok": True}, status=http_status.HTTP_201_CREATED)

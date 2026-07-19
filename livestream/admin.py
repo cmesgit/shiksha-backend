@@ -1,5 +1,12 @@
 from django.contrib import admin
-from .models import LiveSession, LiveSessionAttendance
+from .models import (
+    LiveSession,
+    LiveSessionAttendance,
+    LiveSessionAttendanceInterval,
+    LiveKitWebhookEvent,
+    LiveSessionViewerSample,
+    StreamHealthSample,
+)
 
 
 @admin.register(LiveSession)
@@ -53,3 +60,38 @@ class LiveSessionAttendanceAdmin(admin.ModelAdmin):
         return "—"
 
     duration.short_description = "Duration"
+
+
+@admin.register(LiveSessionAttendanceInterval)
+class LiveSessionAttendanceIntervalAdmin(admin.ModelAdmin):
+    list_display = ("session", "user", "joined_at", "left_at", "closed_by_reconcile")
+    list_filter = ("closed_by_reconcile",)
+    search_fields = ("user__email", "session__title")
+    ordering = ("-joined_at",)
+    readonly_fields = ("session", "user", "joined_at", "left_at", "closed_by_reconcile")
+
+
+@admin.register(LiveKitWebhookEvent)
+class LiveKitWebhookEventAdmin(admin.ModelAdmin):
+    list_display = ("event_type", "room_name", "session", "processed", "received_at")
+    list_filter = ("event_type", "processed")
+    search_fields = ("event_id", "room_name", "session__title")
+    ordering = ("-received_at",)
+    readonly_fields = ("event_id", "event_type", "room_name", "session", "payload", "received_at", "processed", "error")
+
+
+@admin.register(LiveSessionViewerSample)
+class LiveSessionViewerSampleAdmin(admin.ModelAdmin):
+    list_display = ("session", "viewers", "ts")
+    search_fields = ("session__title",)
+    ordering = ("-ts",)
+    readonly_fields = ("session", "viewers", "ts")
+
+
+@admin.register(StreamHealthSample)
+class StreamHealthSampleAdmin(admin.ModelAdmin):
+    list_display = ("session", "user", "is_presenter", "bitrate_kbps", "fps", "latency_ms", "quality", "ts")
+    list_filter = ("is_presenter", "quality")
+    search_fields = ("session__title", "user__email")
+    ordering = ("-ts",)
+    readonly_fields = ("session", "user", "is_presenter", "bitrate_kbps", "fps", "latency_ms", "packet_loss", "quality", "ts")

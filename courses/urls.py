@@ -55,6 +55,8 @@ from .batch_progress_views import (
 # Admin academy management: subject-teacher assignment + batch CRUD.
 from .admin_academy_views import (
     AdminTeacherListView,
+    AdminTeacherDirectoryView,
+    AdminTeacherDetailView,
     AdminSubjectTeachersView,
     AdminSubjectTeacherDetailView,
     AdminCourseBatchesView,
@@ -83,6 +85,8 @@ urlpatterns = [
     path("admin/subjects/<uuid:subject_id>/",      AdminSubjectDeleteView.as_view()),
     # Admin — teacher assignment (subject ↔ teacher)
     path("admin/teachers/",                                  AdminTeacherListView.as_view()),
+    path("admin/teacher-directory/",                         AdminTeacherDirectoryView.as_view()),
+    path("admin/teachers/<uuid:user_id>/",                   AdminTeacherDetailView.as_view()),
     path("admin/subjects/<uuid:subject_id>/teachers/",       AdminSubjectTeachersView.as_view()),
     path("admin/subject-teachers/<int:assignment_id>/",      AdminSubjectTeacherDetailView.as_view()),
     # Admin — batches

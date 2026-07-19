@@ -51,6 +51,7 @@ from .moderation_views import (
     ModThreadsView, ModThreadLockView, ModThreadUnlockView, ModThreadDeleteView, ModThreadRestoreView,
     ModCategoriesView, ModCategoryUpdateView, ModCategoryDeleteView, ModCategoryRestoreView,
     ModLogView, ModAnalyticsView,
+    AdminModerationOverviewView,
 )
 
 urlpatterns = [
@@ -139,4 +140,5 @@ urlpatterns = [
 
     path("mod/log/", ModLogView.as_view(), name="forum-mod-log"),
     path("mod/analytics/", ModAnalyticsView.as_view(), name="forum-mod-analytics"),
+    path("admin/moderation-overview/", AdminModerationOverviewView.as_view(), name="forum-admin-moderation-overview"),
 ]

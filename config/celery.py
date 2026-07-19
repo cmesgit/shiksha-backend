@@ -44,6 +44,10 @@ app.conf.beat_schedule.update({
         "task": "livestream.tasks.auto_complete_expired_sessions",
         "schedule": crontab(minute="*/5"),  # safety net
     },
+    "sample-live-viewers": {
+        "task": "livestream.tasks.sample_live_viewers",
+        "schedule": crontab(minute="*/1"),  # viewer snapshots + attendance reconcile
+    },
     "expire-subscriptions": {
         "task": "enrollments.tasks.expire_subscriptions",
         "schedule": crontab(hour=2, minute=15),  # daily at 02:15

@@ -1,10 +1,16 @@
+import json
 from django.conf import settings
 from .serializers import (
     LiveSessionCreateSerializer,
     LiveSessionListSerializer,
 )
 from .services.token import generate_livekit_token
-from .models import LiveSession, LiveSessionAttendance
+from .services import attendance as attendance_svc
+from .models import (
+    LiveSession,
+    LiveSessionAttendance,
+    LiveKitWebhookEvent,
+)
 from courses.services import teaches_subject
 from accounts.permissions import require_teacher_context, IsTeacherContext
 from enrollments.models import Enrollment
@@ -447,8 +453,41 @@ def live_session_detail(request, session_id):
 # LIVEKIT WEBHOOK
 # =========================
 
+def _event_room_name(event):
+    room = getattr(event, "room", None)
+    return getattr(room, "name", "") if room else ""
+
+
+def _event_dedupe_id(event):
+    """Stable idempotency key for a LiveKit webhook event.
+
+    Prefer the event's own id; fall back to a composite so redeliveries of a
+    payload without an id still collapse to one row.
+    """
+    eid = getattr(event, "id", None)
+    if eid:
+        return str(eid)
+    parts = [
+        getattr(event, "event", ""),
+        _event_room_name(event),
+        str(getattr(getattr(event, "participant", None), "identity", "")),
+        str(getattr(event, "created_at", "")),
+    ]
+    return "|".join(parts)
+
+
 @csrf_exempt
 def livekit_webhook(request):
+    """Signature-verified LiveKit webhook sink.
+
+    Hardened for durability:
+      • Signature failure → 400 (LiveKit will retry; that's correct).
+      • Every accepted event is persisted to LiveKitWebhookEvent BEFORE dispatch.
+      • Idempotent: a duplicate event_id is acknowledged (200) without re-running
+        the handler, so LiveKit retries never double-count attendance.
+      • A handler that throws is logged onto the event row and STILL returns 200
+        — a single poison event must not wedge the whole webhook with retries.
+    """
     if request.method != "POST":
         return HttpResponse(status=405)
 
@@ -456,35 +495,78 @@ def livekit_webhook(request):
         TokenVerifier(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
     )
 
+    # Signature verification — the ONLY case where we ask LiveKit to retry.
     try:
         event = receiver.receive(
             request.body.decode("utf-8"),
             request.headers.get("Authorization"),
         )
-
-        logger.info(f"LiveKit event: {event.event}")
-
-        handlers = {
-            "participant_joined": _handle_participant_join,
-            "participant_left": _handle_participant_left,
-            "room_started": _handle_room_started,
-            "room_finished": _handle_room_finished,
-        }
-
-        handler = handlers.get(event.event)
-        if handler:
-            handler(event)
-
-        return HttpResponse(status=200)
-
     except Exception:
-        logger.exception("Webhook error")
+        logger.exception("LiveKit webhook signature/parse failure")
         return HttpResponse(status=400)
+
+    event_type = getattr(event, "event", "") or ""
+    room_name = _event_room_name(event)
+    dedupe_id = _event_dedupe_id(event)
+    logger.info("LiveKit event: %s room=%s", event_type, room_name)
+
+    session = LiveSession.objects.filter(room_name=room_name).first() if room_name else None
+
+    # Durable, idempotent log. get_or_create on the unique event_id collapses
+    # redeliveries; if it already existed and was processed, we're done.
+    try:
+        payload = {}
+        try:
+            payload = json.loads(request.body.decode("utf-8"))
+        except Exception:
+            payload = {}
+        log_row, created = LiveKitWebhookEvent.objects.get_or_create(
+            event_id=dedupe_id,
+            defaults={
+                "event_type": event_type,
+                "room_name": room_name,
+                "session": session,
+                "payload": payload,
+            },
+        )
+        if not created and log_row.processed:
+            return HttpResponse(status=200)  # already handled — idempotent ack
+    except Exception:
+        # Logging must never drop the event; fall through and still try to handle.
+        logger.exception("LiveKit webhook: failed to persist event log")
+        log_row = None
+
+    handlers = {
+        "participant_joined": _handle_participant_join,
+        "participant_left": _handle_participant_left,
+        "room_started": _handle_room_started,
+        "room_finished": _handle_room_finished,
+    }
+    handler = handlers.get(event_type)
+
+    if handler:
+        try:
+            handler(event)
+            if log_row:
+                log_row.processed = True
+                log_row.save(update_fields=["processed"])
+        except Exception as exc:
+            logger.exception("LiveKit webhook handler error: %s", event_type)
+            if log_row:
+                log_row.error = str(exc)[:2000]
+                log_row.save(update_fields=["error"])
+            # Still 200: retrying a poison event won't help; the row is our trail.
+    else:
+        if log_row:
+            log_row.processed = True
+            log_row.save(update_fields=["processed"])
+
+    return HttpResponse(status=200)
 
 
 @transaction.atomic
 def _handle_participant_join(event):
-    session = LiveSession.objects.filter(room_name=event.room.name).first()
+    session = LiveSession.objects.filter(room_name=_event_room_name(event)).first()
     if not session:
         return
 
@@ -494,20 +576,25 @@ def _handle_participant_join(event):
     if not user:
         return
 
-    LiveSessionAttendance.objects.update_or_create(
-        session=session,
-        user=user,
-        defaults={"joined_at": timezone.now()}
-    )
+    now = timezone.now()
 
-    session.last_activity_at = timezone.now()
+    # Append-only attendance interval (rejoins no longer overwrite).
+    attendance_svc.open_interval(session, user, when=now)
+
+    session.last_activity_at = now
+    update_fields = ["last_activity_at"]
+
+    # First participant activity stamps the actual go-live time.
+    if session.actual_started_at is None:
+        session.actual_started_at = now
+        update_fields.append("actual_started_at")
 
     if str(session.created_by_id) == user_id:
         session.teacher_left_at = None
         session.status = LiveSession.STATUS_LIVE
+        update_fields += ["teacher_left_at", "status"]
 
-    session.save(update_fields=["teacher_left_at",
-                 "status", "last_activity_at"])
+    session.save(update_fields=update_fields)
     broadcast_session_update(session)
 
     # Notify enrolled students when teacher goes live
@@ -528,7 +615,7 @@ def _handle_participant_join(event):
 
 @transaction.atomic
 def _handle_participant_left(event):
-    session = LiveSession.objects.filter(room_name=event.room.name).first()
+    session = LiveSession.objects.filter(room_name=_event_room_name(event)).first()
     if not session:
         return
 
@@ -538,21 +625,17 @@ def _handle_participant_left(event):
     if not user:
         return
 
-    attendance = LiveSessionAttendance.objects.filter(
-        session=session,
-        user=user
-    ).first()
+    now = timezone.now()
 
-    if attendance:
-        attendance.left_at = timezone.now()
-        attendance.save()
+    # Close the open interval(s) and refresh the rollup (first/last/total).
+    attendance_svc.close_intervals(session, user, when=now)
 
-    session.last_activity_at = timezone.now()
+    session.last_activity_at = now
 
     if str(session.created_by_id) == user_id:
         # Only set reconnecting if session was LIVE — don't override manual PAUSED
         if session.status != LiveSession.STATUS_PAUSED:
-            session.teacher_left_at = timezone.now()
+            session.teacher_left_at = now
             session.status = LiveSession.STATUS_RECONNECTING
         # If manually paused, teacher just left — keep PAUSED, no timer
 
@@ -562,17 +645,27 @@ def _handle_participant_left(event):
 
 
 def _handle_room_started(event):
-    for session in LiveSession.objects.filter(room_name=event.room.name):
+    now = timezone.now()
+    for session in LiveSession.objects.filter(room_name=_event_room_name(event)):
         session.status = LiveSession.STATUS_LIVE
-        session.save(update_fields=["status"])
+        fields = ["status"]
+        if session.actual_started_at is None:
+            session.actual_started_at = now
+            fields.append("actual_started_at")
+        session.save(update_fields=fields)
         broadcast_session_update(session)
 
 
 def _handle_room_finished(event):
-    for session in LiveSession.objects.filter(room_name=event.room.name):
+    now = timezone.now()
+    for session in LiveSession.objects.filter(room_name=_event_room_name(event)):
+        # Reconcile attendance: close every dangling interval so a missed
+        # participant_left never orphans left_at forever.
+        attendance_svc.close_all_open(session, when=now)
         # Complete the session regardless of pause state
         if session.status != LiveSession.STATUS_CANCELLED:
             session.status = LiveSession.STATUS_COMPLETED
             session.teacher_left_at = None
-            session.save(update_fields=["status", "teacher_left_at"])
+            session.actual_ended_at = now
+            session.save(update_fields=["status", "teacher_left_at", "actual_ended_at"])
             broadcast_session_update(session)

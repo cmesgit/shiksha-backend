@@ -38,6 +38,19 @@ class SessionRecording(models.Model):
         related_name="recordings",
     )
 
+    # Optional link back to the live class this recording came from. Null for
+    # standalone/manual uploads and legacy rows. SET_NULL so deleting a session
+    # never destroys its recording. Lets the admin console show a recording in
+    # the context of its source session (and future egress automation populate
+    # batch/session_date from it).
+    live_session = models.ForeignKey(
+        "livestream.LiveSession",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="recordings",
+    )
+
     title = models.CharField(max_length=255)
 
     description = models.TextField(blank=True)
