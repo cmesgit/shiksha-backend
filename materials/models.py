@@ -35,6 +35,18 @@ class StudyMaterial(models.Model):
         related_name="materials"
     )
 
+    # Delivery scope. NULL (the default) = curriculum asset shared by every
+    # batch of the course — write once, reuse across batches and years.
+    # Set only for genuinely batch-specific handouts. SET_NULL: deleting a
+    # batch demotes its materials to course-wide instead of destroying them.
+    batch = models.ForeignKey(
+        "courses.Batch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="materials",
+    )
+
     title = models.CharField(max_length=255)
 
     description = models.TextField(blank=True)

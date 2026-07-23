@@ -1,7 +1,8 @@
 from rest_framework import serializers
 from django.utils import timezone
 from .models import Assignment, AssignmentFile, AssignmentSubmission
-from courses.models import Chapter
+from courses.models import Chapter, Batch
+from courses.services import is_teacher_of
 import os
 
 
@@ -177,6 +178,13 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
         source="chapter",
         write_only=True,
     )
+    # Due dates are cohort-relative, so a batch is required for new
+    # assignments (legacy batch=NULL rows stay valid — write-side only).
+    batch_id = serializers.PrimaryKeyRelatedField(
+        queryset=Batch.objects.all(),
+        source="batch",
+        write_only=True,
+    )
 
     # Optional idempotency key from the frontend form session
     idempotency_key = serializers.UUIDField(required=False, allow_null=True)
@@ -185,6 +193,7 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
         model = Assignment
         fields = (
             "chapter_id",
+            "batch_id",
             "title",
             "description",
             "due_date",
@@ -198,18 +207,32 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"due_date": "Due date must be today or in the future."}
             )
+
+        chapter = attrs.get("chapter")
+        batch = attrs.get("batch")
+        user = self.context["request"].user
+
+        # Triangle guard: the batch and the chapter's subject share a course.
+        if chapter and batch and chapter.subject.course_id != batch.course_id:
+            raise serializers.ValidationError(
+                {"batch_id": "Batch and chapter belong to different courses."}
+            )
+
+        # Authz: assigned to this (batch, subject) via the new roster, or the
+        # legacy course-wide SubjectTeacher (dual-read safety net for Phase 3).
+        if chapter and batch:
+            assigned = (
+                is_teacher_of(user, batch, chapter.subject)
+                or chapter.subject.subject_teachers.filter(teacher=user).exists()
+            )
+            if not assigned:
+                raise serializers.ValidationError(
+                    {"non_field_errors": ["You are not assigned to this subject."]}
+                )
         return attrs
 
     def validate_attachment(self, value):
         return validate_assignment_file(value)
-
-    def validate_chapter(self, chapter):
-        user = self.context["request"].user
-        if not chapter.subject.subject_teachers.filter(teacher=user).exists():
-            raise serializers.ValidationError(
-                "You are not assigned to this subject."
-            )
-        return chapter
 
 
 class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
@@ -308,8 +331,9 @@ class TeacherSubmissionListSerializer(serializers.ModelSerializer):
         source="student.id",               read_only=True)
     student_email = serializers.EmailField(
         source="student.email",            read_only=True)
-    student_name = serializers.CharField(
-        source="student.username", read_only=True)
+    student_name = serializers.SerializerMethodField()
+    learner_profile_id = serializers.UUIDField(
+        source="learner_profile.id", read_only=True, default=None)
     submission_status = serializers.CharField(read_only=True)
 
     class Meta:
@@ -319,7 +343,18 @@ class TeacherSubmissionListSerializer(serializers.ModelSerializer):
             "student_id",
             "student_email",
             "student_name",
+            "learner_profile_id",
             "submitted_file",
             "submitted_at",
             "submission_status",
         )
+
+    def get_student_name(self, obj):
+        # The learner who actually submitted — on a shared family account the
+        # account username can't distinguish between children.
+        lp = obj.learner_profile or obj.student.default_learner_profile()
+        if lp:
+            name = (lp.full_name or "").strip() or (lp.display_name or "").strip()
+            if name:
+                return name
+        return obj.student.username or obj.student.email

@@ -1,6 +1,7 @@
 from courses.models import Subject
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
+from accounts.permissions import IsTeacherContext
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -41,7 +42,7 @@ class ChapterMaterials(APIView):
 # ===============================
 
 class UploadStudyMaterial(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, chapter_id=None):
@@ -114,10 +115,17 @@ class UploadStudyMaterial(APIView):
 # ===============================
 
 class DeleteStudyMaterial(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def delete(self, request, material_id):
         material = get_object_or_404(StudyMaterial, id=material_id)
+        # Only the uploading teacher (or staff) may delete — a teacher shouldn't
+        # be able to delete a colleague's material.
+        if material.uploaded_by_id != request.user.id and not request.user.is_staff:
+            return Response(
+                {"detail": "You can only delete your own material."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         material.delete()
         return Response(
             {"detail": "Material deleted successfully"},
@@ -154,10 +162,21 @@ class StudentSubjectMaterials(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, subject_id):
-        subject = get_object_or_404(Subject, id=subject_id)
+        from django.db.models import Q
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"), id=subject_id)
+        # Batch isolation: course-wide materials (batch IS NULL) + this
+        # student's own batch's materials. Materials default to course-wide,
+        # so this only ever hides genuinely batch-specific handouts.
+        enrollment = Enrollment.objects.filter(
+            user=request.user, course_id=subject.course_id,
+            status=Enrollment.STATUS_ACTIVE,
+        ).first()
+        batch_id = enrollment.batch_id if enrollment else None
         materials = (
             StudyMaterial.objects
             .filter(chapter__subject=subject)
+            .filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
             .select_related("chapter")
             .prefetch_related("files")
             .order_by("-created_at")
@@ -192,7 +211,7 @@ class StudyMaterialDetail(APIView):
 # ===============================
 
 class UploadTempFile(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):

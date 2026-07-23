@@ -9,24 +9,38 @@ from django.shortcuts import get_object_or_404
 from .models_recordings import SessionRecording
 from .serializers_recordings import SessionRecordingSerializer
 from .models import Subject
-from accounts.permissions import IsTeacher
+from .services import teaches_subject
+from accounts.permissions import IsTeacherContext
 
 
 class SubjectRecordingsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, subject_id):
-        subject = get_object_or_404(Subject, id=subject_id)
+        from django.db.models import Q
+        from enrollments.models import Enrollment
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"), id=subject_id)
         recordings = SessionRecording.objects.filter(
             subject=subject,
             is_published=True
         )
+        # Teachers/staff see every batch's recordings; a student sees only
+        # course-wide (batch IS NULL) recordings plus their own batch's.
+        if not (request.user.is_staff or teaches_subject(request.user, subject)):
+            enrollment = Enrollment.objects.filter(
+                user=request.user, course_id=subject.course_id,
+                status=Enrollment.STATUS_ACTIVE,
+            ).first()
+            batch_id = enrollment.batch_id if enrollment else None
+            recordings = recordings.filter(
+                Q(batch__isnull=True) | Q(batch_id=batch_id))
         serializer = SessionRecordingSerializer(recordings, many=True)
         return Response(serializer.data)
 
 
 class CreateRecordingView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def post(self, request, subject_id):
         subject = get_object_or_404(Subject, id=subject_id)
@@ -37,18 +51,18 @@ class CreateRecordingView(APIView):
 
 
 class DeleteRecordingView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def delete(self, request, recording_id):
         recording = get_object_or_404(SessionRecording, id=recording_id)
-        if not recording.subject.subject_teachers.filter(teacher=request.user).exists():
+        if not teaches_subject(request.user, recording.subject):
             return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
         recording.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class CreateVideoSlotView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def post(self, request):
         title = request.data.get("title")
@@ -64,7 +78,7 @@ class CreateVideoSlotView(APIView):
 
 
 class SignedUploadUrlView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def post(self, request):
         video_id = request.data.get("video_id")
@@ -81,12 +95,12 @@ class SignedUploadUrlView(APIView):
 
 
 class SaveRecordingView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacher]
+    permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def post(self, request, subject_id):
         subject = get_object_or_404(Subject, id=subject_id)
 
-        if not subject.subject_teachers.filter(teacher=request.user).exists():
+        if not teaches_subject(request.user, subject):
             return Response(
                 {"detail": "You are not assigned to this subject."},
                 status=status.HTTP_403_FORBIDDEN

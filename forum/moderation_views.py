@@ -10,9 +10,11 @@ from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.permissions import IsAdmin
 from . import moderation as forum_moderation
 from .models import (
     ForumPost, Reply, ForumProfile, Report, ModerationAction,
@@ -839,4 +841,108 @@ class ModAnalyticsView(APIView):
             "recent_actions": recent_actions,
             "this_month": this_month,
             "header_stats": header_stats,
+        })
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Admin Moderator Activity overview (is_staff) — backs the admin console's
+# "Moderator Activity" screen. Distinct from the moderator-gated ModAnalyticsView
+# above: this is oversight OF moderators, gated on is_staff.
+# ─────────────────────────────────────────────────────────────────────────
+def _median(values):
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    n = len(vals)
+    mid = n // 2
+    return vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2
+
+
+class AdminModerationOverviewView(APIView):
+    """GET /forum/admin/moderation-overview/?range=7d
+    → { kpis, moderators[], breakdown[], queues[] }"""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        raw = (request.query_params.get("range") or "7d").strip().lower()
+        try:
+            days = max(1, min(int(raw.rstrip("d")), 365))
+        except (TypeError, ValueError):
+            days = 7
+        since = timezone.now() - timedelta(days=days)
+
+        # ── Actions in range ──
+        actions_qs = ModerationAction.objects.filter(created_at__gte=since)
+        actions_count = actions_qs.count()
+
+        # ── Escalations (bans + suspends) ──
+        escalations = actions_qs.filter(
+            action__in=[ModerationAction.ACTION_BAN, ModerationAction.ACTION_SUSPEND]
+        ).count()
+
+        # ── Median response time on resolved forum reports (minutes) ──
+        resolved_reports = Report.objects.filter(
+            resolved=True, resolved_at__isnull=False, created_at__gte=since
+        ).values_list("created_at", "resolved_at")
+        deltas = [(r - c).total_seconds() / 60.0 for c, r in resolved_reports]
+        median_response = _median(deltas)
+
+        # ── Open reports (forum + chat) ──
+        forum_open = Report.objects.filter(resolved=False).count()
+        chat_open = 0
+        try:
+            from chat.models import Report as ChatReport
+            chat_open = ChatReport.objects.filter(status="OPEN").count()
+        except Exception:
+            pass
+        pending_review = AutoRejectedSubmission.objects.filter(
+            status=AutoRejectedSubmission.STATUS_PENDING
+        ).count()
+
+        kpis = [
+            {"key": "actions", "label": f"Actions · {days}d", "value": actions_count},
+            {"key": "median_response", "label": "Median response",
+             "value": (f"{round(median_response)} min" if median_response is not None else "—")},
+            {"key": "escalations", "label": "Escalations", "value": escalations},
+            {"key": "reports_open", "label": "Reports open", "value": forum_open + chat_open},
+        ]
+
+        # ── Per-moderator rows ──
+        by_mod = (
+            actions_qs.values("moderator")
+            .annotate(n=Count("id"))
+            .order_by("-n")[:50]
+        )
+        mod_ids = [r["moderator"] for r in by_mod if r["moderator"]]
+        users = {u.id: u for u in User.objects.filter(id__in=mod_ids)}
+        moderators = []
+        for r in by_mod:
+            u = users.get(r["moderator"])
+            if not u:
+                continue
+            moderators.append({
+                "name": (u.get_full_name() or "").strip() or u.username or u.email,
+                "email": u.email,
+                "week": r["n"],
+            })
+
+        # ── Action-type breakdown ──
+        breakdown = [
+            {"type": r["action"], "count": r["n"]}
+            for r in actions_qs.values("action").annotate(n=Count("id")).order_by("-n")
+        ]
+
+        # ── Queues ──
+        queues = [
+            {"key": "chat", "label": "Chat reports", "count": chat_open, "href": "/communication/reports"},
+            {"key": "forum", "label": "Forum reports open", "count": forum_open, "href": "/roles"},
+            {"key": "review", "label": "Posts pending review", "count": pending_review, "href": "/roles"},
+        ]
+
+        return Response({
+            "range_days": days,
+            "kpis": kpis,
+            "moderators": moderators,
+            "breakdown": breakdown,
+            "queues": queues,
         })

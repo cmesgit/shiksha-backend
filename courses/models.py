@@ -7,9 +7,45 @@ from imagekit.processors import ResizeToFill
 
 class Course(models.Model):
 
+    # Which engine delivers this course. ACADEMIC = the cohort engine
+    # (batches, teaching assignments); COACHING (JEE/NEET/...) reuses the
+    # same engine later with board/stream/class_level left NULL.
+    KIND_ACADEMIC = "ACADEMIC"
+    KIND_COACHING = "COACHING"
+    KIND_CHOICES = [
+        (KIND_ACADEMIC, "Academy"),
+        (KIND_COACHING, "Coaching"),
+    ]
+
+    # Lifecycle gate for the buy flow: only PUBLISHED courses (with an open
+    # batch) appear in the student catalog. ARCHIVED hides from purchase but
+    # keeps existing enrollments working.
+    STATUS_DRAFT = "DRAFT"
+    STATUS_PUBLISHED = "PUBLISHED"
+    STATUS_ARCHIVED = "ARCHIVED"
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, "Draft"),
+        (STATUS_PUBLISHED, "Published"),
+        (STATUS_ARCHIVED, "Archived"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+
+    kind = models.CharField(
+        max_length=20, choices=KIND_CHOICES, default=KIND_ACADEMIC,
+        db_index=True,
+    )
+    status = models.CharField(
+        max_length=12, choices=STATUS_CHOICES, default=STATUS_DRAFT,
+        db_index=True,
+    )
+    # Explicit class level (6..12) instead of encoding it in the title.
+    # NULL for coaching courses and legacy rows the backfill couldn't parse.
+    class_level = models.PositiveSmallIntegerField(
+        null=True, blank=True, db_index=True,
+    )
 
     price = models.PositiveIntegerField(default=0, help_text="Price in paise (₹1 = 100 paise)")
 
@@ -314,3 +350,83 @@ class Batch(models.Model):
     @property
     def is_full(self):
         return self.capacity is not None and self.seats_taken >= self.capacity
+
+
+# Delivery-plane teaching roster: who teaches which subject *in which batch*.
+# Replaces SubjectTeacher (course-wide, batch-blind) as the source of truth;
+# SubjectTeacher stays during the migration window as a read-only fallback
+# and is dropped in the final cleanup phase.
+class TeachingAssignment(models.Model):
+    ROLE_PRIMARY = "PRIMARY"
+    ROLE_ASSISTANT = "ASSISTANT"
+    ROLE_SUBSTITUTE = "SUBSTITUTE"
+    ROLE_CHOICES = [
+        (ROLE_PRIMARY, "Primary teacher"),
+        (ROLE_ASSISTANT, "Assistant"),
+        (ROLE_SUBSTITUTE, "Substitute"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    batch = models.ForeignKey(
+        Batch,
+        on_delete=models.CASCADE,
+        related_name="teaching_assignments",
+    )
+    subject = models.ForeignKey(
+        Subject,
+        on_delete=models.CASCADE,
+        related_name="teaching_assignments",
+    )
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="teaching_assignments",
+    )
+
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_PRIMARY)
+    order = models.PositiveIntegerField(default=1)
+
+    # Audit trail instead of hard deletes: when a teacher leaves or is
+    # substituted, END the row (is_active=False, ended_at=now) and add a new
+    # one. "Who taught batch A13 maths in July" stays answerable.
+    is_active = models.BooleanField(default=True, db_index=True)
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="teaching_assignments_made",
+    )
+
+    class Meta:
+        ordering = ["order"]
+        constraints = [
+            # A teacher appears once per (batch, subject) among ACTIVE rows.
+            models.UniqueConstraint(
+                fields=["batch", "subject", "teacher"],
+                condition=models.Q(is_active=True),
+                name="uniq_active_teacher_per_batch_subject",
+            ),
+            # Exactly one active PRIMARY per (batch, subject).
+            models.UniqueConstraint(
+                fields=["batch", "subject"],
+                condition=models.Q(is_active=True, role="PRIMARY"),
+                name="uniq_active_primary_per_batch_subject",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["teacher", "is_active"]),
+            models.Index(fields=["batch", "subject", "is_active"]),
+        ]
+
+    def clean(self):
+        # Guard the triangle: the subject must belong to the batch's course.
+        if self.subject.course_id != self.batch.course_id:
+            from django.core.exceptions import ValidationError
+            raise ValidationError("Subject and batch belong to different courses.")
+
+    def __str__(self):
+        return f"{self.batch.code} · {self.subject.name} → {self.teacher.email} ({self.role})"

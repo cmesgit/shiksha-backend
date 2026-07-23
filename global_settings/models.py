@@ -16,6 +16,8 @@ keyed on ``pk=1``; ``save()`` enforces that.
 """
 from django.db import models
 
+from .fields import EncryptedCharField
+
 
 class GlobalSettings(models.Model):
     PAYMENT_FREE = "free"
@@ -55,7 +57,10 @@ class GlobalSettings(models.Model):
 
     # ── Razorpay (used when payment_mode = razorpay) ──────────────────────
     razorpay_key_id = models.CharField(max_length=120, blank=True)
-    razorpay_key_secret = models.CharField(max_length=200, blank=True)
+    # Encrypted at rest (Fernet) — see global_settings/fields.py. max_length is
+    # sized for CIPHERTEXT, not the plaintext secret, since Fernet tokens are
+    # substantially longer than their input.
+    razorpay_key_secret = EncryptedCharField(max_length=500, blank=True)
 
     # ── Platform contact ──────────────────────────────────────────────────
     platform_email = models.EmailField(

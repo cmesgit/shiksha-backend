@@ -5,8 +5,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Course, Chapter, SubjectTeacher
+from .models import Course, Chapter, SubjectTeacher, TeachingAssignment
 from .progress import build_course_progress
+from .services import teaches_subject
 
 
 def _can_edit_subject(user, subject):
@@ -15,12 +16,17 @@ def _can_edit_subject(user, subject):
         return False
     if user.is_staff:
         return True
-    return SubjectTeacher.objects.filter(subject=subject, teacher=user).exists()
+    return teaches_subject(user, subject)
 
 
 def _can_edit_any_subject_in_course(user, course):
     if user.is_staff:
         return True
+    if TeachingAssignment.objects.filter(
+        subject__course=course, teacher=user, is_active=True
+    ).exists():
+        return True
+    # Legacy fallback (removed in Phase 5).
     return SubjectTeacher.objects.filter(
         subject__course=course, teacher=user
     ).exists()
@@ -44,6 +50,11 @@ class CourseProgressView(APIView):
 
 class ChapterCoverageView(APIView):
     """Mark a chapter covered / not covered (one shared state per course).
+
+    LEGACY course-wide flag. Per-batch coverage now lives in
+    ``BatchChapterCoverageView`` (POST courses/batches/<batch_id>/chapters/
+    <chapter_id>/coverage/), backed by BatchChapterProgress. This endpoint is
+    kept only until the teacher UI fully moves to the per-batch route.
 
     POST body:
         { "done": true }   # mark covered

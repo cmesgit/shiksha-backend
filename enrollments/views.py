@@ -34,11 +34,25 @@ class MyEnrollmentRequestListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return (
+        from django.db.models import Q
+        from accounts.auth_flow import get_active_profile
+
+        qs = (
             EnrollmentRequest.objects
-            .select_related("course")
+            .select_related("course", "learner_profile")
             .filter(user=self.request.user)
         )
+        # Scope billing history to the active learner profile so a child doesn't
+        # see siblings' requests. Legacy rows (learner_profile NULL, pre-backfill)
+        # surface only to the DEFAULT profile so nothing disappears. With no
+        # active profile (account/teacher context) fall back to the whole account.
+        learner = get_active_profile(self.request)
+        if learner is not None:
+            q = Q(learner_profile=learner)
+            if getattr(learner, "is_default", False):
+                q |= Q(learner_profile__isnull=True)
+            qs = qs.filter(q)
+        return qs
 
 
 # ---------- Admin endpoints ----------

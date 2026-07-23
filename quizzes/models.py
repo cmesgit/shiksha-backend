@@ -1,5 +1,6 @@
 import uuid
 from django.db import models
+from django.db.models import Q
 from django.conf import settings
 from django.utils import timezone
 
@@ -40,6 +41,18 @@ class Quiz(models.Model):
     subject = models.ForeignKey(
         "courses.Subject",
         on_delete=models.CASCADE,
+        related_name="quizzes",
+    )
+
+    # Delivery scope. NULL = evergreen (practice quizzes / question banks,
+    # visible to every batch of the course); set = scoped to one batch
+    # (e.g. "Batch A13 weekly test"). SET_NULL: deleting a batch demotes
+    # its quizzes to course-wide instead of destroying them.
+    batch = models.ForeignKey(
+        "courses.Batch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="quizzes",
     )
 
@@ -84,6 +97,7 @@ class Quiz(models.Model):
             models.Index(fields=["subject"]),
             models.Index(fields=["is_published"]),
             models.Index(fields=["review_status"]),
+            models.Index(fields=["batch", "is_published"]),
         ]
 
     def __str__(self):
@@ -185,10 +199,25 @@ class QuizAttempt(models.Model):
         related_name="attempts",
     )
 
+    # The ACCOUNT that took the attempt (kept for audit; matches the
+    # user/learner_profile dual-keying already used by enrollments).
     student = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="quiz_attempts",
+    )
+
+    # The LEARNER PROFILE the attempt belongs to. One account can hold
+    # several learner profiles (parent + children); scores, attempt
+    # numbering and resume logic are all per-profile. Nullable only for
+    # legacy rows written before this field existed — backfill with
+    # `manage.py backfill_activity_profiles`.
+    learner_profile = models.ForeignKey(
+        "accounts.LearnerProfile",
+        on_delete=models.CASCADE,
+        related_name="quiz_attempts",
+        null=True,
+        blank=True,
     )
 
     attempt_number = models.PositiveIntegerField(default=1)
@@ -207,16 +236,28 @@ class QuizAttempt(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=["student", "quiz"]),
+            models.Index(fields=["learner_profile", "quiz"]),
         ]
         constraints = [
+            # Attempt numbering is per LEARNER PROFILE — two children on the
+            # same account each get their own attempt 1, 2, 3…
+            models.UniqueConstraint(
+                fields=["quiz", "learner_profile", "attempt_number"],
+                condition=Q(learner_profile__isnull=False),
+                name="uniq_attempt_per_profile_number",
+            ),
+            # Legacy rows (pre-profile, learner_profile NULL) keep the old
+            # account-level rule until backfill_activity_profiles runs.
             models.UniqueConstraint(
                 fields=["quiz", "student", "attempt_number"],
-                name="unique_attempt_per_number"
-            )
+                condition=Q(learner_profile__isnull=True),
+                name="uniq_attempt_legacy_account_number",
+            ),
         ]
 
     def __str__(self):
-        return f"{self.student.email} → {self.quiz.title}"
+        who = self.learner_profile.display_name if self.learner_profile else self.student.email
+        return f"{who} → {self.quiz.title}"
 
 
 # -------------------------------------------------------

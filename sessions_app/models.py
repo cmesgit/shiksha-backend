@@ -41,6 +41,20 @@ class PrivateSession(models.Model):
         on_delete=models.CASCADE,
         related_name="requested_private_sessions",
     )
+    # Dual-keying (same convention as enrollments / quiz attempts / assignment
+    # submissions): `requested_by` is the paying/audit ACCOUNT, `learner_profile`
+    # is WHICH learner on that account the session is for. Nullable for legacy
+    # rows created before per-profile attribution — backfilled by
+    # `manage.py backfill_session_profiles`. All student-side reads/writes scope
+    # by this, and teacher-facing rows display the profile's name so two children
+    # on one account are distinguishable.
+    learner_profile = models.ForeignKey(
+        "accounts.LearnerProfile",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="private_sessions",
+    )
 
     # --- Scheduling ---
     subject = models.CharField(max_length=255)
@@ -83,6 +97,7 @@ class PrivateSession(models.Model):
         indexes = [
             models.Index(fields=["teacher", "status"]),
             models.Index(fields=["requested_by", "status"]),
+            models.Index(fields=["learner_profile", "status"]),
             models.Index(fields=["status"]),
             models.Index(fields=["scheduled_date"]),
         ]

@@ -23,11 +23,11 @@ services:
 
   backend:
     build: ./shiksha-backend
-    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3
+    command: uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers 3
     env_file:
       - .env
     environment:
-      - DJANGO_SETTINGS_MODULE=config.settings.prod
+      - DJANGO_SETTINGS_MODULE=config.settings_prod
     volumes:
       # 🔥 shared with nginx
       - ./static:/app/static
