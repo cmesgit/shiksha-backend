@@ -27,7 +27,7 @@ from rest_framework.exceptions import ValidationError, PermissionDenied
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework import status
 from django.utils import timezone
-from django.db.models import Q
+from django.db.models import Q, Count
 from datetime import timedelta
 
 from accounts.models import LearnerProfile, TeacherProfile
@@ -864,6 +864,33 @@ class AdminRemoveMessageView(APIView):
         return Response({"detail": "removed"})
 
 
+class AdminMessageSearchView(APIView):
+    """GET /chat/admin/messages/?q=&conversation_id=&limit=50 — search/browse
+    chat messages for moderation, independent of a filed Report. Backs
+    AdminRemoveMessageView's remove-by-id action, which previously had a
+    frontend API wrapper but no screen that could ever call it."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        q = (request.query_params.get("q") or "").strip()
+        conversation_id = request.query_params.get("conversation_id")
+        try:
+            limit = min(int(request.query_params.get("limit", 50)), 100)
+        except ValueError:
+            limit = 50
+
+        qs = Message.objects.select_related(
+            "sender", "conversation", "reply_to", "reply_to__sender", "attachment",
+        ).prefetch_related("reactions__participant")
+        if q:
+            qs = qs.filter(body__icontains=q)
+        if conversation_id:
+            qs = qs.filter(conversation_id=conversation_id)
+
+        msgs = list(qs.order_by("-created_at")[:limit])
+        return Response([services.serialize_message(m) for m in msgs])
+
+
 class AdminSuspensionsView(APIView):
     """GET  /chat/admin/suspensions/            — active + past.
     POST /chat/admin/suspensions/ { identity_key, reason?, until? } — create."""
@@ -974,6 +1001,34 @@ class AdminTicketStatusView(APIView):
         return Response(services.serialize_ticket(ticket))
 
 
+class AdminConversationMessagesView(APIView):
+    """GET /chat/admin/conversations/<id>/messages/?limit=50 — read-only
+    admin view of a conversation's recent messages. A filed Report only
+    carries the one reported message_id; this gives a moderator the
+    surrounding thread for context, without the participant-membership
+    gate MessageListView enforces for normal users."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, conversation_id):
+        conv = Conversation.objects.filter(id=conversation_id).first()
+        if not conv:
+            raise ValidationError("Conversation not found.")
+        try:
+            limit = min(int(request.query_params.get("limit", 50)), 100)
+        except ValueError:
+            limit = 50
+        qs = conv.messages.select_related(
+            "sender", "reply_to", "reply_to__sender", "attachment",
+        ).prefetch_related("reactions__participant")
+        msgs = list(qs.order_by("-created_at")[:limit])[::-1]
+        return Response({
+            "conversation_id": str(conv.id),
+            "kind": conv.kind,
+            "title": conv.title,
+            "messages": [services.serialize_message(m) for m in msgs],
+        })
+
+
 class AdminLogsView(APIView):
     """GET /chat/admin/logs/ — lightweight comms analytics (CC-023). Not a
     full export pipeline — a first, honest pass at the numbers a moderator
@@ -998,3 +1053,93 @@ class AdminLogsView(APIView):
             "generated_at": now.isoformat(),
         }
         return Response(data)
+
+
+class ChatModerationOverviewView(APIView):
+    """GET /chat/admin/moderation-overview/?range=7d
+    → { range_days, kpis, moderators[], breakdown[], queues[] }
+
+    Chat's counterpart to forum/moderation_views.py's
+    AdminModerationOverviewView, backing a "Chat" scope on the admin
+    console's Moderator Activity screen. Forum logs every action to a
+    dedicated ModerationAction audit row; chat has no equivalent, so the
+    breakdown here is by Report.status (the only outcome chat persists)
+    rather than by action verb (remove_message vs suspend_user), and the
+    moderator rows are attributed via Report.resolved_by.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        raw = (request.query_params.get("range") or "7d").strip().lower()
+        try:
+            days = max(1, min(int(raw.rstrip("d")), 365))
+        except (TypeError, ValueError):
+            days = 7
+        since = timezone.now() - timedelta(days=days)
+
+        resolved_qs = Report.objects.filter(resolved_at__gte=since, resolved_at__isnull=False)
+        resolved_count = resolved_qs.count()
+
+        deltas = sorted(
+            (r.resolved_at - r.created_at).total_seconds() / 60.0
+            for r in resolved_qs.only("created_at", "resolved_at")
+        )
+        median_response = None
+        if deltas:
+            n = len(deltas)
+            mid = n // 2
+            median_response = deltas[mid] if n % 2 else (deltas[mid - 1] + deltas[mid]) / 2
+
+        escalations = ChatSuspension.objects.filter(created_at__gte=since).count()
+        open_reports = Report.objects.filter(status=Report.STATUS_OPEN).count()
+        active_suspensions = ChatSuspension.objects.filter(
+            Q(suspended_until__isnull=True) | Q(suspended_until__gt=timezone.now())
+        ).count()
+
+        kpis = [
+            {"key": "resolved", "label": f"Reports resolved · {days}d", "value": resolved_count},
+            {"key": "median_response", "label": "Median response",
+             "value": (f"{round(median_response)} min" if median_response is not None else "—")},
+            {"key": "escalations", "label": "Suspensions issued", "value": escalations},
+            {"key": "reports_open", "label": "Reports open", "value": open_reports},
+        ]
+
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+
+        by_mod = (
+            resolved_qs.exclude(resolved_by__isnull=True)
+            .values("resolved_by")
+            .annotate(n=Count("id"))
+            .order_by("-n")[:50]
+        )
+        mod_ids = [r["resolved_by"] for r in by_mod]
+        users = {u.id: u for u in User.objects.filter(id__in=mod_ids)}
+        moderators = []
+        for r in by_mod:
+            u = users.get(r["resolved_by"])
+            if not u:
+                continue
+            moderators.append({
+                "name": (u.get_full_name() or "").strip() or u.username or u.email,
+                "email": u.email,
+                "week": r["n"],
+            })
+
+        breakdown = [
+            {"type": r["status"], "count": r["n"]}
+            for r in resolved_qs.values("status").annotate(n=Count("id")).order_by("-n")
+        ]
+
+        queues = [
+            {"key": "chat_open", "label": "Chat reports open", "count": open_reports, "href": "/communication/reports"},
+            {"key": "chat_suspensions", "label": "Active suspensions", "count": active_suspensions, "href": "/communication/reports"},
+        ]
+
+        return Response({
+            "range_days": days,
+            "kpis": kpis,
+            "moderators": moderators,
+            "breakdown": breakdown,
+            "queues": queues,
+        })
