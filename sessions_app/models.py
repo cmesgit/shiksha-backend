@@ -376,7 +376,13 @@ class GroupSession(models.Model):
     cancel_reason = models.TextField(blank=True, default="")
 
     # --- LiveKit ---
-    room_name = models.CharField(max_length=255, blank=True, default="")
+    # null=True (not just blank) so pre-live rows can share the "not set yet"
+    # state without violating uniqueness — many sessions never go live and
+    # would otherwise collide on "". Set once, at go-live, to
+    # f"group_session_{id}" (inherently unique).
+    room_name = models.CharField(
+        max_length=255, null=True, blank=True, default=None, unique=True
+    )
 
     # --- Timestamps ---
     created_at = models.DateTimeField(auto_now_add=True)
@@ -475,3 +481,78 @@ class GroupSessionInvite(models.Model):
 
     def __str__(self):
         return f"{self.user} → {self.session.id} [{self.status}]"
+
+
+class GroupSessionAttendance(models.Model):
+    session = models.ForeignKey(
+        GroupSession,
+        on_delete=models.CASCADE,
+        related_name="attendances",
+    )
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+    )
+
+    # ── ROLLUP semantics ──
+    # joined_at = FIRST join, left_at = LAST leave, total_seconds = summed watch
+    # time across every join/leave cycle (see GroupSessionAttendanceInterval for
+    # the append-only per-cycle rows). unique_together keeps exactly one rollup
+    # row per (session, user); rejoins no longer overwrite prior attendance —
+    # they extend total_seconds instead.
+    joined_at = models.DateTimeField(null=True, blank=True)
+    left_at = models.DateTimeField(null=True, blank=True)
+    total_seconds = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = ("session", "user")
+        indexes = [
+            models.Index(fields=["session", "user"]),
+            models.Index(fields=["session", "joined_at"]),
+        ]
+
+    def duration(self):
+        if self.total_seconds:
+            from datetime import timedelta
+            return timedelta(seconds=self.total_seconds)
+        if self.joined_at and self.left_at:
+            return self.left_at - self.joined_at
+        return None
+
+
+class GroupSessionAttendanceInterval(models.Model):
+    """Append-only, one row per join→leave cycle.
+
+    The authoritative attendance record. `GroupSessionAttendance` is a derived
+    rollup over these. A user who disconnects and rejoins produces multiple
+    rows, so reconnect history, total watch time, and true presence intervals
+    are all recoverable — which the single-interval rollup alone can't do.
+    `closed_by_reconcile` marks rows we closed defensively (missed
+    participant_left webhook) rather than a real leave.
+    """
+    session = models.ForeignKey(
+        GroupSession,
+        on_delete=models.CASCADE,
+        related_name="attendance_intervals",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+    )
+    joined_at = models.DateTimeField()
+    left_at = models.DateTimeField(null=True, blank=True)
+    closed_by_reconcile = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["joined_at"]
+        indexes = [
+            models.Index(fields=["session", "user"]),
+            models.Index(fields=["session", "joined_at"]),
+            models.Index(fields=["session", "left_at"]),
+        ]
+
+    def duration_seconds(self):
+        if self.joined_at and self.left_at:
+            return int((self.left_at - self.joined_at).total_seconds())
+        return 0

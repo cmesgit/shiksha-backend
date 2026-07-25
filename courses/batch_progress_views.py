@@ -30,6 +30,7 @@ from .batch_progress import (
     can_view_batch_progress,
     can_edit_chapter_for_batch,
 )
+from .progress_stats import build_progress_stats
 
 
 class BatchProgressView(APIView):
@@ -159,9 +160,18 @@ class MyBatchProgressView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        # Quiz/assignment/live-hours stats: same "this course's subjects" +
+        # "this student" scope regardless of which branch below runs.
+        subjects_qs = course.subjects.all()
+        stats = build_progress_stats(
+            course, request.user, subjects_qs, learner=learner
+        )
+
         # Batch assigned -> per-batch progress.
         if enrollment.batch_id:
-            return Response(build_batch_progress(enrollment.batch))
+            payload = build_batch_progress(enrollment.batch)
+            payload["stats"] = stats
+            return Response(payload)
 
         # No batch yet (e.g. enrolled before batch assignment rolled out):
         # fall back to the course-wide coverage so the student still sees
@@ -170,4 +180,5 @@ class MyBatchProgressView(APIView):
         payload = build_course_progress(course)
         payload["batch"] = None
         payload["fallback"] = "course_wide"
+        payload["stats"] = stats
         return Response(payload)

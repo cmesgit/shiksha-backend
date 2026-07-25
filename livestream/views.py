@@ -12,7 +12,7 @@ from .models import (
     LiveKitWebhookEvent,
 )
 from courses.services import teaches_subject
-from accounts.permissions import require_teacher_context, IsTeacherContext
+from accounts.permissions import require_teacher_context, IsTeacherContext, CTX_TEACHER
 from enrollments.models import Enrollment
 from livekit.api import WebhookReceiver, TokenVerifier
 from rest_framework.response import Response
@@ -74,28 +74,30 @@ def broadcast_session_update(session):
 
 
 def broadcast_course_sessions_update(session):
-    """Broadcast session changes to the session list page (LiveSessions.jsx)."""
+    """Broadcast session changes to the session list page (LiveSessions.jsx).
+
+    Sends the full LiveSessionListSerializer payload (not a hand-rolled thin
+    dict) so both the student and teacher cards get computed_status/
+    subject_name/course_name/description without a REST refetch.
+
+    CAVEAT: this runs outside any DRF request, so
+    LiveSessionListSerializer.get_can_join()'s `request.user.has_role("TEACHER")`
+    branch never fires here — the pushed `can_join` always falls through to
+    the generic student timing rule. Teacher frontends must not trust this
+    field over the socket; they recompute a teacher-safe can_join client-side
+    instead.
+    """
     channel_layer = get_channel_layer()
     if not channel_layer:
         return
+
+    data = dict(LiveSessionListSerializer(session).data)
 
     async_to_sync(channel_layer.group_send)(
         f"course_sessions_{session.course_id}",
         {
             "type": "session_list_update",
-            "data": {
-                "id": str(session.id),
-                "title": session.title,
-                "start_time": session.start_time.isoformat(),
-                "end_time": session.end_time.isoformat(),
-                "status": session.status,
-                "teacher_left_at": (
-                    session.teacher_left_at.isoformat()
-                    if session.teacher_left_at else None
-                ),
-                "subject_id": str(session.subject_id),
-                "teacher": session.created_by.email if session.created_by else "",
-            },
+            "data": data,
         }
     )
 
@@ -233,8 +235,36 @@ def join_live_session(request, session_id):
             session.save(update_fields=["status", "teacher_left_at"])
             return Response({"detail": "Session has ended."}, status=400)
 
-    # ── Student ──
-    if user.has_role("STUDENT"):
+    # Branch on the JWT `context` claim, not `has_role` — a teacher account
+    # browsing in learner context (e.g. its own SELF learner profile) has no
+    # STUDENT role (see signup_serializer._setup_teacher, which never adds
+    # it), so gating on has_role("STUDENT") sent it down the has_role("TEACHER")
+    # branch instead and handed out a PRESENTER token. Same class of bug
+    # already fixed in StudentLiveSessionListView.get_queryset above; every
+    # other teacher-only endpoint in this file already gates on context via
+    # require_teacher_context, so this mirrors that convention.
+    token = getattr(request, "auth", None)
+    in_teacher_context = (
+        bool(token) and token.get("context") == CTX_TEACHER and user.has_role("TEACHER")
+    )
+
+    # ── Teacher ──
+    if in_teacher_context:
+        if not teaches_subject(user, session.subject):
+            return Response({"detail": "Not assigned"}, status=403)
+
+        is_creator = str(session.created_by_id) == str(user.id)
+        is_teacher = is_creator
+
+        # Revive session if teacher reconnects within 30 min
+        if is_creator and session.teacher_left_at:
+            if now <= session.teacher_left_at + timedelta(minutes=30):
+                session.teacher_left_at = None
+                session.status = LiveSession.STATUS_LIVE
+                session.save(update_fields=["teacher_left_at", "status"])
+
+    # ── Student / learner context ──
+    else:
         from enrollments.services import has_active_subscription, lock_payload
         from accounts.auth_flow import get_active_profile
 
@@ -262,24 +292,6 @@ def join_live_session(request, session_id):
 
         is_teacher = False
 
-    # ── Teacher ──
-    elif user.has_role("TEACHER"):
-        if not teaches_subject(user, session.subject):
-            return Response({"detail": "Not assigned"}, status=403)
-
-        is_creator = str(session.created_by_id) == str(user.id)
-        is_teacher = is_creator
-
-        # Revive session if teacher reconnects within 30 min
-        if is_creator and session.teacher_left_at:
-            if now <= session.teacher_left_at + timedelta(minutes=30):
-                session.teacher_left_at = None
-                session.status = LiveSession.STATUS_LIVE
-                session.save(update_fields=["teacher_left_at", "status"])
-
-    else:
-        return Response({"detail": "Unauthorized"}, status=403)
-
     token = generate_livekit_token(
         user=user,
         session=session,
@@ -301,6 +313,8 @@ def join_live_session(request, session_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_live_session(request):
+    require_teacher_context(request)
+
     serializer = LiveSessionCreateSerializer(
         data=request.data,
         context={"request": request}
@@ -450,6 +464,50 @@ def live_session_detail(request, session_id):
 
 
 # =========================
+# SESSION STATUS (lightweight poll, both sides)
+# =========================
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def live_session_status(request, session_id):
+    """GET sessions/<id>/status/ — the classroom screen's WS-unavailable
+    fallback poll (`LiveApi.sessionStatus`). Unlike live_session_detail
+    (teacher-only, carries the attendance roster), this is reachable by BOTH
+    sides: gated the same way join_live_session is — teacher-context +
+    teaches_subject, or learner-context + an active enrollment in the
+    session's course. No subscription check here: a lapsed subscription
+    already 402s the actual join/token mint; it shouldn't also break the
+    background status poll a student's classroom screen keeps running.
+    """
+    session = get_object_or_404(LiveSession, id=session_id)
+    user = request.user
+
+    token = getattr(request, "auth", None)
+    in_teacher_context = (
+        bool(token) and token.get("context") == CTX_TEACHER and user.has_role("TEACHER")
+    )
+
+    if in_teacher_context:
+        if not teaches_subject(user, session.subject):
+            return Response({"detail": "Not assigned to this subject."}, status=403)
+    else:
+        from accounts.auth_flow import get_active_profile
+
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response({"detail": "Select a learner profile."}, status=403)
+        if not Enrollment.objects.filter(
+            user=user, course=session.course, status=Enrollment.STATUS_ACTIVE
+        ).exists():
+            return Response({"detail": "Not enrolled in this course."}, status=403)
+
+    return Response({
+        "status": session.status,
+        "computed_status": session.computed_status(),
+    })
+
+
+# =========================
 # LIVEKIT WEBHOOK
 # =========================
 
@@ -566,8 +624,10 @@ def livekit_webhook(request):
 
 @transaction.atomic
 def _handle_participant_join(event):
-    session = LiveSession.objects.filter(room_name=_event_room_name(event)).first()
+    room_name = _event_room_name(event)
+    session = LiveSession.objects.filter(room_name=room_name).first()
     if not session:
+        _handle_group_session_join(room_name, event)
         return
 
     user_id = str(event.participant.identity)
@@ -615,8 +675,10 @@ def _handle_participant_join(event):
 
 @transaction.atomic
 def _handle_participant_left(event):
-    session = LiveSession.objects.filter(room_name=_event_room_name(event)).first()
+    room_name = _event_room_name(event)
+    session = LiveSession.objects.filter(room_name=room_name).first()
     if not session:
+        _handle_group_session_left(room_name, event)
         return
 
     user_id = str(event.participant.identity)
@@ -642,6 +704,47 @@ def _handle_participant_left(event):
     session.save(update_fields=["teacher_left_at",
                  "status", "last_activity_at"])
     broadcast_session_update(session)
+
+
+def _handle_group_session_join(room_name, event):
+    """No LiveSession matched this room — try GroupSession. Group session
+    LiveKit identities are composite `"{user.id}_{session.id}"`, not a bare
+    user id, so the user id has to be parsed out first."""
+    from sessions_app.services import group_attendance as group_attendance_svc
+
+    session = group_attendance_svc.resolve_group_session(room_name)
+    if not session:
+        return
+
+    user_id = group_attendance_svc.parse_user_id(str(event.participant.identity))
+    if not user_id:
+        return
+    User = get_user_model()
+    user = User.objects.filter(id=user_id).first()
+    if not user:
+        return
+
+    group_attendance_svc.open_interval(session, user, when=timezone.now())
+
+
+def _handle_group_session_left(room_name, event):
+    """No LiveSession matched this room — try GroupSession (see
+    `_handle_group_session_join` for the identity-parsing note)."""
+    from sessions_app.services import group_attendance as group_attendance_svc
+
+    session = group_attendance_svc.resolve_group_session(room_name)
+    if not session:
+        return
+
+    user_id = group_attendance_svc.parse_user_id(str(event.participant.identity))
+    if not user_id:
+        return
+    User = get_user_model()
+    user = User.objects.filter(id=user_id).first()
+    if not user:
+        return
+
+    group_attendance_svc.close_intervals(session, user, when=timezone.now())
 
 
 def _handle_room_started(event):

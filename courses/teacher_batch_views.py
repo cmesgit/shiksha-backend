@@ -9,15 +9,39 @@ Route (added in courses/urls.py):
     GET  courses/teacher/my-batches/
 """
 
-from django.db.models import Count, Q
+from django.db.models import Avg, Count, ExpressionWrapper, F, FloatField, Q
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from quizzes.models import QuizAttempt
+
 from .models import Batch, Chapter, Course, Subject, SubjectTeacher
 from .models_batch_progress import BatchChapterProgress
 from .services import teaches_subject
+
+
+def _avg_quiz_score(user):
+    """Attempt-weighted average score % across this teacher's published
+    quizzes' submitted attempts (every attempt counts once — not a
+    per-quiz average of averages). None if there are no such attempts."""
+    avg = (
+        QuizAttempt.objects.filter(
+            quiz__created_by=user,
+            quiz__is_published=True,
+            status=QuizAttempt.STATUS_SUBMITTED,
+            quiz__total_marks__gt=0,
+        )
+        .annotate(
+            pct=ExpressionWrapper(
+                F("score") * 100.0 / F("quiz__total_marks"),
+                output_field=FloatField(),
+            )
+        )
+        .aggregate(avg=Avg("pct"))["avg"]
+    )
+    return round(avg) if avg is not None else None
 
 
 class TeacherMyBatchesView(APIView):
@@ -32,7 +56,15 @@ class TeacherMyBatchesView(APIView):
             .distinct()
         )
         if not course_ids:
-            return Response([])
+            return Response({
+                "groups": [],
+                "stats": {
+                    "active_batches": 0,
+                    "avg_syllabus_completion": 0,
+                    "students": 0,
+                    "avg_quiz_score": _avg_quiz_score(user),
+                },
+            })
 
         courses = {
             c.id: c
@@ -80,6 +112,8 @@ class TeacherMyBatchesView(APIView):
                 "chapters_total": total,
                 "chapters_done": done,
                 "percent": round(done / total * 100) if total else 0,
+                "start_date": b.start_date.isoformat() if b.start_date else None,
+                "end_date": b.end_date.isoformat() if b.end_date else None,
             })
 
         out = []
@@ -91,7 +125,21 @@ class TeacherMyBatchesView(APIView):
                 "batches": grouped.get(cid, []),
             })
         out.sort(key=lambda x: x["course_title"] or "")
-        return Response(out)
+
+        active_batches = [
+            b for batch_list in grouped.values() for b in batch_list if b["is_active"]
+        ]
+        stats = {
+            "active_batches": len(active_batches),
+            "avg_syllabus_completion": (
+                round(sum(b["percent"] for b in active_batches) / len(active_batches))
+                if active_batches else 0
+            ),
+            "students": sum(b["seats_taken"] for b in active_batches),
+            "avg_quiz_score": _avg_quiz_score(user),
+        }
+
+        return Response({"groups": out, "stats": stats})
 
 
 class TeacherSubjectBatchesView(APIView):

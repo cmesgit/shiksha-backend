@@ -54,9 +54,10 @@ from accounts.models import Role
 from activity.models import Activity
 from assignments.models import Assignment, AssignmentSubmission
 from courses.models import Subject, Chapter, SubjectTeacher
+from courses.progress_stats import average_quiz_score_pct
 from enrollments.models import Enrollment
 from livestream.models import LiveSession
-from quizzes.models import Quiz
+from quizzes.models import Quiz, QuizAttempt
 from sessions_app.models import PrivateSession
 
 from .serializers import (
@@ -142,6 +143,26 @@ def _learner_quizzes(subject_ids):
     )
 
 
+def _learner_quiz_avg_pct(profile, subject_ids):
+    """Average score % across this profile's own SUBMITTED QuizAttempts for
+    quizzes in `subject_ids` — the same subject set _learner_quizzes uses,
+    which may span every course this profile is enrolled in (not just one).
+    Scoped by learner_profile only, matching how the rest of this view's
+    learner slices (e.g. _learner_course_ids) key off the active profile —
+    unlike courses.progress_stats' single-course stats block, there's no
+    dual-key/is_default legacy fallback here. None if there are zero
+    submitted attempts. See courses.progress_stats.average_quiz_score_pct
+    for the shared percentage math (skips quizzes with total_marks=0)."""
+    attempts = list(
+        QuizAttempt.objects.filter(
+            learner_profile=profile,
+            quiz__subject_id__in=subject_ids,
+            status=QuizAttempt.STATUS_SUBMITTED,
+        ).select_related("quiz")
+    )
+    return average_quiz_score_pct(attempts)
+
+
 def _learner_private_sessions(user, now):
     # PrivateSession has no learner_profile FK yet (account-level by
     # design of that model) — scope to sessions this ACCOUNT requested,
@@ -219,6 +240,23 @@ def _teacher_grading_queue(user, limit=15):
         .select_related("student", "assignment__chapter__subject")
         .distinct()
         .order_by("-submitted_at")[:limit]
+    )
+
+
+def _teacher_grading_count(user):
+    """Uncapped count for the SAME filter _teacher_grading_queue uses, so
+    the '{n} pending' badge doesn't silently cap at that function's
+    display-list limit (15) once a teacher has more submissions than fit
+    on the card. AssignmentSubmission has no graded/ungraded status field
+    (see the docstring above), so — same as the display list — 'pending'
+    here means 'submission exists on one of my assignments', not
+    'ungraded'; there is currently no way to distinguish the two."""
+    return (
+        AssignmentSubmission.objects.filter(
+            assignment__chapter__subject__subject_teachers__teacher=user
+        )
+        .distinct()
+        .count()
     )
 
 
@@ -343,6 +381,10 @@ class DashboardView(APIView):
             grading_queue = _guard(
                 "teacher.grading_queue",
                 lambda: _teacher_grading_queue(user), [])
+            grading_count = _guard(
+                "teacher.grading_count",
+                lambda: _teacher_grading_count(user), 0)
+            quiz_avg_pct = None  # teacher dashboards have no quiz score to average
             notifications = _guard(
                 "teacher.notifications",
                 lambda: _notifications(user, now,
@@ -390,10 +432,14 @@ class DashboardView(APIView):
                 lambda: _learner_assignments(chapter_ids, teacher_prefetch), [])
             quizzes = _guard(
                 "learner.quizzes", lambda: _learner_quizzes(subject_ids), [])
+            quiz_avg_pct = _guard(
+                "learner.quiz_avg_pct",
+                lambda: _learner_quiz_avg_pct(profile, subject_ids), None)
             private_sessions = _guard(
                 "learner.private_sessions",
                 lambda: _learner_private_sessions(user, now), [])
             grading_queue = []  # learner dashboards have no grading queue
+            grading_count = 0   # ditto
             notifications = _guard(
                 "learner.notifications",
                 lambda: _notifications(user, now,
@@ -443,7 +489,8 @@ class DashboardView(APIView):
                                        lambda: DashboardPrivateSessionSerializer(private_sessions, many=True).data, []),
             "grading_queue":    _guard("ser.grading_queue",
                                        lambda: DashboardGradingItemSerializer(grading_queue, many=True).data, []),
-            "grading_count":    len(grading_queue),
+            "grading_count":    grading_count,
+            "quiz_avg_pct":     quiz_avg_pct,
             "notifications":    notifications_data,
             "schedule":         _guard("ser.schedule",
                                        lambda: DashboardActivitySerializer(schedule, many=True).data, []),
