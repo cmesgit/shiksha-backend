@@ -10,8 +10,9 @@ from rest_framework import status
 from enrollments.models import Enrollment, EnrollmentRequest, Subscription
 from accounts.permissions import IsTeacherContext, IsAdmin
 from accounts.auth_flow import get_active_profile
-from quizzes.models import Quiz
+from quizzes.models import Quiz, QuizAttempt
 from assignments.models import Assignment
+from courses.progress_stats import average_quiz_score_pct
 from .models import Course, Subject, Board
 from .serializers import CourseSerializer, SubjectSerializer, BoardSerializer
 from django.utils import timezone
@@ -362,6 +363,22 @@ class SubjectDashboardView(APIView):
         completed_quizzes = quiz_counts["completed"] or 0 if is_student else 0
         pending_quizzes = total_quizzes - completed_quizzes
 
+        # Avg quiz score for this subject — same score/total_marks% math as
+        # the Progress screen's stats block (courses.progress_stats), just
+        # scoped to one subject's submitted attempts instead of a whole
+        # course. None for teachers (they don't take their own quizzes) or
+        # when the student has no submitted attempts yet.
+        quiz_avg_pct = None
+        if is_student:
+            attempts = list(
+                QuizAttempt.objects.filter(
+                    quiz__subject=subject,
+                    student=user,
+                    status=QuizAttempt.STATUS_SUBMITTED,
+                ).select_related("quiz")
+            )
+            quiz_avg_pct = average_quiz_score_pct(attempts)
+
         # ── Misc counts: 1 query ──
         from courses.models_recordings import SessionRecording
         from materials.models import StudyMaterial
@@ -406,6 +423,7 @@ class SubjectDashboardView(APIView):
                 "completed": completed_quizzes,
                 "total": total_quizzes,
             },
+            "quizAvgPct": quiz_avg_pct,
             "recordingsCount": recordings_count,
             "recordings_count": recordings_count,
             "studyMaterialsCount": study_materials_count,
