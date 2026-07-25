@@ -8,6 +8,8 @@ from .views import (
     live_session_detail,
     live_session_status,
     livekit_webhook,
+    submit_session_review,
+    session_notes,
     StudentLiveSessionListView,
     TeacherLiveSessionListView,
 )
@@ -33,6 +35,8 @@ urlpatterns = [
     path("sessions/<uuid:session_id>/detail/", live_session_detail),
     path("sessions/<uuid:session_id>/status/", live_session_status),
     path("sessions/<uuid:session_id>/health/", ingest_health),
+    path("sessions/<uuid:session_id>/review/", submit_session_review),
+    path("sessions/<uuid:session_id>/notes/", session_notes),
     path("webhook/", livekit_webhook),
 
     # ── Admin console (is_staff) ──

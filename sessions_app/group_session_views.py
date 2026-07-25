@@ -22,11 +22,12 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import GroupSession, GroupSessionInvite, GroupSessionChatMessage
+from .models import GroupSession, GroupSessionInvite, GroupSessionChatMessage, GroupSessionNote
 from .permissions import IsStudent
 from .serializers import get_user_name
 from .services.group_session_token import generate_group_session_token
 from .group_session_serializers import (
+    GroupSessionNoteSerializer,
     GroupSessionCreateSerializer,
     GroupSessionDetailSerializer,
     GroupSessionInviteMoreSerializer,
@@ -1239,6 +1240,48 @@ def send_group_session_chat_message(request, session_id):
             logger.exception("Channel-layer broadcast failed for group session %s", session.id)
 
     return Response(payload, status=http_status.HTTP_201_CREATED)
+
+
+# ===========================================================================
+# NOTES — private per-user scratchpad, no review counterpart (spec: group
+# sessions never show a post-call review modal).
+# ===========================================================================
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def group_session_note(request, session_id):
+    """GET/PATCH group-sessions/<session_id>/notes/ — the requesting user's
+    own private notes for this session. Uses the same participant gate as
+    chat (host / accepted invite / instant meeting) rather than the looser
+    `_can_view` used for read-only session info, since this is a
+    write-capable per-user resource.
+    """
+    try:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    allowed, err = _chat_participant_check(session, request.user)
+    if not allowed:
+        return err
+
+    if request.method == "GET":
+        note = GroupSessionNote.objects.filter(session=session, user=request.user).first()
+        return Response(
+            GroupSessionNoteSerializer(note).data if note else {"content": "", "updated_at": None}
+        )
+
+    serializer = GroupSessionNoteSerializer(data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+
+    note, _ = GroupSessionNote.objects.update_or_create(
+        session=session,
+        user=request.user,
+        defaults=serializer.validated_data,
+    )
+
+    return Response(GroupSessionNoteSerializer(note).data)
 
 
 # ===========================================================================

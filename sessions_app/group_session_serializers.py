@@ -8,7 +8,7 @@ the original serializers module where useful.
 
 from rest_framework import serializers
 
-from .models import GroupSession, GroupSessionInvite
+from .models import GroupSession, GroupSessionInvite, GroupSessionNote
 from .serializers import get_user_name, get_student_id
 
 
@@ -211,3 +211,10 @@ class GroupSessionInviteMoreSerializer(serializers.Serializer):
         child=serializers.UUIDField(),
         allow_empty=False,
     )
+
+
+class GroupSessionNoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GroupSessionNote
+        fields = ["content", "updated_at"]
+        read_only_fields = ["updated_at"]

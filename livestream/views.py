@@ -3,6 +3,8 @@ from django.conf import settings
 from .serializers import (
     LiveSessionCreateSerializer,
     LiveSessionListSerializer,
+    SessionReviewSerializer,
+    SessionNoteSerializer,
 )
 from .services.token import generate_livekit_token
 from .services import attendance as attendance_svc
@@ -10,6 +12,8 @@ from .models import (
     LiveSession,
     LiveSessionAttendance,
     LiveKitWebhookEvent,
+    SessionReview,
+    SessionNote,
 )
 from courses.services import teaches_subject
 from accounts.permissions import require_teacher_context, IsTeacherContext, CTX_TEACHER
@@ -505,6 +509,89 @@ def live_session_status(request, session_id):
         "status": session.status,
         "computed_status": session.computed_status(),
     })
+
+
+def _require_session_participant(request, session):
+    """Same access gate as live_session_status: teacher-context + assigned to
+    the subject, or learner-context + an active enrollment in the course.
+    Raises PermissionDenied (→ 403) rather than returning a Response, so
+    callers can use it as a one-line guard.
+    """
+    user = request.user
+    token = getattr(request, "auth", None)
+    in_teacher_context = (
+        bool(token) and token.get("context") == CTX_TEACHER and user.has_role("TEACHER")
+    )
+
+    if in_teacher_context:
+        if not teaches_subject(user, session.subject):
+            raise PermissionDenied("Not assigned to this subject.")
+    else:
+        if not Enrollment.objects.filter(
+            user=user, course=session.course, status=Enrollment.STATUS_ACTIVE
+        ).exists():
+            raise PermissionDenied("Not enrolled in this course.")
+
+
+# =========================
+# SESSION REVIEW (post-class rating)
+# =========================
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def submit_session_review(request, session_id):
+    """POST sessions/<id>/review/ — 1-5 star rating + optional description,
+    submitted from the end-call review modal shown whenever a participant
+    leaves the call. Not gated on the session being COMPLETED: a student
+    leaving a still-live class (teacher continues for others) is a normal
+    path here, and their review reflects their own experience up to that
+    point. Resubmitting (e.g. modal shown again) overwrites the prior
+    review rather than erroring, via update_or_create.
+    """
+    session = get_object_or_404(LiveSession, id=session_id)
+    _require_session_participant(request, session)
+
+    serializer = SessionReviewSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    review, _ = SessionReview.objects.update_or_create(
+        session=session,
+        user=request.user,
+        defaults=serializer.validated_data,
+    )
+
+    return Response(SessionReviewSerializer(review).data, status=status.HTTP_201_CREATED)
+
+
+# =========================
+# SESSION NOTES (private per-user notes)
+# =========================
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def session_notes(request, session_id):
+    """GET/PATCH sessions/<id>/notes/ — the requesting user's own private
+    notes for this session (never another participant's). PATCH upserts via
+    update_or_create so the in-call Notes panel can autosave without a
+    separate create-vs-update branch.
+    """
+    session = get_object_or_404(LiveSession, id=session_id)
+    _require_session_participant(request, session)
+
+    if request.method == "GET":
+        note = SessionNote.objects.filter(session=session, user=request.user).first()
+        return Response(SessionNoteSerializer(note).data if note else {"content": "", "updated_at": None})
+
+    serializer = SessionNoteSerializer(data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+
+    note, _ = SessionNote.objects.update_or_create(
+        session=session,
+        user=request.user,
+        defaults=serializer.validated_data,
+    )
+
+    return Response(SessionNoteSerializer(note).data)
 
 
 # =========================

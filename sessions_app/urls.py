@@ -45,6 +45,12 @@ urlpatterns = [
     path("<uuid:session_id>/chat/send/", views.send_chat_message,
          name="private-session-chat-send"),
 
+    # --- Review + Notes ---
+    path("<uuid:session_id>/review/", views.submit_private_session_review,
+         name="private-session-review"),
+    path("<uuid:session_id>/notes/", views.private_session_notes,
+         name="private-session-notes"),
+
     # ✅ ADD THIS HERE (clean)
     path("subjects/<uuid:subject_id>/teachers/", subject_teachers),
     path("subjects/<uuid:subject_id>/students/", subject_students),
@@ -108,4 +114,9 @@ urlpatterns = [
     path("group-sessions/<uuid:session_id>/chat/send/",
          gs_views.send_group_session_chat_message,
          name="group-session-chat-send"),
+
+    # --- Group-session notes ---
+    path("group-sessions/<uuid:session_id>/notes/",
+         gs_views.group_session_note,
+         name="group-session-notes"),
 ]

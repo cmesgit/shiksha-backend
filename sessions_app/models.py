@@ -148,6 +148,57 @@ class SessionParticipant(models.Model):
         return f"{self.user} in {self.session.id}"
 
 
+class PrivateSessionReview(models.Model):
+    """A participant's post-class rating for one PrivateSession.
+
+    One review per (session, user) — resubmitting overwrites via
+    update_or_create rather than erroring. Mirrors livestream.SessionReview.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        PrivateSession, on_delete=models.CASCADE, related_name="reviews"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+    )
+    rating = models.PositiveSmallIntegerField(
+        choices=[(1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")]
+    )
+    description = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("session", "user")
+
+    def __str__(self):
+        return f"{self.user_id} rated {self.session_id}: {self.rating}"
+
+
+class PrivateSessionNote(models.Model):
+    """A participant's private notes for one PrivateSession.
+
+    Private per (session, user) — mirrors livestream.SessionNote. Distinct
+    from PrivateSession.notes (a single shared free-text field on the
+    session itself, unrelated to this per-user in-call scratchpad).
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        PrivateSession, on_delete=models.CASCADE, related_name="participant_notes"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+    )
+    content = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("session", "user")
+
+    def __str__(self):
+        return f"{self.user_id} notes on {self.session_id}"
+
+
 class SessionRescheduleHistory(models.Model):
     """Audit log for every reschedule proposal on a session."""
 
@@ -519,6 +570,31 @@ class GroupSessionAttendance(models.Model):
         if self.joined_at and self.left_at:
             return self.left_at - self.joined_at
         return None
+
+
+class GroupSessionNote(models.Model):
+    """A participant's private notes for one GroupSession.
+
+    Private per (session, user) — mirrors livestream.SessionNote /
+    PrivateSessionNote. No review-model counterpart: group sessions never
+    show a post-call review modal per the design spec.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        GroupSession, on_delete=models.CASCADE, related_name="notes"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+    )
+    content = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("session", "user")
+
+    def __str__(self):
+        return f"{self.user_id} notes on {self.session_id}"
 
 
 class GroupSessionAttendanceInterval(models.Model):

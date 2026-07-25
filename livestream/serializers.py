@@ -5,7 +5,7 @@ from datetime import timedelta
 import uuid
 from zoneinfo import ZoneInfo
 
-from .models import LiveSession
+from .models import LiveSession, SessionReview, SessionNote
 from courses.models import Subject, Batch
 from courses.services import is_teacher_of
 
@@ -154,6 +154,8 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
     teacher_left_at = serializers.DateTimeField(read_only=True)
     status = serializers.CharField(read_only=True)
     description = serializers.CharField(read_only=True)
+    batch_name = serializers.CharField(source="batch.name", read_only=True, default=None)
+    batch_student_count = serializers.SerializerMethodField()
 
     class Meta:
         model = LiveSession
@@ -171,7 +173,17 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
             "course_name",
             "teacher_left_at",
             "status",
+            "batch_name",
+            "batch_student_count",
         ]
+
+    def get_batch_student_count(self, obj):
+        if not obj.batch_id:
+            return None
+        from enrollments.models import Enrollment
+        return Enrollment.objects.filter(
+            batch_id=obj.batch_id, status=Enrollment.STATUS_ACTIVE
+        ).count()
 
     def get_computed_status(self, obj):
         now = timezone.now()
@@ -224,3 +236,17 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
             return True
 
         return now >= obj.start_time - timedelta(minutes=15)
+
+
+class SessionReviewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SessionReview
+        fields = ["id", "rating", "description", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+
+class SessionNoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SessionNote
+        fields = ["content", "updated_at"]
+        read_only_fields = ["updated_at"]
