@@ -18,6 +18,7 @@ from .views import (
     TeacherQuizAttemptDetailView,
     TeacherStudentAttemptsView,
     TeacherSubjectQuizListView,
+    TeacherAllQuizListView,
     TeacherQuizAttemptsView,
     TeacherQuestionBankView,
     TeacherBankFiltersView,
@@ -39,6 +40,11 @@ urlpatterns = [
     path(
         "teacher/subjects/<uuid:subject_id>/quizzes/",
         TeacherSubjectQuizListView.as_view(),
+    ),
+    # Flat: every quiz across the subjects this teacher is assigned to.
+    path(
+        "teacher/quizzes/all/",
+        TeacherAllQuizListView.as_view(),
     ),
     path(
         "teacher/quizzes/<uuid:pk>/attempts/",

@@ -403,6 +403,9 @@ class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
 
 class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="subject.name", read_only=True)
+    # The flat faculty Quizzes list needs the id, not just the name, to build
+    # subject pills and to target per-subject actions at the right class.
+    subject_id = serializers.UUIDField(source="subject.id", read_only=True)
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
     questions_count = serializers.IntegerField(read_only=True)
@@ -415,7 +418,7 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quiz
         fields = [
-            "id", "title", "created_at", "subject_name", "course_title",
+            "id", "title", "created_at", "subject_name", "subject_id", "course_title",
             "is_published", "questions_count",
             "total_attempts", "submission_rate", "average_score",
             "highest_score", "lowest_score", "quiz_type", "review_status",

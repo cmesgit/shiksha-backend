@@ -14,6 +14,8 @@ from .validators import validate_material_file
 from courses.models import Chapter
 from enrollments.models import Enrollment
 from livestream.services.notifications import push_ws_notification
+from accounts.auth_flow import get_active_profile
+from enrollments.services import active_batch_id
 
 
 # ===============================
@@ -28,6 +30,8 @@ class ChapterMaterials(APIView):
         materials = (
             StudyMaterial.objects
             .filter(chapter=chapter)
+            # chapter__subject: the serializer reports subject_id/subject_name.
+            .select_related("chapter__subject")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -145,6 +149,8 @@ class SubjectMaterials(APIView):
         materials = (
             StudyMaterial.objects
             .filter(chapter__subject=subject)
+            # chapter__subject: the serializer reports subject_id/subject_name.
+            .select_related("chapter__subject")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -168,16 +174,94 @@ class StudentSubjectMaterials(APIView):
         # Batch isolation: course-wide materials (batch IS NULL) + this
         # student's own batch's materials. Materials default to course-wide,
         # so this only ever hides genuinely batch-specific handouts.
-        enrollment = Enrollment.objects.filter(
-            user=request.user, course_id=subject.course_id,
-            status=Enrollment.STATUS_ACTIVE,
-        ).first()
-        batch_id = enrollment.batch_id if enrollment else None
+        # Scoped to the ACTIVE PROFILE, not the account — see active_batch_id.
+        batch_id = active_batch_id(
+            learner_profile=get_active_profile(request),
+            course_id=subject.course_id,
+        )
         materials = (
             StudyMaterial.objects
             .filter(chapter__subject=subject)
             .filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
-            .select_related("chapter")
+            .select_related("chapter__subject")
+            .prefetch_related("files")
+            .order_by("-created_at")
+        )
+        serializer = StudyMaterialSerializer(
+            materials, many=True, context={"request": request}
+        )
+        return Response(serializer.data)
+
+
+# ===============================
+# TEACHER — ALL MATERIALS ACROSS THEIR SUBJECTS
+# ===============================
+
+class TeacherAllMaterials(APIView):
+    """Every material across every subject this teacher is assigned to.
+
+    The faculty Study Materials screen is one flat, subject-filtered list
+    (design handoff screen 13). Before this existed the frontend called
+    SubjectMaterials once per subject and flattened client-side.
+
+    No batch filter: a teacher owns every batch's material for their subjects,
+    which is exactly how SubjectRecordingsView already treats teachers.
+    """
+
+    permission_classes = [IsAuthenticated, IsTeacherContext]
+
+    def get(self, request):
+        materials = (
+            StudyMaterial.objects
+            .filter(chapter__subject__subject_teachers__teacher=request.user)
+            # chapter__subject: the serializer reports subject_id/subject_name.
+            .select_related("chapter__subject")
+            .prefetch_related("files")
+            # distinct(): a teacher listed twice on one subject would otherwise
+            # duplicate every material on it.
+            .distinct()
+            .order_by("-created_at")
+        )
+        serializer = StudyMaterialSerializer(
+            materials, many=True, context={"request": request}
+        )
+        return Response(serializer.data)
+
+
+# ===============================
+# STUDENT COURSE MATERIALS
+# ===============================
+
+class StudentCourseMaterials(APIView):
+    """Every material across a course's subjects, in one request.
+
+    The learner's Study Material screen is a single flat, subject-filtered list
+    (design handoff screen 13). Before this existed the frontend had to call
+    StudentSubjectMaterials once per subject and flatten client-side — an N+1
+    that grew with the syllabus.
+
+    Batch isolation matches StudentSubjectMaterials: course-wide materials
+    (batch IS NULL) plus this learner's own batch's materials.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, course_id):
+        from django.db.models import Q
+
+        # Scope the batch to the ACTIVE PROFILE, not just the account — two
+        # children on one account can sit in different batches of one course.
+        batch_id = active_batch_id(
+            learner_profile=get_active_profile(request),
+            course_id=course_id,
+        )
+
+        materials = (
+            StudyMaterial.objects
+            .filter(chapter__subject__course_id=course_id)
+            .filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
+            # subject_id/subject_name are read off chapter.subject per row.
+            .select_related("chapter__subject")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -196,7 +280,9 @@ class StudyMaterialDetail(APIView):
 
     def get(self, request, material_id):
         material = get_object_or_404(
-            StudyMaterial.objects.prefetch_related("files"),
+            StudyMaterial.objects
+            .select_related("chapter__subject")
+            .prefetch_related("files"),
             id=material_id
         )
         serializer = StudyMaterialSerializer(

@@ -8,6 +8,7 @@ from .views import (
     TeacherDeleteAssignmentView,
     TeacherDeleteAssignmentFileView,
     TeacherSubjectAssignmentsView,
+    TeacherAllAssignmentsView,
     TeacherAssignmentSubmissionsView,
     SubjectAssignmentsView,
     DownloadAllSubmissionsView,
@@ -30,6 +31,12 @@ urlpatterns = [
     path(
         "subject/<uuid:subject_id>/",
         SubjectAssignmentsView.as_view(),
+    ),
+
+    # Flat: every assignment across the subjects this teacher is assigned to.
+    path(
+        "teacher/all/",
+        TeacherAllAssignmentsView.as_view(),
     ),
 
     # ── Teacher — assignment CRUD ──────────────────────────────────────

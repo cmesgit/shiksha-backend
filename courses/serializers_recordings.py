@@ -5,12 +5,16 @@ from .models_recordings import SessionRecording
 class SessionRecordingSerializer(serializers.ModelSerializer):
 
     uploaded_by_name = serializers.SerializerMethodField()
+    # The flat faculty Recordings grid spans subjects, so a card has to
+    # name its own. `subject` above is the raw FK id.
+    subject_name = serializers.CharField(source="subject.name", read_only=True)
 
     class Meta:
         model = SessionRecording
         fields = [
             "id",
             "subject",
+            "subject_name",
             "chapter",
             "title",
             "description",

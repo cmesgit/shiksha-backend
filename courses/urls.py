@@ -25,6 +25,7 @@ from .views import (
 )
 from .views import MySubjectsView
 from .views_recordings import (
+    TeacherAllRecordingsView,
     SubjectRecordingsView,
     CreateRecordingView,
     DeleteRecordingView,
@@ -132,6 +133,8 @@ urlpatterns = [
     path("<uuid:course_id>/progress/",     CourseProgressView.as_view()),
     path("<uuid:course_id>/my-progress/",  MyCourseProgressView.as_view()),
     # RECORDINGS — subjects-scoped
+    # Flat: every recording across the subjects this teacher is assigned to.
+    path("teacher/recordings/all/", TeacherAllRecordingsView.as_view()),
     path("subjects/<uuid:subject_id>/recordings/",
          SubjectRecordingsView.as_view()),
     path("subjects/<uuid:subject_id>/recordings/create/",

@@ -14,7 +14,11 @@ from accounts.permissions import IsEmailVerified, IsAdmin, require_teacher_conte
 from accounts.auth_flow import get_active_profile
 from enrollments.models import Enrollment
 from django.db import models
-from django.db.models import Count, Avg, Max, Min, Q
+from django.db.models import (
+    Count, Avg, Max, Min, Q, Case, When, Value, F,
+    FloatField, IntegerField, OuterRef, Subquery,
+)
+from django.db.models.functions import Coalesce
 
 from courses.models import Subject, SubjectTeacher
 from courses.services import teaches_subject
@@ -234,6 +238,67 @@ class TeacherDeleteQuizView(APIView):
         return Response(
             {"detail": "Quiz deleted successfully."},
             status=status.HTTP_204_NO_CONTENT
+        )
+
+
+class TeacherAllQuizListView(generics.ListAPIView):
+    """Every quiz across every subject this teacher is assigned to.
+
+    The faculty Quizzes screen is one flat, subject-filtered list (design
+    handoff screen 12). Before this existed the frontend called
+    TeacherSubjectQuizListView once per subject and flattened client-side.
+
+    NOTE the difference from the per-subject view: that one can compute the
+    enrolled-student count ONCE as a scalar, because every quiz it returns
+    belongs to the same course. Across subjects the denominator varies per row,
+    so submission_rate needs a correlated subquery on each quiz's own course —
+    reusing the scalar here would have divided every subject's attempts by one
+    arbitrary course's enrolment.
+    """
+
+    serializer_class = TeacherQuizAnalyticsSerializer
+    permission_classes = [IsAuthenticated, IsEmailVerified, IsTeacherContext]
+
+    def get_queryset(self):
+        from enrollments.models import Enrollment
+
+        enrolled_per_course = (
+            Enrollment.objects
+            .filter(course_id=OuterRef("subject__course_id"), status="ACTIVE")
+            .values("course_id")
+            .annotate(n=Count("id"))
+            .values("n")[:1]
+        )
+
+        return (
+            Quiz.objects
+            .filter(subject__subject_teachers__teacher=self.request.user)
+            .select_related("subject", "subject__course")
+            .annotate(
+                enrolled_count=Coalesce(
+                    Subquery(enrolled_per_course, output_field=IntegerField()),
+                    Value(0),
+                ),
+                total_attempts=Count("attempts", distinct=True),
+                average_score=Avg("attempts__score"),
+                highest_score=Max("attempts__score"),
+                lowest_score=Min("attempts__score"),
+                questions_count=Count("questions", distinct=True),
+            )
+            .annotate(
+                submission_rate=Case(
+                    When(
+                        enrolled_count__gt=0,
+                        then=Count("attempts", distinct=True) * 100.0 / F("enrolled_count"),
+                    ),
+                    default=Value(0.0),
+                    output_field=FloatField(),
+                )
+            )
+            # distinct(): a teacher listed twice on one subject would otherwise
+            # duplicate every quiz on it.
+            .distinct()
+            .order_by("-created_at")
         )
 
 

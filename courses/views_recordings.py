@@ -18,7 +18,8 @@ class SubjectRecordingsView(APIView):
 
     def get(self, request, subject_id):
         from django.db.models import Q
-        from enrollments.models import Enrollment
+        from accounts.auth_flow import get_active_profile
+        from enrollments.services import active_batch_id
         subject = get_object_or_404(
             Subject.objects.select_related("course"), id=subject_id)
         recordings = SessionRecording.objects.filter(
@@ -27,14 +28,41 @@ class SubjectRecordingsView(APIView):
         )
         # Teachers/staff see every batch's recordings; a student sees only
         # course-wide (batch IS NULL) recordings plus their own batch's.
+        # Scoped to the ACTIVE PROFILE, not the account — see active_batch_id.
         if not (request.user.is_staff or teaches_subject(request.user, subject)):
-            enrollment = Enrollment.objects.filter(
-                user=request.user, course_id=subject.course_id,
-                status=Enrollment.STATUS_ACTIVE,
-            ).first()
-            batch_id = enrollment.batch_id if enrollment else None
+            batch_id = active_batch_id(
+                learner_profile=get_active_profile(request),
+                course_id=subject.course_id,
+            )
             recordings = recordings.filter(
                 Q(batch__isnull=True) | Q(batch_id=batch_id))
+        serializer = SessionRecordingSerializer(recordings, many=True)
+        return Response(serializer.data)
+
+
+class TeacherAllRecordingsView(APIView):
+    """Every recording across every subject this teacher is assigned to.
+
+    The faculty Recordings screen is one flat, subject-filtered grid (design
+    handoff screen 9). Before this existed the frontend called
+    SubjectRecordingsView once per subject and flattened client-side.
+
+    No batch filter and no is_published filter — SubjectRecordingsView already
+    gives teachers every batch's recordings, and a teacher needs to see their
+    own unpublished/still-processing uploads (the grid shows those as Pending).
+    """
+
+    permission_classes = [IsAuthenticated, IsTeacherContext]
+
+    def get(self, request):
+        recordings = (
+            SessionRecording.objects
+            .filter(subject__subject_teachers__teacher=request.user)
+            .select_related("subject")
+            # distinct(): a teacher listed twice on one subject would otherwise
+            # duplicate every recording on it.
+            .distinct()
+        )
         serializer = SessionRecordingSerializer(recordings, many=True)
         return Response(serializer.data)
 

@@ -66,6 +66,14 @@ class AssignmentListSerializer(serializers.ModelSerializer):
         source="chapter.subject.name",
         read_only=True,
     )
+    # The learner's Assignments screen is one flat, subject-filtered list built
+    # from this endpoint, so it needs the id (not just the name) to group rows
+    # into subject pills and to link each row at
+    # /subjects/<subject_id>/assignments/<id>.
+    subject_id = serializers.UUIDField(
+        source="chapter.subject.id",
+        read_only=True,
+    )
     course_id = serializers.UUIDField(
         source="chapter.subject.course.id",
         read_only=True,
@@ -81,6 +89,7 @@ class AssignmentListSerializer(serializers.ModelSerializer):
             "due_date",
             "status",
             "subject_name",
+            "subject_id",
             "course_id",
             "attachment",
         )
@@ -309,6 +318,19 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
     chapter_name = serializers.SerializerMethodField()
     total_submissions = serializers.IntegerField(read_only=True)
     files = AssignmentFileSerializer(many=True, read_only=True)
+    # The teacher's Assignments screen is one flat list across every subject
+    # they teach, so a row has to name its subject — for the pill filter and to
+    # target per-subject actions (edit / submissions) at the right class.
+    # Method fields because `chapter` is nullable; a dotted source would raise.
+    subject_id = serializers.SerializerMethodField()
+    subject_name = serializers.SerializerMethodField()
+    # The design filters the faculty Assignments list by BATCH — its teacher
+    # chips are ["All", "10-A", "10-B", "9-A"], matched against the row's meta
+    # line (Academy Dashboard.dc.html, AP_CHIPS at line 3276). Assignment.batch
+    # already exists on the model and simply wasn't serialised. NULL means
+    # course-wide (legacy rows), which the UI shows as "All batches".
+    batch_id = serializers.UUIDField(source="batch.id", read_only=True, allow_null=True)
+    batch_name = serializers.CharField(source="batch.name", read_only=True, allow_null=True)
 
     class Meta:
         model = Assignment
@@ -316,6 +338,10 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "chapter_name",
+            "subject_id",
+            "subject_name",
+            "batch_id",
+            "batch_name",
             "due_date",
             "total_submissions",
             "attachment",   # legacy
@@ -324,6 +350,17 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
 
     def get_chapter_name(self, obj):
         return obj.chapter.title if obj.chapter else None
+
+    def _subject(self, obj):
+        return getattr(obj.chapter, "subject", None) if obj.chapter else None
+
+    def get_subject_id(self, obj):
+        s = self._subject(obj)
+        return str(s.id) if s else None
+
+    def get_subject_name(self, obj):
+        s = self._subject(obj)
+        return s.name if s else None
 
 
 class TeacherSubmissionListSerializer(serializers.ModelSerializer):
