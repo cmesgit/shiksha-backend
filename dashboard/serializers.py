@@ -24,6 +24,16 @@ class DashboardSessionSerializer(serializers.ModelSerializer):
     teacher       = serializers.SerializerMethodField()
     dateTime      = serializers.DateTimeField(source="start_time")
 
+    # The teacher dashboard's own "Today's Sessions" row needs a second line
+    # of context that isn't "your own email" (what `teacher` resolves to for
+    # a teacher looking at their own session) — the session's batch (falling
+    # back to the course when it's a course-wide/unscoped session) plus how
+    # many students are in it. Mirrors livestream/serializers.py's
+    # LiveSessionSerializer, which already exposes both for the dedicated
+    # Live Sessions page.
+    batch_name           = serializers.SerializerMethodField()
+    batch_student_count  = serializers.SerializerMethodField()
+
     # ── Fields mobile index.tsx needs for live.tsx + calEvents ──────────────
     live          = serializers.SerializerMethodField()
     start_time    = serializers.DateTimeField()
@@ -35,6 +45,7 @@ class DashboardSessionSerializer(serializers.ModelSerializer):
         model  = LiveSession
         fields = [
             "id", "subject", "subject_id", "topic", "teacher",
+            "batch_name", "batch_student_count",
             "dateTime",           # web dashboard compat
             "start_time",         # mobile live.tsx compat
             "end_time",
@@ -61,6 +72,25 @@ class DashboardSessionSerializer(serializers.ModelSerializer):
             return obj.created_by.email if obj.created_by_id else ""
         except Exception:
             return ""
+
+    def get_batch_name(self, obj):
+        try:
+            if obj.batch_id:
+                return obj.batch.name
+            return obj.course.title if obj.course_id else ""
+        except Exception:
+            return ""
+
+    def get_batch_student_count(self, obj):
+        if not obj.batch_id:
+            return None
+        try:
+            from enrollments.models import Enrollment
+            return Enrollment.objects.filter(
+                batch_id=obj.batch_id, status=Enrollment.STATUS_ACTIVE
+            ).count()
+        except Exception:
+            return None
 
     def get_live(self, obj):
         """True when the session is currently in progress."""

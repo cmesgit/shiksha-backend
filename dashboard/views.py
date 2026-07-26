@@ -188,7 +188,7 @@ def _teacher_live_sessions(user, today_start, excluded, week_only):
         qs = qs.filter(start_time__lte=today_start + timedelta(days=7))
     return list(
         qs.exclude(status__in=excluded)
-        .select_related("subject", "created_by")
+        .select_related("subject", "created_by", "batch", "course")
         .order_by("start_time")
     )
 
