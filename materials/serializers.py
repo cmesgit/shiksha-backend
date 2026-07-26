@@ -54,6 +54,9 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
     # so this doesn't cost a query per row.
     subject_id = serializers.SerializerMethodField()
     subject_name = serializers.SerializerMethodField()
+    # NULL = course-wide (the model's own default — see materials/models.py).
+    # Method field, not a dotted source, since `batch` is nullable.
+    batch_name = serializers.SerializerMethodField()
 
     class Meta:
         model = StudyMaterial
@@ -65,6 +68,7 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
             "chapter_title",
             "subject_id",
             "subject_name",
+            "batch_name",
             "files",
         ]
 
@@ -88,3 +92,6 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
     def get_subject_name(self, obj):
         subject = getattr(obj.chapter, "subject", None) if obj.chapter else None
         return subject.name if subject else None
+
+    def get_batch_name(self, obj):
+        return obj.batch.name if obj.batch_id else None

@@ -11,7 +11,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from .models import StudyMaterial, MaterialFile
 from .serializers import StudyMaterialSerializer
 from .validators import validate_material_file
-from courses.models import Chapter
+from courses.models import Chapter, Batch
 from enrollments.models import Enrollment
 from livestream.services.notifications import push_ws_notification
 from accounts.auth_flow import get_active_profile
@@ -31,7 +31,7 @@ class ChapterMaterials(APIView):
             StudyMaterial.objects
             .filter(chapter=chapter)
             # chapter__subject: the serializer reports subject_id/subject_name.
-            .select_related("chapter__subject")
+            .select_related("chapter__subject", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -81,8 +81,17 @@ class UploadStudyMaterial(APIView):
         if not file_ids:
             return Response({"detail": "At least one file required"}, status=400)
 
+        # Optional — the model's own default is course-wide (batch=NULL, a
+        # "write once, reuse across batches" curriculum asset). A teacher can
+        # scope a genuinely batch-specific handout by picking one.
+        batch = None
+        batch_id = request.data.get("batch_id")
+        if batch_id:
+            batch = get_object_or_404(Batch, id=batch_id)
+
         material = StudyMaterial.objects.create(
             chapter=chapter,
+            batch=batch,
             title=title,
             description=request.data.get("description", ""),
             uploaded_by=request.user
@@ -150,7 +159,7 @@ class SubjectMaterials(APIView):
             StudyMaterial.objects
             .filter(chapter__subject=subject)
             # chapter__subject: the serializer reports subject_id/subject_name.
-            .select_related("chapter__subject")
+            .select_related("chapter__subject", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -183,7 +192,7 @@ class StudentSubjectMaterials(APIView):
             StudyMaterial.objects
             .filter(chapter__subject=subject)
             .filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
-            .select_related("chapter__subject")
+            .select_related("chapter__subject", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -215,7 +224,7 @@ class TeacherAllMaterials(APIView):
             StudyMaterial.objects
             .filter(chapter__subject__subject_teachers__teacher=request.user)
             # chapter__subject: the serializer reports subject_id/subject_name.
-            .select_related("chapter__subject")
+            .select_related("chapter__subject", "batch")
             .prefetch_related("files")
             # distinct(): a teacher listed twice on one subject would otherwise
             # duplicate every material on it.
@@ -261,7 +270,7 @@ class StudentCourseMaterials(APIView):
             .filter(chapter__subject__course_id=course_id)
             .filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
             # subject_id/subject_name are read off chapter.subject per row.
-            .select_related("chapter__subject")
+            .select_related("chapter__subject", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -281,7 +290,7 @@ class StudyMaterialDetail(APIView):
     def get(self, request, material_id):
         material = get_object_or_404(
             StudyMaterial.objects
-            .select_related("chapter__subject")
+            .select_related("chapter__subject", "batch")
             .prefetch_related("files"),
             id=material_id
         )

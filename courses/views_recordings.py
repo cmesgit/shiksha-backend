@@ -8,7 +8,7 @@ from django.shortcuts import get_object_or_404
 
 from .models_recordings import SessionRecording
 from .serializers_recordings import SessionRecordingSerializer
-from .models import Subject
+from .models import Subject, Batch
 from .services import teaches_subject
 from accounts.permissions import IsTeacherContext
 
@@ -137,14 +137,25 @@ class SaveRecordingView(APIView):
         title = request.data.get("title")
         session_date = request.data.get("session_date")
         video_id = request.data.get("video_id")
+        description = request.data.get("description", "")
 
         if not video_id:
             return Response({"error": "video_id is required."}, status=400)
 
+        # Optional — NULL means course-wide (every batch of the subject sees
+        # it), the model's own default for a manual upload with no source
+        # LiveSession to inherit scope from.
+        batch = None
+        batch_id = request.data.get("batch_id")
+        if batch_id:
+            batch = get_object_or_404(Batch, id=batch_id)
+
         recording = SessionRecording.objects.create(
             subject=subject,
+            batch=batch,
             title=title,
-            session_date=session_date,
+            description=description,
+            session_date=session_date or None,
             bunny_video_id=video_id,
             uploaded_by=request.user,
             status=1,
