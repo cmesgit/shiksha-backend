@@ -818,10 +818,40 @@ class DistrictsListView(APIView):
 # =====================================================
 
 class LogoutView(APIView):
+    """Sign out of this device.
+
+    Clearing the cookies is not enough on its own: the refresh token stays
+    valid for REFRESH_TOKEN_LIFETIME (7 days), so anything that captured it
+    before logout could mint fresh access tokens long afterwards. So logout
+    also closes the UserSession and blacklists the token — the same teardown
+    "Revoke" performs in Settings → Sessions & devices, because that is what
+    logging out is.
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        from .auth_flow import session_id_for
+        from .models import UserSession
+        from .revocation import mark_revoked
+
         response = Response({"detail": "Logged out."})
+
+        sid = session_id_for(request)
+        if sid:
+            UserSession.objects.filter(
+                id=sid, user=request.user, revoked_at__isnull=True
+            ).update(revoked_at=timezone.now())
+            mark_revoked(sid)
+
+        # Blacklist the presented refresh token directly — no need for the
+        # decode-every-token sweep revoke_sessions() does, since the token we
+        # want is right here in the cookie.
+        raw_refresh = request.COOKIES.get("refresh")
+        if raw_refresh:
+            try:
+                RefreshToken(raw_refresh).blacklist()
+            except TokenError:
+                pass  # expired / already blacklisted — nothing left to revoke
 
         response.delete_cookie("access", domain=settings.COOKIE_DOMAIN)
         response.delete_cookie("refresh", domain=settings.COOKIE_DOMAIN)
@@ -862,7 +892,8 @@ class RefreshView(APIView):
 
     def post(self, request):
         from .auth_flow import build_tokens, set_auth_cookies, CTX_ACCOUNT
-        from accounts.models import LearnerProfile
+        from .device import touch_session
+        from accounts.models import LearnerProfile, UserSession
 
         refresh_token = request.COOKIES.get("refresh")
 
@@ -877,6 +908,21 @@ class RefreshView(APIView):
             context = old_token.get("context") or CTX_ACCOUNT
             old_profile_id = old_token.get("active_profile")
             active_track = old_token.get("active_track")   # ← preserved now
+            sid = old_token.get("sid")                     # UserSession this browser is
+
+            # A revoked session must not be able to renew itself. The old token
+            # is also blacklisted at revoke time, but that only covers tokens
+            # outstanding *then* — this check is what stops a token minted after
+            # the blacklist sweep (i.e. a rotation racing the revoke) from
+            # extending a session the user just killed.
+            if sid and not touch_session(sid, request):
+                # Tokens predating this feature carry no sid at all and must
+                # keep working, so only a *known but not-live* sid is fatal.
+                if UserSession.objects.filter(id=sid).exists():
+                    return Response(
+                        {"detail": "This session was signed out."},
+                        status=status.HTTP_401_UNAUTHORIZED,
+                    )
 
             profile = None
             if old_profile_id:
@@ -891,6 +937,7 @@ class RefreshView(APIView):
                 context=context,
                 profile=profile,
                 active_track=active_track,                  # ← preserved now
+                sid=sid,
             )
             response = set_auth_cookies(Response({"detail": "refreshed"}), new_refresh)
 

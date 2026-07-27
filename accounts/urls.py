@@ -5,6 +5,23 @@
 
 from django.urls import path
 
+from .admin_student_views import (
+    AdminStudentListView,
+    AdminStudentDetailView,
+    AdminStudentActiveView,
+)
+
+from .settings_views import (
+    BillingView,
+    DataExportView,
+    DeleteAccountView,
+    LearningGoalView,
+    SessionListView,
+    SessionRevokeOthersView,
+    SessionRevokeView,
+    SettingsChoicesView,
+)
+
 from .rbac_views import (
     RoleListCreateView,
     RoleDetailView,
@@ -86,6 +103,20 @@ urlpatterns = [
     path("student/profile/",     StudentProfileView.as_view()),
     path("change-password/",     ChangePasswordView.as_view()),
 
+    # ── Settings surface (accounts/settings_views.py) ────────────────────
+    # Sessions & devices, Learning goals, Billing and Privacy & data. Added
+    # for the Settings redesign; everything else that screen needs already
+    # existed above (profiles CRUD, PIN, change-password, form-fillup) or in
+    # the notifications app (/api/notifications/preferences/).
+    path("sessions/",                        SessionListView.as_view()),
+    path("sessions/revoke-others/",          SessionRevokeOthersView.as_view()),
+    path("sessions/<uuid:session_id>/revoke/", SessionRevokeView.as_view()),
+    path("learning-goals/",                  LearningGoalView.as_view()),
+    path("billing/",                         BillingView.as_view()),
+    path("data-export/",                     DataExportView.as_view()),
+    path("delete-account/",                  DeleteAccountView.as_view()),
+    path("choices/",                         SettingsChoicesView.as_view()),
+
     path("password-reset/request/", PasswordResetRequestView.as_view()),
     path("password-reset/verify/",  PasswordResetVerifyView.as_view()),
     path("password-reset/confirm/", PasswordResetConfirmView.as_view()),
@@ -100,6 +131,11 @@ urlpatterns = [
     path("admin/stats/",             AdminStatsView.as_view()),
     path("admin/users/",             AdminUserListView.as_view()),
     path("admin/users/<uuid:user_id>/", AdminUserDetailView.as_view()),
+    # Students = LearnerProfile rows (one account can hold several), so this is
+    # a different directory from admin/users/ above, not a filtered view of it.
+    path("admin/students/",                          AdminStudentListView.as_view()),
+    path("admin/students/<uuid:profile_id>/",        AdminStudentDetailView.as_view()),
+    path("admin/students/<uuid:profile_id>/active/", AdminStudentActiveView.as_view()),
     path("admin/teacher-approvals/", AdminTeacherApprovalListView.as_view()),
     path("admin/teacher-approvals/<int:approval_id>/action/", AdminTeacherApprovalActionView.as_view()),
     # Agreement letters (admin editor + immutable version history)

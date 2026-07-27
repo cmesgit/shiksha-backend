@@ -199,12 +199,20 @@ class PreferencesView(APIView):
 
     def _payload(self, prefs):
         from . import policy
+        from .models import NotificationPreference
         return {
             "email_enabled": prefs.email_enabled,
             "sms_enabled": prefs.sms_enabled,
             "push_enabled": prefs.push_enabled,
             "muted_categories": prefs.muted_categories or [],
             "categories": policy.CATEGORIES,
+            "language": prefs.language,
+            # Sent so Settings → Notifications renders the language picker from
+            # the server's list instead of a hardcoded copy that can drift.
+            "languages": [
+                {"value": v, "label": l}
+                for v, l in NotificationPreference.LANGUAGE_CHOICES
+            ],
         }
 
     def get(self, request):
@@ -235,6 +243,14 @@ class PreferencesView(APIView):
                                f"{policy.CATEGORIES}."},
                     status=400)
             prefs.muted_categories = muted
+
+        if "language" in data:
+            valid = {v for v, _ in NotificationPreference.LANGUAGE_CHOICES}
+            if data["language"] not in valid:
+                return Response(
+                    {"detail": f"language must be one of {sorted(valid)}."},
+                    status=400)
+            prefs.language = data["language"]
 
         prefs.save()
         return Response(self._payload(prefs))

@@ -25,3 +25,11 @@ CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"
 # module (settings_dev/settings_prod are untouched).
 CORS_ALLOW_ALL_ORIGINS = True
 SESSION_COOKIE_SECURE = False
+
+# The auth cookies are set with domain=settings.COOKIE_DOMAIN (auth_flow.py).
+# The inherited ".shikshacom.com" makes browsers discard them outright when the
+# server is localhost/127.0.0.1, so a real browser login can't be exercised
+# locally. None = host-only cookie, which works on either host.
+COOKIE_DOMAIN = None
+SESSION_COOKIE_DOMAIN = None
+CSRF_COOKIE_DOMAIN = None
