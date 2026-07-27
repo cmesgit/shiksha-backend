@@ -782,6 +782,35 @@ class TeacherAllStudentsView(APIView):
 
         students.sort(key=_roster_sort_key)
 
+        # One grouped query for every student's quiz average, rather than
+        # the N+1 you'd get calling the per-student helper once per row.
+        # Same real computation `build_progress_stats` uses for a single
+        # learner (Avg(score/quiz.total_marks*100) over SUBMITTED attempts
+        # on the teacher's own subjects) — just batched.
+        profile_ids = [row["id"] for row in students if row["id"]]
+        attempts_by_profile = {}
+        if profile_ids:
+            subject_ids = [s.id for s in subjects]
+            attempts = (
+                QuizAttempt.objects
+                .filter(
+                    quiz__subject_id__in=subject_ids,
+                    status=QuizAttempt.STATUS_SUBMITTED,
+                    learner_profile_id__in=profile_ids,
+                )
+                .select_related("quiz")
+            )
+            for attempt in attempts:
+                attempts_by_profile.setdefault(
+                    str(attempt.learner_profile_id), []
+                ).append(attempt)
+
+        for row in students:
+            row["avg_quiz_score"] = (
+                average_quiz_score_pct(attempts_by_profile.get(row["id"], []))
+                if row["id"] else None
+            )
+
         return Response({
             "total_students": len(students),
             "students": students,
