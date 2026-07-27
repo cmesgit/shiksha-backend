@@ -65,6 +65,11 @@ class Quiz(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
 
+    # Deprecated — quizzes no longer expire (product decision: a quiz stays
+    # attemptable for as long as it's published, gated only by is_published /
+    # review_status). Left in place rather than dropped so existing rows and
+    # any external report keep working; nothing reads or writes it any more —
+    # see CreateQuiz.jsx and TeacherQuizAnalyticsSerializer.
     due_date = models.DateTimeField(null=True, blank=True)
     time_limit_minutes = models.PositiveIntegerField(null=True, blank=True)
 

@@ -76,19 +76,6 @@ class IsEnrolledStudent(BasePermission):
 
 
 # -------------------------------------------------------
-# ✅ 5️⃣ Quiz Must Be Published & Not Expired
-# -------------------------------------------------------
-
-class IsPublishedAndActive(BasePermission):
-    """
-    Ensures quiz is published and not expired.
-    """
-
-    def has_object_permission(self, request, view, obj: Quiz):
-        return obj.is_published and obj.due_date > timezone.now()
-
-
-# -------------------------------------------------------
 # ✅ 6️⃣ Prevent Multiple Attempts
 # -------------------------------------------------------
 

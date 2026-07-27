@@ -418,7 +418,7 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quiz
         fields = [
-            "id", "title", "created_at", "due_date", "subject_name", "subject_id",
+            "id", "title", "created_at", "subject_name", "subject_id",
             "course_title",
             "is_published", "questions_count",
             "total_attempts", "submission_rate", "average_score",
