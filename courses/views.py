@@ -2,7 +2,7 @@ from .serializers import ChapterSerializer
 from .models import Chapter
 from django.db.models import Count, Prefetch, Q
 from .models import SubjectTeacher
-from accounts.models import Role
+from accounts.models import LearnerProfile, Role
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -504,6 +504,125 @@ class SubjectChaptersView(APIView):
 
 
 # =========================
+# TEACHER ROSTER ROWS
+# =========================
+# A "student" in this app is a LearnerProfile, NOT a User: one account holds
+# many learner profiles, so a parent with three enrolled children is 1 user and
+# 3 students. Teacher rosters are therefore keyed on the learner profile —
+# keying them on the account (as these views used to) collapses siblings into a
+# single row and hands the frontend an id that identifies the family rather
+# than the student. The admin-side equivalent of these helpers is
+# ``accounts.admin_student_views._student_row`` / ``AdminStudentListView``.
+
+
+def _resolve_enrollment_profiles(enrollments):
+    """Map ``enrollment.id -> LearnerProfile or None`` for ``enrollments``.
+
+    Enrollments predating per-profile enrollment have ``learner_profile=NULL``
+    and belong to the account's DEFAULT profile — the same rule
+    ``courses.progress_stats._dual_key_q`` applies when reading a student's
+    activity. Applying it here keeps legacy students on the roster with a real
+    learner-profile id instead of dropping them or falling back to their
+    account id.
+
+    The default profile is resolved with ONE extra query covering every legacy
+    account, then picked in Python so the preference order matches
+    ``User.default_learner_profile()`` exactly: an ``is_default`` profile, else
+    a SELF profile, else the first in ``LearnerProfile.Meta.ordering``.
+    """
+    resolved = {e.id: e.learner_profile for e in enrollments if e.learner_profile_id}
+
+    legacy_account_ids = {e.user_id for e in enrollments if not e.learner_profile_id}
+    if not legacy_account_ids:
+        return resolved
+
+    by_account = {}
+    for profile in LearnerProfile.objects.filter(
+        account_id__in=legacy_account_ids, is_active=True
+    ):
+        by_account.setdefault(profile.account_id, []).append(profile)
+
+    for enrollment in enrollments:
+        if enrollment.learner_profile_id:
+            continue
+        candidates = by_account.get(enrollment.user_id, [])
+        resolved[enrollment.id] = (
+            next((p for p in candidates if p.is_default), None)
+            or next(
+                (
+                    p for p in candidates
+                    if p.relationship == LearnerProfile.RELATIONSHIP_SELF
+                ),
+                None,
+            )
+            or (candidates[0] if candidates else None)
+        )
+    return resolved
+
+
+def _roster_row_key(enrollment, profile):
+    """Dedupe key for a roster row: the STUDENT, falling back to the account
+    for rows whose profile couldn't be resolved, so those neither collapse into
+    each other nor into a real student's row."""
+    if profile is not None:
+        return ("profile", profile.id)
+    return ("account", enrollment.user_id)
+
+
+def _roster_row(enrollment, profile):
+    """One roster row. ``profile`` is the resolved LearnerProfile (see
+    ``_resolve_enrollment_profiles``), so ``id`` identifies the student; the
+    account is reported separately as ``account_id``/``email``/``username`` so
+    a teacher can still tell which family a student belongs to.
+
+    ⚠️ Several rows legitimately share the same ``account_id`` and ``email``
+    (siblings), so never treat those as a student identifier.
+    """
+    account = enrollment.user
+    row = {
+        "account_id": str(account.id),
+        "email": account.email,
+        "username": account.username,
+        "enrolled_at": enrollment.enrolled_at,
+        "batch_code": enrollment.batch_code or "",
+    }
+
+    if profile is None:
+        # The account has no active learner profile at all, so this enrollment
+        # can't be attributed to a student. Kept rather than dropped so the
+        # gap is visible instead of silently shortening the roster.
+        row.update({
+            "id": None,
+            "display_name": "",
+            "full_name": "",
+            "phone": "",
+            "student_id": "",
+            "avatar_type": None,
+            "avatar": None,
+            "unresolved_profile": True,
+        })
+        return row
+
+    row.update({
+        "id": str(profile.id),
+        # display_name is what the profile picker shows, and the only field
+        # that reliably distinguishes siblings on one account.
+        "display_name": profile.display_name,
+        "full_name": profile.full_name or f"{profile.first_name} {profile.last_name}".strip(),
+        "phone": profile.phone,
+        "student_id": profile.student_id or "",
+        "avatar_type": profile.avatar_type(),
+        "avatar": profile.avatar_value(),
+        "unresolved_profile": False,
+    })
+    return row
+
+
+def _roster_sort_key(row):
+    return (row["full_name"] or row["display_name"]).lower()
+
+
+# =========================
 # SUBJECT STUDENTS
 # =========================
 
@@ -529,32 +648,34 @@ class SubjectStudentsView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        enrollments = (
+        # Not ordered in SQL: legacy rows have learner_profile=NULL, so
+        # order_by("learner_profile__full_name") sorted them by NULL rather
+        # than by the default profile they actually resolve to. Sorted in
+        # Python below, after resolution.
+        enrollments = list(
             Enrollment.objects.filter(
                 course=subject.course,
                 status=Enrollment.STATUS_ACTIVE,
             )
             .select_related("user", "learner_profile")
-            .order_by("learner_profile__full_name")
         )
+        profiles = _resolve_enrollment_profiles(enrollments)
 
+        # Deduped even though `unique_together = ("learner_profile", "course")`
+        # already bounds it: that constraint doesn't bind NULL profiles, so an
+        # account carrying both a legacy and a migrated row for this course
+        # would otherwise emit the same student twice.
+        seen = set()
         students = []
         for enrollment in enrollments:
-            u = enrollment.user
-            profile = enrollment.learner_profile
+            profile = profiles.get(enrollment.id)
+            key = _roster_row_key(enrollment, profile)
+            if key in seen:
+                continue
+            seen.add(key)
+            students.append(_roster_row(enrollment, profile))
 
-            students.append({
-                "id": str(u.id),
-                "email": u.email,
-                "username": u.username,
-                "full_name": profile.full_name if profile else "",
-                "phone": profile.phone if profile else "",
-                "student_id": profile.student_id if profile else "",
-                "avatar_type": profile.avatar_type() if profile else None,
-                "avatar": profile.avatar_value() if profile else None,
-                "enrolled_at": enrollment.enrolled_at,
-                "batch_code": enrollment.batch_code or "",
-            })
+        students.sort(key=_roster_sort_key)
 
         return Response({
             "subject_name": subject.name,
@@ -621,40 +742,45 @@ class TeacherAllStudentsView(APIView):
 
         course_ids = [s.course_id for s in subjects]
 
-        enrollments = (
+        # Sorted in Python after profile resolution — see SubjectStudentsView.
+        enrollments = list(
             Enrollment.objects.filter(
                 course_id__in=course_ids,
                 status=Enrollment.STATUS_ACTIVE,
             )
             .select_related("user", "learner_profile", "course")
-            .order_by("learner_profile__full_name")
         )
+        profiles = _resolve_enrollment_profiles(enrollments)
 
-        seen = set()
+        # Deduped per STUDENT, not per account: this used to key `seen` on
+        # User.id, so a parent with three enrolled children showed up as one
+        # row instead of three.
+        rows_by_key = {}
         students = []
 
         for enrollment in enrollments:
-            u = enrollment.user
+            profile = profiles.get(enrollment.id)
+            key = _roster_row_key(enrollment, profile)
+            course_title = enrollment.course.title
 
-            if u.id in seen:
+            existing = rows_by_key.get(key)
+            if existing is not None:
+                # Same student, another of this teacher's courses.
+                if course_title not in existing["course_titles"]:
+                    existing["course_titles"].append(course_title)
                 continue
-            seen.add(u.id)
 
-            profile = enrollment.learner_profile
+            row = _roster_row(enrollment, profile)
+            # One student can sit in several of this teacher's courses, and
+            # dedupe keeps a single row — so list every course rather than
+            # letting whichever enrollment happened to come first decide.
+            # `course_title` stays for the existing frontend column.
+            row["course_title"] = course_title
+            row["course_titles"] = [course_title]
+            rows_by_key[key] = row
+            students.append(row)
 
-            students.append({
-                "id": str(u.id),
-                "email": u.email,
-                "username": u.username,
-                "full_name": profile.full_name if profile else "",
-                "phone": profile.phone if profile else "",
-                "student_id": profile.student_id if profile else "",
-                "avatar_type": profile.avatar_type() if profile else None,
-                "avatar": profile.avatar_value() if profile else None,
-                "course_title": enrollment.course.title,
-                "enrolled_at": enrollment.enrolled_at,
-                "batch_code": enrollment.batch_code or "",
-            })
+        students.sort(key=_roster_sort_key)
 
         return Response({
             "total_students": len(students),

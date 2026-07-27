@@ -9,6 +9,7 @@ from .views import (
 from .payment_views import PaymentConfigView, FreeEnrollView
 from .admin_enrollment_views import (
     AdminEnrollmentListView, AdminEnrollmentActionView,
+    AdminEnrollmentBulkBatchView,
 )
 
 urlpatterns = [
@@ -25,4 +26,5 @@ urlpatterns = [
     # Admin — enrollment management (list + revoke/reactivate)
     path("admin/enrollments/", AdminEnrollmentListView.as_view()),
     path("admin/enrollments/<uuid:enrollment_id>/action/", AdminEnrollmentActionView.as_view()),
+    path("admin/enrollments/bulk-batch/", AdminEnrollmentBulkBatchView.as_view()),
 ]
