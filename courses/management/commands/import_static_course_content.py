@@ -234,6 +234,21 @@ class Command(BaseCommand):
         if course is None:
             return  # dry-run "matched" branch with no real row to inspect further
 
+        if not created and course.subjects.exists():
+            # A matched (already-existing) course that already has real
+            # subjects was populated independently through the admin UI —
+            # its subject names won't match this fixture's naming at all, so
+            # a name-matched get_or_create would just create duplicates
+            # alongside the real, already-curated content. Skip entirely;
+            # only genuinely empty courses (typically the brand-new ones)
+            # get the static fixture's subjects/chapters backfilled.
+            self.stdout.write(
+                f"[{class_key}/{board_key}] course already has "
+                f"{course.subjects.count()} real subject(s) — skipping static "
+                f"content backfill (assumed independently curated)."
+            )
+            return
+
         for order, topic in enumerate(class_data.get("topics", [])):
             name = TOPIC_PREFIX_RX.sub("", topic["title"]).strip()
             textbook = topic.get("textbook", "")
