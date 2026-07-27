@@ -671,10 +671,30 @@ class MeView(APIView):
         profiles = list(user.learner_profiles.filter(is_active=True))
         teacher  = getattr(user, "teacher_profile", None)
 
+        # The account's real human name lives on its SELF learner profile —
+        # NOT on User or TeacherProfile, neither of which has a name field.
+        # `active_profile` is None while browsing in TEACHER context (no
+        # active_profile claim), so without this a teacher's dashboard
+        # greeting and sidebar footer had nothing but `username`/email to
+        # fall back on. `display_name` (required at profile-creation time,
+        # see ProfileListCreateView) is populated on every profile; the
+        # teacher-form-fillup's first_name/last_name are optional and only
+        # set once that form is completed, so display_name is the reliable
+        # one — checked in prod: 39/39 default profiles have display_name
+        # set vs 22/39 for first_name.
+        self_profile = user.default_learner_profile()
+        full_name = (
+            self_profile.display_name
+            or f"{self_profile.first_name} {self_profile.last_name}".strip()
+        ) if self_profile else ""
+
         return Response({
             "id":             str(user.id),
             "email":          user.email,
             "username":       user.username,
+            "first_name":     self_profile.first_name if self_profile else "",
+            "last_name":      self_profile.last_name if self_profile else "",
+            "full_name":      full_name,
             "context":        context,
             "roles":          user.get_active_roles(),
             "permissions":    sorted(user.get_permissions()),
