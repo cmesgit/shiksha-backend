@@ -438,6 +438,15 @@ class ShowcaseCourse(TimeStampedModel):
         help_text='router state, e.g. {"selectedBoardGroup":"central",'
                   '"selectedBoard":"cbse"}',
     )
+    course = models.ForeignKey(
+        "courses.Course",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="showcase_cards",
+        help_text="Optional link to a real course. When set, link_path/link_state "
+                  "are derived server-side instead of the manual values.",
+    )
     order = models.PositiveSmallIntegerField(default=0)
     is_active = models.BooleanField(default=True, db_index=True)
 
@@ -450,6 +459,11 @@ class ShowcaseCourse(TimeStampedModel):
             raise ValidationError({"stars": "Maximum is 5."})
         if not isinstance(self.categories, list):
             raise ValidationError({"categories": "Must be a JSON list."})
+        if self.course_id and self.is_explore_card:
+            raise ValidationError({
+                "is_explore_card": "A card linked to a real course can't also be a "
+                                   "generic 'Explore Programs' card.",
+            })
 
     def __str__(self):
         return self.title

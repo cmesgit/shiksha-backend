@@ -14,3 +14,7 @@ class CoursesConfig(AppConfig):
             models_progress,
             models_batch_progress,
         )
+        # Registers post_save/post_delete signals that bump the courses cache
+        # version, so the public boards/catalog list endpoints invalidate
+        # instantly on edit (see courses/cache.py).
+        from . import cache  # noqa: F401

@@ -54,6 +54,16 @@ class Course(models.Model):
         help_text="How many days of access a single approved enrollment grants (default = 1 month)",
     )
 
+    thumbnail = ProcessedImageField(
+        upload_to="courses/thumbnails/",
+        processors=[ResizeToFill(1200, 675)],
+        format="WEBP",
+        options={"quality": 80},
+        blank=True,
+        null=True,
+        help_text="Cover image shown on course cards and the course detail hero (16:9).",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -110,6 +120,10 @@ class Subject(models.Model):
         blank=True,
         null=True
     )
+    textbook = models.CharField(
+        max_length=200, blank=True, default="",
+        help_text="Textbook reference shown under the subject, e.g. 'Our Pasts III'.",
+    )
     order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -137,6 +151,16 @@ class Chapter(models.Model):
 
     title = models.CharField(max_length=255)
     order = models.PositiveIntegerField(default=0)
+
+    content_html = models.TextField(
+        blank=True, default="",
+        help_text="Chapter notes/content as HTML. Sanitized on save unless "
+                  "'trusted html' is ticked.",
+    )
+    trusted_html = models.BooleanField(
+        default=False,
+        help_text="Skip HTML sanitization — only for first-party content.",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -166,6 +190,12 @@ class Chapter(models.Model):
             )
         ]
 
+    def save(self, *args, **kwargs):
+        if not self.trusted_html:
+            from content.sanitize import clean_html
+            self.content_html = clean_html(self.content_html)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.title
 
@@ -177,8 +207,8 @@ class CourseDetail(models.Model):
         related_name="details"
     )
 
-    level = models.CharField(max_length=50)
-    duration_weeks = models.PositiveIntegerField()
+    level = models.CharField(max_length=50, blank=True, default="")
+    duration_weeks = models.PositiveIntegerField(default=0)
     syllabus = models.TextField(blank=True)
 
     language = models.CharField(max_length=50, default="English")
@@ -317,6 +347,12 @@ class Batch(models.Model):
         help_text="Max active students; leave blank for unlimited.",
     )
 
+    price_override = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Paise; overrides Course.price for this batch. Leave blank to use the course price.",
+    )
+
     is_active = models.BooleanField(
         default=True,
         help_text="Inactive batches are hidden from new enrollments.",
@@ -350,6 +386,10 @@ class Batch(models.Model):
     @property
     def is_full(self):
         return self.capacity is not None and self.seats_taken >= self.capacity
+
+    @property
+    def effective_price(self):
+        return self.course.price if self.price_override is None else self.price_override
 
 
 # Delivery-plane teaching roster: who teaches which subject *in which batch*.

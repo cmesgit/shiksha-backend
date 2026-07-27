@@ -1,7 +1,7 @@
 from .models_recordings import SessionRecording
 from .models import Chapter
 from rest_framework import serializers
-from .models import Subject, Course, Board
+from .models import Subject, Course, Board, CourseDetail
 
 # The "published & ready" recording status. Pull it from the model if it
 # defines a named constant; otherwise fall back to the historical literal (4).
@@ -111,6 +111,12 @@ class BoardSerializer(serializers.ModelSerializer):
         fields = ("id", "name", "board_type", "description", "is_active")
 
 
+class CourseDetailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CourseDetail
+        fields = ("level", "duration_weeks", "syllabus", "language", "requirements")
+
+
 class CourseSerializer(serializers.ModelSerializer):
     board = BoardSerializer(read_only=True)
     board_id = serializers.PrimaryKeyRelatedField(
@@ -121,6 +127,8 @@ class CourseSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
     stream_name = serializers.CharField(source="stream.name", read_only=True)
+    thumbnail = serializers.SerializerMethodField()
+    details = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -130,6 +138,11 @@ class CourseSerializer(serializers.ModelSerializer):
             "description",
             "price",
             "subscription_duration_days",
+            "kind",
+            "status",
+            "class_level",
+            "thumbnail",
+            "details",
             "stream_name",
             "board",
             "board_id",
@@ -138,11 +151,25 @@ class CourseSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("id", "created_at", "updated_at")
 
+    def get_thumbnail(self, obj):
+        request = self.context.get("request")
+        if obj.thumbnail:
+            if request:
+                return request.build_absolute_uri(obj.thumbnail.url)
+            return obj.thumbnail.url
+        return None
+
+    def get_details(self, obj):
+        detail = getattr(obj, "details", None)
+        if detail is None:
+            return None
+        return CourseDetailSerializer(detail).data
+
 
 class ChapterSerializer(serializers.ModelSerializer):
     class Meta:
         model = Chapter
-        fields = ["id", "title", "order"]
+        fields = ["id", "title", "order", "content_html", "trusted_html"]
 
 
 class RecordingSerializer(serializers.ModelSerializer):

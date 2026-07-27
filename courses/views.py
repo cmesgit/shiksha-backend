@@ -5,7 +5,7 @@ from .models import SubjectTeacher
 from accounts.models import Role
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status
 from enrollments.models import Enrollment, EnrollmentRequest, Subscription
 from accounts.permissions import IsTeacherContext, IsAdmin
@@ -13,8 +13,10 @@ from accounts.auth_flow import get_active_profile
 from quizzes.models import Quiz, QuizAttempt
 from assignments.models import Assignment
 from courses.progress_stats import average_quiz_score_pct
-from .models import Course, Subject, Board
-from .serializers import CourseSerializer, SubjectSerializer, BoardSerializer
+from .models import Course, Subject, Board, CourseDetail, Batch
+from .serializers import CourseSerializer, SubjectSerializer, BoardSerializer, CourseDetailSerializer
+from .cache import LIST_TTL, list_cache_key
+from django.core.cache import cache
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from datetime import timedelta
@@ -24,13 +26,18 @@ from datetime import timedelta
 # CREATE COURSE
 # =========================
 
-class PublicCourseDetailView(APIView):
-    """Lightweight course detail for the enrollment page — any authenticated user can read."""
+class EnrollCourseSummaryView(APIView):
+    """Lightweight course detail for the enrollment page — any authenticated user
+    can read. (Renamed from PublicCourseDetailView: despite the old name this was
+    never anonymous-accessible, and a genuinely public/AllowAny detail view now
+    lives at PublicCourseDetailView below, `/courses/public/<id>/`.)"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, course_id):
         course = get_object_or_404(
-            Course.objects.select_related("board", "stream"),
+            Course.objects.select_related("board", "stream").filter(
+                status__in=[Course.STATUS_PUBLISHED, Course.STATUS_ARCHIVED],
+            ),
             id=course_id,
         )
         data = {
@@ -723,6 +730,8 @@ class AdminCourseListView(APIView):
                 "title": c.title,
                 "description": c.description,
                 "price": c.price,
+                "status": c.status,
+                "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
                 "enrollment_count": c.enrollment_count,
                 "created_at": c.created_at,
             }
@@ -817,6 +826,8 @@ class AdminBoardCoursesView(APIView):
                 "title": c.title,
                 "description": c.description,
                 "price": c.price,
+                "status": c.status,
+                "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
                 "subscription_duration_days": c.subscription_duration_days,
                 "stream_name": c.stream.name if c.stream else None,
                 "enrollment_count": c.enrollment_count,
@@ -831,17 +842,61 @@ class AdminCourseCreateView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request):
-        serializer = CourseSerializer(data=request.data)
+        serializer = CourseSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         course = serializer.save()
+        if request.FILES.get("thumbnail"):
+            course.thumbnail = request.FILES["thumbnail"]
+            course.save(update_fields=["thumbnail"])
         return Response(
-            CourseSerializer(course).data,
+            CourseSerializer(course, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
 
 
-class AdminCourseDeleteView(APIView):
+class AdminCourseDetailView(APIView):
+    """GET a single course (admin shape); PATCH edits it, including a nested
+    ``details`` object (create-or-update the course's CourseDetail row) and a
+    multipart ``thumbnail`` file; DELETE removes it."""
     permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, course_id):
+        course = get_object_or_404(
+            Course.objects.select_related("board", "stream", "details"),
+            id=course_id,
+        )
+        return Response(CourseSerializer(course, context={"request": request}).data)
+
+    def patch(self, request, course_id):
+        course = get_object_or_404(Course.objects.select_related("details"), id=course_id)
+
+        details_data = request.data.get("details")
+        # multipart requests JSON-encode nested objects as a string
+        if isinstance(details_data, str):
+            import json
+            try:
+                details_data = json.loads(details_data)
+            except ValueError:
+                details_data = None
+
+        serializer = CourseSerializer(
+            course, data=request.data, partial=True, context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        course = serializer.save()
+
+        if request.FILES.get("thumbnail"):
+            course.thumbnail = request.FILES["thumbnail"]
+            course.save(update_fields=["thumbnail"])
+
+        if isinstance(details_data, dict):
+            detail, _ = CourseDetail.objects.get_or_create(course=course)
+            detail_serializer = CourseDetailSerializer(detail, data=details_data, partial=True)
+            detail_serializer.is_valid(raise_exception=True)
+            detail_serializer.save()
+
+        course.refresh_from_db()
+        return Response(CourseSerializer(course, context={"request": request}).data)
 
     def delete(self, request, course_id):
         course = get_object_or_404(Course, id=course_id)
@@ -859,14 +914,24 @@ class AdminCourseSubjectsView(APIView):
 
     def get(self, request, course_id):
         get_object_or_404(Course, id=course_id)
-        subjects = Subject.objects.filter(course_id=course_id).order_by("order", "name")
+        subjects = (
+            Subject.objects.filter(course_id=course_id)
+            .prefetch_related("chapters")
+            .order_by("order", "name")
+        )
         return Response([
             {
                 "id": str(s.id),
                 "name": s.name,
                 "order": s.order,
+                "textbook": s.textbook,
                 "image": request.build_absolute_uri(s.image.url) if s.image else None,
                 "created_at": s.created_at,
+                "chapters": [
+                    {"id": str(ch.id), "title": ch.title, "order": ch.order,
+                     "content_html": ch.content_html, "trusted_html": ch.trusted_html}
+                    for ch in s.chapters.all()
+                ],
             }
             for s in subjects
         ])
@@ -900,6 +965,7 @@ class AdminCourseSubjectsView(APIView):
             course=course,
             name=name,
             order=order,
+            textbook=(request.data.get("textbook") or "").strip(),
             image=request.FILES.get("image"),
         )
         return Response(
@@ -907,8 +973,10 @@ class AdminCourseSubjectsView(APIView):
                 "id": str(subject.id),
                 "name": subject.name,
                 "order": subject.order,
+                "textbook": subject.textbook,
                 "image": request.build_absolute_uri(subject.image.url) if subject.image else None,
                 "created_at": subject.created_at,
+                "chapters": [],
             },
             status=status.HTTP_201_CREATED,
         )
@@ -917,9 +985,107 @@ class AdminCourseSubjectsView(APIView):
 class AdminSubjectDeleteView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
+    def patch(self, request, subject_id):
+        subject = get_object_or_404(Subject, id=subject_id)
+        if "name" in request.data and request.data.get("name"):
+            subject.name = str(request.data["name"]).strip()
+        if "order" in request.data and request.data.get("order") not in (None, ""):
+            subject.order = request.data["order"]
+        if "textbook" in request.data:
+            subject.textbook = (request.data.get("textbook") or "").strip()
+        if request.FILES.get("image"):
+            subject.image = request.FILES["image"]
+        subject.save()
+        return Response({
+            "id": str(subject.id),
+            "name": subject.name,
+            "order": subject.order,
+            "textbook": subject.textbook,
+            "image": request.build_absolute_uri(subject.image.url) if subject.image else None,
+            "created_at": subject.created_at,
+        })
+
     def delete(self, request, subject_id):
         subject = get_object_or_404(Subject, id=subject_id)
         subject.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminSubjectChaptersView(APIView):
+    """POST creates a new chapter under a subject (admin authoring)."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, subject_id):
+        subject = get_object_or_404(Subject, id=subject_id)
+        title = (request.data.get("title") or "").strip()
+        if not title:
+            return Response(
+                {"detail": "Chapter title is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        order = request.data.get("order")
+        if order in (None, ""):
+            next_order = (
+                Chapter.objects.filter(subject=subject)
+                .order_by("-order")
+                .values_list("order", flat=True)
+                .first()
+            )
+            order = (next_order or 0) + 1
+
+        if Chapter.objects.filter(subject=subject, title__iexact=title).exists():
+            return Response(
+                {"detail": f"A chapter titled '{title}' already exists in this subject."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        chapter = Chapter(
+            subject=subject,
+            title=title,
+            order=order,
+            content_html=request.data.get("content_html") or "",
+            trusted_html=bool(request.data.get("trusted_html", False)),
+        )
+        chapter.save()
+        return Response(
+            {
+                "id": str(chapter.id),
+                "title": chapter.title,
+                "order": chapter.order,
+                "content_html": chapter.content_html,
+                "trusted_html": chapter.trusted_html,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AdminChapterDetailView(APIView):
+    """PATCH edits a chapter's title/order/content; DELETE removes it."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def patch(self, request, chapter_id):
+        chapter = get_object_or_404(Chapter, id=chapter_id)
+        if "title" in request.data and request.data.get("title"):
+            chapter.title = str(request.data["title"]).strip()
+        if "order" in request.data and request.data.get("order") not in (None, ""):
+            chapter.order = request.data["order"]
+        if "trusted_html" in request.data:
+            chapter.trusted_html = bool(request.data["trusted_html"])
+        if "content_html" in request.data:
+            chapter.content_html = request.data.get("content_html") or ""
+        chapter.save()
+        return Response({
+            "id": str(chapter.id),
+            "title": chapter.title,
+            "order": chapter.order,
+            "content_html": chapter.content_html,
+            "trusted_html": chapter.trusted_html,
+        })
+
+    def delete(self, request, chapter_id):
+        chapter = get_object_or_404(Chapter, id=chapter_id)
+        chapter.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -1025,4 +1191,173 @@ class CourseCatalogView(APIView):
             }
             for c in qs
         ]
+        return Response(data)
+
+
+# =========================
+# PUBLIC (ANONYMOUS) CATALOG — the real /courses browse page + course detail.
+# Unlike CourseCatalogView above (any *authenticated* learner), these three
+# views are AllowAny: the marketing site's course browser works for guests.
+# Only ever exposes status=PUBLISHED courses; never leaks DRAFT/ARCHIVED.
+# =========================
+
+class PublicBoardListView(APIView):
+    """GET /courses/public/boards/ — active boards + whether each currently has
+    any published course, so the frontend can compute "Coming Soon" without a
+    hardcoded per-board flag."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        key = list_cache_key(request)
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+
+        boards = (
+            Board.objects.filter(is_active=True)
+            .annotate(
+                published_count=Count(
+                    "courses", filter=Q(courses__status=Course.STATUS_PUBLISHED), distinct=True,
+                )
+            )
+            .order_by("board_type", "name")
+        )
+        data = [
+            {
+                "id": str(b.id),
+                "name": b.name,
+                "board_type": b.board_type,
+                "description": b.description,
+                "has_published_courses": b.published_count > 0,
+            }
+            for b in boards
+        ]
+        cache.set(key, data, LIST_TTL)
+        return Response(data)
+
+
+class PublicCourseCatalogView(APIView):
+    """GET /courses/public/catalog/ — same shop-card shape as CourseCatalogView,
+    minus the per-user `is_enrolled` query (the public site has no logged-in
+    user to key it to; the frontend checks enrollment separately once signed in).
+    Optional ?q=, ?board=, ?stream= — same semantics as CourseCatalogView."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        key = list_cache_key(request)
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+
+        qs = (
+            Course.objects
+            .filter(status=Course.STATUS_PUBLISHED)
+            .select_related("board", "stream", "details")
+            .annotate(subject_count=Count("subjects", distinct=True))
+            .order_by("board__name", "title")
+            .distinct()
+        )
+
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q))
+
+        board_id = request.query_params.get("board")
+        if board_id:
+            qs = qs.filter(board_id=board_id)
+
+        stream_id = request.query_params.get("stream")
+        if stream_id:
+            qs = qs.filter(stream_id=stream_id)
+
+        data = [
+            {
+                "id": str(c.id),
+                "title": c.title,
+                "description": c.description,
+                "price": c.price,
+                "subscription_duration_days": c.subscription_duration_days,
+                "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
+                "board": (
+                    {"id": str(c.board.id), "name": c.board.name, "board_type": c.board.board_type}
+                    if c.board else None
+                ),
+                "stream_name": c.stream.name if c.stream else None,
+                "subject_count": c.subject_count,
+                "duration_weeks": getattr(getattr(c, "details", None), "duration_weeks", None) or None,
+            }
+            for c in qs
+        ]
+        cache.set(key, data, LIST_TTL)
+        return Response(data)
+
+
+class PublicCourseDetailView(APIView):
+    """GET /courses/public/<id>/ — full anonymous course detail: subjects →
+    chapters (with content), active batches (with effective price), course
+    details and thumbnail. Only PUBLISHED courses; anything else 404s (never
+    403 — a status split would let a caller distinguish "exists but draft"
+    from "doesn't exist" by UUID probing). Not cached (single-row lookup;
+    matches content app's convention of caching only list endpoints)."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, course_id):
+        course = get_object_or_404(
+            Course.objects.filter(status=Course.STATUS_PUBLISHED).select_related(
+                "board", "stream", "details",
+            ).prefetch_related(
+                Prefetch(
+                    "subjects",
+                    queryset=Subject.objects.order_by("order").prefetch_related(
+                        Prefetch("chapters", queryset=Chapter.objects.order_by("order")),
+                    ),
+                ),
+                Prefetch("batches", queryset=Batch.objects.filter(is_active=True)),
+            ),
+            id=course_id,
+        )
+
+        details = getattr(course, "details", None)
+        data = {
+            "id": str(course.id),
+            "title": course.title,
+            "description": course.description,
+            "price": course.price,
+            "thumbnail": request.build_absolute_uri(course.thumbnail.url) if course.thumbnail else None,
+            "board": (
+                {"id": str(course.board.id), "name": course.board.name, "board_type": course.board.board_type}
+                if course.board else None
+            ),
+            "stream_name": course.stream.name if course.stream else None,
+            "details": CourseDetailSerializer(details).data if details else None,
+            "subjects": [
+                {
+                    "id": str(s.id),
+                    "name": s.name,
+                    "order": s.order,
+                    "textbook": s.textbook,
+                    "image": request.build_absolute_uri(s.image.url) if s.image else None,
+                    "chapters": [
+                        {
+                            "id": str(ch.id),
+                            "title": ch.title,
+                            "order": ch.order,
+                            "content_html": ch.content_html,
+                        }
+                        for ch in s.chapters.all()
+                    ],
+                }
+                for s in course.subjects.all()
+            ],
+            "batches": [
+                {
+                    "id": str(b.id),
+                    "name": b.name,
+                    "code": b.code,
+                    "effective_price": b.effective_price,
+                    "is_full": b.is_full,
+                }
+                for b in course.batches.all()
+            ],
+        }
         return Response(data)

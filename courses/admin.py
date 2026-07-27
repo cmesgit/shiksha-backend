@@ -13,9 +13,9 @@ from .models import Board
 
 @admin.register(Course)
 class CourseAdmin(admin.ModelAdmin):
-    list_display = ("title", "board", "created_at", "stream")
+    list_display = ("title", "board", "status", "created_at", "stream")
     search_fields = ("title", "board__name", "stream__name")
-    list_filter = ("created_at", "board", "stream")
+    list_filter = ("status", "created_at", "board", "stream")
     autocomplete_fields = ["board", "stream"]
 
 # =========================
@@ -51,7 +51,7 @@ class SessionRecordingInline(admin.TabularInline):
 
 @admin.register(Subject)
 class SubjectAdmin(admin.ModelAdmin):
-    list_display = ("name", "course", "order", "get_teachers")
+    list_display = ("name", "course", "textbook", "order", "get_teachers")
     list_filter = ("course__board", "course")
     ordering = ("course", "order")
     autocomplete_fields = ["course"]
