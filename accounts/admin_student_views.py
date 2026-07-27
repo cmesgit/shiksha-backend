@@ -86,6 +86,30 @@ def _bool_param(val):
     return str(val).lower() in ("true", "1", "yes")
 
 
+def profile_enrollment_q(**enrollment_kwargs):
+    """A LearnerProfile-queryset Q matching "this profile has an active
+    enrollment satisfying ``enrollment_kwargs``" (e.g. ``course_id=x``,
+    ``batch__isnull=True``) — INCLUDING legacy enrollments that predate
+    per-profile linking (``learner_profile=NULL``), which belong to the
+    account's default profile.
+
+    This is the queryset-filter twin of ``courses.progress_stats._dual_key_q``
+    (same rule, expressed for filtering LearnerProfile rather than for scoping
+    a query already anchored to one profile). Every enrollment/batch/course
+    filter on the student list MUST go through this — a profile-only
+    ``Q(enrollments__...)`` silently drops legacy rows, and those are exactly
+    the students most likely to still need attention (unplaced, unfiltered,
+    etc). Found and fixed live: a `?course=` filter without this hid a real
+    legacy-enrolled student from the bulk-batch-assign flow.
+    """
+    active = {"status": Enrollment.STATUS_ACTIVE, **enrollment_kwargs}
+    return Q(**{f"enrollments__{k}": v for k, v in active.items()}) | Q(
+        is_default=True,
+        **{f"account__enrollments__{k}": v for k, v in active.items()},
+        account__enrollments__learner_profile__isnull=True,
+    )
+
+
 # ─────────────────────────────── row builders ───────────────────────────────
 def _student_row(p, *, sibling_counts=None, enrollment_counts=None, placements=None):
     """One student row. ``sibling_counts``/``enrollment_counts``/``placements``
@@ -186,16 +210,7 @@ class AdminStudentListView(APIView):
         if enrolled_raw == "":
             enrolled = True
         if enrolled is not None:
-            # Mirrors _dual_key_q in SQL: an active enrollment on this profile,
-            # OR — for the account's DEFAULT profile — a legacy enrollment with
-            # no profile link. Getting this wrong would hide real students whose
-            # rows predate per-profile enrollment, which is exactly the group an
-            # admin most needs to see.
-            with_enrollment = Q(enrollments__status=Enrollment.STATUS_ACTIVE) | Q(
-                is_default=True,
-                account__enrollments__status=Enrollment.STATUS_ACTIVE,
-                account__enrollments__learner_profile__isnull=True,
-            )
+            with_enrollment = profile_enrollment_q()
             qs = qs.filter(with_enrollment).distinct() if enrolled else qs.exclude(
                 with_enrollment
             ).distinct()
@@ -203,35 +218,19 @@ class AdminStudentListView(APIView):
         # ── course / batch placement filters ──
         # These are what an academy admin actually works from: "everyone in
         # A13", and (via ?no_batch=true) "who still needs placing before the
-        # session starts".
+        # session starts". All three go through profile_enrollment_q() so a
+        # legacy (pre-per-profile) enrollment is never silently excluded.
         course_id = (request.query_params.get("course") or "").strip()
         if course_id:
-            qs = qs.filter(
-                enrollments__course_id=course_id,
-                enrollments__status=Enrollment.STATUS_ACTIVE,
-            ).distinct()
+            qs = qs.filter(profile_enrollment_q(course_id=course_id)).distinct()
 
         batch_id = (request.query_params.get("batch") or "").strip()
         if batch_id:
-            qs = qs.filter(
-                enrollments__batch_id=batch_id,
-                enrollments__status=Enrollment.STATUS_ACTIVE,
-            ).distinct()
+            qs = qs.filter(profile_enrollment_q(batch_id=batch_id)).distinct()
 
         no_batch = _bool_param(request.query_params.get("no_batch"))
         if no_batch is not None:
-            # Same dual-key treatment as `enrolled` above — legacy rows are
-            # exactly the ones most likely to be missing a batch, so excluding
-            # them here would defeat the point of the filter.
-            unplaced = Q(
-                enrollments__batch__isnull=True,
-                enrollments__status=Enrollment.STATUS_ACTIVE,
-            ) | Q(
-                is_default=True,
-                account__enrollments__batch__isnull=True,
-                account__enrollments__status=Enrollment.STATUS_ACTIVE,
-                account__enrollments__learner_profile__isnull=True,
-            )
+            unplaced = profile_enrollment_q(batch__isnull=True)
             qs = qs.filter(unplaced).distinct() if no_batch else qs.exclude(
                 unplaced
             ).distinct()
