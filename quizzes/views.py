@@ -1,3 +1,9 @@
+import json
+import logging
+
+import requests
+from django.conf import settings
+from django.db import transaction
 from django.db.models import Prefetch
 from rest_framework.exceptions import PermissionDenied
 from rest_framework import generics
@@ -9,6 +15,9 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
+from rest_framework.throttling import ScopedRateThrottle
+
+logger = logging.getLogger(__name__)
 
 from accounts.permissions import IsEmailVerified, IsAdmin, require_teacher_context, IsTeacherContext
 from accounts.auth_flow import get_active_profile
@@ -79,6 +88,49 @@ class CreateQuizView(APIView):
         )
 
 
+class TeacherUpdateQuizView(APIView):
+    """
+    PATCH /teacher/quizzes/:pk/
+
+    Edit a draft/rejected quiz's meta (title, quiz_type, time_limit_minutes)
+    from the builder. Same owner + is_editable gate as every other
+    quiz-mutation view in this file; questions are edited via
+    BulkAddQuestionsView.put(), not here.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        require_teacher_context(request)
+
+        quiz = get_object_or_404(Quiz, pk=pk)
+
+        if quiz.created_by != request.user:
+            raise PermissionDenied("Not authorized for this quiz.")
+
+        if not quiz.is_editable:
+            raise ValidationError(
+                "This quiz can no longer be edited (it has been submitted, "
+                "approved, or published)."
+            )
+
+        serializer = QuizCreateSerializer(
+            quiz,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        # subject is immutable once created — never allow it to move quizzes
+        # between subjects via this endpoint.
+        serializer.validated_data.pop("subject", None)
+        serializer.save()
+
+        return Response(
+            {"id": quiz.id, "detail": "Quiz updated successfully."},
+            status=status.HTTP_200_OK,
+        )
+
+
 class AddQuestionView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -144,6 +196,94 @@ class BulkAddQuestionsView(APIView):
         return Response(
             {"detail": f"{len(created)} question(s) added.", "count": len(created)},
             status=status.HTTP_201_CREATED,
+        )
+
+    def put(self, request, pk):
+        """
+        PUT /teacher/quizzes/:pk/questions/bulk/
+
+        Replace-semantics sibling of the POST above, for the builder's
+        "save": { "questions": [{id?, text, marks, order, explanation,
+        topic, difficulty, source, choices:[{text,is_correct}]}, ...] }.
+        Questions with an `id` already on this quiz are updated in place
+        (choices fully replaced); questions without `id` are created;
+        existing questions whose `id` is absent from the payload are
+        deleted. All-or-nothing in one transaction.
+        """
+        require_teacher_context(request)
+
+        quiz = get_object_or_404(Quiz, pk=pk)
+
+        if quiz.created_by != request.user:
+            raise PermissionDenied("Not authorized for this quiz.")
+
+        if not quiz.is_editable:
+            raise ValidationError(
+                "This quiz can no longer be edited (it has been submitted, "
+                "approved, or published)."
+            )
+
+        payload = request.data.get("questions", [])
+        if not isinstance(payload, list):
+            raise ValidationError("`questions` must be a list.")
+
+        existing_by_id = {str(q.id): q for q in quiz.questions.all()}
+        valid_sources = {c[0] for c in Question.SOURCE_CHOICES}
+        keep_ids = set()
+        cleaned = []
+
+        for i, q_data in enumerate(payload):
+            choices = q_data.get("choices", [])
+            if len(choices) < 2:
+                raise ValidationError(f"Question {i + 1}: at least two choices required.")
+            if sum(1 for c in choices if c.get("is_correct")) != 1:
+                raise ValidationError(f"Question {i + 1}: exactly one correct answer required.")
+            if not q_data.get("text", "").strip():
+                raise ValidationError(f"Question {i + 1}: text is required.")
+            if not q_data.get("explanation", "").strip():
+                raise ValidationError(f"Question {i + 1}: explanation is required.")
+
+            q_id = str(q_data["id"]) if q_data.get("id") else None
+            if q_id and q_id not in existing_by_id:
+                raise ValidationError(f"Question {i + 1}: not part of this quiz.")
+
+            cleaned.append({
+                "id": q_id,
+                "text": q_data["text"].strip(),
+                "marks": int(q_data.get("marks") or 1),
+                "order": q_data.get("order", i),
+                "explanation": q_data.get("explanation", "").strip(),
+                "topic": q_data.get("topic", "") or "",
+                "difficulty": q_data.get("difficulty") or Question.DIFFICULTY_MEDIUM,
+                "source": q_data.get("source") if q_data.get("source") in valid_sources else Question.SOURCE_MANUAL,
+                "choices": [
+                    {"text": c.get("text", "").strip(), "is_correct": bool(c.get("is_correct"))}
+                    for c in choices if c.get("text", "").strip()
+                ],
+            })
+            if q_id:
+                keep_ids.add(q_id)
+
+        with transaction.atomic():
+            quiz.questions.exclude(id__in=keep_ids).delete()
+
+            for q_data in cleaned:
+                choices_data = q_data.pop("choices")
+                q_id = q_data.pop("id")
+                if q_id:
+                    Question.objects.filter(id=q_id).update(**q_data)
+                    question = existing_by_id[q_id]
+                    question.choices.all().delete()
+                else:
+                    question = Question.objects.create(quiz=quiz, **q_data)
+                Choice.objects.bulk_create([
+                    Choice(question_id=question.id, **c)
+                    for c in choices_data
+                ])
+
+        return Response(
+            {"detail": f"{len(cleaned)} question(s) saved.", "count": len(cleaned)},
+            status=status.HTTP_200_OK,
         )
 
 
@@ -238,6 +378,59 @@ class TeacherDeleteQuizView(APIView):
         return Response(
             {"detail": "Quiz deleted successfully."},
             status=status.HTTP_204_NO_CONTENT
+        )
+
+
+class TeacherQuizDuplicateView(APIView):
+    """
+    POST /teacher/quizzes/:pk/duplicate/
+
+    Deep-copies a quiz (any review_status) into a fresh, unpublished draft
+    owned by the same teacher — questions and choices included, attempts
+    and review history left behind.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, pk):
+        require_teacher_context(request)
+
+        quiz = get_object_or_404(
+            Quiz.objects.prefetch_related("questions__choices"), pk=pk
+        )
+
+        if quiz.created_by != request.user:
+            raise PermissionDenied("Not authorized for this quiz.")
+
+        new_quiz = Quiz.objects.create(
+            subject=quiz.subject,
+            batch=quiz.batch,
+            created_by=request.user,
+            title=f"{quiz.title} (copy)",
+            description=quiz.description,
+            time_limit_minutes=quiz.time_limit_minutes,
+            quiz_type=quiz.quiz_type,
+        )
+
+        for q in quiz.questions.all():
+            new_q = Question.objects.create(
+                quiz=new_quiz,
+                text=q.text,
+                marks=q.marks,
+                order=q.order,
+                explanation=q.explanation,
+                topic=q.topic,
+                difficulty=q.difficulty,
+                source=q.source,
+            )
+            Choice.objects.bulk_create([
+                Choice(question=new_q, text=c.text, is_correct=c.is_correct)
+                for c in q.choices.all()
+            ])
+
+        return Response(
+            {"id": new_quiz.id, "detail": "Quiz duplicated as a new draft."},
+            status=status.HTTP_201_CREATED,
         )
 
 
@@ -417,6 +610,101 @@ class StudentDashboardView(APIView):
         )
 
         return Response(serializer.data)
+
+
+class StudentQuizStatsView(APIView):
+    """
+    GET /student/quizzes/stats/?subject=<id>
+
+    Stat strip for the Hub, scoped to the active learner profile (and
+    optionally one subject): practice streak, average mock score, questions
+    solved this week, weakest topic. StudentAnswer has no timestamp of its
+    own, so "this week"/streak use the parent attempt's started_at as a
+    proxy for when the answering happened — fine for a rollup stat, not
+    used anywhere scores are computed.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def get(self, request):
+        from datetime import timedelta
+        from django.db.models.functions import TruncDate
+
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response(
+                {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
+                status=403,
+            )
+        subject_id = request.query_params.get("subject")
+
+        attempts_qs = QuizAttempt.objects.filter(learner_profile=learner)
+        if subject_id:
+            attempts_qs = attempts_qs.filter(quiz__subject_id=subject_id)
+
+        # ── streak: consecutive days with activity, counting back from today
+        # (or from yesterday if nothing has happened yet today) ──────────────
+        activity_dates = set(
+            attempts_qs.annotate(day=TruncDate("started_at")).values_list("day", flat=True)
+        )
+        today = timezone.localdate()
+        cursor = today if today in activity_dates else today - timedelta(days=1)
+        streak_days = 0
+        while cursor in activity_dates:
+            streak_days += 1
+            cursor -= timedelta(days=1)
+
+        # ── average mock score: best % per mock quiz, averaged ──────────────
+        mock_attempts = (
+            attempts_qs
+            .filter(status=QuizAttempt.STATUS_SUBMITTED, quiz__quiz_type=Quiz.TYPE_MOCK)
+            .select_related("quiz")
+        )
+        best_by_quiz = {}
+        for a in mock_attempts:
+            if not a.quiz.total_marks:
+                continue
+            pct = a.score * 100.0 / a.quiz.total_marks
+            best_by_quiz[a.quiz_id] = max(pct, best_by_quiz.get(a.quiz_id, 0))
+        avg_mock_score = round(sum(best_by_quiz.values()) / len(best_by_quiz), 1) if best_by_quiz else 0
+
+        # ── questions solved this week ───────────────────────────────────────
+        week_ago = timezone.now() - timedelta(days=7)
+        all_answers = StudentAnswer.objects.filter(attempt__learner_profile=learner)
+        if subject_id:
+            all_answers = all_answers.filter(question__quiz__subject_id=subject_id)
+        questions_solved = all_answers.filter(attempt__started_at__gte=week_ago).count()
+
+        # ── weakest topic (same accumulation pattern as QuizResultView,
+        # generalized across every attempt instead of one; topics with fewer
+        # than 3 answers are skipped so a single lucky/unlucky guess can't
+        # dominate the label) ────────────────────────────────────────────────
+        topic_stats = {}
+        for ans in all_answers.select_related("question"):
+            topic_key = ans.question.topic or "General"
+            t = topic_stats.setdefault(topic_key, [0, 0])
+            t[1] += 1
+            if ans.is_correct:
+                t[0] += 1
+
+        weakest_topic = None
+        weakest_topic_accuracy = None
+        worst_pct = None
+        for topic_key, (correct, total) in topic_stats.items():
+            if total < 3:
+                continue
+            pct = correct * 100.0 / total
+            if worst_pct is None or pct < worst_pct:
+                worst_pct = pct
+                weakest_topic = topic_key
+                weakest_topic_accuracy = round(pct, 1)
+
+        return Response({
+            "streak_days": streak_days,
+            "avg_mock_score": avg_mock_score,
+            "questions_solved": questions_solved,
+            "weakest_topic": weakest_topic,
+            "weakest_topic_accuracy": weakest_topic_accuracy,
+        })
 
 
 class StartQuizView(APIView):
@@ -1069,6 +1357,272 @@ class TeacherQuizAttemptDetailView(APIView):
             "attempt_number": attempt.attempt_number,
             "questions": result_questions,
         })
+
+
+class TeacherQuizAnalyticsView(APIView):
+    """
+    GET /teacher/quizzes/:pk/analytics/
+
+    Item analysis (per-question % correct), score distribution, and the
+    not-yet-attempted roster for one quiz — the aggregate companion to
+    TeacherQuizAttemptsView's per-student roster.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def get(self, request, pk):
+        require_teacher_context(request)
+
+        quiz = get_object_or_404(
+            Quiz.objects.select_related("subject", "subject__course"), pk=pk
+        )
+
+        if not SubjectTeacher.objects.filter(
+            subject=quiz.subject, teacher=request.user
+        ).exists():
+            raise PermissionDenied("Not assigned to this subject.")
+
+        submitted_attempts = list(
+            QuizAttempt.objects.filter(
+                quiz=quiz, status=QuizAttempt.STATUS_SUBMITTED,
+            ).prefetch_related("answers")
+        )
+
+        items = []
+        for q in quiz.questions.all().order_by("order"):
+            answers = StudentAnswer.objects.filter(
+                question=q, attempt__status=QuizAttempt.STATUS_SUBMITTED,
+            )
+            total = answers.count()
+            correct = answers.filter(is_correct=True).count()
+            items.append({
+                "id": q.id,
+                "order": q.order + 1,
+                "text": q.text,
+                "pct_correct": round(correct * 100.0 / total, 1) if total else 0,
+            })
+
+        enrolled_profile_ids = set(
+            Enrollment.objects.filter(course=quiz.subject.course, status="ACTIVE")
+            .exclude(learner_profile__isnull=True)
+            .values_list("learner_profile_id", flat=True)
+        )
+        attempted_profile_ids = {
+            a.learner_profile_id for a in submitted_attempts if a.learner_profile_id
+        }
+        total_students = len(enrolled_profile_ids)
+        attempted_count = len(enrolled_profile_ids & attempted_profile_ids)
+
+        pct_scores = []
+        durations = []
+        if quiz.total_marks:
+            for a in submitted_attempts:
+                pct_scores.append(a.score * 100.0 / quiz.total_marks)
+        for a in submitted_attempts:
+            durations.append(sum(ans.time_spent_seconds for ans in a.answers.all()))
+
+        class_average = round(sum(pct_scores) / len(pct_scores), 1) if pct_scores else 0
+        sorted_scores = sorted(pct_scores)
+        n = len(sorted_scores)
+        if n:
+            mid = n // 2
+            median = sorted_scores[mid] if n % 2 else (sorted_scores[mid - 1] + sorted_scores[mid]) / 2
+            median = round(median, 1)
+        else:
+            median = 0
+        avg_time_seconds = round(sum(durations) / len(durations)) if durations else None
+
+        buckets = [("0-20", 0, 20), ("21-40", 21, 40), ("41-60", 41, 60), ("61-80", 61, 80), ("81-100", 81, 100)]
+        score_distribution = [
+            {"range": label, "count": sum(1 for p in pct_scores if lo <= p <= hi)}
+            for label, lo, hi in buckets
+        ]
+
+        not_attempted_ids = enrolled_profile_ids - attempted_profile_ids
+        not_attempted = []
+        if not_attempted_ids:
+            from accounts.models import LearnerProfile
+            for lp in LearnerProfile.objects.filter(id__in=not_attempted_ids):
+                name = (lp.full_name or "").strip() or (lp.display_name or "").strip() or "Student"
+                not_attempted.append({"id": lp.id, "name": name})
+
+        return Response({
+            "title": quiz.title,
+            "attempted_count": attempted_count,
+            "total_students": total_students,
+            "class_average": class_average,
+            "median": median,
+            "avg_time_seconds": avg_time_seconds,
+            "time_limit_minutes": quiz.time_limit_minutes,
+            "items": items,
+            "score_distribution": score_distribution,
+            "not_attempted": not_attempted,
+        })
+
+
+class TeacherQuizRemindView(APIView):
+    """
+    POST /teacher/quizzes/:pk/remind/
+
+    Nudges every enrolled learner who hasn't submitted an attempt yet via
+    the standard notification pipeline (see notifications/policy.py's
+    "quiz.reminder" entry).
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def post(self, request, pk):
+        require_teacher_context(request)
+
+        quiz = get_object_or_404(
+            Quiz.objects.select_related("subject", "subject__course"), pk=pk
+        )
+
+        if not SubjectTeacher.objects.filter(
+            subject=quiz.subject, teacher=request.user
+        ).exists():
+            raise PermissionDenied("Not assigned to this subject.")
+
+        enrolled_profile_ids = set(
+            Enrollment.objects.filter(course=quiz.subject.course, status="ACTIVE")
+            .exclude(learner_profile__isnull=True)
+            .values_list("learner_profile_id", flat=True)
+        )
+        attempted_profile_ids = set(
+            QuizAttempt.objects.filter(quiz=quiz, status=QuizAttempt.STATUS_SUBMITTED)
+            .exclude(learner_profile__isnull=True)
+            .values_list("learner_profile_id", flat=True)
+        )
+        not_attempted_ids = enrolled_profile_ids - attempted_profile_ids
+        if not not_attempted_ids:
+            return Response({"detail": "Everyone has already attempted this quiz.", "count": 0})
+
+        from accounts.models import LearnerProfile
+        from notifications.services import notify
+
+        profiles = list(
+            LearnerProfile.objects.filter(id__in=not_attempted_ids).select_related("account")
+        )
+        sent = 0
+        for lp in profiles:
+            if not lp.account:
+                continue
+            notify(
+                recipient=lp.account,
+                verb="quiz.reminder",
+                title=f'Reminder: "{quiz.title}" is still pending',
+                body=f"Your teacher sent a reminder to complete this {quiz.get_quiz_type_display().lower()}.",
+                actor=request.user,
+                link_url=f"/subjects/quiz/{quiz.subject_id}",
+                learner_profile=lp,
+            )
+            sent += 1
+
+        return Response({"detail": f"Reminder sent to {sent} student(s).", "count": sent})
+
+
+class TeacherGenerateAIQuestionsView(APIView):
+    """
+    POST /teacher/quizzes/generate-ai   { topic, difficulty, count }
+
+    Drafts MCQs via OpenAI and returns them to the client only — nothing is
+    written to the DB here, so every AI-drafted question still goes through
+    the normal builder-review + admin-approval path before it can reach a
+    student. Requires OPENAI_API_KEY to be set in the environment.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "quiz_ai_generate"
+
+    def post(self, request):
+        require_teacher_context(request)
+
+        topic = (request.data.get("topic") or "").strip()
+        if not topic:
+            raise ValidationError("topic is required.")
+        difficulty = (request.data.get("difficulty") or "Mixed").strip()
+        try:
+            count = max(1, min(10, int(request.data.get("count") or 3)))
+        except (TypeError, ValueError):
+            count = 3
+
+        api_key = getattr(settings, "OPENAI_API_KEY", "") or ""
+        if not api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is not configured; cannot generate questions."
+            )
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "topic": {"type": "string"},
+                            "difficulty": {"type": "string", "enum": ["easy", "medium", "hard"]},
+                            "marks": {"type": "integer"},
+                            "explanation": {"type": "string"},
+                            "choices": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "text": {"type": "string"},
+                                        "is_correct": {"type": "boolean"},
+                                    },
+                                    "required": ["text", "is_correct"],
+                                    "additionalProperties": False,
+                                },
+                                "minItems": 4,
+                                "maxItems": 4,
+                            },
+                        },
+                        "required": ["text", "topic", "difficulty", "marks", "explanation", "choices"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["questions"],
+            "additionalProperties": False,
+        }
+
+        prompt = (
+            f'Write {count} multiple-choice quiz question(s) on the topic "{topic}" '
+            f"at {difficulty} difficulty. Each question needs exactly 4 answer "
+            f"choices with exactly one marked is_correct=true, a short explanation "
+            f"of the correct answer, a 1-3 word topic tag, and marks=2. Keep "
+            f"questions unambiguous and distractors plausible."
+        )
+
+        try:
+            resp = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o",
+                    "messages": [
+                        {"role": "system", "content": "You are a precise quiz-question writer for a school exam platform."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {"name": "quiz_questions", "schema": schema, "strict": True},
+                    },
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+            drafted = json.loads(content)["questions"]
+        except Exception:
+            logger.exception("Quiz AI generation failed")
+            raise ValidationError("AI generation failed. Try again or add questions manually.")
+
+        return Response({"questions": drafted})
 
 
 # =====================================================

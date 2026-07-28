@@ -119,13 +119,14 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
     score = serializers.SerializerMethodField()
     attempts_count = serializers.SerializerMethodField()
+    best_score = serializers.SerializerMethodField()
 
     class Meta:
         model = Quiz
         fields = [
             "id", "title", "subject_id", "subject_name", "course_title", "teacher_name",
             "created_at", "total_marks", "questions_count", "time_limit_minutes",
-            "status", "score", "is_published", "attempts_count", "quiz_type",
+            "status", "score", "best_score", "is_published", "attempts_count", "quiz_type",
         ]
 
     def get_status(self, obj):
@@ -156,6 +157,16 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
         # Fallback: at least 1 if in submitted_ids
         submitted_ids = self.context.get("submitted_ids", set())
         return 1 if obj.id in submitted_ids else 0
+
+    def get_best_score(self, obj):
+        # Best-ever percent across every submitted attempt (not just the
+        # latest, which `score` above reflects) — reuses the same prefetch,
+        # no extra query.
+        attempts = getattr(obj, "user_submitted_attempts", [])
+        if not attempts or not obj.total_marks:
+            return None
+        best = max(a.score for a in attempts)
+        return round(best * 100.0 / obj.total_marks, 1)
 
 
 class QuizSubmitSerializer(serializers.Serializer):
@@ -292,6 +303,7 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
     Teacher draft preview — includes correct answers and explanations.
     Used by QuizDetailDraftView for unpublished quiz review.
     """
+    subject_id = serializers.UUIDField(source="subject.id", read_only=True)
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
@@ -303,8 +315,8 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quiz
         fields = [
-            "id", "title", "description", "subject_name", "course_title",
-            "teacher_name", "created_at", "time_limit_minutes",
+            "id", "title", "description", "subject_id", "subject_name",
+            "course_title", "teacher_name", "created_at", "time_limit_minutes",
             "is_published", "questions", "quiz_type", "review_status",
             "review_note", "reviewed_at", "submitted_for_review_at",
             "is_editable",

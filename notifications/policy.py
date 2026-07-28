@@ -83,6 +83,9 @@ POLICY = {
     "assignment.graded":   {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
     "quiz.posted":         {"category": "learning", "email": OFF,     "sms": OFF, "push": OPT_OUT},
     "quiz.deadline":       {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": REQUIRED},
+    # Teacher-triggered nudge for students who haven't attempted a
+    # published quiz yet (Quiz Analytics "Send reminder" action).
+    "quiz.reminder":       {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": REQUIRED},
     "materials.uploaded":  {"category": "learning", "email": OFF,     "sms": OFF, "push": OPT_OUT},
 
     # ── Social (high volume — NEVER email/SMS these) ───────────────────

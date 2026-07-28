@@ -145,6 +145,23 @@ class Question(models.Model):
         max_length=10, choices=DIFFICULTY_CHOICES, default=DIFFICULTY_MEDIUM,
     )
 
+    # Provenance for the builder's per-question badge (AI-drafted, imported
+    # from bulk-paste, pulled from the question bank) — purely informational,
+    # never affects grading or visibility.
+    SOURCE_MANUAL = "manual"
+    SOURCE_AI = "ai"
+    SOURCE_BANK = "bank"
+    SOURCE_IMPORT = "import"
+    SOURCE_CHOICES = [
+        (SOURCE_MANUAL, "Manual"),
+        (SOURCE_AI, "AI-drafted"),
+        (SOURCE_BANK, "From question bank"),
+        (SOURCE_IMPORT, "Bulk import"),
+    ]
+    source = models.CharField(
+        max_length=10, choices=SOURCE_CHOICES, default=SOURCE_MANUAL,
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
