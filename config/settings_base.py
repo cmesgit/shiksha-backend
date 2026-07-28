@@ -162,6 +162,9 @@ REST_FRAMEWORK = {
         "documents_report": "30/hour",
         # Quiz builder's AI question drafting — costs real money per call.
         "quiz_ai_generate": "10/hour",
+        # Anonymous "notify me when {board} launches" lead capture — the
+        # only unauthenticated write endpoint in the app, so throttled hard.
+        "board_notify": "5/hour",
     },
 }
 

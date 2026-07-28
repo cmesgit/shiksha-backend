@@ -6,6 +6,7 @@ from accounts.models import LearnerProfile, Role
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework import status
 from enrollments.models import Enrollment, EnrollmentRequest, Subscription
 from accounts.permissions import IsTeacherContext, IsAdmin
@@ -13,7 +14,7 @@ from accounts.auth_flow import get_active_profile
 from quizzes.models import Quiz, QuizAttempt
 from assignments.models import Assignment
 from courses.progress_stats import average_quiz_score_pct
-from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream
+from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream, BoardNotifyRequest
 from content.models import ShowcaseCourse
 from .serializers import (
     CourseSerializer, SubjectSerializer, BoardSerializer, CourseDetailSerializer,
@@ -1040,7 +1041,8 @@ class AdminBoardCoursesView(APIView):
                 ),
                 subject_count=Count("subjects", distinct=True),
             )
-            .select_related("stream")
+            .select_related("stream", "details")
+            .prefetch_related("categories")
             .order_by("title")
         )
         return Response([
@@ -1056,6 +1058,20 @@ class AdminBoardCoursesView(APIView):
                 "enrollment_count": c.enrollment_count,
                 "subject_count": c.subject_count,
                 "created_at": c.created_at,
+                # Fields needed for the admin course-list "content complete" /
+                # "shows up on" columns — mirrors what openEditCourse already
+                # fetches per-course via getCourse(), but at list scope so the
+                # completeness score can render without a fetch per row.
+                "details": (
+                    {"syllabus": c.details.syllabus, "highlights": c.details.highlights}
+                    if hasattr(c, "details") else None
+                ),
+                "is_featured": c.is_featured,
+                "categories": [
+                    {"id": cat.id, "slug": cat.slug, "name": cat.name, "group": cat.group}
+                    for cat in c.categories.all()
+                ],
+                "seo_title": c.seo_title,
             }
             for c in courses
         ])
@@ -1507,6 +1523,42 @@ class PublicBoardListView(APIView):
         return Response(data)
 
 
+class BoardNotifyMeView(APIView):
+    """POST /courses/public/boards/<board_id>/notify/ — anonymous "notify me
+    when {board} launches" lead capture from a locked board chip. The first
+    anonymous-write endpoint in this codebase, so it's throttled (see
+    board_notify in DEFAULT_THROTTLE_RATES) and de-duped via the model's
+    (board, email) unique constraint rather than trusting client behavior."""
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "board_notify"
+
+    def post(self, request, board_id):
+        board = get_object_or_404(Board, id=board_id)
+        email = (request.data.get("email") or "").strip().lower()
+        if not email or "@" not in email:
+            return Response({"detail": "A valid email is required."}, status=status.HTTP_400_BAD_REQUEST)
+        BoardNotifyRequest.objects.get_or_create(board=board, email=email)
+        return Response({"ok": True}, status=status.HTTP_201_CREATED)
+
+
+def _catalog_seats_left(course):
+    """Sum capacity - seats_taken across all is_active batches (there is no
+    single "current batch" flag, so a course can have several concurrently
+    active cohorts). None if any active batch is uncapped or there are no
+    active batches at all — the frontend hides the seats line in that case
+    rather than showing a misleading number."""
+    batches = getattr(course, "active_batches", [])
+    if not batches:
+        return None
+    total = 0
+    for b in batches:
+        if b.capacity is None:
+            return None
+        total += max(0, b.capacity - b._seats)
+    return total
+
+
 class PublicCourseCatalogView(APIView):
     """GET /courses/public/catalog/ — same shop-card shape as CourseCatalogView,
     minus the per-user `is_enrolled` query (the public site has no logged-in
@@ -1526,7 +1578,16 @@ class PublicCourseCatalogView(APIView):
             Course.objects
             .filter(status__in=[Course.STATUS_PUBLISHED, Course.STATUS_COMING_SOON])
             .select_related("board", "stream", "details")
-            .prefetch_related("categories")
+            .prefetch_related(
+                "categories",
+                Prefetch(
+                    "batches",
+                    queryset=Batch.objects.filter(is_active=True).annotate(
+                        _seats=Count("enrollments", filter=Q(enrollments__status="ACTIVE"))
+                    ),
+                    to_attr="active_batches",
+                ),
+            )
             .annotate(subject_count=Count("subjects", distinct=True))
             .order_by("board__name", "title")
             .distinct()
@@ -1581,6 +1642,7 @@ class PublicCourseCatalogView(APIView):
                 "category_slugs": [cat.slug for cat in c.categories.all()],
                 "subject_count": c.subject_count,
                 "duration_weeks": getattr(getattr(c, "details", None), "duration_weeks", None) or None,
+                "seats_left": _catalog_seats_left(c),
             }
             for c in qs
         ]

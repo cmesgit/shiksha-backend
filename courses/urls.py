@@ -15,6 +15,7 @@ from .views import (
     SubjectsByCourseTitleView,
     EnrollCourseSummaryView,
     PublicBoardListView,
+    BoardNotifyMeView,
     PublicCourseCatalogView,
     PublicCourseDetailView,
     PublicCourseBySlugView,
@@ -124,6 +125,7 @@ urlpatterns = [
     # PUBLIC (anonymous) catalog — the real marketing-site /courses browser.
     # Static segments before the bare <uuid:course_id> routes further down.
     path("public/boards/",             PublicBoardListView.as_view()),
+    path("public/boards/<uuid:board_id>/notify/", BoardNotifyMeView.as_view()),
     path("public/catalog/",            PublicCourseCatalogView.as_view()),
     path("public/featured/",           PublicFeaturedView.as_view()),
     path("public/nav-menu/",           PublicNavMenuView.as_view()),

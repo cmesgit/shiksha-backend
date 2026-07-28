@@ -4,7 +4,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from .models import Course, Subject, Chapter, SubjectTeacher, Batch
 from .models_recordings import SessionRecording
-from .models import Board
+from .models import Board, BoardNotifyRequest
 
 # =========================
 # COURSE ADMIN
@@ -165,6 +165,14 @@ class BoardAdmin(admin.ModelAdmin):
 @admin.register(Stream)
 class StreamAdmin(admin.ModelAdmin):
     search_fields = ["name"]
+
+
+@admin.register(BoardNotifyRequest)
+class BoardNotifyRequestAdmin(admin.ModelAdmin):
+    list_display = ("board", "email", "created_at")
+    list_filter = ("board",)
+    search_fields = ("email", "board__name")
+    ordering = ("-created_at",)
 
 
 # =========================

@@ -567,3 +567,26 @@ class TeachingAssignment(models.Model):
 
     def __str__(self):
         return f"{self.batch.code} · {self.subject.name} → {self.teacher.email} ({self.role})"
+
+
+class BoardNotifyRequest(models.Model):
+    """A "notify me when {board} launches" lead, captured anonymously from a
+    locked board chip on the public catalog. Visible only via Django admin —
+    no dedicated review UI was requested."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    board = models.ForeignKey(Board, on_delete=models.CASCADE, related_name="notify_requests")
+    email = models.EmailField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["board", "email"], name="unique_notify_per_board_email"),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.email = self.email.strip().lower()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.email} → {self.board.name}"
