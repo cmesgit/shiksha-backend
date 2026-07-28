@@ -170,13 +170,12 @@ class DashboardAssignmentSerializer(serializers.ModelSerializer):
 
 class DashboardQuizSerializer(serializers.ModelSerializer):
     teacher      = serializers.SerializerMethodField()
-    due          = serializers.DateTimeField(source="due_date")
     subject_id   = serializers.SerializerMethodField()
     subject_name = serializers.SerializerMethodField()
 
     class Meta:
         model  = Quiz
-        fields = ["id", "title", "teacher", "due", "subject_id", "subject_name"]
+        fields = ["id", "title", "teacher", "subject_id", "subject_name"]
 
     def get_subject_id(self, obj):
         try:

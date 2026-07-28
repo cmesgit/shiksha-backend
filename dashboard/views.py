@@ -139,7 +139,7 @@ def _learner_quizzes(subject_ids):
     return list(
         Quiz.objects.filter(subject_id__in=subject_ids, is_published=True)
         .select_related("created_by")
-        .order_by("due_date")[:20]
+        .order_by("-created_at")[:20]
     )
 
 
@@ -209,7 +209,7 @@ def _teacher_quizzes(user):
     return list(
         Quiz.objects.filter(created_by=user, is_published=True)
         .select_related("created_by", "subject")
-        .order_by("due_date")
+        .order_by("-created_at")
     )
 
 

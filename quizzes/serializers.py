@@ -109,6 +109,7 @@ class QuizCreateSerializer(serializers.ModelSerializer):
 
 
 class QuizDashboardSerializer(serializers.ModelSerializer):
+    subject_id = serializers.UUIDField(read_only=True)
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
@@ -122,7 +123,7 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quiz
         fields = [
-            "id", "title", "subject_name", "course_title", "teacher_name",
+            "id", "title", "subject_id", "subject_name", "course_title", "teacher_name",
             "created_at", "total_marks", "questions_count", "time_limit_minutes",
             "status", "score", "is_published", "attempts_count", "quiz_type",
         ]
