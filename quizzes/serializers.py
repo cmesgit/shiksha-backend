@@ -166,7 +166,10 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
         if not attempts or not obj.total_marks:
             return None
         best = max(a.score for a in attempts)
-        return round(best * 100.0 / obj.total_marks, 1)
+        # Clamped: a quiz whose total_marks fell out of sync with its
+        # questions (edited after an attempt was scored) can otherwise
+        # divide out to well over 100% — seen live on a dev-seeded quiz.
+        return round(min(100.0, best * 100.0 / obj.total_marks), 1)
 
 
 class QuizSubmitSerializer(serializers.Serializer):

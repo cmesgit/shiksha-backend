@@ -663,7 +663,9 @@ class StudentQuizStatsView(APIView):
         for a in mock_attempts:
             if not a.quiz.total_marks:
                 continue
-            pct = a.score * 100.0 / a.quiz.total_marks
+            # Clamped for the same reason as QuizDashboardSerializer.get_best_score
+            # — total_marks can fall out of sync with a quiz's questions.
+            pct = min(100.0, a.score * 100.0 / a.quiz.total_marks)
             best_by_quiz[a.quiz_id] = max(pct, best_by_quiz.get(a.quiz_id, 0))
         avg_mock_score = round(sum(best_by_quiz.values()) / len(best_by_quiz), 1) if best_by_quiz else 0
 
