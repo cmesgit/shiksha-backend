@@ -293,6 +293,85 @@ class JoinLiveSessionContextTests(TestCase):
         self.assertEqual(r.status_code, 201, r.content)
 
 
+class StudentCannotEndSessionTests(TestCase):
+    """A student must never be able to end a teacher's live class — only the
+    session's own creator, in teacher context, can. Regression cover for the
+    exact "end class" control a student's classroom UI never binds
+    (ControlBar.jsx's isHost defaults false there), verified here directly
+    against the API so it doesn't rely on the frontend never wiring it up."""
+
+    def setUp(self):
+        from accounts.models import LearnerProfile, Role, UserRole
+        from courses.models import SubjectTeacher
+        from enrollments.models import Enrollment
+
+        self.teacher = User.objects.create_user(
+            username="es_teacher@x.com", email="es_teacher@x.com", password="x"
+        )
+        teacher_role, _ = Role.objects.get_or_create(name="TEACHER")
+        UserRole.objects.create(
+            user=self.teacher, role=teacher_role, is_active=True, is_primary=True
+        )
+        board = Board.objects.create(name="CBSE", board_type=Board.TYPE_CENTRAL)
+        self.course = Course.objects.create(board=board, title="C10", class_level=10)
+        self.subject = Subject.objects.create(course=self.course, name="Physics")
+        SubjectTeacher.objects.create(subject=self.subject, teacher=self.teacher)
+
+        self.student = User.objects.create_user(
+            username="es_student@x.com", email="es_student@x.com", password="x"
+        )
+        self.profile = LearnerProfile.objects.create(
+            account=self.student, display_name="S", full_name="S",
+            student_id="ES001", is_default=True,
+        )
+        Enrollment.objects.create(
+            user=self.student, learner_profile=self.profile,
+            course=self.course, status=Enrollment.STATUS_ACTIVE,
+        )
+
+        now = timezone.now()
+        self.session = LiveSession.objects.create(
+            course=self.course, subject=self.subject, title="Live now",
+            start_time=now - timedelta(minutes=5), end_time=now + timedelta(hours=1),
+            room_name="room_end_guard", created_by=self.teacher,
+            status=LiveSession.STATUS_LIVE,
+        )
+
+    def test_enrolled_student_cannot_end_the_class(self):
+        client = APIClient()
+        client.force_authenticate(
+            user=self.student,
+            token={"context": "learner", "active_profile": str(self.profile.id)},
+        )
+        r = client.post(f"/api/livestream/sessions/{self.session.id}/end/")
+        self.assertEqual(r.status_code, 403, r.content)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, LiveSession.STATUS_LIVE)  # unchanged
+
+    def test_teacher_can_end_their_own_class(self):
+        client = APIClient()
+        client.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = client.post(f"/api/livestream/sessions/{self.session.id}/end/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, LiveSession.STATUS_COMPLETED)
+
+    def test_other_teacher_cannot_end_someone_elses_class(self):
+        from accounts.models import Role, UserRole
+
+        other_teacher = User.objects.create_user(
+            username="es_other@x.com", email="es_other@x.com", password="x"
+        )
+        UserRole.objects.create(
+            user=other_teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=other_teacher, token={"context": "teacher"})
+        r = client.post(f"/api/livestream/sessions/{self.session.id}/end/")
+        self.assertEqual(r.status_code, 403, r.content)
+
+
 class RescheduleLiveSessionTests(TestCase):
     """PATCH sessions/<id>/reschedule/ — teacher-only edit of a still-
     SCHEDULED session's title/time. Covers the validation this reuses from
