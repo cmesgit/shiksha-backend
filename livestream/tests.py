@@ -293,6 +293,120 @@ class JoinLiveSessionContextTests(TestCase):
         self.assertEqual(r.status_code, 201, r.content)
 
 
+class RescheduleLiveSessionTests(TestCase):
+    """PATCH sessions/<id>/reschedule/ — teacher-only edit of a still-
+    SCHEDULED session's title/time. Covers the validation this reuses from
+    create (ownership, status/time gating, overlap) plus the one thing
+    that's different: excluding the session itself from its own overlap
+    check."""
+
+    def setUp(self):
+        from accounts.models import Role, UserRole
+        from courses.models import Batch, SubjectTeacher
+
+        self.teacher = User.objects.create_user(
+            username="rt@x.com", email="rt@x.com", password="x"
+        )
+        teacher_role, _ = Role.objects.get_or_create(name="TEACHER")
+        UserRole.objects.create(
+            user=self.teacher, role=teacher_role, is_active=True, is_primary=True
+        )
+        board = Board.objects.create(name="CBSE", board_type=Board.TYPE_CENTRAL)
+        self.course = Course.objects.create(board=board, title="C10", class_level=10)
+        self.subject = Subject.objects.create(course=self.course, name="Physics")
+        SubjectTeacher.objects.create(subject=self.subject, teacher=self.teacher)
+        self.batch = Batch.objects.create(course=self.course, name="Batch A", code="A1")
+
+        self.now = timezone.now()
+        self.session = LiveSession.objects.create(
+            course=self.course, subject=self.subject, batch=self.batch,
+            title="Original title",
+            start_time=self.now + timedelta(days=1),
+            end_time=self.now + timedelta(days=1, hours=1),
+            room_name="room_resched", created_by=self.teacher,
+            status=LiveSession.STATUS_SCHEDULED,
+        )
+
+    def _client(self, user=None):
+        client = APIClient()
+        client.force_authenticate(user=user or self.teacher, token={"context": "teacher"})
+        return client
+
+    def test_owner_can_reschedule(self):
+        new_start = self.now + timedelta(days=2)
+        r = self._client().patch(
+            f"/api/livestream/sessions/{self.session.id}/reschedule/",
+            {"title": "Moved class", "start_time": new_start.isoformat(),
+             "end_time": (new_start + timedelta(hours=1)).isoformat()},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.title, "Moved class")
+        self.assertEqual(self.session.start_time, new_start)
+
+    def test_non_owner_rejected(self):
+        other = User.objects.create_user(username="ro@x.com", email="ro@x.com", password="x")
+        from accounts.models import Role, UserRole
+        UserRole.objects.create(
+            user=other, role=Role.objects.get(name="TEACHER"), is_active=True, is_primary=True
+        )
+        r = self._client(user=other).patch(
+            f"/api/livestream/sessions/{self.session.id}/reschedule/",
+            {"start_time": (self.now + timedelta(days=2)).isoformat()},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 403)
+
+    def test_cannot_reschedule_to_the_past(self):
+        r = self._client().patch(
+            f"/api/livestream/sessions/{self.session.id}/reschedule/",
+            {"start_time": (self.now - timedelta(hours=1)).isoformat(),
+             "end_time": self.now.isoformat()},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_cannot_edit_a_session_already_underway(self):
+        self.session.status = LiveSession.STATUS_LIVE
+        self.session.start_time = self.now - timedelta(minutes=5)
+        self.session.save(update_fields=["status", "start_time"])
+        r = self._client().patch(
+            f"/api/livestream/sessions/{self.session.id}/reschedule/",
+            {"title": "Nope"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_rejects_overlap_with_another_session_excluding_self(self):
+        other_session = LiveSession.objects.create(
+            course=self.course, subject=self.subject, batch=self.batch,
+            title="Other class",
+            start_time=self.now + timedelta(days=3),
+            end_time=self.now + timedelta(days=3, hours=1),
+            room_name="room_other", created_by=self.teacher,
+            status=LiveSession.STATUS_SCHEDULED,
+        )
+        # Moving self.session onto other_session's slot should be rejected...
+        r = self._client().patch(
+            f"/api/livestream/sessions/{self.session.id}/reschedule/",
+            {"start_time": other_session.start_time.isoformat(),
+             "end_time": other_session.end_time.isoformat()},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+
+        # ...but a no-op "reschedule" back onto its OWN existing slot must not
+        # trip the overlap check against itself.
+        r = self._client().patch(
+            f"/api/livestream/sessions/{self.session.id}/reschedule/",
+            {"start_time": self.session.start_time.isoformat(),
+             "end_time": self.session.end_time.isoformat()},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+
+
 class CourseSessionConsumerAuthTests(TransactionTestCase):
     """CourseSessionConsumer must accept a teacher assigned to the course's
     subject, not just an actively-enrolled student — regression for the

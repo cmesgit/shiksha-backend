@@ -2,6 +2,7 @@ import json
 from django.conf import settings
 from .serializers import (
     LiveSessionCreateSerializer,
+    LiveSessionUpdateSerializer,
     LiveSessionListSerializer,
     SessionReviewSerializer,
     SessionNoteSerializer,
@@ -368,6 +369,38 @@ def cancel_live_session(request, session_id):
     broadcast_course_sessions_update(session)
 
     return Response({"detail": "Session cancelled successfully."})
+
+
+# =========================
+# RESCHEDULE / EDIT SESSION
+# =========================
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def reschedule_live_session(request, session_id):
+    user = request.user
+    session = get_object_or_404(LiveSession, id=session_id)
+
+    require_teacher_context(request)
+
+    if session.created_by != user:
+        return Response({"detail": "You can only edit your own sessions."}, status=403)
+
+    if session.status in (LiveSession.STATUS_CANCELLED, LiveSession.STATUS_COMPLETED):
+        return Response({"detail": "This session has already ended."}, status=400)
+
+    if timezone.now() >= session.start_time:
+        return Response({"detail": "Cannot edit a session that has already started."}, status=400)
+
+    serializer = LiveSessionUpdateSerializer(
+        session, data=request.data, partial=True, context={"request": request}
+    )
+    if serializer.is_valid():
+        serializer.save()
+        broadcast_course_sessions_update(session)
+        return Response(LiveSessionListSerializer(session, context={"request": request}).data)
+
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 # =========================

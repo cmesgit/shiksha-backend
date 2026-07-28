@@ -810,3 +810,118 @@ class TeacherContextEnforcementTest(BaseTestCase):
         # A student who somehow carries a teacher-context token still lacks the role.
         res = self._client(self.student, "teacher").get("/api/sessions/teacher/sessions/")
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+
+# ===================================================================
+# GROUP SESSION — UPDATE (edit a still-scheduled session)
+# ===================================================================
+# No existing GroupSession fixtures in this file (PrivateSession above uses a
+# plain CharField `subject`, not a real Subject/Course FK) — self-contained
+# setup mirroring livestream/tests.py's Board/Course/Subject/Batch pattern,
+# since GroupSession's invite validation genuinely needs those.
+
+class GroupSessionUpdateTest(TestCase):
+    def setUp(self):
+        from courses.models import Board, Course, Subject
+        from enrollments.models import Enrollment
+        from .models import GroupSession, GroupSessionInvite
+
+        self.host = User.objects.create_user(
+            username="gs_host@x.com", email="gs_host@x.com", password="x"
+        )
+        teacher_role, _ = Role.objects.get_or_create(name="TEACHER")
+        UserRole.objects.create(
+            user=self.host, role=teacher_role, is_active=True, is_primary=True
+        )
+
+        self.student = User.objects.create_user(
+            username="gs_student@x.com", email="gs_student@x.com", password="x"
+        )
+        board = Board.objects.create(name="CBSE", board_type=Board.TYPE_CENTRAL)
+        self.course = Course.objects.create(board=board, title="C10", class_level=10)
+        self.subject = Subject.objects.create(course=self.course, name="Physics")
+        Enrollment.objects.create(
+            user=self.student, course=self.course, status=Enrollment.STATUS_ACTIVE
+        )
+
+        self.not_enrolled = User.objects.create_user(
+            username="gs_out@x.com", email="gs_out@x.com", password="x"
+        )
+
+        self.now = timezone.now()
+        self.session = GroupSession.objects.create(
+            host=self.host, subject=self.subject,
+            subject_name=self.subject.name, course_title=self.course.title,
+            topic="Original topic",
+            scheduled_date=(self.now + timedelta(days=1)).date(),
+            scheduled_time=time(15, 0),
+            duration_minutes=45,
+            status="scheduled",
+        )
+        self.GroupSessionInvite = GroupSessionInvite
+
+    def _client(self, user=None):
+        client = APIClient()
+        client.force_authenticate(user=user or self.host, token={"context": "teacher"})
+        return client
+
+    def test_host_can_edit_topic_and_time(self):
+        r = self._client().patch(
+            f"/api/sessions/group-sessions/{self.session.id}/",
+            {"topic": "Updated topic", "scheduled_time": "16:30", "duration_minutes": 60},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.topic, "Updated topic")
+        self.assertEqual(self.session.duration_minutes, 60)
+        self.assertEqual(self.session.scheduled_time, time(16, 30))
+
+    def test_non_host_cannot_edit(self):
+        other = User.objects.create_user(
+            username="gs_other@x.com", email="gs_other@x.com", password="x"
+        )
+        UserRole.objects.create(
+            user=other, role=Role.objects.get(name="TEACHER"), is_active=True, is_primary=True
+        )
+        r = self._client(user=other).patch(
+            f"/api/sessions/group-sessions/{self.session.id}/",
+            {"topic": "Hijacked"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 404)  # scoped query excludes non-hosts, same as cancel
+
+    def test_cannot_edit_once_live(self):
+        self.session.status = "live"
+        self.session.save(update_fields=["status"])
+        r = self._client().patch(
+            f"/api/sessions/group-sessions/{self.session.id}/",
+            {"topic": "Too late"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_additive_invite_adds_only_new_valid_students(self):
+        # Pre-existing invite — must survive an edit that doesn't mention it,
+        # and must not be duplicated if resubmitted.
+        self.GroupSessionInvite.objects.create(
+            session=self.session, user=self.student, invite_role="student"
+        )
+        r = self._client().patch(
+            f"/api/sessions/group-sessions/{self.session.id}/",
+            {"invited_user_ids": [str(self.student.id), str(self.not_enrolled.id)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        invited_ids = set(
+            self.session.invites.values_list("user_id", flat=True)
+        )
+        self.assertEqual(invited_ids, {self.student.id})  # not_enrolled never added, no dupes
+
+    def test_reschedule_to_the_past_rejected(self):
+        r = self._client().patch(
+            f"/api/sessions/group-sessions/{self.session.id}/",
+            {"scheduled_date": (self.now - timedelta(days=1)).date().isoformat()},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 400)

@@ -6,11 +6,11 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 
-from .models_recordings import SessionRecording
-from .serializers_recordings import SessionRecordingSerializer
+from .models_recordings import SessionRecording, RecordingNote
+from .serializers_recordings import SessionRecordingSerializer, RecordingNoteSerializer
 from .models import Subject, Batch
 from .services import teaches_subject
-from accounts.permissions import IsTeacherContext
+from accounts.permissions import IsTeacherContext, CTX_TEACHER
 
 
 class SubjectRecordingsView(APIView):
@@ -209,3 +209,65 @@ class RecordingDetailView(APIView):
     def get(self, request, recording_id):
         recording = get_object_or_404(SessionRecording, id=recording_id)
         return Response(SessionRecordingSerializer(recording).data)
+
+
+def _require_recording_viewer(request, recording):
+    """Same shape as livestream's _require_session_participant: teacher
+    context needs to teach the recording's subject; otherwise the user needs
+    an active enrollment in its course. Raises PermissionDenied (403) rather
+    than returning a Response, so call sites can use it as a one-line guard.
+    """
+    from rest_framework.exceptions import PermissionDenied
+    from enrollments.models import Enrollment
+
+    user = request.user
+    token = getattr(request, "auth", None)
+    in_teacher_context = (
+        bool(token) and token.get("context") == CTX_TEACHER and user.has_role("TEACHER")
+    )
+
+    if in_teacher_context:
+        if not teaches_subject(user, recording.subject):
+            raise PermissionDenied("Not assigned to this subject.")
+    else:
+        if not Enrollment.objects.filter(
+            user=user, course=recording.subject.course,
+            status=Enrollment.STATUS_ACTIVE,
+        ).exists():
+            raise PermissionDenied("Not enrolled in this course.")
+
+
+class RecordingNotesView(APIView):
+    """GET/PATCH recordings/<id>/notes/ — the requesting user's own private
+    notes on this recording (never another viewer's). PATCH upserts via
+    update_or_create, same autosave-friendly shape as the live session's own
+    SessionNote this mirrors.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, recording_id):
+        recording = get_object_or_404(
+            SessionRecording.objects.select_related("subject"), id=recording_id
+        )
+        _require_recording_viewer(request, recording)
+
+        note = RecordingNote.objects.filter(recording=recording, user=request.user).first()
+        return Response(
+            RecordingNoteSerializer(note).data if note else {"content": "", "updated_at": None}
+        )
+
+    def patch(self, request, recording_id):
+        recording = get_object_or_404(
+            SessionRecording.objects.select_related("subject"), id=recording_id
+        )
+        _require_recording_viewer(request, recording)
+
+        serializer = RecordingNoteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        note, _ = RecordingNote.objects.update_or_create(
+            recording=recording,
+            user=request.user,
+            defaults=serializer.validated_data,
+        )
+        return Response(RecordingNoteSerializer(note).data)

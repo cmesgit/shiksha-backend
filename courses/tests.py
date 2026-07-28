@@ -179,3 +179,91 @@ class TeacherRosterTests(TestCase):
             1,
             "the same student must not appear twice",
         )
+
+
+# ===================================================================
+# RECORDING NOTES — a viewer's own private notes on a recording
+# ===================================================================
+
+class RecordingNoteTest(TestCase):
+    def setUp(self):
+        from rest_framework.test import APIClient
+        from .models_recordings import SessionRecording
+
+        self.teacher = User.objects.create_user(
+            username="rn_teacher@x.com", email="rn_teacher@x.com", password="x"
+        )
+        teacher_role, _ = Role.objects.get_or_create(name="TEACHER")
+        UserRole.objects.create(
+            user=self.teacher, role=teacher_role, is_active=True, is_primary=True
+        )
+
+        self.student = User.objects.create_user(
+            username="rn_student@x.com", email="rn_student@x.com", password="x"
+        )
+        self.outsider = User.objects.create_user(
+            username="rn_out@x.com", email="rn_out@x.com", password="x"
+        )
+
+        self.course = Course.objects.create(title="C10", class_level=10)
+        self.subject = Subject.objects.create(course=self.course, name="Physics")
+        SubjectTeacher.objects.create(subject=self.subject, teacher=self.teacher)
+        Enrollment.objects.create(
+            user=self.student, course=self.course, status=Enrollment.STATUS_ACTIVE
+        )
+
+        self.recording = SessionRecording.objects.create(
+            subject=self.subject, title="Ch1 recording",
+            bunny_video_id="vid123", uploaded_by=self.teacher,
+        )
+        self.APIClient = APIClient
+
+    def _client(self, user, context="teacher"):
+        client = self.APIClient()
+        client.force_authenticate(user=user, token={"context": context})
+        return client
+
+    def test_teacher_can_save_and_read_own_note(self):
+        client = self._client(self.teacher)
+        r = client.patch(
+            f"/api/courses/recordings/{self.recording.id}/notes/",
+            {"content": "Class ran long, revisit refraction next time."},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+
+        r = client.get(f"/api/courses/recordings/{self.recording.id}/notes/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["content"], "Class ran long, revisit refraction next time.")
+
+    def test_enrolled_student_can_save_own_note(self):
+        client = self._client(self.student, context="learner")
+        r = client.patch(
+            f"/api/courses/recordings/{self.recording.id}/notes/",
+            {"content": "Remember: refraction formula."},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+
+    def test_notes_are_private_per_user(self):
+        self._client(self.teacher).patch(
+            f"/api/courses/recordings/{self.recording.id}/notes/",
+            {"content": "Teacher's note"}, format="json",
+        )
+        self._client(self.student, context="learner").patch(
+            f"/api/courses/recordings/{self.recording.id}/notes/",
+            {"content": "Student's note"}, format="json",
+        )
+        teacher_view = self._client(self.teacher).get(
+            f"/api/courses/recordings/{self.recording.id}/notes/"
+        )
+        student_view = self._client(self.student, context="learner").get(
+            f"/api/courses/recordings/{self.recording.id}/notes/"
+        )
+        self.assertEqual(teacher_view.data["content"], "Teacher's note")
+        self.assertEqual(student_view.data["content"], "Student's note")
+
+    def test_unrelated_user_rejected(self):
+        client = self._client(self.outsider, context="learner")
+        r = client.get(f"/api/courses/recordings/{self.recording.id}/notes/")
+        self.assertEqual(r.status_code, 403)

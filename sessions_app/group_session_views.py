@@ -32,6 +32,7 @@ from .group_session_serializers import (
     GroupSessionDetailSerializer,
     GroupSessionInviteMoreSerializer,
     GroupSessionListSerializer,
+    GroupSessionUpdateSerializer,
 )
 
 User = get_user_model()
@@ -809,9 +810,12 @@ def my_group_sessions(request):
     return Response(GroupSessionDetailSerializer(items, many=True).data)
 
 
-@api_view(["GET"])
+@api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
 def group_session_detail(request, session_id):
+    if request.method == "PATCH":
+        return _update_group_session(request, session_id)
+
     try:
         session = _gs_qs().get(pk=session_id)
     except GroupSession.DoesNotExist:
@@ -822,6 +826,75 @@ def group_session_detail(request, session_id):
             {"error": "You do not have access to this group session."}, status=403
         )
     return Response(GroupSessionDetailSerializer(session).data)
+
+
+def _update_group_session(request, session_id):
+    """Edit a still-``scheduled`` group session (host only): topic, date,
+    time, duration, plus additive invitee changes. Existing invites (accepted
+    or pending) are never removed here — revoking an invite is a separate,
+    more sensitive action this endpoint doesn't attempt; only ids in
+    ``invited_user_ids`` that aren't already invited get added, exactly like
+    ``invite_more``. ``invited_teacher_id`` from the same payload is ignored —
+    there's no established "change the invited teacher" flow to reuse, and
+    guessing at one risks silently dropping a session's original co-teacher.
+    """
+    try:
+        session = GroupSession.objects.select_related(
+            "subject", "subject__course"
+        ).get(pk=session_id, host=request.user)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    if session.status != "scheduled":
+        return Response(
+            {"error": f"Cannot edit a group session that is {session.status}."},
+            status=400,
+        )
+
+    ser = GroupSessionUpdateSerializer(data=request.data, context={"session": session})
+    ser.is_valid(raise_exception=True)
+    data = ser.validated_data
+
+    fields = []
+    for key in ("scheduled_date", "scheduled_time", "duration_minutes", "topic"):
+        if key in data:
+            setattr(session, key, data[key])
+            fields.append(key)
+    if fields:
+        fields.append("updated_at")
+        session.save(update_fields=fields)
+
+    raw_ids = request.data.get("invited_user_ids")
+    if raw_ids:
+        from enrollments.models import Enrollment
+
+        ids = [str(uid) for uid in raw_ids]
+        valid = {
+            str(uid) for uid in Enrollment.objects.filter(
+                course=session.subject.course,
+                status=Enrollment.STATUS_ACTIVE,
+                user_id__in=ids,
+            ).values_list("user_id", flat=True)
+        }
+        existing = {str(uid) for uid in session.invites.values_list("user_id", flat=True)}
+        room_left = session.max_invitees - session.invites.count()
+        to_add_ids = [uid for uid in ids if uid in valid and uid not in existing][:max(room_left, 0)]
+
+        if to_add_ids:
+            GroupSessionInvite.objects.bulk_create([
+                GroupSessionInvite(session=session, user_id=uid, invite_role="student")
+                for uid in to_add_ids
+            ])
+            host_name = get_user_name(request.user)
+            for inv in session.invites.filter(user_id__in=to_add_ids).select_related("user"):
+                _notify_user(
+                    inv.user,
+                    f"📚 {host_name} invited you to a {session.subject_name} group session",
+                    session,
+                )
+
+    full = _gs_qs().get(pk=session.pk)
+    return Response(GroupSessionDetailSerializer(full).data)
 
 
 # ---------------------------------------------------------------------------

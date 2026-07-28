@@ -144,6 +144,60 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
         )
 
 
+class LiveSessionUpdateSerializer(serializers.ModelSerializer):
+    """
+    Edit a session that hasn't started yet — title/description/time only.
+    Subject and batch are fixed at creation; changing either would make this
+    a different class's timetable entry, not a reschedule of this one.
+    """
+
+    class Meta:
+        model = LiveSession
+        fields = ["title", "description", "start_time", "end_time"]
+
+    def validate(self, data):
+        session = self.instance
+        start_time = data.get("start_time", session.start_time)
+        end_time = data.get("end_time", session.end_time)
+
+        if timezone.is_naive(start_time):
+            start_time = timezone.make_aware(start_time, IST)
+        if timezone.is_naive(end_time):
+            end_time = timezone.make_aware(end_time, IST)
+        data["start_time"] = start_time
+        data["end_time"] = end_time
+
+        if start_time >= end_time:
+            raise serializers.ValidationError(
+                {"end_time": ["End time must be after start time."]}
+            )
+
+        if start_time <= timezone.now():
+            raise serializers.ValidationError(
+                {"start_time": ["Cannot reschedule to a time in the past."]}
+            )
+
+        # Same overlap rule as create, scoped to this batch+subject and
+        # excluding the session being edited (it always "overlaps" itself).
+        overlap_exists = LiveSession.objects.filter(
+            subject=session.subject, batch=session.batch,
+        ).exclude(id=session.id).exclude(
+            status__in=[LiveSession.STATUS_CANCELLED,
+                        LiveSession.STATUS_COMPLETED]
+        ).filter(
+            Q(start_time__lt=end_time) & Q(end_time__gt=start_time)
+        ).exists()
+
+        if overlap_exists:
+            raise serializers.ValidationError(
+                {"non_field_errors": [
+                    "This time overlaps with another session."
+                ]}
+            )
+
+        return data
+
+
 class LiveSessionListSerializer(serializers.ModelSerializer):
     teacher = serializers.CharField(source="created_by.email", read_only=True)
     can_join = serializers.SerializerMethodField()

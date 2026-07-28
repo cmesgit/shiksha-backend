@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models_recordings import SessionRecording
+from .models_recordings import SessionRecording, RecordingNote
 
 
 class SessionRecordingSerializer(serializers.ModelSerializer):
@@ -36,3 +36,10 @@ class SessionRecordingSerializer(serializers.ModelSerializer):
         if profile and getattr(profile, "full_name", None):
             return profile.full_name
         return user.get_full_name() or user.username
+
+
+class RecordingNoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RecordingNote
+        fields = ["content", "updated_at"]
+        read_only_fields = ["updated_at"]
