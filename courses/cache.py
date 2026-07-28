@@ -37,9 +37,16 @@ def list_cache_key(request):
 def _register():
     # Imported lazily so this module can load before the app registry is
     # fully ready (apps.py imports us inside ready()).
-    from .models import Batch, Board, Chapter, Course, Subject
+    from .models import (
+        Batch, Board, Chapter, Course, CourseCategory, CourseDetail,
+        Stream, Subject,
+    )
+    from content.models import ShowcaseCourse
 
-    tracked = (Course, Subject, Chapter, Batch, Board)
+    tracked = (
+        Course, Subject, Chapter, Batch, Board,
+        CourseDetail, CourseCategory, Stream, ShowcaseCourse,
+    )
 
     def _bump(*args, **kwargs):
         bump_courses_version()

@@ -188,7 +188,8 @@ class ShowcaseCourseAdminSerializer(FullCleanMixin, serializers.ModelSerializer)
             "id", "title", "level_label", "ribbon", "stars", "review_count",
             "fact_line", "price_label", "tutor_name", "is_explore_card",
             "categories", "gradient_css", "image", "image_url", "icon",
-            "link_path", "link_state", "course", "course_title", "order", "is_active",
+            "link_path", "link_state", "course", "course_title", "board",
+            "order", "is_active",
             "created_at", "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]

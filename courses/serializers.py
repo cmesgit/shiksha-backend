@@ -1,7 +1,7 @@
 from .models_recordings import SessionRecording
 from .models import Chapter
 from rest_framework import serializers
-from .models import Subject, Course, Board, CourseDetail
+from .models import Subject, Course, Board, CourseDetail, CourseCategory
 
 # The "published & ready" recording status. Pull it from the model if it
 # defines a named constant; otherwise fall back to the historical literal (4).
@@ -106,15 +106,42 @@ class SubjectSerializer(serializers.ModelSerializer):
 
 
 class BoardSerializer(serializers.ModelSerializer):
+    logo = serializers.SerializerMethodField()
+
     class Meta:
         model = Board
-        fields = ("id", "name", "board_type", "description", "is_active")
+        fields = (
+            "id", "name", "board_type", "description",
+            "slug", "logo", "display_order", "is_active",
+        )
+        read_only_fields = ("id",)
+
+    def get_logo(self, obj):
+        request = self.context.get("request")
+        if obj.logo:
+            if request:
+                return request.build_absolute_uri(obj.logo.url)
+            return obj.logo.url
+        return None
 
 
 class CourseDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = CourseDetail
-        fields = ("level", "duration_weeks", "syllabus", "language", "requirements")
+        fields = (
+            "level", "duration_weeks", "syllabus", "language", "requirements",
+            "highlights", "includes",
+        )
+
+
+class CourseCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CourseCategory
+        fields = (
+            "id", "name", "slug", "group", "blurb", "icon",
+            "display_order", "is_active",
+        )
+        read_only_fields = ("id",)
 
 
 class CourseSerializer(serializers.ModelSerializer):
@@ -129,6 +156,12 @@ class CourseSerializer(serializers.ModelSerializer):
     stream_name = serializers.CharField(source="stream.name", read_only=True)
     thumbnail = serializers.SerializerMethodField()
     details = serializers.SerializerMethodField()
+    # Read-only nested representation for the admin edit form's multi-select.
+    # Writes go through the raw `categories` key in request.data (a list of
+    # category ids, or a JSON-encoded string of one under multipart — see
+    # AdminCourseDetailView.patch), mirroring how `details` is handled: this
+    # field never appears in validated_data, so it can't collide with that.
+    categories = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -137,12 +170,21 @@ class CourseSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "price",
+            "mrp",
+            "discount_label",
+            "badge",
+            "is_featured",
+            "display_order",
+            "seo_title",
+            "seo_description",
+            "promo_video_url",
             "subscription_duration_days",
             "kind",
             "status",
             "class_level",
             "thumbnail",
             "details",
+            "categories",
             "stream_name",
             "board",
             "board_id",
@@ -164,6 +206,9 @@ class CourseSerializer(serializers.ModelSerializer):
         if detail is None:
             return None
         return CourseDetailSerializer(detail).data
+
+    def get_categories(self, obj):
+        return CourseCategorySerializer(obj.categories.all(), many=True).data
 
 
 class ChapterSerializer(serializers.ModelSerializer):

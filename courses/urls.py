@@ -17,10 +17,15 @@ from .views import (
     PublicBoardListView,
     PublicCourseCatalogView,
     PublicCourseDetailView,
+    PublicCourseBySlugView,
+    PublicFeaturedView,
+    PublicNavMenuView,
     AdminCourseListView,
     AdminBoardListCreateView,
     AdminBoardDetailView,
     AdminBoardCoursesView,
+    AdminCourseCategoryListCreateView,
+    AdminCourseCategoryDetailView,
     AdminCourseCreateView,
     AdminCourseDetailView,
     AdminCourseSubjectsView,
@@ -84,6 +89,9 @@ urlpatterns = [
     path("admin/boards/",                          AdminBoardListCreateView.as_view()),
     path("admin/boards/<uuid:board_id>/",          AdminBoardDetailView.as_view()),
     path("admin/boards/<uuid:board_id>/courses/",  AdminBoardCoursesView.as_view()),
+    # Admin Course Categories
+    path("admin/categories/",                      AdminCourseCategoryListCreateView.as_view()),
+    path("admin/categories/<int:category_id>/",    AdminCourseCategoryDetailView.as_view()),
     # Admin Course CRUD
     path("admin/courses/",                         AdminCourseCreateView.as_view()),
     path("admin/courses/<uuid:course_id>/",        AdminCourseDetailView.as_view()),
@@ -117,6 +125,9 @@ urlpatterns = [
     # Static segments before the bare <uuid:course_id> routes further down.
     path("public/boards/",             PublicBoardListView.as_view()),
     path("public/catalog/",            PublicCourseCatalogView.as_view()),
+    path("public/featured/",           PublicFeaturedView.as_view()),
+    path("public/nav-menu/",           PublicNavMenuView.as_view()),
+    path("public/by-slug/<slug:slug>/", PublicCourseBySlugView.as_view()),
     path("public/<uuid:course_id>/",   PublicCourseDetailView.as_view()),
     # PER-BATCH PROGRESS — teacher-ticked chapter coverage, per batch.
     # "batches" and "my-batch-progress" are static segments, so the bare

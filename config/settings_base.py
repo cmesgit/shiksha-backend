@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.sitemaps',
     'rest_framework',
     'accounts.apps.AccountsConfig',
     "courses",
@@ -177,6 +178,11 @@ CSRF_COOKIE_SAMESITE = "None"
 COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN", ".shikshacom.com")
 SESSION_COOKIE_DOMAIN = COOKIE_DOMAIN
 CSRF_COOKIE_DOMAIN = COOKIE_DOMAIN
+
+# The marketing site's own domain (not this API's), for building absolute
+# frontend URLs from backend code — e.g. sitemap.xml, whose <loc> entries
+# must point at the frontend host, never at api.shikshacom.com.
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "https://www.shikshacom.com")
 
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = list(default_headers) + ["authorization"]

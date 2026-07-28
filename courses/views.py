@@ -13,13 +13,18 @@ from accounts.auth_flow import get_active_profile
 from quizzes.models import Quiz, QuizAttempt
 from assignments.models import Assignment
 from courses.progress_stats import average_quiz_score_pct
-from .models import Course, Subject, Board, CourseDetail, Batch
-from .serializers import CourseSerializer, SubjectSerializer, BoardSerializer, CourseDetailSerializer
+from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream
+from content.models import ShowcaseCourse
+from .serializers import (
+    CourseSerializer, SubjectSerializer, BoardSerializer, CourseDetailSerializer,
+    CourseCategorySerializer,
+)
 from .cache import LIST_TTL, list_cache_key
 from django.core.cache import cache
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from datetime import timedelta
+import json
 
 
 # =========================
@@ -914,6 +919,9 @@ class AdminBoardListCreateView(APIView):
                 "name": b.name,
                 "board_type": b.board_type,
                 "description": b.description,
+                "slug": b.slug,
+                "logo": request.build_absolute_uri(b.logo.url) if b.logo else None,
+                "display_order": b.display_order,
                 "is_active": b.is_active,
                 "course_count": b.course_count,
             }
@@ -921,25 +929,36 @@ class AdminBoardListCreateView(APIView):
         ])
 
     def post(self, request):
-        serializer = BoardSerializer(data=request.data)
+        serializer = BoardSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         board = serializer.save()
+        if request.FILES.get("logo"):
+            board.logo = request.FILES["logo"]
+            board.save(update_fields=["logo"])
         return Response(
-            BoardSerializer(board).data,
+            BoardSerializer(board, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
 
 
 class AdminBoardDetailView(APIView):
-    """PATCH (toggle is_active / rename) and DELETE a board."""
+    """PATCH (toggle is_active / rename / logo / display_order) and DELETE a
+    board. `logo` arrives as a multipart file, handled separately like
+    Course.thumbnail — see AdminCourseDetailView.patch."""
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def patch(self, request, board_id):
         board = get_object_or_404(Board, id=board_id)
-        serializer = BoardSerializer(board, data=request.data, partial=True)
+        serializer = BoardSerializer(
+            board, data=request.data, partial=True, context={"request": request},
+        )
         serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(serializer.data)
+        board = serializer.save()
+        if request.FILES.get("logo"):
+            board.logo = request.FILES["logo"]
+            board.save(update_fields=["logo"])
+            board.refresh_from_db()
+        return Response(BoardSerializer(board, context={"request": request}).data)
 
     def delete(self, request, board_id):
         board = get_object_or_404(Board, id=board_id)
@@ -949,6 +968,55 @@ class AdminBoardDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         board.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# =========================
+# ADMIN COURSE CATEGORY CRUD
+# =========================
+# CourseCategory powers the public catalog's category/group filters and the
+# navbar mega-menu's "competitive" tab (see PublicCourseCatalogView /
+# PublicNavMenuView above). Admin-authenticated the same way as the other
+# course-admin endpoints (IsAuthenticated + IsAdmin), following the same
+# plain APIView + path() convention as the Board CRUD immediately above
+# (courses/urls.py has no router-based ViewSet setup to match instead).
+
+class AdminCourseCategoryListCreateView(APIView):
+    """GET → list every category (active + inactive). POST → create one."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        categories = CourseCategory.objects.all()
+        return Response(CourseCategorySerializer(categories, many=True).data)
+
+    def post(self, request):
+        serializer = CourseCategorySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        category = serializer.save()
+        return Response(
+            CourseCategorySerializer(category).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AdminCourseCategoryDetailView(APIView):
+    """GET a single category; PATCH edits it; DELETE removes it."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, category_id):
+        category = get_object_or_404(CourseCategory, id=category_id)
+        return Response(CourseCategorySerializer(category).data)
+
+    def patch(self, request, category_id):
+        category = get_object_or_404(CourseCategory, id=category_id)
+        serializer = CourseCategorySerializer(category, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, category_id):
+        category = get_object_or_404(CourseCategory, id=category_id)
+        category.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -993,6 +1061,41 @@ class AdminBoardCoursesView(APIView):
         ])
 
 
+def _parse_maybe_json(value):
+    """`details` (dict) and `categories` (list) both arrive as the real
+    JSON type in a plain JSON body, but multipart requests can only carry
+    strings, so the frontend JSON-encodes them there. Parse the string form;
+    pass anything else (already a dict/list, or None) straight through."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+    return value
+
+
+def _apply_course_details_and_categories(course, request):
+    """Upsert CourseDetail and set the categories M2M from the `details` /
+    `categories` keys in request.data. Shared by AdminCourseCreateView.post
+    and AdminCourseDetailView.patch so create and edit can't drift — this
+    used to live only in the PATCH view, silently dropping `details` (and
+    now `categories`) on course creation."""
+    details_data = _parse_maybe_json(request.data.get("details"))
+    if isinstance(details_data, dict):
+        detail, _ = CourseDetail.objects.get_or_create(course=course)
+        detail_serializer = CourseDetailSerializer(detail, data=details_data, partial=True)
+        detail_serializer.is_valid(raise_exception=True)
+        detail_serializer.save()
+
+    categories_data = _parse_maybe_json(request.data.get("categories"))
+    if isinstance(categories_data, list):
+        # Filter to real ids rather than letting a stale/typo'd id 500 the
+        # request via the M2M through-table's FK constraint.
+        course.categories.set(
+            CourseCategory.objects.filter(id__in=categories_data)
+        )
+
+
 class AdminCourseCreateView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
@@ -1003,6 +1106,8 @@ class AdminCourseCreateView(APIView):
         if request.FILES.get("thumbnail"):
             course.thumbnail = request.FILES["thumbnail"]
             course.save(update_fields=["thumbnail"])
+        _apply_course_details_and_categories(course, request)
+        course.refresh_from_db()
         return Response(
             CourseSerializer(course, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
@@ -1011,8 +1116,9 @@ class AdminCourseCreateView(APIView):
 
 class AdminCourseDetailView(APIView):
     """GET a single course (admin shape); PATCH edits it, including a nested
-    ``details`` object (create-or-update the course's CourseDetail row) and a
-    multipart ``thumbnail`` file; DELETE removes it."""
+    ``details`` object (create-or-update the course's CourseDetail row), a
+    ``categories`` id list (M2M `.set()`), and a multipart ``thumbnail``
+    file; DELETE removes it."""
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def get(self, request, course_id):
@@ -1025,15 +1131,6 @@ class AdminCourseDetailView(APIView):
     def patch(self, request, course_id):
         course = get_object_or_404(Course.objects.select_related("details"), id=course_id)
 
-        details_data = request.data.get("details")
-        # multipart requests JSON-encode nested objects as a string
-        if isinstance(details_data, str):
-            import json
-            try:
-                details_data = json.loads(details_data)
-            except ValueError:
-                details_data = None
-
         serializer = CourseSerializer(
             course, data=request.data, partial=True, context={"request": request},
         )
@@ -1044,11 +1141,7 @@ class AdminCourseDetailView(APIView):
             course.thumbnail = request.FILES["thumbnail"]
             course.save(update_fields=["thumbnail"])
 
-        if isinstance(details_data, dict):
-            detail, _ = CourseDetail.objects.get_or_create(course=course)
-            detail_serializer = CourseDetailSerializer(detail, data=details_data, partial=True)
-            detail_serializer.is_valid(raise_exception=True)
-            detail_serializer.save()
+        _apply_course_details_and_categories(course, request)
 
         course.refresh_from_db()
         return Response(CourseSerializer(course, context={"request": request}).data)
@@ -1259,6 +1352,11 @@ class CourseCatalogView(APIView):
     enrolled rather than purchasable. Matches the same "active enrollment for
     this user" rule that /courses/my/ uses, so the two stay in sync.
 
+    Also includes COMING_SOON courses (no batch required — they're
+    intentionally not purchasable yet) alongside PUBLISHED-with-an-active-batch
+    courses, carrying the same mrp/discount_label/category fields as the public
+    catalog so the shop can render strikethrough pricing and category chips.
+
     Optional query params:
         ?q=<text>        title / description search
         ?board=<uuid>    filter to one board
@@ -1266,14 +1364,19 @@ class CourseCatalogView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # Only published courses that have at least one open (active) batch are
-        # purchasable — this keeps DRAFT/half-built courses and courses with no
-        # running cohort out of the buy flow. Owned courses still appear via
-        # /courses/my/ regardless of status.
+        # Purchasable: published with at least one open (active) batch — keeps
+        # DRAFT/half-built courses and courses with no running cohort out of
+        # the buy flow. Coming-soon courses need no batch (not purchasable
+        # yet); owned courses still appear via /courses/my/ regardless of
+        # status.
         qs = (
             Course.objects
-            .filter(status=Course.STATUS_PUBLISHED, batches__is_active=True)
+            .filter(
+                Q(status=Course.STATUS_PUBLISHED, batches__is_active=True)
+                | Q(status=Course.STATUS_COMING_SOON)
+            )
             .select_related("board", "stream")
+            .prefetch_related("categories")
             .annotate(subject_count=Count("subjects", distinct=True))
             .order_by("board__name", "title")
             .distinct()
@@ -1326,6 +1429,10 @@ class CourseCatalogView(APIView):
                 "title": c.title,
                 "description": c.description,
                 "price": c.price,  # paise (₹1 = 100 paise); 0 = free
+                "mrp": c.mrp,
+                "discount_label": c.discount_label,
+                "is_coming_soon": c.status == Course.STATUS_COMING_SOON,
+                "category_slugs": [cat.slug for cat in c.categories.all()],
                 "subscription_duration_days": c.subscription_duration_days,
                 "board": (
                     {
@@ -1368,14 +1475,19 @@ class PublicBoardListView(APIView):
         if cached is not None:
             return Response(cached)
 
+        # NOTE (Phase B): dropped the previous `is_active=True` filter so that
+        # coming-soon (inactive) boards are also returned, each flagged via the
+        # explicit `coming_soon` boolean below. Without this the flag would be
+        # dead weight (always False), and the public /courses page + navbar need
+        # coming-soon boards to render as dormant chips.
         boards = (
-            Board.objects.filter(is_active=True)
+            Board.objects
             .annotate(
                 published_count=Count(
                     "courses", filter=Q(courses__status=Course.STATUS_PUBLISHED), distinct=True,
                 )
             )
-            .order_by("board_type", "name")
+            .order_by("display_order", "name")
         )
         data = [
             {
@@ -1383,6 +1495,10 @@ class PublicBoardListView(APIView):
                 "name": b.name,
                 "board_type": b.board_type,
                 "description": b.description,
+                "slug": b.slug,
+                "logo": request.build_absolute_uri(b.logo.url) if b.logo else None,
+                "display_order": b.display_order,
+                "coming_soon": not b.is_active,
                 "has_published_courses": b.published_count > 0,
             }
             for b in boards
@@ -1404,10 +1520,13 @@ class PublicCourseCatalogView(APIView):
         if cached is not None:
             return Response(cached)
 
+        # Both PUBLISHED and COMING_SOON are publicly visible; only PUBLISHED is
+        # purchasable (the frontend gates the buy flow on `is_coming_soon`).
         qs = (
             Course.objects
-            .filter(status=Course.STATUS_PUBLISHED)
+            .filter(status__in=[Course.STATUS_PUBLISHED, Course.STATUS_COMING_SOON])
             .select_related("board", "stream", "details")
+            .prefetch_related("categories")
             .annotate(subject_count=Count("subjects", distinct=True))
             .order_by("board__name", "title")
             .distinct()
@@ -1425,12 +1544,33 @@ class PublicCourseCatalogView(APIView):
         if stream_id:
             qs = qs.filter(stream_id=stream_id)
 
+        category = request.query_params.get("category")
+        if category:
+            qs = qs.filter(categories__slug=category)
+
+        group = request.query_params.get("group")
+        if group:
+            qs = qs.filter(categories__group=group)
+
+        kind = request.query_params.get("kind")
+        if kind:
+            qs = qs.filter(kind=kind)
+
         data = [
             {
                 "id": str(c.id),
                 "title": c.title,
+                "slug": c.slug,
                 "description": c.description,
                 "price": c.price,
+                # price_override is a per-Batch concern (Batch.effective_price);
+                # a catalog card has no batch context, so effective_price == the
+                # course-level price here. See report notes.
+                "effective_price": c.price,
+                "mrp": c.mrp,
+                "discount_label": c.discount_label,
+                "badge": c.badge,
+                "is_coming_soon": c.status == Course.STATUS_COMING_SOON,
                 "subscription_duration_days": c.subscription_duration_days,
                 "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
                 "board": (
@@ -1438,6 +1578,7 @@ class PublicCourseCatalogView(APIView):
                     if c.board else None
                 ),
                 "stream_name": c.stream.name if c.stream else None,
+                "category_slugs": [cat.slug for cat in c.categories.all()],
                 "subject_count": c.subject_count,
                 "duration_weeks": getattr(getattr(c, "details", None), "duration_weeks", None) or None,
             }
@@ -1447,72 +1588,276 @@ class PublicCourseCatalogView(APIView):
         return Response(data)
 
 
+# Courses publicly visible on the marketing site: purchasable (PUBLISHED) plus
+# coming-soon teasers (COMING_SOON). DRAFT/ARCHIVED are never exposed.
+PUBLIC_COURSE_STATUSES = [Course.STATUS_PUBLISHED, Course.STATUS_COMING_SOON]
+
+
+def _public_course_detail_queryset():
+    """Shared queryset (with prefetches) for the by-id and by-slug detail views."""
+    return (
+        Course.objects.filter(status__in=PUBLIC_COURSE_STATUSES)
+        .select_related("board", "stream", "details")
+        .prefetch_related(
+            "categories",
+            Prefetch(
+                "subjects",
+                queryset=Subject.objects.order_by("order").prefetch_related(
+                    Prefetch("chapters", queryset=Chapter.objects.order_by("order")),
+                ),
+            ),
+            Prefetch("batches", queryset=Batch.objects.filter(is_active=True)),
+        )
+    )
+
+
+def _serialize_public_course_detail(course, request):
+    """Build the full public course-detail dict. Shared by the by-id and by-slug
+    detail endpoints so their shapes never drift."""
+    details = getattr(course, "details", None)
+    return {
+        "id": str(course.id),
+        "title": course.title,
+        "slug": course.slug,
+        "description": course.description,
+        "price": course.price,
+        # price_override is a per-Batch concern (see Batch.effective_price on each
+        # batch below); the course-level effective_price is just Course.price.
+        "effective_price": course.price,
+        "mrp": course.mrp,
+        "discount_label": course.discount_label,
+        "badge": course.badge,
+        "is_coming_soon": course.status == Course.STATUS_COMING_SOON,
+        "thumbnail": request.build_absolute_uri(course.thumbnail.url) if course.thumbnail else None,
+        "board": (
+            {"id": str(course.board.id), "name": course.board.name, "board_type": course.board.board_type}
+            if course.board else None
+        ),
+        "stream_name": course.stream.name if course.stream else None,
+        "category_slugs": [cat.slug for cat in course.categories.all()],
+        "details": CourseDetailSerializer(details).data if details else None,
+        "subjects": [
+            {
+                "id": str(s.id),
+                "name": s.name,
+                "order": s.order,
+                "textbook": s.textbook,
+                "image": request.build_absolute_uri(s.image.url) if s.image else None,
+                "chapters": [
+                    {
+                        "id": str(ch.id),
+                        "title": ch.title,
+                        "order": ch.order,
+                        "content_html": ch.content_html,
+                    }
+                    for ch in s.chapters.all()
+                ],
+            }
+            for s in course.subjects.all()
+        ],
+        "batches": [
+            {
+                "id": str(b.id),
+                "name": b.name,
+                "code": b.code,
+                "effective_price": b.effective_price,
+                "is_full": b.is_full,
+            }
+            for b in course.batches.all()
+        ],
+    }
+
+
 class PublicCourseDetailView(APIView):
     """GET /courses/public/<id>/ — full anonymous course detail: subjects →
     chapters (with content), active batches (with effective price), course
-    details and thumbnail. Only PUBLISHED courses; anything else 404s (never
-    403 — a status split would let a caller distinguish "exists but draft"
-    from "doesn't exist" by UUID probing). Not cached (single-row lookup;
+    details and thumbnail. Only PUBLISHED / COMING_SOON courses; anything else
+    404s (never 403 — a status split would let a caller distinguish "exists but
+    draft" from "doesn't exist" by UUID probing). Not cached (single-row lookup;
     matches content app's convention of caching only list endpoints)."""
     permission_classes = [AllowAny]
 
     def get(self, request, course_id):
-        course = get_object_or_404(
-            Course.objects.filter(status=Course.STATUS_PUBLISHED).select_related(
-                "board", "stream", "details",
-            ).prefetch_related(
-                Prefetch(
-                    "subjects",
-                    queryset=Subject.objects.order_by("order").prefetch_related(
-                        Prefetch("chapters", queryset=Chapter.objects.order_by("order")),
-                    ),
-                ),
-                Prefetch("batches", queryset=Batch.objects.filter(is_active=True)),
-            ),
-            id=course_id,
+        course = get_object_or_404(_public_course_detail_queryset(), id=course_id)
+        return Response(_serialize_public_course_detail(course, request))
+
+
+class PublicCourseBySlugView(APIView):
+    """GET /courses/public/by-slug/<slug>/ — identical response shape to
+    PublicCourseDetailView, looked up by slug instead of UUID. Additive; the
+    by-id route keeps working unchanged."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        course = get_object_or_404(_public_course_detail_queryset(), slug=slug)
+        return Response(_serialize_public_course_detail(course, request))
+
+
+class PublicFeaturedView(APIView):
+    """GET /courses/public/featured/ — homepage 'Featured courses' grid.
+    Cards derive title/price/thumbnail from a linked Course/Board when set,
+    computed fresh on every request (never written back to ShowcaseCourse)."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        key = list_cache_key(request)
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+
+        cards_qs = (
+            ShowcaseCourse.objects.filter(is_active=True)
+            .select_related("course", "board")
+            .order_by("order")
         )
 
-        details = getattr(course, "details", None)
+        cards = []
+        for card in cards_qs:
+            course = card.course
+            board = card.board
+
+            # title
+            if course:
+                title = course.title
+            elif board:
+                title = board.name
+            else:
+                title = card.title
+
+            # price_label — course price is in paise; format as "₹X,XXX/month".
+            if course:
+                price_label = f"₹{course.price // 100:,}/month"
+            elif board:
+                price_label = None
+            else:
+                price_label = card.price_label
+
+            # is_coming_soon
+            if course:
+                is_coming_soon = course.status == Course.STATUS_COMING_SOON
+            elif board:
+                is_coming_soon = board.is_active is False
+            else:
+                is_coming_soon = False
+
+            # thumbnail (absolute URL)
+            if course and course.thumbnail:
+                thumbnail = request.build_absolute_uri(course.thumbnail.url)
+            elif board and board.logo:
+                thumbnail = request.build_absolute_uri(board.logo.url)
+            elif card.image:
+                thumbnail = request.build_absolute_uri(card.image.url)
+            else:
+                thumbnail = card.image_url or None
+
+            cards.append({
+                "id": card.id,
+                "title": title,
+                "price_label": price_label,
+                "mrp": course.mrp if course else None,
+                "discount_label": course.discount_label if course else None,
+                "is_coming_soon": is_coming_soon,
+                "thumbnail": thumbnail,
+                "tutor_name": card.tutor_name,
+                "level_label": card.level_label,
+                "ribbon": card.ribbon,
+                "stars": card.stars,
+                "review_count": card.review_count,
+                "fact_line": card.fact_line,
+                "is_explore_card": card.is_explore_card,
+                "categories": card.categories,
+                "gradient_css": card.gradient_css,
+                "icon": card.icon,
+                "link_path": card.link_path,
+                "link_state": card.link_state,
+                "course_id": str(card.course_id) if card.course_id else None,
+                "board_id": str(card.board_id) if card.board_id else None,
+                "order": card.order,
+            })
+
+        data = {"cards": cards}
+        cache.set(key, data, LIST_TTL)
+        return Response(data)
+
+
+class PublicNavMenuView(APIView):
+    """GET /courses/public/nav-menu/ — the navbar Courses mega-menu payload.
+    Returns exactly two categories the backend can back with data: "school"
+    (board tabs grouped by board_type) and "competitive" (courses tagged with a
+    CourseCategory whose group == 'competitive'). The frontend merges its static
+    "Skill & Career" category client-side; it is deliberately NOT returned here."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        key = list_cache_key(request)
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+
+        # --- "school" category: one tab per board_type present ---
+        boards = list(Board.objects.order_by("display_order", "name"))
+        type_display = dict(Board.TYPE_CHOICES)  # {"CENTRAL": "Central", ...}
+
+        tabs = []
+        seen_types = []
+        for b in boards:
+            if b.board_type not in seen_types:
+                seen_types.append(b.board_type)
+        for board_type in seen_types:
+            group_key = board_type.lower()
+            disp = type_display.get(board_type, board_type.title())
+            label = f"{disp} Boards"
+            links = []
+            for b in boards:
+                if b.board_type != board_type:
+                    continue
+                if b.is_active:
+                    links.append({
+                        "label": b.name,
+                        "to": "/courses",
+                        "state": {"selectedBoardGroup": group_key, "selectedBoard": b.slug},
+                    })
+                else:
+                    links.append({"label": b.name, "soon": True})
+            tabs.append({
+                "id": group_key,
+                "label": label,
+                "heading": f"{disp} Board Courses",
+                "links": links,
+                "viewAll": {
+                    "label": f"View All {label}",
+                    "to": "/courses",
+                    "state": {"selectedBoardGroup": group_key},
+                },
+            })
+
+        # --- "competitive" category: courses tagged group == "competitive" ---
+        competitive_courses = (
+            Course.objects
+            .filter(
+                status__in=PUBLIC_COURSE_STATUSES,
+                categories__group=CourseCategory.GROUP_COMPETITIVE,
+            )
+            .order_by("display_order", "title")
+            .distinct()
+        )
+        competitive_links = []
+        for c in competitive_courses:
+            if c.status == Course.STATUS_COMING_SOON:
+                competitive_links.append({"label": c.title, "soon": True})
+            else:
+                competitive_links.append({"label": c.title, "to": f"/courses/{c.slug}"})
+
         data = {
-            "id": str(course.id),
-            "title": course.title,
-            "description": course.description,
-            "price": course.price,
-            "thumbnail": request.build_absolute_uri(course.thumbnail.url) if course.thumbnail else None,
-            "board": (
-                {"id": str(course.board.id), "name": course.board.name, "board_type": course.board.board_type}
-                if course.board else None
-            ),
-            "stream_name": course.stream.name if course.stream else None,
-            "details": CourseDetailSerializer(details).data if details else None,
-            "subjects": [
+            "categories": [
+                {"key": "school", "tabs": tabs},
                 {
-                    "id": str(s.id),
-                    "name": s.name,
-                    "order": s.order,
-                    "textbook": s.textbook,
-                    "image": request.build_absolute_uri(s.image.url) if s.image else None,
-                    "chapters": [
-                        {
-                            "id": str(ch.id),
-                            "title": ch.title,
-                            "order": ch.order,
-                            "content_html": ch.content_html,
-                        }
-                        for ch in s.chapters.all()
+                    "key": "competitive",
+                    "sections": [
+                        {"heading": "Competitive Exams", "links": competitive_links},
                     ],
-                }
-                for s in course.subjects.all()
-            ],
-            "batches": [
-                {
-                    "id": str(b.id),
-                    "name": b.name,
-                    "code": b.code,
-                    "effective_price": b.effective_price,
-                    "is_full": b.is_full,
-                }
-                for b in course.batches.all()
-            ],
+                },
+            ]
         }
+        cache.set(key, data, LIST_TTL)
         return Response(data)

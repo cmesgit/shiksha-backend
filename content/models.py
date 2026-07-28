@@ -416,6 +416,7 @@ class ShowcaseCourse(TimeStampedModel):
     )
     categories = models.JSONField(
         default=list,
+        blank=True,
         help_text='Filter tabs this card appears in, e.g. ["class8-12"].',
     )
     gradient_css = models.CharField(
@@ -446,6 +447,13 @@ class ShowcaseCourse(TimeStampedModel):
         related_name="showcase_cards",
         help_text="Optional link to a real course. When set, link_path/link_state "
                   "are derived server-side instead of the manual values.",
+    )
+    board = models.ForeignKey(
+        "courses.Board",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="showcase_cards",
     )
     order = models.PositiveSmallIntegerField(default=0)
     is_active = models.BooleanField(default=True, db_index=True)

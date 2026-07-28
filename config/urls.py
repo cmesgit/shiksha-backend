@@ -1,12 +1,17 @@
 # Place at: config/urls.py
 
 from django.contrib import admin
+from django.contrib.sitemaps.views import sitemap
 from django.urls import path, include
 from django.conf.urls.static import static
 from django.conf import settings
 
+from content.sitemaps import CONTENT_SITEMAPS
+
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path("sitemap.xml", sitemap, {"sitemaps": CONTENT_SITEMAPS},
+         name="django.contrib.sitemaps.views.sitemap"),
     path("api/accounts/", include("accounts.urls")),
     path("api/courses/", include("courses.urls")),
     path("api/assignments/", include("assignments.urls")),
