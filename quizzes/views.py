@@ -1359,6 +1359,24 @@ class TeacherQuizAttemptDetailView(APIView):
         })
 
 
+def _attempted_profile_ids(attempts):
+    """Learner-profile ids behind a list of attempts, falling back to the
+    student's default profile for legacy attempts written before
+    QuizAttempt.learner_profile existed (learner_profile is NULL there) —
+    same fallback `_attempt_learner_name` above already relies on, needed
+    here too so old attempts aren't invisible to attempted/not-attempted
+    counting."""
+    ids = set()
+    for a in attempts:
+        if a.learner_profile_id:
+            ids.add(a.learner_profile_id)
+        else:
+            lp = a.student.default_learner_profile()
+            if lp:
+                ids.add(lp.id)
+    return ids
+
+
 class TeacherQuizAnalyticsView(APIView):
     """
     GET /teacher/quizzes/:pk/analytics/
@@ -1384,7 +1402,7 @@ class TeacherQuizAnalyticsView(APIView):
         submitted_attempts = list(
             QuizAttempt.objects.filter(
                 quiz=quiz, status=QuizAttempt.STATUS_SUBMITTED,
-            ).prefetch_related("answers")
+            ).select_related("student").prefetch_related("answers")
         )
 
         items = []
@@ -1406,9 +1424,7 @@ class TeacherQuizAnalyticsView(APIView):
             .exclude(learner_profile__isnull=True)
             .values_list("learner_profile_id", flat=True)
         )
-        attempted_profile_ids = {
-            a.learner_profile_id for a in submitted_attempts if a.learner_profile_id
-        }
+        attempted_profile_ids = _attempted_profile_ids(submitted_attempts)
         total_students = len(enrolled_profile_ids)
         attempted_count = len(enrolled_profile_ids & attempted_profile_ids)
 
@@ -1486,11 +1502,11 @@ class TeacherQuizRemindView(APIView):
             .exclude(learner_profile__isnull=True)
             .values_list("learner_profile_id", flat=True)
         )
-        attempted_profile_ids = set(
+        submitted_attempts = list(
             QuizAttempt.objects.filter(quiz=quiz, status=QuizAttempt.STATUS_SUBMITTED)
-            .exclude(learner_profile__isnull=True)
-            .values_list("learner_profile_id", flat=True)
+            .select_related("student")
         )
+        attempted_profile_ids = _attempted_profile_ids(submitted_attempts)
         not_attempted_ids = enrolled_profile_ids - attempted_profile_ids
         if not not_attempted_ids:
             return Response({"detail": "Everyone has already attempted this quiz.", "count": 0})
