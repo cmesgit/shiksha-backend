@@ -19,3 +19,11 @@ class PasswordResetRequestRateThrottle(AnonRateThrottle):
 
 class PasswordResetVerifyRateThrottle(AnonRateThrottle):
     scope = "password_reset_verify"
+
+
+class PinVerifyRateThrottle(UserRateThrottle):
+    # Profile-switch PIN check (ProfileSelectView) had no throttle at all —
+    # a 4-6 digit PIN with unlimited guesses is brute-forceable. Keyed per
+    # authenticated user (the endpoint already requires IsAuthenticated),
+    # same as ResendVerificationRateThrottle.
+    scope = "pin_verify"

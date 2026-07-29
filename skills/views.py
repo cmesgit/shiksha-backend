@@ -22,6 +22,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.exceptions import ValidationError, PermissionDenied, NotFound
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from accounts.models import LearnerProfile, Role, UserRole
 from accounts.permissions import IsAdmin
@@ -40,8 +41,12 @@ from .models import (
     Evaluation,
     SkillSession,
 )
+from .marketing_models import SkillMarketingBlock
 from .serializers import (
     SkillCategorySerializer,
+    SkillCategoryAdminSerializer,
+    SkillMarketingBlockSerializer,
+    SkillMarketingBlockAdminSerializer,
     ExpertCardSerializer,
     TeacherApplicationCreateSerializer,
     InterviewSlotSerializer,
@@ -185,7 +190,19 @@ class CategoryListView(APIView):
 
     def get(self, request):
         qs = SkillCategory.objects.filter(is_active=True)
-        return Response(SkillCategorySerializer(qs, many=True).data)
+        return Response(
+            SkillCategorySerializer(qs, many=True, context={"request": request}).data
+        )
+
+
+class MarketingBlockListView(APIView):
+    """GET /skill/marketing/  → active marketing blocks keyed by `key`."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        qs = SkillMarketingBlock.objects.filter(is_active=True)
+        data = SkillMarketingBlockSerializer(qs, many=True, context={"request": request}).data
+        return Response({row["key"]: row for row in data})
 
 
 class ExpertListView(APIView):
@@ -564,12 +581,14 @@ def _sub_summary(ep):
     }
 
 
-def _admin_expert_row(ep):
+def _admin_expert_row(ep, request=None):
     return {
         "id":           str(ep.id),
         "name":         ep.display_name(),
         "email":        _expert_email(ep),
-        "category":     ep.category.name if ep.category else None,
+        # NOTE: SkillCategory has no `name` field (only `label`) — this used to
+        # raise AttributeError for any expert with a category set. Fixed here.
+        "category":     ep.category.label if ep.category else None,
         "headline":     ep.headline,
         "rating":       float(ep.rating) if ep.rating is not None else None,
         "sessions":     ep.sessions_count,
@@ -578,7 +597,14 @@ def _admin_expert_row(ep):
         "is_featured":  ep.is_featured,
         "is_suspended": ep.is_suspended,
         "subscription": _sub_summary(ep),
+        "photo":        _absolute_url(ep.photo, request),
     }
+
+
+def _absolute_url(field_file, request=None):
+    if not field_file:
+        return None
+    return request.build_absolute_uri(field_file.url) if request else field_file.url
 
 
 class AdminExpertListView(APIView):
@@ -589,12 +615,14 @@ class AdminExpertListView(APIView):
         qs = (ExpertProfile.objects
               .select_related("category", "teacher_profile__user")
               .order_by("-is_listed", "-rating", "-sessions_count"))
-        return Response([_admin_expert_row(ep) for ep in qs])
+        return Response([_admin_expert_row(ep, request) for ep in qs])
 
 
 class AdminExpertDetailView(APIView):
-    """GET /skill/admin/experts/<id>/  → full detail for the expert profile modal."""
+    """GET /skill/admin/experts/<id>/  → full detail for the expert profile modal.
+    PATCH — media moderation only: replace the expert's public photo."""
     permission_classes = [IsAuthenticated, IsAdmin]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request, expert_id):
         ep = (ExpertProfile.objects
@@ -602,13 +630,24 @@ class AdminExpertDetailView(APIView):
               .filter(id=expert_id).first())
         if not ep:
             raise NotFound("Expert not found.")
-        row = _admin_expert_row(ep)
+        row = _admin_expert_row(ep, request)
         row.update({
             "bio":          ep.bio,
             "skill_tags":   ep.skill_tags or [],
             "availability": ep.availability,
         })
         return Response(row)
+
+    def patch(self, request, expert_id):
+        ep = ExpertProfile.objects.filter(id=expert_id).first()
+        if not ep:
+            raise NotFound("Expert not found.")
+        photo = request.data.get("photo")
+        if photo is None:
+            raise ValidationError("photo is required.")
+        ep.photo = photo
+        ep.save(update_fields=["photo", "updated_at"])
+        return Response(_admin_expert_row(ep, request))
 
 
 class AdminExpertSuspendView(APIView):
@@ -643,4 +682,89 @@ class AdminExpertSuspendView(APIView):
             raise ValidationError("action must be 'suspend' or 'unsuspend'.")
 
         ep.refresh_from_db()
-        return Response({"ok": True, **_admin_expert_row(ep)})
+        return Response({"ok": True, **_admin_expert_row(ep, request)})
+
+
+# =====================================================
+# ADMIN — SKILLDEV CMS  (categories + marketing copy)
+# =====================================================
+
+class AdminSkillCategoryListView(APIView):
+    """GET list / POST create — SkillDev CMS "Categories" tab."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request):
+        qs = SkillCategory.objects.all()
+        return Response(
+            SkillCategoryAdminSerializer(qs, many=True, context={"request": request}).data
+        )
+
+    def post(self, request):
+        serializer = SkillCategoryAdminSerializer(
+            data=request.data, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class AdminSkillCategoryDetailView(APIView):
+    """GET / PATCH / DELETE one category — SkillDev CMS "Categories" tab."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def _get(self, category_id):
+        cat = SkillCategory.objects.filter(id=category_id).first()
+        if not cat:
+            raise NotFound("Category not found.")
+        return cat
+
+    def get(self, request, category_id):
+        cat = self._get(category_id)
+        return Response(
+            SkillCategoryAdminSerializer(cat, context={"request": request}).data
+        )
+
+    def patch(self, request, category_id):
+        cat = self._get(category_id)
+        serializer = SkillCategoryAdminSerializer(
+            cat, data=request.data, partial=True, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, category_id):
+        cat = self._get(category_id)
+        cat.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminSkillMarketingBlockListView(APIView):
+    """GET the 3 fixed marketing blocks (created on first read if missing) —
+    SkillDev CMS "Marketing" tab. No create/delete: keys are fixed."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        for key, _label in SkillMarketingBlock.KEY_CHOICES:
+            SkillMarketingBlock.objects.get_or_create(key=key)
+        qs = SkillMarketingBlock.objects.all()
+        return Response(
+            SkillMarketingBlockAdminSerializer(qs, many=True, context={"request": request}).data
+        )
+
+
+class AdminSkillMarketingBlockDetailView(APIView):
+    """PATCH one marketing block by key — SkillDev CMS "Marketing" tab."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def patch(self, request, key):
+        block, _created = SkillMarketingBlock.objects.get_or_create(key=key)
+        serializer = SkillMarketingBlockAdminSerializer(
+            block, data=request.data, partial=True, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

@@ -76,6 +76,8 @@ POLICY = {
     "group.cancelled":    {"category": "classes",   "email": OPT_OUT, "sms": OFF,     "push": REQUIRED},
     "group.reminder_24h": {"category": "reminders", "email": OPT_OUT, "sms": OFF,     "push": REQUIRED},
     "group.reminder_1h":  {"category": "reminders", "email": OFF,     "sms": OPT_OUT, "push": REQUIRED, "sms_template": "session_reminder"},
+    "livestream.reminder_24h": {"category": "reminders", "email": OPT_OUT, "sms": OFF,     "push": REQUIRED},
+    "livestream.reminder_1h":  {"category": "reminders", "email": OFF,     "sms": REQUIRED, "push": REQUIRED, "sms_template": "session_reminder"},
 
     # ── Live classes / learning ────────────────────────────────────────
     "livestream.started":  {"category": "classes",  "email": OFF,     "sms": OFF, "push": REQUIRED},

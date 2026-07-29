@@ -113,6 +113,17 @@ def _push_session_bell(session, cancelled_by=None):
             if not recipient or not title:
                 continue
 
+            # recipient is always either the learner side (requested_by) or
+            # the teacher — tag audience/learner_profile accordingly so this
+            # row is scoped to the right dashboard identity and (for the
+            # learner side) the right sibling profile on a multi-profile
+            # account. Omitting these left both fields at their LEARNER/NULL
+            # defaults even for teacher-directed rows, which is both a wrong
+            # audience tag and a "visible to every profile" leak.
+            is_learner_side = recipient.id == session.requested_by_id
+            audience = Activity.AUDIENCE_LEARNER if is_learner_side else Activity.AUDIENCE_TEACHER
+            learner_profile = session.learner_profile if is_learner_side else None
+
             # get_or_create avoids duplicate bell entries on retries
             activity, created = Activity.objects.get_or_create(
                 user=recipient,
@@ -123,6 +134,8 @@ def _push_session_bell(session, cancelled_by=None):
                 defaults={
                     "subject_name": session.subject,
                     "due_date": scheduled_dt,
+                    "audience": audience,
+                    "learner_profile": learner_profile,
                 },
             )
 

@@ -31,6 +31,7 @@ class SkillCategory(models.Model):
     label = models.CharField(max_length=80)                    # "Coding & Web"
     icon = models.CharField(max_length=8, blank=True)          # glyph used on cards
     color = models.CharField(max_length=9, blank=True)         # hex accent
+    image = models.ImageField(upload_to="skills/categories/", null=True, blank=True)
     order = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
 
@@ -608,3 +609,7 @@ from .course_models import (  # noqa: F401, E402
 from .review_models import ExpertReview  # noqa: F401, E402
 from .payment_models import SkillPaymentRequest  # noqa: F401, E402
 from .subscription_models import ExpertAdSubscription  # noqa: F401, E402
+from .marketing_models import SkillMarketingBlock  # noqa: F401, E402
+from .attendance_models import (  # noqa: F401, E402
+    SkillSessionAttendance, SkillSessionAttendanceInterval,
+)

@@ -30,6 +30,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from .device import open_session, touch_session
 from .models import LearnerProfile, Role
+from .throttles import PinVerifyRateThrottle
 
 ACCESS_MAX_AGE  = 60 * 60            # 1 hour
 REFRESH_MAX_AGE = 60 * 60 * 24 * 7  # 1 week
@@ -425,6 +426,7 @@ class LoginView(APIView):
 
 class ProfileSelectView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [PinVerifyRateThrottle]
 
     def post(self, request):
         profile_id = request.data.get("profile_id")
@@ -677,15 +679,21 @@ class MeView(APIView):
         # active_profile claim), so without this a teacher's dashboard
         # greeting and sidebar footer had nothing but `username`/email to
         # fall back on. `display_name` (required at profile-creation time,
-        # see ProfileListCreateView) is populated on every profile; the
-        # teacher-form-fillup's first_name/last_name are optional and only
-        # set once that form is completed, so display_name is the reliable
-        # one — checked in prod: 39/39 default profiles have display_name
-        # set vs 22/39 for first_name.
+        # see ProfileListCreateView) is populated on every profile, so it's
+        # a reliable non-empty fallback — but it's a one-time, email-derived
+        # snapshot that never re-syncs after signup. first_name/last_name
+        # ARE kept fresh (edited via FacultyProfile.jsx / ExpertProfileEdit.jsx),
+        # so prefer the composed name whenever the teacher has actually filled
+        # it in, and only fall back to display_name when they haven't —
+        # otherwise a teacher who edits their name never sees the change
+        # reflected in their own dashboard header/sidebar.
         self_profile = user.default_learner_profile()
+        composed_name = (
+            f"{self_profile.first_name} {self_profile.last_name}".strip()
+            if self_profile else ""
+        )
         full_name = (
-            self_profile.display_name
-            or f"{self_profile.first_name} {self_profile.last_name}".strip()
+            composed_name or self_profile.display_name
         ) if self_profile else ""
 
         return Response({

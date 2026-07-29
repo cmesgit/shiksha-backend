@@ -265,6 +265,26 @@ class AdminSessionListView(APIView):
             qs = qs.filter(status=st)
         qs = qs[:300]  # cap for safety
 
+        from .attendance_models import SkillSessionAttendance
+
+        def _display_name(user):
+            lp = user.default_learner_profile()
+            if lp:
+                return lp.display_name or lp.full_name or user.email
+            return user.email
+
+        attendance_by_session = {}
+        for a in (SkillSessionAttendance.objects
+                  .filter(session__in=qs)
+                  .select_related("user")):
+            attendance_by_session.setdefault(a.session_id, []).append({
+                "user_id": str(a.user_id),
+                "name": _display_name(a.user),
+                "joined_at": a.joined_at,
+                "left_at": a.left_at,
+                "total_seconds": a.total_seconds,
+            })
+
         rows = []
         for s in qs:
             learner = (s.learner_profile.display_name
@@ -279,6 +299,9 @@ class AdminSessionListView(APIView):
                 "started_at":    s.started_at,
                 "duration_mins": s.duration_mins,
                 "created_at":    s.created_at,
+                # Real attendance (LiveKit webhook), where duration_mins above
+                # is only the SCHEDULED length, not actual watch time.
+                "attendance":    attendance_by_session.get(s.id, []),
             })
 
         # Small status summary so the admin page can show counts.

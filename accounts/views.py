@@ -1197,9 +1197,11 @@ class PasswordResetRequestView(APIView):
                     "It expires in 15 minutes. If you didn't request this, ignore this email."
                 ),
             )
-        except Exception:
-            # Don't leak transport errors to the client; the code is already stored.
-            pass
+        except Exception as e:
+            # Don't leak transport errors to the client; the code is already
+            # stored — but a silent `pass` here means a Resend outage looks
+            # identical to success, with zero trace it didn't send.
+            logger.error(f"Failed to send password reset email to {user.email}: {e}")
         return generic
 
 

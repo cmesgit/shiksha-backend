@@ -9,6 +9,9 @@ from .views import (
     TeacherApplicationCreateView, InterviewSlotListView, ScheduleInterviewView,
     ReviewQueueView, SubmitEvaluationView, SessionRequestView, CreateOrderView,
     AdminExpertListView, AdminExpertDetailView, AdminExpertSuspendView,   # NEW
+    MarketingBlockListView,                                              # NEW — SkillDev CMS
+    AdminSkillCategoryListView, AdminSkillCategoryDetailView,             # NEW — SkillDev CMS
+    AdminSkillMarketingBlockListView, AdminSkillMarketingBlockDetailView, # NEW — SkillDev CMS
 )
 from .course_views import (
     PublicCourseListView, PublicCourseDetailView,
@@ -16,6 +19,7 @@ from .course_views import (
     TeacherSectionView, TeacherLectureView, TeacherLectureDetailView,
     CourseEnrollView, MySkillCoursesView, CourseLectureProgressView,
     AdminSkillCourseQueueView, AdminSkillCourseReviewView,
+    AdminSkillCourseMediaView,   # NEW — SkillDev CMS media moderation
 )
 from .livekit_views import (
     JoinSessionView, MySessionsView,
@@ -59,6 +63,7 @@ urlpatterns = [
 
     # ── Public expert directory ──────────────────────────────────────────────
     path("categories/",                              CategoryListView.as_view()),
+    path("marketing/",                               MarketingBlockListView.as_view()),
     path("teachers/",                                ExpertListView.as_view()),
     path("teachers/<uuid:expert_id>/",               ExpertDetailView.as_view()),
     # NEW: powers the Book-a-Tutor weekly grid (was unwired → grid showed empty,
@@ -139,7 +144,14 @@ urlpatterns = [
     path("admin/interviews/<uuid:application_id>/evaluation/",   SubmitEvaluationView.as_view()),
     path("admin/courses/",                                       AdminSkillCourseQueueView.as_view()),
     path("admin/courses/<uuid:course_id>/review/",               AdminSkillCourseReviewView.as_view()),
+    path("admin/courses/<uuid:course_id>/media/",                AdminSkillCourseMediaView.as_view()),
     path("admin/ad-subscriptions/",                              AdminAdSubscriptionQueueView.as_view()),
     path("admin/ad-subscriptions/<uuid:sub_id>/approve/",        AdminAdSubscriptionApproveView.as_view()),
     path("admin/ad-subscriptions/<uuid:sub_id>/reject/",         AdminAdSubscriptionRejectView.as_view()),
+
+    # ── Admin — SkillDev CMS (categories + marketing copy) ───────────────────
+    path("admin/categories/",                                    AdminSkillCategoryListView.as_view()),
+    path("admin/categories/<uuid:category_id>/",                 AdminSkillCategoryDetailView.as_view()),
+    path("admin/marketing/",                                     AdminSkillMarketingBlockListView.as_view()),
+    path("admin/marketing/<str:key>/",                           AdminSkillMarketingBlockDetailView.as_view()),
 ]

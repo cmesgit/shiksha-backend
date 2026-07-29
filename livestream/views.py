@@ -834,6 +834,7 @@ def _handle_group_session_join(room_name, event):
 
     session = group_attendance_svc.resolve_group_session(room_name)
     if not session:
+        _handle_private_session_join(room_name, event)
         return
 
     user_id = group_attendance_svc.parse_user_id(str(event.participant.identity))
@@ -854,6 +855,7 @@ def _handle_group_session_left(room_name, event):
 
     session = group_attendance_svc.resolve_group_session(room_name)
     if not session:
+        _handle_private_session_left(room_name, event)
         return
 
     user_id = group_attendance_svc.parse_user_id(str(event.participant.identity))
@@ -865,6 +867,90 @@ def _handle_group_session_left(room_name, event):
         return
 
     group_attendance_svc.close_intervals(session, user, when=timezone.now())
+
+
+def _handle_private_session_join(room_name, event):
+    """No LiveSession/GroupSession matched — try PrivateSession (1-on-1
+    Academy sessions), same composite identity scheme as GroupSession."""
+    from sessions_app.services import private_attendance as private_attendance_svc
+
+    session = private_attendance_svc.resolve_private_session(room_name)
+    if not session:
+        _handle_skill_session_join(room_name, event)
+        return
+
+    user_id = private_attendance_svc.parse_user_id(str(event.participant.identity))
+    if not user_id:
+        return
+    User = get_user_model()
+    user = User.objects.filter(id=user_id).first()
+    if not user:
+        return
+
+    private_attendance_svc.open_interval(session, user, when=timezone.now())
+
+
+def _handle_private_session_left(room_name, event):
+    """No LiveSession/GroupSession matched — try PrivateSession (see
+    `_handle_private_session_join`)."""
+    from sessions_app.services import private_attendance as private_attendance_svc
+
+    session = private_attendance_svc.resolve_private_session(room_name)
+    if not session:
+        _handle_skill_session_left(room_name, event)
+        return
+
+    user_id = private_attendance_svc.parse_user_id(str(event.participant.identity))
+    if not user_id:
+        return
+    User = get_user_model()
+    user = User.objects.filter(id=user_id).first()
+    if not user:
+        return
+
+    private_attendance_svc.close_intervals(session, user, when=timezone.now())
+
+
+def _handle_skill_session_join(room_name, event):
+    """No LiveSession/GroupSession/PrivateSession matched — try SkillSession
+    (SkillDev 1-on-1 tutor sessions). Identity scheme is
+    "expert-{id}"/"learner-{id}", not the composite scheme the other three
+    features share — see skills/attendance.py."""
+    from skills import attendance as skill_attendance_svc
+
+    session = skill_attendance_svc.resolve_skill_session(room_name)
+    if not session:
+        return
+
+    user_id = skill_attendance_svc.parse_user_id(str(event.participant.identity))
+    if not user_id:
+        return
+    User = get_user_model()
+    user = User.objects.filter(id=user_id).first()
+    if not user:
+        return
+
+    skill_attendance_svc.open_interval(session, user, when=timezone.now())
+
+
+def _handle_skill_session_left(room_name, event):
+    """No LiveSession/GroupSession/PrivateSession matched — try SkillSession
+    (see `_handle_skill_session_join`)."""
+    from skills import attendance as skill_attendance_svc
+
+    session = skill_attendance_svc.resolve_skill_session(room_name)
+    if not session:
+        return
+
+    user_id = skill_attendance_svc.parse_user_id(str(event.participant.identity))
+    if not user_id:
+        return
+    User = get_user_model()
+    user = User.objects.filter(id=user_id).first()
+    if not user:
+        return
+
+    skill_attendance_svc.close_intervals(session, user, when=timezone.now())
 
 
 def _handle_room_started(event):

@@ -128,6 +128,25 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 MEDIA_URL = "/media/"
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
+# Bunny Edge Storage (config/bunny_storage.py) — separate product/credentials
+# from the BUNNY_* video (Stream) settings below. Falls back to local disk
+# when unset, so dev/test environments without a real Bunny Storage Zone
+# keep working exactly as before this was added.
+BUNNY_STORAGE_ZONE = os.getenv("BUNNY_STORAGE_ZONE", "")
+BUNNY_STORAGE_API_KEY = os.getenv("BUNNY_STORAGE_API_KEY", "")
+BUNNY_STORAGE_HOSTNAME = os.getenv("BUNNY_STORAGE_HOSTNAME", "storage.bunnycdn.com")
+
+STORAGES = {
+    "default": (
+        {"BACKEND": "config.bunny_storage.BunnyStorage"}
+        if BUNNY_STORAGE_ZONE and BUNNY_STORAGE_API_KEY
+        else {"BACKEND": "django.core.files.storage.FileSystemStorage"}
+    ),
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
+
 DATA_UPLOAD_MAX_MEMORY_SIZE = 52428800
 FILE_UPLOAD_MAX_MEMORY_SIZE = 52428800
 
@@ -152,6 +171,9 @@ REST_FRAMEWORK = {
         "resend_verification": "3/hour",
         "password_reset_request": "5/hour",
         "password_reset_verify": "10/hour",
+        # PIN guesses on profile-switch — a 4-6 digit PIN with no rate
+        # limit at all is brute-forceable within seconds.
+        "pin_verify": "10/min",
         # Forum anti-abuse: cap how fast a single user can create content
         # or file reports (spam / flood protection).
         "forum_post": "20/hour",
@@ -215,6 +237,17 @@ BUNNY_API_KEY = os.getenv("BUNNY_API_KEY")
 BUNNY_CDN_HOST = os.getenv("BUNNY_CDN_HOST", "")
 BUNNY_STREAM_URL = os.getenv("BUNNY_STREAM_URL", "https://video.bunnycdn.com")
 BUNNY_EMBED = os.getenv("BUNNY_EMBED", "https://iframe.mediadelivery.net/embed")
+
+# Razorpay — referenced by payments/services.py (order creation, at module
+# import time) and payments/webhooks.py (signature verification) but never
+# actually defined here before now; both would raise AttributeError the
+# moment either code path ran. Dormant while GlobalSettings.payment_mode
+# is "free"/"manual_upi", but must exist so switching to "razorpay" doesn't
+# immediately break checkout and payment confirmation.
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
+
 ASGI_APPLICATION = "config.asgi.application"
 # ── Redis DB layout (M0 — Phase 3 §25/§32) ─────────────
 # Previously channels used the implicit default db (0) and Celery used db 1,

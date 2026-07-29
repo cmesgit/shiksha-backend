@@ -78,6 +78,8 @@ urlpatterns = [
          name="group-session-instant-create"),
     path("group-sessions/join-by-code/", gs_views.join_by_code,
          name="group-session-join-by-code"),
+    path("admin/group-sessions/", gs_views.admin_group_session_list,
+         name="admin-group-session-list"),
 
     path("group-sessions/<uuid:session_id>/", gs_views.group_session_detail,
          name="group-session-detail"),
@@ -104,6 +106,16 @@ urlpatterns = [
          name="group-session-end"),
     path("group-sessions/<uuid:session_id>/admit-mode/", gs_views.set_admit_mode,
          name="group-session-admit-mode"),
+
+    # --- Knock-to-join (admit_mode="lobby") ---
+    path("group-sessions/<uuid:session_id>/my-join-status/", gs_views.my_join_status,
+         name="group-session-my-join-status"),
+    path("group-sessions/<uuid:session_id>/join-requests/", gs_views.list_join_requests,
+         name="group-session-join-requests"),
+    path("group-sessions/<uuid:session_id>/join-requests/<uuid:request_id>/admit/",
+         gs_views.admit_join_request, name="group-session-join-request-admit"),
+    path("group-sessions/<uuid:session_id>/join-requests/<uuid:request_id>/deny/",
+         gs_views.deny_join_request, name="group-session-join-request-deny"),
 
     # --- Group-session chat ---
     # Mirrors the private-session chat endpoints. WS path lives in

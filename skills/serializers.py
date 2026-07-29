@@ -23,12 +23,56 @@ from .models import (
     Evaluation,
     SkillSession,
 )
+from .marketing_models import SkillMarketingBlock
 
 
 class SkillCategorySerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+
     class Meta:
         model = SkillCategory
-        fields = ["id", "slug", "label", "icon", "color"]
+        fields = ["id", "slug", "label", "icon", "color", "image", "order"]
+
+    def get_image(self, obj):
+        if not obj.image:
+            return None
+        request = self.context.get("request")
+        return request.build_absolute_uri(obj.image.url) if request else obj.image.url
+
+
+class SkillCategoryAdminSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SkillCategory
+        fields = ["id", "slug", "label", "icon", "color", "image", "order", "is_active"]
+        read_only_fields = ["id"]
+
+
+class SkillMarketingBlockSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SkillMarketingBlock
+        fields = [
+            "id", "key", "heading", "subheading", "body",
+            "cta_label", "cta_url", "image", "is_active",
+        ]
+        read_only_fields = ["id", "key"]
+
+    def get_image(self, obj):
+        if not obj.image:
+            return None
+        request = self.context.get("request")
+        return request.build_absolute_uri(obj.image.url) if request else obj.image.url
+
+
+class SkillMarketingBlockAdminSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SkillMarketingBlock
+        fields = [
+            "id", "key", "heading", "subheading", "body",
+            "cta_label", "cta_url", "image", "is_active",
+        ]
+        read_only_fields = ["id", "key"]
 
 
 class ExpertCardSerializer(serializers.ModelSerializer):

@@ -18,6 +18,7 @@ from .course_models import (
 )
 from .review_models import ExpertReview
 from .payment_models import SkillPaymentRequest
+from .marketing_models import SkillMarketingBlock
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -100,6 +101,12 @@ admin.site.register(SkillCourseSection)
 admin.site.register(SkillCourseLecture)
 admin.site.register(SkillCourseEnrollment)
 admin.site.register(ExpertReview)
+
+
+@admin.register(SkillMarketingBlock)
+class SkillMarketingBlockAdmin(admin.ModelAdmin):
+    list_display = ("key", "heading", "is_active", "updated_at")
+    list_filter = ("is_active",)
 
 
 # ─────────────────────────────────────────────────────────────────────────
