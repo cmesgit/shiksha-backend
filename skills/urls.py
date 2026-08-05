@@ -24,6 +24,7 @@ from .course_views import (
 from .livekit_views import (
     JoinSessionView, MySessionsView,
     TeacherSessionsView, TeacherConfirmSessionView, TeacherCompleteSessionView,
+    TeacherReportNoShowView, TeacherSessionNoteView,
     AdminSessionListView,        # NEW — admin platform-wide session monitor
     AdminUserSkillProfileView,   # NEW — per-user skill context for admin
 )
@@ -46,6 +47,10 @@ from .teacher_views import (
     TeacherDashboardView, TeacherEarningsView, TeacherAvailabilityView,
     TeacherDeclineSessionView, TeacherProfileUpdateView,
     ExpertAvailabilityView,      # NEW — public read of a specific expert's slots
+    ExpertPricingView,           # NEW — pricing ladder for a specific expert
+    TeacherMasteryTargetView, TeacherStudentsView,   # NEW — mastery tracker
+    TeacherMarkStudentSessionCompleteView,           # NEW — mastery tracker "Mark complete"
+    ExpertBlackoutsView, ExpertBlackoutDetailView,   # NEW — availability blackout dates
 )
 from .views_intro_video import (
     CreateIntroVideoSlotView, IntroVideoSignedUploadUrlView,
@@ -69,6 +74,7 @@ urlpatterns = [
     # NEW: powers the Book-a-Tutor weekly grid (was unwired → grid showed empty,
     # so every slot looked "closed" and nothing could be booked).
     path("teachers/<uuid:expert_id>/availability/",  ExpertAvailabilityView.as_view()),
+    path("teachers/<uuid:expert_id>/pricing/",       ExpertPricingView.as_view()),
     path("teachers/<uuid:expert_id>/reviews/",       ExpertReviewListView.as_view()),
 
     # ── Public skill courses ─────────────────────────────────────────────────
@@ -113,6 +119,8 @@ urlpatterns = [
     path("teacher/sessions/",                               TeacherSessionsView.as_view()),
     path("teacher/sessions/<uuid:session_id>/confirm/",     TeacherConfirmSessionView.as_view()),
     path("teacher/sessions/<uuid:session_id>/complete/",    TeacherCompleteSessionView.as_view()),
+    path("teacher/sessions/<uuid:session_id>/report-no-show/", TeacherReportNoShowView.as_view()),
+    path("teacher/sessions/<uuid:session_id>/note/",            TeacherSessionNoteView.as_view()),
 
     # ── Student skill dashboard ───────────────────────────────────────────────
     path("student/dashboard/",  StudentSkillDashboardView.as_view()),
@@ -122,6 +130,11 @@ urlpatterns = [
     path("teacher/dashboard/",                               TeacherDashboardView.as_view()),
     path("teacher/earnings/",                                TeacherEarningsView.as_view()),
     path("teacher/availability/",                            TeacherAvailabilityView.as_view()),
+    path("teacher/mastery-target/",                          TeacherMasteryTargetView.as_view()),
+    path("teacher/students/",                                TeacherStudentsView.as_view()),
+    path("teacher/students/<uuid:learner_id>/mark-complete/", TeacherMarkStudentSessionCompleteView.as_view()),
+    path("teacher/blackouts/",                               ExpertBlackoutsView.as_view()),
+    path("teacher/blackouts/<uuid:blackout_id>/",            ExpertBlackoutDetailView.as_view()),
     path("teacher/sessions/<uuid:session_id>/decline/",      TeacherDeclineSessionView.as_view()),
     path("teacher/sessions/<uuid:session_id>/reschedule/",   TeacherRescheduleSessionView.as_view()),
     path("teacher/profile/",                                 TeacherProfileUpdateView.as_view()),

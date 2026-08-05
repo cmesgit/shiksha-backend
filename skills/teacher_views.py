@@ -58,9 +58,18 @@ def _avail(expert):
 
 
 def slot_is_open(expert, slot_key):
-    """A slot is bookable if the teacher declared it open and it isn't taken."""
+    """A slot is bookable if the teacher declared it open, it isn't taken,
+    and its next real-calendar occurrence isn't inside a blackout range."""
     a = _avail(expert)
-    return slot_key in a.get("open", []) and slot_key not in a.get("booked", [])
+    if slot_key not in a.get("open", []) or slot_key in a.get("booked", []):
+        return False
+    from .views import _slot_to_datetime
+    occurs_on = _slot_to_datetime(slot_key)
+    if occurs_on and expert.blackouts.filter(
+        date_from__lte=occurs_on.date(), date_to__gte=occurs_on.date()
+    ).exists():
+        return False
+    return True
 
 
 def mark_slot_booked(expert, slot_key):
@@ -187,6 +196,48 @@ class TeacherDashboardView(APIView):
             "needs_location": ep.has_offline_class() and not bool(ep.class_location),
         }
 
+        # ── Dashboard stat tiles + 7-day chart (design_handoff_skilldev) ──
+        monday = (now - timezone.timedelta(days=now.weekday())).date()
+        week_start = timezone.make_aware(datetime.datetime.combine(monday, datetime.time.min))
+        week_end = week_start + timezone.timedelta(days=7)
+        prev_week_start = week_start - timezone.timedelta(days=7)
+
+        week_sessions = sessions.filter(
+            status__in=[SkillSession.STATUS_CONFIRMED, SkillSession.STATUS_COMPLETED],
+            scheduled_for__gte=week_start, scheduled_for__lt=week_end,
+        )
+        sessions_this_week = week_sessions.count()
+        sessions_last_week = sessions.filter(
+            status__in=[SkillSession.STATUS_CONFIRMED, SkillSession.STATUS_COMPLETED],
+            scheduled_for__gte=prev_week_start, scheduled_for__lt=week_start,
+        ).count()
+
+        week_chart = [0] * 7
+        for s in week_sessions:
+            week_chart[(s.scheduled_for.date() - monday).days] += 1
+
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        hours_this_month = round(
+            sum(sessions.filter(
+                status=SkillSession.STATUS_COMPLETED, updated_at__gte=month_start,
+            ).values_list("duration_mins", flat=True)) / 60, 1,
+        )
+
+        active_students = (
+            sessions.exclude(status=SkillSession.STATUS_CANCELLED)
+            .values("learner_profile").distinct().count()
+        )
+
+        today = now.date()
+        today_schedule = [n for n in next_up if n["scheduled_for"] and n["scheduled_for"].date() == today]
+
+        # Rank among listed experts by cached rating (ties broken by session count).
+        rank = None
+        if ep.rating is not None:
+            better = ExpertProfile.objects.filter(is_listed=True, rating__gt=ep.rating).count()
+            rank = better + 1
+        total_experts = ExpertProfile.objects.filter(is_listed=True).count()
+
         return Response({
             "stats": {
                 "taught":          taught,
@@ -196,7 +247,15 @@ class TeacherDashboardView(APIView):
                 "avg_rating":      avg_rating,
                 "reviews_count":   reviews_count,
                 "course_students": course_students,
+                "sessions_this_week":      sessions_this_week,
+                "sessions_this_week_delta": sessions_this_week - sessions_last_week,
+                "active_students":         active_students,
+                "hours_this_month":        hours_this_month,
+                "rank":                    rank,
+                "total_experts":           total_experts,
             },
+            "week_chart":      {"labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], "counts": week_chart},
+            "today_schedule":  today_schedule,
             "next_up":         next_up,
             "recent_reviews":  recent_reviews,
             "advertising":  advertising,
@@ -308,8 +367,9 @@ class TeacherAvailabilityView(APIView):
         ep    = _get_expert(request.user)
         avail = getattr(ep, "availability_slots", None) or {}
         return Response({
-            "open":   avail.get("open",   []),
-            "booked": avail.get("booked", []),
+            "open":      avail.get("open",   []),
+            "booked":    avail.get("booked", []),
+            "blackouts": _blackout_list(ep),
         })
 
     def patch(self, request):
@@ -325,6 +385,133 @@ class TeacherAvailabilityView(APIView):
             "open":   avail.get("open",   []),
             "booked": avail.get("booked", []),
         })
+
+
+# ── Mastery ─────────────────────────────────────────────────────────────
+
+class TeacherMasteryTargetView(APIView):
+    """PUT /skill/teacher/mastery-target/  body: { target: int }"""
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request):
+        ep = _get_expert(request.user)
+        try:
+            target = int(request.data.get("target"))
+        except (TypeError, ValueError):
+            raise ValidationError({"target": "Must be an integer."})
+        if not (1 <= target <= 12):
+            raise ValidationError({"target": "Must be between 1 and 12."})
+        ep.mastery_target = target
+        ep.save(update_fields=["mastery_target"])
+        return Response({"target": ep.mastery_target})
+
+
+class TeacherStudentsView(APIView):
+    """GET /skill/teacher/students/  — mastery tracker roster.
+
+    One row per learner this expert has ever had a session with, with
+    progress derived (never stored) against the expert's mastery_target.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models import mastery_progress
+
+        ep  = _get_expert(request.user)
+        now = timezone.now()
+        sessions = (
+            SkillSession.objects
+            .filter(expert=ep)
+            .exclude(status__in=[SkillSession.STATUS_CANCELLED])
+            .select_related("learner_profile")
+            .order_by("scheduled_for")
+        )
+
+        by_learner = defaultdict(list)
+        for s in sessions:
+            by_learner[s.learner_profile_id].append(s)
+
+        rows = []
+        for learner_id, sess_list in by_learner.items():
+            learner = sess_list[0].learner_profile
+            m = mastery_progress(ep, learner)
+
+            upcoming = [
+                s for s in sess_list
+                if s.status == SkillSession.STATUS_CONFIRMED
+                and s.scheduled_for and s.scheduled_for >= now
+            ]
+            upcoming.sort(key=lambda s: s.scheduled_for)
+            next_session = upcoming[0].scheduled_for if upcoming else None
+
+            completed = [s for s in sess_list if s.status == SkillSession.STATUS_COMPLETED]
+            last_session = max((s.updated_at for s in completed), default=None)
+
+            # Most recent non-blank teacher note across this learner's sessions.
+            noted = [s for s in sess_list if s.teacher_note]
+            note = max(noted, key=lambda s: s.updated_at).teacher_note if noted else ""
+
+            rows.append({
+                "learner_id":     str(learner_id),
+                "name":           learner.display_name or learner.full_name or "Student",
+                "track":          ep.headline or (ep.category.label if ep.category_id else ""),
+                "progress":       m["progress"],
+                "target":         m["target"],
+                "mastered":       m["mastered"],
+                "next_session":   next_session,
+                "last_session":   last_session,
+                "note":           note,
+            })
+
+        rows.sort(key=lambda r: (r["mastered"], r["name"]))
+
+        active_students   = sum(1 for r in rows if not r["mastered"])
+        reached_mastery   = sum(1 for r in rows if r["mastered"])
+        sessions_delivered = sum(r["progress"] for r in rows)
+
+        return Response({
+            "mastery_target": ep.mastery_target,
+            "stats": {
+                "active_students":    active_students,
+                "reached_mastery":    reached_mastery,
+                "sessions_delivered": sessions_delivered,
+            },
+            "students": rows,
+        })
+
+
+class TeacherMarkStudentSessionCompleteView(APIView):
+    """POST /skill/teacher/students/<learner_id>/mark-complete/
+
+    The Students (mastery tracker) card has one "Mark session complete"
+    button per student, not per session — completes that student's oldest
+    still-CONFIRMED session with this expert (mirrors TeacherCompleteSessionView's
+    effects: bumps sessions_count, frees the slot).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, learner_id):
+        ep = _get_expert(request.user)
+        sess = (
+            SkillSession.objects
+            .filter(expert=ep, learner_profile_id=learner_id, status=SkillSession.STATUS_CONFIRMED)
+            .order_by("scheduled_for")
+            .first()
+        )
+        if not sess:
+            raise ValidationError("No confirmed session to mark complete for this student.")
+        sess.status = SkillSession.STATUS_COMPLETED
+        sess.save(update_fields=["status", "updated_at"])
+        ep.sessions_count = SkillSession.objects.filter(
+            expert=ep, status=SkillSession.STATUS_COMPLETED
+        ).count()
+        ep.save(update_fields=["sessions_count"])
+        if sess.slot_key:
+            free_slot(ep, sess.slot_key)
+
+        from .models import mastery_progress
+        m = mastery_progress(ep, sess.learner_profile)
+        return Response({"ok": True, "progress": m["progress"], "target": m["target"], "mastered": m["mastered"]})
 
 
 # ── Decline session ───────────────────────────────────────────────────────
@@ -350,7 +537,14 @@ class TeacherDeclineSessionView(APIView):
                 "This session is already live — use 'Mark done' once it's "
                 "finished, not decline."
             )
-        sess.status = SkillSession.STATUS_CANCELLED
+        # A pending REQUEST being declined is DECLINED (design's Requests tab
+        # outcome); backing out of an already-CONFIRMED session is a
+        # cancellation, not a decline — keep that distinction visible.
+        sess.status = (
+            SkillSession.STATUS_DECLINED
+            if sess.status == SkillSession.STATUS_REQUESTED
+            else SkillSession.STATUS_CANCELLED
+        )
         sess.save(update_fields=["status", "updated_at"])
         # Release the reserved availability slot back to the expert's grid.
         if sess.slot_key:
@@ -429,6 +623,119 @@ class ExpertAvailabilityView(APIView):
             raise NotFound("Expert not found.")
         a = getattr(ep, "availability_slots", None) or {}
         return Response({
-            "open":   a.get("open",   []),
-            "booked": a.get("booked", []),
+            "open":      a.get("open",   []),
+            "booked":    a.get("booked", []),
+            "blackouts": _blackout_list(ep),
         })
+
+
+def _blackout_list(ep):
+    return [
+        {"id": str(b.id), "date_from": b.date_from, "date_to": b.date_to, "label": b.label}
+        for b in ep.blackouts.all()
+    ]
+
+
+class ExpertBlackoutsView(APIView):
+    """
+    GET  /skill/teacher/blackouts/   → this expert's blackout ranges
+    POST /skill/teacher/blackouts/   body: { date_from, date_to, label? }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        ep = _get_expert(request.user)
+        return Response(_blackout_list(ep))
+
+    def post(self, request):
+        from .blackout_models import ExpertBlackoutDate
+
+        ep = _get_expert(request.user)
+        date_from = request.data.get("date_from")
+        date_to = request.data.get("date_to") or date_from
+        if not date_from:
+            raise ValidationError({"date_from": "Required."})
+        if date_to < date_from:
+            raise ValidationError({"date_to": "Must be on or after date_from."})
+        b = ExpertBlackoutDate.objects.create(
+            expert=ep, date_from=date_from, date_to=date_to,
+            label=(request.data.get("label") or "")[:120],
+        )
+        return Response(
+            {"id": str(b.id), "date_from": b.date_from, "date_to": b.date_to, "label": b.label},
+            status=201,
+        )
+
+
+class ExpertBlackoutDetailView(APIView):
+    """DELETE /skill/teacher/blackouts/<id>/"""
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, blackout_id):
+        ep = _get_expert(request.user)
+        deleted, _ = ep.blackouts.filter(id=blackout_id).delete()
+        if not deleted:
+            raise NotFound("Blackout range not found.")
+        return Response(status=204)
+
+
+class ExpertPricingView(APIView):
+    """
+    GET /skill/teachers/<expert_id>/pricing/  — the pricing ladder for THIS
+    learner booking THIS expert (WORKFLOW.md §5).
+
+    The tier/copy ("First session is ₹99", the bundle-savings panel, etc.) is
+    always computed and returned — the live prototype shows that panel even
+    while free-launch is on, it's the *displayed price* that's overridden to
+    "Free during launch" (`is_free: true`). No real payment collection is
+    wired here either way — Razorpay stays unimplemented, booking always
+    charges 0 while GlobalSettings.free_trial_enabled is on.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, expert_id):
+        from accounts.auth_flow import get_active_profile
+        from .models import mastery_progress
+        from global_settings.models import GlobalSettings
+
+        ep = ExpertProfile.objects.filter(id=expert_id, is_listed=True).first()
+        if not ep:
+            raise NotFound("Expert not found.")
+
+        gs = GlobalSettings.load()
+        is_free = gs.free_trial_enabled
+
+        learner = get_active_profile(request)
+        completed = 0
+        if learner:
+            completed = mastery_progress(ep, learner)["progress"]
+
+        unit_price = ep.hourly_rate or 49900  # ₹499 fallback per the design
+        remaining = max(0, ep.mastery_target - completed)
+
+        if completed == 0:
+            tier = "intro"
+            # "Regular sessions are ₹499 after this one" needs the standard
+            # rate alongside the intro price — the design shows both numbers
+            # in the same sentence, not just the intro price.
+            data = {
+                "tier": tier,
+                "unit_price": gs.skill_intro_session_paise,
+                "regular_unit_price": unit_price,
+            }
+        elif remaining > 1:
+            tier = "bundle"
+            full_total = unit_price * remaining
+            discount = round(full_total * gs.skill_bundle_discount_pct / 100)
+            data = {
+                "tier": tier,
+                "unit_price": unit_price,
+                "bundle_sessions": remaining,
+                "bundle_total": full_total - discount,
+                "bundle_savings": discount,
+            }
+        else:
+            tier = "single"
+            data = {"tier": tier, "unit_price": unit_price}
+
+        return Response({"is_free": is_free, **data})

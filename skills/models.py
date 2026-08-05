@@ -107,6 +107,16 @@ class ExpertProfile(models.Model):
     # Rate is stored in paise for consistency with courses/payments.
     hourly_rate = models.PositiveIntegerField(default=0, help_text="Paise (₹1 = 100)")
 
+    # ── Mastery ─────────────────────────────────────────────────────────
+    # "Complete N sessions with me to master my course." Progress itself is
+    # NEVER stored — it's always `SkillSession.objects.filter(expert=self,
+    # learner_profile=<student>, status=COMPLETED).count()` vs this target,
+    # so changing the target re-derives every student's status immediately.
+    mastery_target = models.PositiveSmallIntegerField(
+        default=3,
+        help_text="Sessions a student must complete with this expert to reach mastery (1-12).",
+    )
+
     rating = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
     sessions_count = models.PositiveIntegerField(default=0)
 
@@ -162,6 +172,16 @@ class ExpertProfile(models.Model):
     # ── Teaching profile extras ───────────────────────────────────────────
     languages = models.JSONField(default=list, blank=True)   # ["English","Hindi"]
     subject_description = models.TextField(blank=True)
+
+    # ── Expert Profile screen extras (design_handoff_skilldev) ────────────
+    # Nothing modeled these before this redesign's Expert Profile page,
+    # which shows a "Years experience" stat, an Experience timeline, and an
+    # Education line none of the existing fields cover.
+    experience_years = models.PositiveSmallIntegerField(null=True, blank=True)
+    education = models.CharField(max_length=160, blank=True)
+    # [{"years": "2021 — now", "role": "Lead Data Scientist, Flipkart",
+    #   "detail": "Recommendation and pricing models serving 40M+ users."}, ...]
+    experience_timeline = models.JSONField(default=list, blank=True)
 
     # ── Direct (P2P) payment details ──────────────────────────────────────
     # Booking/course money is settled DIRECTLY between the learner and the
@@ -508,9 +528,17 @@ class SkillSession(models.Model):
     STATUS_REQUESTED = "requested"
     STATUS_PENDING_PAYMENT = "pending_payment"
     STATUS_CONFIRMED = "confirmed"
-    STATUS_NEEDS_RECONFIRMATION = "needs_reconfirmation"
+    STATUS_NEEDS_RECONFIRMATION = "needs_reconfirmation"  # == design's "awaiting_student"
     STATUS_COMPLETED = "completed"
     STATUS_CANCELLED = "cancelled"
+    # A teacher explicitly declining a pending REQUEST (Bookings › Requests).
+    # Distinct from CANCELLED, which is a learner backing out of an already-
+    # scheduled session — the design's Requests tab needs to tell these apart.
+    STATUS_DECLINED = "declined"
+    # The 24h SLA on a request expired with no teacher response — same
+    # student-facing outcome as DECLINED (refunded, notified) but a distinct
+    # status so "declined" vs "expired unanswered" isn't lost.
+    STATUS_AUTO_DECLINED = "auto_declined"
     STATUS_CHOICES = [
         (STATUS_REQUESTED, "Requested"),
         (STATUS_PENDING_PAYMENT, "Pending payment"),
@@ -518,6 +546,8 @@ class SkillSession(models.Model):
         (STATUS_NEEDS_RECONFIRMATION, "Needs reconfirmation"),
         (STATUS_COMPLETED, "Completed"),
         (STATUS_CANCELLED, "Cancelled"),
+        (STATUS_DECLINED, "Declined"),
+        (STATUS_AUTO_DECLINED, "Auto-declined (24h SLA)"),
     ]
 
     PAYMENT_UNPAID = "unpaid"
@@ -567,9 +597,25 @@ class SkillSession(models.Model):
     proposed_slot_key = models.CharField(max_length=16, blank=True)
     proposed_scheduled_for = models.DateTimeField(null=True, blank=True)
     reschedule_reason = models.CharField(max_length=255, blank=True)
+    # The status this session was in right before a reschedule was proposed
+    # (REQUESTED or CONFIRMED — see RESCHEDULABLE). Declining the proposal
+    # reverts to exactly this per WORKFLOW.md §3 ("Keep original → reverts to
+    # previous status"), rather than cancelling the whole session.
+    status_before_reschedule = models.CharField(max_length=20, blank=True)
+
+    # ── No-show ─────────────────────────────────────────────────────────
+    # Teacher-reported: the student didn't turn up. Per WORKFLOW.md §4 the
+    # session is still forfeited/paid in full — no_show is a flag alongside
+    # STATUS_COMPLETED, not a separate status.
+    no_show = models.BooleanField(default=False)
+    no_show_reported_at = models.DateTimeField(null=True, blank=True)
 
     amount = models.PositiveIntegerField(default=0, help_text="Paise")
     note = models.TextField(blank=True)            # the contact draft / message
+    # Teacher's own private note about this session (Bookings › Past "+Note",
+    # and the most recent non-blank one surfaces on the Students mastery
+    # tracker card). Never visible to the student.
+    teacher_note = models.TextField(blank=True)
     meeting_url = models.CharField(max_length=300, blank=True)
 
     # Payment (Razorpay) — wired via the payments app.
@@ -587,6 +633,17 @@ class SkillSession(models.Model):
 
     def __str__(self):
         return f"Session · {self.learner_profile.display_name} → {self.expert.display_name()}"
+
+
+def mastery_progress(expert, learner_profile):
+    """{"progress": int, "target": int, "mastered": bool} for one (student,
+    teacher) pair. Progress is always derived from completed sessions, never
+    stored — see ExpertProfile.mastery_target."""
+    progress = SkillSession.objects.filter(
+        expert=expert, learner_profile=learner_profile, status=SkillSession.STATUS_COMPLETED,
+    ).count()
+    target = expert.mastery_target
+    return {"progress": progress, "target": target, "mastered": progress >= target}
 
 
 # =====================================================
@@ -613,3 +670,4 @@ from .marketing_models import SkillMarketingBlock  # noqa: F401, E402
 from .attendance_models import (  # noqa: F401, E402
     SkillSessionAttendance, SkillSessionAttendanceInterval,
 )
+from .blackout_models import ExpertBlackoutDate  # noqa: F401, E402

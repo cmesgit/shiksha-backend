@@ -56,4 +56,8 @@ app.conf.beat_schedule.update({
         "task": "chat.tasks.expire_old_attachments",
         "schedule": crontab(hour=3, minute=30),  # daily, off-peak
     },
+    "auto-decline-stale-skill-requests": {
+        "task": "skills.tasks.auto_decline_stale_requests",
+        "schedule": crontab(minute="*/15"),  # 24h SLA sweep
+    },
 })

@@ -68,6 +68,19 @@ class GlobalSettings(models.Model):
         help_text="Where subscription / payment notifications are sent.",
     )
 
+    # ── Skill Dev pricing ladder ────────────────────────────────────────
+    # Informational display values only while free_trial_enabled is True
+    # (booking still charges 0 — see skills.payment_config_views). Tunable
+    # here for when the free-launch phase ends.
+    skill_intro_session_paise = models.PositiveIntegerField(
+        default=9900,
+        help_text="First-session-ever intro price with a given expert (₹99 default).",
+    )
+    skill_bundle_discount_pct = models.PositiveSmallIntegerField(
+        default=15,
+        help_text="Discount % off rate×remaining-sessions when buying the full track.",
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

@@ -104,21 +104,46 @@ class ExpertCardSerializer(serializers.ModelSerializer):
     # Intro video (advertising clip, not a session recording)
     intro_video_embed_url = serializers.SerializerMethodField()
 
+    reviews_count = serializers.SerializerMethodField()
+    my_mastery_progress = serializers.SerializerMethodField()
+
     class Meta:
         model = ExpertProfile
         fields = [
             "id", "name", "title", "skills", "cat",
             "rating", "sessions", "rate", "img", "bio",
-            "badges", "availability",
+            "badges", "availability", "mastery_target",
             "teacher_profile_id",
             # location
             "class_mode", "class_location", "location", "offline",
             # extras
             "languages", "subject_description",
+            "experience_years", "education", "experience_timeline",
             # advertising
             "advertised", "featured", "reach",
             "intro_video_embed_url",
+            "reviews_count", "my_mastery_progress",
         ]
+
+    def get_reviews_count(self, obj):
+        from .review_models import ExpertReview
+        return ExpertReview.objects.filter(expert=obj, is_public=True).count()
+
+    def get_my_mastery_progress(self, obj):
+        """Completed-session count for the REQUESTING learner, or None when
+        there isn't one (public/anonymous read, or no active profile)."""
+        request = self.context.get("request")
+        if not request:
+            return None
+        from accounts.auth_flow import get_active_profile
+        from .models import mastery_progress
+        try:
+            learner = get_active_profile(request)
+        except Exception:
+            return None
+        if not learner:
+            return None
+        return mastery_progress(obj, learner)["progress"]
 
     def get_name(self, obj):
         return obj.display_name()

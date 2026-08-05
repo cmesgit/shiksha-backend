@@ -149,6 +149,7 @@ class StudentMyReviewsView(APIView):
                 "id":          str(r.id),
                 "rating":      r.rating,
                 "body":        r.body,
+                "is_edited":   r.is_edited,
                 "created_at":  r.created_at,
                 "expert_id":   str(r.expert_id),
                 "expert_name": r.expert.display_name(),
@@ -195,7 +196,8 @@ class MyReviewUpdateView(APIView):
             changed.append("body")
 
         if changed:
-            review.save(update_fields=changed)
+            review.is_edited = True
+            review.save(update_fields=changed + ["is_edited"])
 
         # Refresh the expert's cached average rating.
         ep = review.expert
@@ -207,8 +209,34 @@ class MyReviewUpdateView(APIView):
             ep.save(update_fields=["rating"])
 
         return Response({
-            "id":     str(review.id),
-            "rating": review.rating,
-            "body":   review.body,
-            "ok":     True,
+            "id":        str(review.id),
+            "rating":    review.rating,
+            "body":      review.body,
+            "is_edited": review.is_edited,
+            "ok":        True,
         })
+
+    def delete(self, request, review_id):
+        """DELETE /skill/my-reviews/<review_id>/ — design's Reviews screen
+        Delete flow (README.md §8), permanent, then the expert's cached
+        average rating is recomputed over the remaining reviews."""
+        learner = get_active_profile(request)
+        if not learner:
+            raise PermissionDenied("Select a learner profile.")
+        try:
+            review = ExpertReview.objects.select_related("expert").get(
+                id=review_id, learner_profile=learner
+            )
+        except (ExpertReview.DoesNotExist, ValueError):
+            raise NotFound("Review not found.")
+
+        ep = review.expert
+        review.delete()
+
+        remaining = list(
+            ExpertReview.objects.filter(expert=ep, is_public=True).values_list("rating", flat=True)
+        )
+        ep.rating = round(sum(remaining) / len(remaining), 2) if remaining else None
+        ep.save(update_fields=["rating"])
+
+        return Response(status=204)

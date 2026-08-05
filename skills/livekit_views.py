@@ -200,6 +200,55 @@ class TeacherCompleteSessionView(APIView):
         return Response({"detail": "Session marked complete."})
 
 
+class TeacherSessionNoteView(APIView):
+    """PUT /skill/teacher/sessions/<id>/note/  body: { note: str }
+
+    Teacher-private note about a session (Bookings › Past "+Note"/"●Notes"),
+    never visible to the student.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, session_id):
+        sess = _teacher_session(request.user, session_id)
+        sess.teacher_note = (request.data.get("note") or "").strip()
+        sess.save(update_fields=["teacher_note", "updated_at"])
+        return Response({"note": sess.teacher_note})
+
+
+class TeacherReportNoShowView(APIView):
+    """POST /skill/teacher/sessions/<id>/report-no-show/
+
+    Only valid once the session's scheduled window has passed on a
+    CONFIRMED session. Per WORKFLOW.md §4 the session is forfeited — the
+    teacher is paid in full — so this flags no_show and forces COMPLETED
+    rather than leaving the session hanging in CONFIRMED forever.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, session_id):
+        from .teacher_views import free_slot
+
+        sess = _teacher_session(request.user, session_id)
+        if sess.status not in (SkillSession.STATUS_CONFIRMED, SkillSession.STATUS_COMPLETED):
+            raise ValidationError("Only a confirmed or completed session can be reported no-show.")
+        now = timezone.now()
+        if sess.scheduled_for and now < sess.scheduled_for:
+            raise ValidationError("Can't report a no-show before the session's scheduled time.")
+        sess.no_show = True
+        sess.no_show_reported_at = now
+        sess.status = SkillSession.STATUS_COMPLETED
+        sess.save(update_fields=["no_show", "no_show_reported_at", "status", "updated_at"])
+
+        ep = sess.expert
+        ep.sessions_count = SkillSession.objects.filter(
+            expert=ep, status=SkillSession.STATUS_COMPLETED
+        ).count()
+        ep.save(update_fields=["sessions_count"])
+        if sess.slot_key:
+            free_slot(ep, sess.slot_key)
+        return Response({"detail": "No-show reported.", "no_show": True})
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _teacher_session(user, session_id):
@@ -233,7 +282,13 @@ def _session_card(s, teacher_view=False):
         "live":          is_live,
         "joinable":      is_confirmed,
         "duration_mins": s.duration_mins,
+        "no_show":       s.no_show,
+        # Reschedule handshake (WORKFLOW.md §3) — needed so the awaiting-
+        # student UI can render the teacher's proposed slot/reason.
+        "proposed_scheduled_for": s.proposed_scheduled_for,
+        "reschedule_reason":      s.reschedule_reason,
         "note":          s.note,
+        "teacher_note":  s.teacher_note if teacher_view else None,  # private, never to the student
         "meeting_url":   s.meeting_url,
         "payment_status":s.payment_status,
         "amount":        s.amount,
