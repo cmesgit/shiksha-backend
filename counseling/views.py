@@ -41,7 +41,8 @@
 # Every event notifies through the site-wide notifications app
 # (verbs "counseling.*"); bookings and published reports also email.
 
-from django.db.models import Q
+from django.db.models import Avg, Count, IntegerField, OuterRef, Q, Subquery
+from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -160,6 +161,27 @@ class ListSpecializationsView(APIView):
         return Response(SpecializationSerializer(qs, many=True).data)
 
 
+def _with_session_count(qs):
+    """Annotate completed-appointment count per counselor.
+
+    A Subquery (not a joined Count(filter=...)) because the directory
+    queryset already joins `specializations` (M2M, with `.distinct()`) —
+    stacking a second joined aggregate on top of that would fan out across
+    both relations and inflate the count.
+    """
+    completed = (
+        Appointment.objects.filter(
+            counselor_id=OuterRef("pk"), status=Appointment.STATUS_COMPLETED
+        )
+        .values("counselor_id")
+        .annotate(c=Count("id"))
+        .values("c")
+    )
+    return qs.annotate(
+        session_count=Coalesce(Subquery(completed, output_field=IntegerField()), 0)
+    )
+
+
 class CounselorDirectoryView(APIView):
     """Public counselor directory (approved + listed only)."""
 
@@ -169,6 +191,7 @@ class CounselorDirectoryView(APIView):
         qs = CounselorProfile.objects.filter(
             status=CounselorProfile.STATUS_APPROVED, is_listed=True
         ).prefetch_related("specializations")
+        qs = _with_session_count(qs)
 
         spec = request.query_params.get("specialization")
         if spec:
@@ -198,8 +221,11 @@ class CounselorDetailView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, counselor_id):
+        qs = _with_session_count(
+            CounselorProfile.objects.prefetch_related("specializations", "availability")
+        )
         profile = get_object_or_404(
-            CounselorProfile.objects.prefetch_related("specializations", "availability"),
+            qs,
             pk=counselor_id,
             status=CounselorProfile.STATUS_APPROVED,
             is_listed=True,
@@ -207,6 +233,27 @@ class CounselorDetailView(APIView):
         return Response(
             CounselorDetailSerializer(profile, context={"request": request}).data
         )
+
+
+class PublicStatsView(APIView):
+    """Site-wide counselling stats for the landing page hero — approved,
+    listed counselors only, same visibility rule as the directory."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        qs = CounselorProfile.objects.filter(
+            status=CounselorProfile.STATUS_APPROVED, is_listed=True
+        )
+        agg = qs.aggregate(avg_rating=Avg("avg_rating"), counselor_count=Count("id"))
+        total_sessions = Appointment.objects.filter(
+            status=Appointment.STATUS_COMPLETED, counselor__in=qs
+        ).count()
+        return Response({
+            "counselor_count": agg["counselor_count"] or 0,
+            "avg_rating": round(float(agg["avg_rating"] or 0), 1),
+            "total_sessions": total_sessions,
+        })
 
 
 class CounselorSlotsView(APIView):

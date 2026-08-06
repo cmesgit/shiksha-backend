@@ -26,6 +26,9 @@ class CounselorCardSerializer(serializers.ModelSerializer):
     specializations = SpecializationSerializer(many=True, read_only=True)
     languages = serializers.SerializerMethodField()
     photo_url = serializers.SerializerMethodField()
+    # Annotated by the view's `_with_session_count` (not a model field) —
+    # default covers any call site that forgets the annotation.
+    session_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = CounselorProfile
@@ -33,6 +36,7 @@ class CounselorCardSerializer(serializers.ModelSerializer):
             "id", "display_name", "photo_url", "qualifications",
             "years_experience", "languages", "specializations",
             "avg_rating", "rating_count", "session_duration_minutes",
+            "session_count",
         )
 
     def get_languages(self, obj):

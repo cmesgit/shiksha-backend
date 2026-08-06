@@ -11,7 +11,7 @@ from .guide_views import (
 )
 from .views import (
     ListSpecializationsView, CounselorDirectoryView, CounselorDetailView,
-    CounselorSlotsView,
+    CounselorSlotsView, PublicStatsView,
     IntakeView, MatchView,
     CreateAppointmentView, MyAppointmentsView, CancelAppointmentView,
     AssessmentView, SubmitAssessmentView, MyReportsView,
@@ -28,6 +28,7 @@ urlpatterns = [
     path("counselors/", CounselorDirectoryView.as_view()),
     path("counselors/<int:counselor_id>/", CounselorDetailView.as_view()),
     path("counselors/<int:counselor_id>/slots/", CounselorSlotsView.as_view()),
+    path("stats/", PublicStatsView.as_view()),
 
     # Student
     path("intake/", IntakeView.as_view()),
