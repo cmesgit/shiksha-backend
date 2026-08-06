@@ -403,3 +403,10 @@ class SessionReport(models.Model):
 
     def __str__(self):
         return f"Report for appointment {self.appointment_id}"
+
+
+# Career-guidance content library — additive module, imported here so
+# `manage.py makemigrations counseling` sees it as part of this app
+# rather than a separate one. See guide_models.py for why it isn't in
+# `content` instead.
+from .guide_models import CareerGuide, GuideChapter, GuideSection  # noqa: E402,F401

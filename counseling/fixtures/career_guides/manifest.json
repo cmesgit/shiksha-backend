@@ -1,0 +1,376 @@
+{
+  "_readme": [
+    "Editorial metadata + declared chapter structure for the career-guidance library.",
+    "Consumed by counseling/management/commands/import_career_guides.py.",
+    "",
+    "Chapter structure is DECLARED here rather than detected, because the ten source",
+    "documents were hand-authored over years and their Word outline levels are not",
+    "semantically usable (New DOCX Document.docx puts real chapters and 'Quick Facts'",
+    "both at heading 1; career guidance after class 10.docx marks chapters with",
+    "heading 2 and SUBsections with heading 1; commerce.docx numbers chapters 4-9 but",
+    "not 1-3). Run the command with --propose to regenerate a first-draft chapter list",
+    "for a document, then check the corrected list in here.",
+    "",
+    "chapter_titles entries are either a verbatim heading string, or",
+    "{match, title} when the source has no chapter-level heading at all and the",
+    "chapter has to be opened on its first subsection.",
+    "",
+    "'stage' drives the Library filter chips; 'stage_order' their display order.",
+    "'legacy_slugs' keeps already-published URLs alive after a slug change."
+  ],
+  "midddle school.docx": {
+    "slug": "middle-school",
+    "title": "Career Guidance — Middle School (Classes 6–8)",
+    "blurb": "Know yourself, explore careers early, and get ready for Class 9",
+    "audience": "Middle School · Classes 6–8",
+    "stage": "middle",
+    "stage_label": "Middle School",
+    "stage_order": 10,
+    "accent": "teal",
+    "order": 10,
+    "class_levels": [
+      "6",
+      "7",
+      "8"
+    ],
+    "specializations": [
+      "Career Discovery"
+    ],
+    "chapter_titles": [
+      "1. Know Yourself",
+      "2. School & Learning",
+      "3. Skills for Life",
+      "4. Growing Up",
+      "5. Explore Careers",
+      "6. Discover Your Interests",
+      "7. Beyond the Classroom",
+      "8. Getting Ready for Secondary School (Classes 9–10)",
+      "9. Parent & Guardian Guide",
+      "10. Frequently Asked Questions (FAQs)",
+      "11. Activities & Worksheets",
+      "12. Student Action Plan",
+      "13. References"
+    ]
+  },
+  "secondary school.docx": {
+    "slug": "secondary-school",
+    "title": "Career Guidance — Secondary School (Classes 9–10)",
+    "blurb": "Subjects, stream choice after Class 10, and stream-to-career pathways",
+    "audience": "Secondary School · Classes 9–10",
+    "stage": "secondary",
+    "stage_label": "Classes 9–10",
+    "stage_order": 20,
+    "accent": "green",
+    "order": 20,
+    "class_levels": [
+      "9",
+      "10"
+    ],
+    "specializations": [
+      "Stream Selection (Class 9–10)",
+      "Career Discovery"
+    ],
+    "legacy_slugs": [],
+    "chapter_titles": [
+      "1. Know Yourself",
+      "2. School & Learning",
+      "3. Understanding Your School Subjects",
+      "4. Skills for Life",
+      "5: Explore Career Fields",
+      "6. Choosing the Right Stream After Class 10",
+      "7: Real Student Questions & Career Guidance",
+      "Chapter 8: Stream to Career Pathways",
+      "9: Common Mistakes Students Make",
+      "10: Parents & Guardians Guide",
+      "11: Frequently Asked Questions (FAQs)",
+      "12: Activities & Worksheets",
+      "13: My Career Action Plan"
+    ]
+  },
+  "career guidance after class 10.docx": {
+    "slug": "class-10",
+    "title": "Career Guidance After Class 10",
+    "blurb": "Streams, diplomas, ITI, polytechnic and how to choose",
+    "audience": "After Class 10",
+    "stage": "after-10",
+    "stage_label": "After Class 10",
+    "stage_order": 30,
+    "accent": "orange",
+    "order": 30,
+    "class_levels": [
+      "10"
+    ],
+    "specializations": [
+      "Stream Selection (Class 9–10)"
+    ],
+    "_note": "Chapter 1's heading is missing from the source; its prose lands in a leading untitled section, which is correct. Chapter headings are heading 2 here while SUBsections are heading 1, so section_levels stays at the default and the 3.x stream headings become sections.",
+    "chapter_titles": [
+      "2. Why is Class 10 an Important Stage?",
+      "3. What are the Options After Class 10?",
+      "4. How to Choose the Right Stream?",
+      "5. Common Mistakes Students Make While Choosing a Stream",
+      "6. Frequently Asked Questions (FAQs)",
+      "7. References"
+    ],
+    "toc_extra": [
+      "1. Introduction",
+      "3.4 Diploma Courses"
+    ]
+  },
+  "higher schoo.docx": {
+    "slug": "class-11-12",
+    "title": "Class 11 & 12 Career Counselling",
+    "blurb": "Stream deep-dives, building your profile, and life after Class 12",
+    "audience": "Class 11–12",
+    "stage": "class-11-12",
+    "stage_label": "Class 11–12",
+    "stage_order": 40,
+    "accent": "teal",
+    "order": 40,
+    "class_levels": [
+      "11",
+      "12"
+    ],
+    "specializations": [
+      "Stream Selection (Class 9–10)",
+      "Career Discovery"
+    ],
+    "_note": "Chapters 5-8 have no chapter-level heading in the source and begin directly at their N.1 subsection, hence the {match, title} entries.",
+    "chapter_titles": [
+      "1. Introduction",
+      "2. Transition from Class 10 to Class 11",
+      "3. Choosing the Right Stream",
+      "4. Science Stream",
+      {
+        "match": "5.1 Overview of the Commerce Stream",
+        "title": "5. Commerce Stream"
+      },
+      {
+        "match": "6.1 Overview of the Humanities (Arts) Stream",
+        "title": "6. Humanities (Arts) Stream"
+      },
+      {
+        "match": "7.1 Introduction to Vocational Education",
+        "title": "7. Vocational Education"
+      },
+      {
+        "match": "8.1 Introduction",
+        "title": "8. Comparing the Streams"
+      }
+    ]
+  },
+  "science.docx": {
+    "slug": "after-12-science",
+    "title": "Career Guidance After Class 12 — Science",
+    "blurb": "Degrees, professional routes, entrance exams and careers in Science",
+    "audience": "After Class 12 · Science",
+    "stage": "after-12",
+    "stage_label": "After Class 12",
+    "stage_order": 50,
+    "accent": "teal",
+    "order": 50,
+    "class_levels": [
+      "12"
+    ],
+    "specializations": [
+      "Computer Science & IT",
+      "Engineering Careers",
+      "Medicine & Health Sciences"
+    ],
+    "_note": "Chapter 2 is unnumbered in the source ('Popular Degree Courses'); the first heading is the document title and is deliberately not a chapter.",
+    "chapter_titles": [
+      "1. Introduction",
+      "Popular Degree Courses",
+      "3. Professional Courses",
+      "4. Diploma & Skill-Based Courses",
+      "5. Entrance Examinations",
+      "6. Career Opportunities",
+      "7. Government Job Opportunities",
+      "8. Skills Required",
+      "9. How to Choose the Right Course",
+      "10. Final Thoughts"
+    ]
+  },
+  "commerce.docx": {
+    "slug": "after-12-commerce",
+    "title": "Career Guidance After Class 12 — Commerce",
+    "blurb": "B.Com, CA/CS/CMA, entrance exams and careers in Commerce",
+    "audience": "After Class 12 · Commerce",
+    "stage": "after-12",
+    "stage_label": "After Class 12",
+    "stage_order": 50,
+    "accent": "orange",
+    "order": 51,
+    "class_levels": [
+      "12"
+    ],
+    "specializations": [
+      "Commerce & Finance",
+      "Business & Management"
+    ],
+    "_note": "Chapters 1-3 are unnumbered in the source; 4-10 are numbered.",
+    "chapter_titles": [
+      "Popular Degree Courses",
+      "Professional Courses",
+      "4. Diploma & Skill-Based Courses",
+      "5. Entrance Examinations",
+      "6. Career Opportunities",
+      "7. Government Job Opportunities",
+      "8. Skills Required",
+      "9. How to Choose the Right Course",
+      "10. Final Thoughts"
+    ],
+    "toc_extra": [
+      "1. Introduction"
+    ]
+  },
+  "arts.docx": {
+    "slug": "after-12-arts",
+    "title": "Career Guidance After Class 12 — Arts (Humanities)",
+    "blurb": "Degrees, civil services, media, design and careers in Humanities",
+    "audience": "After Class 12 · Arts",
+    "stage": "after-12",
+    "stage_label": "After Class 12",
+    "stage_order": 50,
+    "accent": "green",
+    "order": 52,
+    "class_levels": [
+      "12"
+    ],
+    "specializations": [
+      "Arts & Humanities",
+      "Civil Services & Government Exams"
+    ],
+    "chapter_titles": [
+      "1. Introduction",
+      "2. Popular Degree Courses",
+      "3. Professional Courses",
+      "4. Diploma & Skill-Based Courses",
+      "5. Entrance Examinations",
+      "6. Career Opportunities",
+      "7. Government Job Opportunities",
+      "8. Skills Required",
+      "9. How to Choose the Right Course",
+      "10. Final Thoughts"
+    ]
+  },
+  "ug.docx": {
+    "slug": "undergraduate",
+    "title": "Career Guidance — Undergraduate (UG)",
+    "blurb": "Choosing and making the most of an undergraduate degree",
+    "audience": "Undergraduate",
+    "stage": "ug",
+    "stage_label": "Undergraduate",
+    "stage_order": 60,
+    "accent": "teal",
+    "order": 60,
+    "class_levels": [],
+    "specializations": [
+      "University Admissions",
+      "Career Discovery"
+    ],
+    "chapter_titles": [
+      "1. Introduction",
+      "2. Undergraduate Degree Courses",
+      "3. Professional Courses",
+      "4. Diploma & Skill-Based Courses",
+      "5. Entrance Examinations",
+      "6. Admission Process",
+      "7. Types of Higher Education Institutions",
+      "8. Career Opportunities",
+      "9. Government Job Opportunities",
+      "10. Higher Education Pathways",
+      "11. Skills Required",
+      "12. How to Choose the Right Undergraduate Course",
+      "13. Final Thoughts"
+    ]
+  },
+  "pg.docx": {
+    "slug": "postgraduate",
+    "title": "Career Guidance — Postgraduate (PG)",
+    "blurb": "Master's, research pathways, and specialising after your degree",
+    "audience": "Postgraduate",
+    "stage": "pg",
+    "stage_label": "Postgraduate",
+    "stage_order": 70,
+    "accent": "green",
+    "order": 70,
+    "class_levels": [],
+    "specializations": [
+      "University Admissions"
+    ],
+    "chapter_titles": [
+      "1. Introduction",
+      "2. Postgraduate Degree Courses",
+      "3. Professional Courses",
+      "4. Diploma & Skill-Based Courses",
+      "5. Entrance Examinations",
+      "6. Admission Process",
+      "7. Types of Higher Education Institutions",
+      "8. Career Opportunities",
+      "9. Government Job Opportunities",
+      "10. Higher Education & Research Pathways",
+      "11. Skills Required",
+      "12. How to Choose the Right Postgraduate Course",
+      "13. Final Thoughts"
+    ]
+  },
+  "New DOCX Document.docx": {
+    "slug": "study-in-india",
+    "title": "Study in India — Admissions Handbook",
+    "blurb": "Institutions, regulators, entrance exams, fees, scholarships and rankings",
+    "audience": "Admissions · India",
+    "stage": "admissions",
+    "stage_label": "Study in India",
+    "stage_order": 80,
+    "accent": "orange",
+    "order": 80,
+    "class_levels": [
+      "12"
+    ],
+    "specializations": [
+      "University Admissions"
+    ],
+    "_note": "Canonical Study-in-India source (1.9M chars / 337 tables); supersedes admission India.docx. Chapters 7-12 have no chapter-level heading and begin at their N.1 subsection.",
+    "chapter_titles": [
+      "1: Overview of Higher Education in India",
+      "2: Structure of the Indian Higher Education System",
+      "3: Types of Higher Education Institutions",
+      "4: Regulatory Bodies and Accreditation",
+      "5: Admission Process in India",
+      "6: Entrance Examinations in India",
+      {
+        "match": "7.1 Overview",
+        "title": "7. Entrance Examinations in Detail"
+      },
+      {
+        "match": "8.1 Overview of Fees, Scholarships & Financial Assistance",
+        "title": "8. Fees, Scholarships & Financial Assistance"
+      },
+      {
+        "match": "9.1 Introduction",
+        "title": "9. Universities & Colleges in India"
+      },
+      {
+        "match": "10.1 Overview of Student Support & Digital Learning Platforms",
+        "title": "10. Student Support & Digital Learning Platforms"
+      },
+      {
+        "match": "11.1 Understanding Rankings & Accreditation",
+        "title": "11. Rankings & Choosing an Institution"
+      },
+      {
+        "match": "12.1 Final Thoughts",
+        "title": "12. Final Thoughts"
+      }
+    ],
+    "toc_extra": [
+      "4. Regulatory Bodies & Accreditation",
+      "6. Entrance Examinations",
+      "12.Action Plan"
+    ]
+  },
+  "admission India.docx": {
+    "skip": "Superseded by New DOCX Document.docx, which is the same 13-chapter STUDY IN INDIA skeleton with ~7.7x the text and 3.5x the tables."
+  }
+}

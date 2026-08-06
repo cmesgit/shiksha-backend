@@ -19,6 +19,11 @@ from courses.models import Course
 
 from .models import BlogPost, CurrentAffair
 
+# Imported here (content -> counseling) rather than the other way around;
+# counseling/guide_models.py explains why the guide models themselves live
+# in counseling and not content.
+from counseling.guide_models import CareerGuide
+
 _frontend = urlparse(settings.FRONTEND_BASE_URL)
 
 
@@ -61,8 +66,23 @@ class CourseSitemap(FrontendSitemap):
         return Course.objects.filter(status=Course.STATUS_PUBLISHED).order_by("slug")
 
 
+class CareerGuideSitemap(FrontendSitemap):
+    changefreq = "monthly"
+    priority = 0.6
+
+    def items(self):
+        return CareerGuide.objects.published()
+
+    def lastmod(self, obj):
+        return obj.updated_at
+
+    def location(self, obj):
+        return obj.get_absolute_url()
+
+
 CONTENT_SITEMAPS = {
     "blog": BlogPostSitemap,
     "current-affairs": CurrentAffairSitemap,
     "courses": CourseSitemap,
+    "career-guides": CareerGuideSitemap,
 }
