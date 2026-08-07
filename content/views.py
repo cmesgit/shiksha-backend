@@ -21,13 +21,14 @@ from .cache import LIST_TTL, list_cache_key
 from django.core.cache import cache
 
 from .models import (
-    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    ShowcaseCourse,
+    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem, HeroBanner,
+    HomeCategory, HomeCta, ShowcaseCourse,
 )
 from .serializers import (
     AnnouncementSerializer, BlogPostDetailSerializer, BlogPostListSerializer,
     CurrentAffairDetailSerializer, CurrentAffairListSerializer,
-    FAQItemSerializer, ShowcaseCourseSerializer,
+    FAQItemSerializer, HeroBannerSerializer, HomeCategorySerializer,
+    HomeCtaSerializer, ShowcaseCourseSerializer,
 )
 
 
@@ -179,3 +180,54 @@ class ShowcaseListView(CachedListAPIView):
 
     def get_queryset(self):
         return ShowcaseCourse.objects.filter(is_active=True)
+
+
+# ── Hero banner / home categories / closing CTA ───────────────────
+
+class SingletonContentView(generics.GenericAPIView):
+    """Base for a homepage section backed by a single active row (Hero,
+    closing CTA) — cached the same way CachedListAPIView caches lists, but
+    returns one object (or 204 if nothing is configured yet)."""
+
+    permission_classes = [AllowAny]
+
+    def get_object_or_none(self):
+        raise NotImplementedError
+
+    def get(self, request, *args, **kwargs):
+        key = list_cache_key(request)
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached, status=200 if cached else 204)
+        obj = self.get_object_or_none()
+        data = self.get_serializer(obj).data if obj else {}
+        cache.set(key, data, LIST_TTL)
+        return Response(data, status=200 if obj else 204)
+
+
+class HeroBannerView(SingletonContentView):
+    """GET /api/content/hero/ — the active hero banner."""
+
+    serializer_class = HeroBannerSerializer
+
+    def get_object_or_none(self):
+        return HeroBanner.objects.filter(is_active=True).first()
+
+
+class HomeCtaView(SingletonContentView):
+    """GET /api/content/cta/ — the active closing-CTA section."""
+
+    serializer_class = HomeCtaSerializer
+
+    def get_object_or_none(self):
+        return HomeCta.objects.filter(is_active=True).first()
+
+
+class HomeCategoryListView(CachedListAPIView):
+    """GET /api/content/categories/ — homepage 'Browse categories' cards."""
+
+    serializer_class = HomeCategorySerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        return HomeCategory.objects.filter(is_active=True)

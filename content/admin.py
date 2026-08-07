@@ -14,8 +14,8 @@ from django.utils import timezone
 from django.utils.html import format_html
 
 from .models import (
-    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    PublishStatus, ShowcaseCourse,
+    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem, HeroBanner,
+    HomeCategory, HomeCta, PublishStatus, ShowcaseCourse,
 )
 
 # ── optional rich-text widget ────────────────────────────────────
@@ -201,3 +201,29 @@ class ContentTagAdmin(admin.ModelAdmin):
     list_display = ("name", "slug")
     search_fields = ("name",)
     prepopulated_fields = {"slug": ("name",)}
+
+
+# ── Hero banner / home categories / closing CTA ──────────────────
+
+@admin.register(HeroBanner)
+class HeroBannerAdmin(admin.ModelAdmin):
+    list_display = ("heading", "order", "is_active")
+    list_editable = ("order", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("heading", "eyebrow")
+
+
+@admin.register(HomeCategory)
+class HomeCategoryAdmin(admin.ModelAdmin):
+    list_display = ("name", "gradient", "icon", "order", "is_active")
+    list_editable = ("order", "is_active")
+    list_filter = ("is_active", "gradient")
+    search_fields = ("name", "tagline")
+
+
+@admin.register(HomeCta)
+class HomeCtaAdmin(admin.ModelAdmin):
+    list_display = ("heading", "order", "is_active")
+    list_editable = ("order", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("heading", "eyebrow")

@@ -3,7 +3,8 @@
 from rest_framework import serializers
 
 from .models import (
-    Announcement, BlogPost, CurrentAffair, FAQItem, ShowcaseCourse,
+    Announcement, BlogPost, CurrentAffair, FAQItem, HeroBanner, HomeCategory,
+    HomeCta, ShowcaseCourse,
 )
 
 
@@ -109,3 +110,40 @@ class ShowcaseCourseSerializer(serializers.ModelSerializer):
         if obj.image:
             return _absolute(self.context.get("request"), obj.image.url)
         return obj.image_url or ""
+
+
+# ── Hero banner / home categories / closing CTA ───────────────────
+
+class HeroBannerSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HeroBanner
+        fields = [
+            "id", "eyebrow", "heading", "heading_highlight", "subheading",
+            "primary_cta_text", "primary_cta_link",
+            "secondary_cta_text", "secondary_cta_link", "image",
+        ]
+
+    def get_image(self, obj):
+        if obj.image:
+            return _absolute(self.context.get("request"), obj.image.url)
+        return obj.image_url or ""
+
+
+class HomeCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HomeCategory
+        fields = [
+            "id", "name", "tagline", "pills", "stat_text", "cta_text",
+            "link_path", "link_state", "icon", "gradient", "order",
+        ]
+
+
+class HomeCtaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HomeCta
+        fields = [
+            "id", "eyebrow", "heading", "subheading",
+            "primary_text", "primary_link", "secondary_text", "secondary_link",
+        ]

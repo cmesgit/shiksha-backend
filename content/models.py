@@ -453,3 +453,126 @@ class ShowcaseCourse(TimeStampedModel):
 
     def __str__(self):
         return self.title
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Homepage hero banner
+# ─────────────────────────────────────────────────────────────────
+
+class HeroBanner(TimeStampedModel):
+    """The homepage hero section. Only the first `is_active` row (ordered
+    by `order`) is served — the public endpoint returns a single object,
+    not a list, mirroring how the hero renders exactly once on the page."""
+
+    eyebrow = models.CharField(
+        max_length=80, blank=True, default="",
+        help_text='Small pill above the heading, e.g. "Trusted by 50,000+ Students".',
+    )
+    heading = models.CharField(max_length=160, help_text='e.g. "Learn Smarter."')
+    heading_highlight = models.CharField(
+        max_length=160, blank=True, default="",
+        help_text='The emphasised gradient line, e.g. "Achieve More".',
+    )
+    subheading = models.TextField(blank=True, default="")
+    primary_cta_text = models.CharField(max_length=60, default="Get Started")
+    primary_cta_link = models.CharField(max_length=200, default="/signup")
+    secondary_cta_text = models.CharField(max_length=60, blank=True, default="")
+    secondary_cta_link = models.CharField(max_length=200, blank=True, default="")
+    image = models.ImageField(upload_to="content/hero/", blank=True, null=True)
+    image_url = models.URLField(
+        blank=True, default="", help_text="Used if no image file is uploaded.",
+    )
+    order = models.PositiveSmallIntegerField(default=0)
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        ordering = ["order", "id"]
+
+    def __str__(self):
+        return self.heading
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Homepage "Browse categories"
+# ─────────────────────────────────────────────────────────────────
+
+class HomeCategoryIcon(models.TextChoices):
+    SCHOOL = "school", "School"
+    TARGET = "target", "Target"
+    BRIEFCASE = "briefcase", "Briefcase"
+
+
+class HomeCategoryGradient(models.TextChoices):
+    GREEN = "green", "Green"
+    WARM = "warm", "Warm"
+    COOL = "cool", "Cool"
+
+
+class HomeCategory(TimeStampedModel):
+    """One card in the homepage 'Browse categories' grid."""
+
+    name = models.CharField(max_length=80)
+    tagline = models.CharField(
+        max_length=160, blank=True, default="",
+        help_text='e.g. "Classes 8–12 · CBSE, NCERT & MBSE".',
+    )
+    pills = models.JSONField(
+        default=list,
+        help_text='Short tags shown as chips, e.g. ["Mathematics", "Science"].',
+    )
+    stat_text = models.CharField(
+        max_length=160, blank=True, default="",
+        help_text='e.g. "Board-aligned live & recorded classes".',
+    )
+    cta_text = models.CharField(max_length=60, default="Explore")
+    link_path = models.CharField(max_length=200, default="/courses")
+    link_state = models.JSONField(default=dict, blank=True)
+    icon = models.CharField(
+        max_length=12, choices=HomeCategoryIcon.choices,
+        default=HomeCategoryIcon.SCHOOL,
+    )
+    gradient = models.CharField(
+        max_length=10, choices=HomeCategoryGradient.choices,
+        default=HomeCategoryGradient.GREEN,
+    )
+    order = models.PositiveSmallIntegerField(default=0)
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        ordering = ["order", "id"]
+        verbose_name_plural = "home categories"
+
+    def clean(self):
+        super().clean()
+        if not isinstance(self.pills, list):
+            raise ValidationError({"pills": "Must be a JSON list."})
+
+    def __str__(self):
+        return self.name
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Homepage closing CTA
+# ─────────────────────────────────────────────────────────────────
+
+class HomeCta(TimeStampedModel):
+    """The closing call-to-action section. Same singleton convention as
+    HeroBanner — only the first `is_active` row (by `order`) is served."""
+
+    eyebrow = models.CharField(max_length=80, blank=True, default="")
+    heading = models.CharField(max_length=160)
+    subheading = models.TextField(blank=True, default="")
+    primary_text = models.CharField(max_length=60, default="Create free account")
+    primary_link = models.CharField(max_length=200, default="/signup")
+    secondary_text = models.CharField(max_length=60, blank=True, default="")
+    secondary_link = models.CharField(max_length=200, blank=True, default="")
+    order = models.PositiveSmallIntegerField(default=0)
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        ordering = ["order", "id"]
+        verbose_name = "home CTA"
+        verbose_name_plural = "home CTA"
+
+    def __str__(self):
+        return self.heading
