@@ -73,13 +73,16 @@ class CareerGuideCardSerializer(serializers.ModelSerializer):
 
     section_count = serializers.SerializerMethodField()
     cover_url = serializers.SerializerMethodField()
+    specializations = serializers.SlugRelatedField(
+        slug_field="name", many=True, read_only=True
+    )
 
     class Meta:
         model = CareerGuide
         fields = (
             "slug", "title", "blurb", "audience", "stage", "stage_label",
             "stage_order", "accent", "cover_url", "class_levels",
-            "section_count", "view_count",
+            "specializations", "section_count", "view_count",
         )
 
     def get_section_count(self, obj):

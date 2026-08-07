@@ -14,8 +14,8 @@ from django.utils import timezone
 from django.utils.html import format_html
 
 from .models import (
-    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    PublishStatus, ShowcaseCourse,
+    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem, HomeFloater,
+    HomeContentBlock, HomeListItem, PublishStatus, ShowcaseCourse,
 )
 
 # ── optional rich-text widget ────────────────────────────────────
@@ -201,3 +201,27 @@ class ContentTagAdmin(admin.ModelAdmin):
     list_display = ("name", "slug")
     search_fields = ("name",)
     prepopulated_fields = {"slug": ("name",)}
+
+
+# ── Homepage content ──────────────────────────────────────────────
+
+@admin.register(HomeContentBlock)
+class HomeContentBlockAdmin(admin.ModelAdmin):
+    list_display = ("section", "heading", "is_active", "updated_at")
+    list_filter = ("section", "is_active")
+    search_fields = ("heading", "subhead", "body")
+
+
+@admin.register(HomeListItem)
+class HomeListItemAdmin(admin.ModelAdmin):
+    list_display = ("section", "variant", "title", "order", "is_active")
+    list_filter = ("section", "variant", "is_active")
+    list_editable = ("order", "is_active")
+    search_fields = ("title", "subtitle", "body")
+
+
+@admin.register(HomeFloater)
+class HomeFloaterAdmin(admin.ModelAdmin):
+    list_display = ("section", "slot", "label", "is_active")
+    list_filter = ("section", "is_active")
+    search_fields = ("label", "sublabel")

@@ -21,11 +21,13 @@ from rest_framework.response import Response
 from .admin_serializers import (
     AnnouncementAdminSerializer, BlogPostAdminSerializer,
     ContentTagSerializer, CurrentAffairAdminSerializer,
-    FAQItemAdminSerializer, ShowcaseCourseAdminSerializer,
+    FAQItemAdminSerializer, HomeContentBlockAdminSerializer,
+    HomeFloaterAdminSerializer, HomeListItemAdminSerializer,
+    ShowcaseCourseAdminSerializer,
 )
 from .models import (
     Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    PublishStatus, ShowcaseCourse,
+    HomeContentBlock, HomeFloater, HomeListItem, PublishStatus, ShowcaseCourse,
 )
 from .permissions import IsContentEditor
 
@@ -106,6 +108,53 @@ class ShowcaseCourseAdminViewSet(viewsets.ModelViewSet):
     # `image` is a file upload field, so multipart support must not be
     # left to an implicit default that could change.
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+
+# ── Homepage content ──────────────────────────────────────────────
+
+class HomeContentBlockAdminViewSet(viewsets.ModelViewSet):
+    queryset = HomeContentBlock.objects.all()
+    serializer_class = HomeContentBlockAdminSerializer
+    permission_classes = [IsContentEditor]
+    pagination_class = AdminPagination
+    parser_classes = [MultiPartParser, FormParser, JSONParser]  # `image` upload
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        section = self.request.query_params.get("section")
+        if section:
+            qs = qs.filter(section=section)
+        return qs
+
+
+class HomeListItemAdminViewSet(viewsets.ModelViewSet):
+    queryset = HomeListItem.objects.all()
+    serializer_class = HomeListItemAdminSerializer
+    permission_classes = [IsContentEditor]
+    pagination_class = AdminPagination
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        p = self.request.query_params
+        if p.get("section"):
+            qs = qs.filter(section=p["section"])
+        if p.get("variant"):
+            qs = qs.filter(variant=p["variant"])
+        return qs
+
+
+class HomeFloaterAdminViewSet(viewsets.ModelViewSet):
+    queryset = HomeFloater.objects.all()
+    serializer_class = HomeFloaterAdminSerializer
+    permission_classes = [IsContentEditor]
+    pagination_class = AdminPagination
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        section = self.request.query_params.get("section")
+        if section:
+            qs = qs.filter(section=section)
+        return qs
 
 
 # ── Blog posts ────────────────────────────────────────────────────

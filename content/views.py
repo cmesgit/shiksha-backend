@@ -22,12 +22,13 @@ from django.core.cache import cache
 
 from .models import (
     Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    ShowcaseCourse,
+    HomeContentBlock, HomeFloater, HomeListItem, ShowcaseCourse,
 )
 from .serializers import (
     AnnouncementSerializer, BlogPostDetailSerializer, BlogPostListSerializer,
     CurrentAffairDetailSerializer, CurrentAffairListSerializer,
-    FAQItemSerializer, ShowcaseCourseSerializer,
+    FAQItemSerializer, HomeContentBlockSerializer, HomeFloaterSerializer,
+    HomeListItemSerializer, ShowcaseCourseSerializer,
 )
 
 
@@ -179,3 +180,49 @@ class ShowcaseListView(CachedListAPIView):
 
     def get_queryset(self):
         return ShowcaseCourse.objects.filter(is_active=True)
+
+
+# ── Homepage content ───────────────────────────────────────────────
+
+class HomeContentListView(CachedListAPIView):
+    """GET /api/content/home-content/?section=hero"""
+
+    serializer_class = HomeContentBlockSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = HomeContentBlock.objects.filter(is_active=True)
+        section = self.request.query_params.get("section")
+        if section:
+            qs = qs.filter(section=section)
+        return qs
+
+
+class HomeListItemListView(CachedListAPIView):
+    """GET /api/content/home-list-items/?section=why_shiksha"""
+
+    serializer_class = HomeListItemSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = HomeListItem.objects.filter(is_active=True)
+        p = self.request.query_params
+        if p.get("section"):
+            qs = qs.filter(section=p["section"])
+        if p.get("variant"):
+            qs = qs.filter(variant=p["variant"])
+        return qs
+
+
+class HomeFloaterListView(CachedListAPIView):
+    """GET /api/content/home-floaters/?section=why_choose"""
+
+    serializer_class = HomeFloaterSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = HomeFloater.objects.filter(is_active=True)
+        section = self.request.query_params.get("section")
+        if section:
+            qs = qs.filter(section=section)
+        return qs

@@ -475,3 +475,155 @@ class ShowcaseCourse(TimeStampedModel):
 
     def __str__(self):
         return self.title
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Homepage content (Hero, WhyShiksha, TeachersStudents, BrowseCategories,
+#  WhyChoose, Resources, Collaborate, Cta — everything on the public
+#  homepage NOT already covered by ShowcaseCourse/FAQItem above)
+# ─────────────────────────────────────────────────────────────────
+
+class HomeSection(models.TextChoices):
+    HERO = "hero", "Hero"
+    WHY_SHIKSHA = "why_shiksha", "Why Shiksha"
+    TEACHERS_STUDENTS = "teachers_students", "Teachers & Students"
+    BROWSE_CATEGORIES = "browse_categories", "Browse Categories"
+    WHY_CHOOSE = "why_choose", "Why Choose ShikshaCom"
+    RESOURCES = "resources", "Resources & Support"
+    COLLABORATE = "collaborate", "Collaborate"
+    CTA = "cta", "Closing CTA"
+
+
+class HomeContentBlock(TimeStampedModel):
+    """One row per homepage section — its heading/copy/CTA/hero image.
+    `section` is unique: this is a singleton-per-section table, not a list."""
+
+    section = models.CharField(
+        max_length=24, choices=HomeSection.choices, unique=True, db_index=True,
+    )
+    eyebrow = models.CharField(max_length=80, blank=True, default="")
+    heading = models.CharField(max_length=200, blank=True, default="")
+    heading_secondary = models.CharField(
+        max_length=200, blank=True, default="",
+        help_text="Optional 2nd half of a two-part heading (only Hero uses this today).",
+    )
+    subhead = models.CharField(max_length=300, blank=True, default="")
+    body = models.TextField(blank=True, default="")
+    cta_primary_label = models.CharField(max_length=60, blank=True, default="")
+    cta_primary_href = models.CharField(max_length=200, blank=True, default="")
+    cta_secondary_label = models.CharField(max_length=60, blank=True, default="")
+    cta_secondary_href = models.CharField(max_length=200, blank=True, default="")
+    image = models.ImageField(upload_to="content/home/", blank=True, null=True)
+    image_url = models.URLField(
+        blank=True, default="", help_text="Used if no image file is uploaded.",
+    )
+    extra = models.JSONField(
+        default=dict, blank=True,
+        help_text="Rare escape valve for a section-specific single value that "
+                  "doesn't warrant its own column. Should normally be empty.",
+    )
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        ordering = ["section"]
+        verbose_name = "Homepage content block"
+
+    def __str__(self):
+        return f"[{self.get_section_display()}] content block"
+
+
+class HomeListVariant(models.TextChoices):
+    DEFAULT = "default", "Default"
+    MARQUEE_CHIP = "marquee_chip", "Marquee chip (Collaborate)"
+    STAT_CHIP = "stat_chip", "Stat chip (Collaborate)"
+
+
+class HomeListItem(TimeStampedModel):
+    """A repeatable card/chip within a homepage section (e.g. WhyShiksha's
+    feature cards, BrowseCategories' category cards, Collaborate's marquee
+    chips and stat chips — distinguished by `variant`)."""
+
+    section = models.CharField(
+        max_length=24, choices=HomeSection.choices, db_index=True,
+    )
+    variant = models.CharField(
+        max_length=20, choices=HomeListVariant.choices, default=HomeListVariant.DEFAULT,
+    )
+    icon = models.CharField(
+        max_length=40, blank=True, default="",
+        help_text="Icon key from the frontend's shared icon set.",
+    )
+    title = models.CharField(max_length=120, blank=True, default="")
+    subtitle = models.CharField(max_length=160, blank=True, default="")
+    body = models.TextField(blank=True, default="")
+    pills = models.JSONField(
+        default=list, blank=True,
+        help_text="Short tag list, e.g. BrowseCategories' subject pills.",
+    )
+    stat_text = models.CharField(max_length=160, blank=True, default="")
+    cta_label = models.CharField(max_length=60, blank=True, default="")
+    cta_href = models.CharField(max_length=200, blank=True, default="")
+    tint = models.CharField(
+        max_length=20, blank=True, default="",
+        help_text="Design-token key (e.g. violet/green/gold) — the frontend "
+                  "maps this to a CSS variable, never a raw color.",
+    )
+    order = models.PositiveSmallIntegerField(default=0)
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        ordering = ["section", "order", "id"]
+        verbose_name = "Homepage list item"
+
+    def clean(self):
+        super().clean()
+        if not isinstance(self.pills, list):
+            raise ValidationError({"pills": "Must be a JSON list."})
+
+    def __str__(self):
+        return f"[{self.get_section_display()}] {self.title or self.stat_text or self.pk}"
+
+
+class HomeFloater(TimeStampedModel):
+    """A decorative floating badge/icon anchored to one of a section's
+    pre-tested CSS slots. `slot` is deliberately constrained per-section
+    (see SLOT_CHOICES_BY_SECTION) and unique per section so two floaters can
+    never be positioned on top of each other — there is no coordinate field
+    for an editor to get wrong."""
+
+    section = models.CharField(
+        max_length=24, choices=HomeSection.choices, db_index=True,
+    )
+    slot = models.CharField(max_length=20)
+    icon = models.CharField(max_length=40, blank=True, default="")
+    label = models.CharField(max_length=60, blank=True, default="")
+    sublabel = models.CharField(max_length=80, blank=True, default="")
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    SLOT_CHOICES_BY_SECTION = {
+        HomeSection.HERO: ["cap", "book", "play"],
+        HomeSection.WHY_CHOOSE: ["b_tl", "b_tr", "b_bl"],
+        HomeSection.COLLABORATE: ["top", "bottom"],
+    }
+
+    class Meta:
+        ordering = ["section", "slot"]
+        verbose_name = "Homepage floater"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["section", "slot"], name="content_homefloater_unique_slot",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        allowed = self.SLOT_CHOICES_BY_SECTION.get(self.section, [])
+        if self.slot not in allowed:
+            allowed_text = allowed or "(none — this section has no floater slots)"
+            raise ValidationError({
+                "slot": f"'{self.slot}' is not a valid slot for section "
+                        f"'{self.section}'. Allowed: {allowed_text}",
+            })
+
+    def __str__(self):
+        return f"[{self.get_section_display()}] {self.slot}"
