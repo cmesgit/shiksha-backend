@@ -1623,6 +1623,7 @@ class PublicCourseCatalogView(APIView):
                 "title": c.title,
                 "slug": c.slug,
                 "description": c.description,
+                "class_level": c.class_level,
                 "price": c.price,
                 # price_override is a per-Batch concern (Batch.effective_price);
                 # a catalog card has no batch context, so effective_price == the

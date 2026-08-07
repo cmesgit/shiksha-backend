@@ -67,6 +67,7 @@ INSTALLED_APPS = [
     "notifications",
     "content",
     "news",
+    "scholarship.apps.ScholarshipConfig",
     # counseling has migrations, seed data and mounted URLs but was
     # missing here (likely a server-side settings edit that never made it
     # back to the repo — see settings.py.save.1). Required by
@@ -184,6 +185,8 @@ REST_FRAMEWORK = {
         "documents_report": "30/hour",
         # Quiz builder's AI question drafting — costs real money per call.
         "quiz_ai_generate": "10/hour",
+        # Scholarship question-bank AI drafting — same reasoning as above.
+        "scholarship_ai_generate": "10/hour",
         # Anonymous "notify me when {board} launches" lead capture — the
         # only unauthenticated write endpoint in the app, so throttled hard.
         "board_notify": "5/hour",
@@ -228,6 +231,15 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "Shiksha <onboarding@resend
 # TeacherGenerateAIQuestionsView). Unset by default — the endpoint raises a
 # clear RuntimeError until an operator adds a real key to the environment.
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+# Scholarship eligibility dedup (scholarship/services.py compute_dedup_hash).
+# A server-side pepper mixed into the hash of {guardian verification
+# reference, child name, child DOB} so the stored hash isn't a bare,
+# realistically-reversible digest of low-entropy identity data. Falls back to
+# SECRET_KEY so this works out of the box in dev/tests; production should set
+# a dedicated value so rotating SECRET_KEY doesn't also reshuffle every
+# existing eligibility record's hash.
+SCHOLARSHIP_DEDUP_PEPPER = os.getenv("SCHOLARSHIP_DEDUP_PEPPER", "") or SECRET_KEY
 
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
