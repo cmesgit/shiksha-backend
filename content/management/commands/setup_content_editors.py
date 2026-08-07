@@ -16,6 +16,7 @@ GROUP_NAME = "Content Editors"
 MODELS = (
     m.BlogPost, m.CurrentAffair, m.FAQItem, m.Announcement,
     m.ShowcaseCourse, m.ContentTag,
+    m.HeroBanner, m.HomeCategory, m.HomeCta,
 )
 
 
