@@ -23,6 +23,10 @@ urlpatterns = [
     path("faqs/", views.FAQListView.as_view(), name="faq-list"),
     path("announcements/", views.AnnouncementListView.as_view(), name="announcement-list"),
     path("showcase/", views.ShowcaseListView.as_view(), name="showcase-list"),
+
+    path("hero/", views.HeroBannerView.as_view(), name="hero"),
+    path("categories/", views.HomeCategoryListView.as_view(), name="category-list"),
+    path("cta/", views.HomeCtaView.as_view(), name="cta"),
 ]
 
 # ── Staff-only CMS admin API (content/admin_views.py) ──────────────
@@ -33,4 +37,7 @@ admin_router.register("admin/faqs", admin_views.FAQItemAdminViewSet, basename="a
 admin_router.register("admin/announcements", admin_views.AnnouncementAdminViewSet, basename="admin-announcement")
 admin_router.register("admin/showcase", admin_views.ShowcaseCourseAdminViewSet, basename="admin-showcase")
 admin_router.register("admin/tags", admin_views.TagAdminViewSet, basename="admin-tag")
+admin_router.register("admin/hero", admin_views.HeroBannerAdminViewSet, basename="admin-hero")
+admin_router.register("admin/categories", admin_views.HomeCategoryAdminViewSet, basename="admin-category")
+admin_router.register("admin/cta", admin_views.HomeCtaAdminViewSet, basename="admin-cta")
 urlpatterns += admin_router.urls

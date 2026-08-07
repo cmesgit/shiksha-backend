@@ -21,11 +21,13 @@ from rest_framework.response import Response
 from .admin_serializers import (
     AnnouncementAdminSerializer, BlogPostAdminSerializer,
     ContentTagSerializer, CurrentAffairAdminSerializer,
-    FAQItemAdminSerializer, ShowcaseCourseAdminSerializer,
+    FAQItemAdminSerializer, HeroBannerAdminSerializer,
+    HomeCategoryAdminSerializer, HomeCtaAdminSerializer,
+    ShowcaseCourseAdminSerializer,
 )
 from .models import (
-    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    PublishStatus, ShowcaseCourse,
+    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem, HeroBanner,
+    HomeCategory, HomeCta, PublishStatus, ShowcaseCourse,
 )
 from .permissions import IsContentEditor
 
@@ -106,6 +108,30 @@ class ShowcaseCourseAdminViewSet(viewsets.ModelViewSet):
     # `image` is a file upload field, so multipart support must not be
     # left to an implicit default that could change.
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+
+# ── Hero banner / home categories / closing CTA ───────────────────
+
+class HeroBannerAdminViewSet(viewsets.ModelViewSet):
+    queryset = HeroBanner.objects.all()
+    serializer_class = HeroBannerAdminSerializer
+    permission_classes = [IsContentEditor]
+    pagination_class = AdminPagination
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+
+class HomeCategoryAdminViewSet(viewsets.ModelViewSet):
+    queryset = HomeCategory.objects.all()
+    serializer_class = HomeCategoryAdminSerializer
+    permission_classes = [IsContentEditor]
+    pagination_class = AdminPagination
+
+
+class HomeCtaAdminViewSet(viewsets.ModelViewSet):
+    queryset = HomeCta.objects.all()
+    serializer_class = HomeCtaAdminSerializer
+    permission_classes = [IsContentEditor]
+    pagination_class = AdminPagination
 
 
 # ── Blog posts ────────────────────────────────────────────────────

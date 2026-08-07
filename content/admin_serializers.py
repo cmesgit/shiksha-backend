@@ -20,7 +20,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import (
-    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem, ShowcaseCourse,
+    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem, HeroBanner,
+    HomeCategory, HomeCta, ShowcaseCourse,
 )
 
 
@@ -195,3 +196,44 @@ class ContentTagSerializer(serializers.ModelSerializer):
         model = ContentTag
         fields = ["id", "name", "slug"]
         read_only_fields = ["slug"]
+
+
+# ── Hero banner / home categories / closing CTA ───────────────────
+
+class HeroBannerAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
+    class Meta:
+        model = HeroBanner
+        fields = [
+            "id", "eyebrow", "heading", "heading_highlight", "subheading",
+            "primary_cta_text", "primary_cta_link",
+            "secondary_cta_text", "secondary_cta_link",
+            "image", "image_url", "order", "is_active",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at"]
+
+
+class HomeCategoryAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
+    # `pills` is `JSONField(default=list)` *without* `blank=True` — same
+    # pitfall as ShowcaseCourseAdminSerializer.categories above.
+    full_clean_exclude = ("pills",)
+
+    class Meta:
+        model = HomeCategory
+        fields = [
+            "id", "name", "tagline", "pills", "stat_text", "cta_text",
+            "link_path", "link_state", "icon", "gradient", "order",
+            "is_active", "created_at", "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at"]
+
+
+class HomeCtaAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
+    class Meta:
+        model = HomeCta
+        fields = [
+            "id", "eyebrow", "heading", "subheading",
+            "primary_text", "primary_link", "secondary_text", "secondary_link",
+            "order", "is_active", "created_at", "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at"]
