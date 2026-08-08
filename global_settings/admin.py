@@ -8,12 +8,20 @@ from .models import GlobalSettings
 class GlobalSettingsAdmin(admin.ModelAdmin):
     fieldsets = (
         ("Payment mode", {
-            "fields": ("free_trial_enabled", "payment_mode"),
+            "fields": ("free_trial_enabled", "trial_started_at", "trial_duration_days", "payment_mode"),
             "description": (
-                "While <b>free trial</b> is on, the platform is free for "
-                "everyone and the payment mode below is ignored. Turn it off "
-                "to start charging using the selected mode."
+                "While <b>free trial</b> is on AND the countdown "
+                "(trial_started_at + trial_duration_days) hasn't elapsed, the "
+                "platform is free for everyone and the payment mode below is "
+                "ignored. Turn the switch off, or let the countdown expire, "
+                "to start charging using the selected mode — though it will "
+                "only actually go live once that mode is implemented "
+                "end-to-end (see PAID_MODES_LIVE in models.py)."
             ),
+        }),
+        ("Skill Dev pricing", {
+            "fields": ("skill_intro_session_paise", "skill_bundle_discount_pct"),
+            "description": "Informational while free-trial is active; used once it ends.",
         }),
         ("Manual UPI", {
             "fields": ("upi_id", "upi_payee_name"),

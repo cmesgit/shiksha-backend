@@ -14,8 +14,10 @@ save whose *effective* mode would be a paid one — i.e. a paid `payment_mode`
 combined with `free_trial_enabled = False`. An admin can still pre-select a
 paid mode and pre-fill credentials while the free-trial switch stays ON.
 
-To launch a paid mode later: implement it, then flip PAID_MODES_LIVE below (or
-delete the guard) — one line.
+To launch a paid mode later: implement it, then flip PAID_MODES_LIVE in
+models.py (or delete the guard) — one line. It lives there, not here, because
+GlobalSettings.effective_mode's fail-open-to-free trial-expiry logic depends
+on the same live/not-live fact at read time, not just at save time.
 
 Security (unchanged):
   * razorpay_key_secret is WRITE-ONLY — never returned in GET responses.
@@ -26,14 +28,7 @@ Security (unchanged):
 """
 from rest_framework import serializers
 
-from .models import GlobalSettings
-
-# Flip these to True one at a time as each provider is fully implemented
-# (backend flow + learner UI + verification path).
-PAID_MODES_LIVE = {
-    GlobalSettings.PAYMENT_MANUAL_UPI: False,
-    GlobalSettings.PAYMENT_RAZORPAY:   False,
-}
+from .models import PAID_MODES_LIVE, GlobalSettings
 
 
 class GlobalSettingsSerializer(serializers.ModelSerializer):
@@ -43,18 +38,28 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
     )
     razorpay_secret_set = serializers.SerializerMethodField()
     effective_mode = serializers.CharField(read_only=True)
+    trial_ends_at = serializers.DateTimeField(read_only=True)
+    trial_days_remaining = serializers.IntegerField(read_only=True)
+    trial_active = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = GlobalSettings
         fields = [
             "payment_mode",
             "free_trial_enabled",
+            "trial_started_at",
+            "trial_duration_days",
+            "trial_ends_at",           # read-only, computed
+            "trial_days_remaining",    # read-only, computed
+            "trial_active",            # read-only, computed
             "upi_id",
             "upi_payee_name",
             "razorpay_key_id",
             "razorpay_key_secret",   # write-only
             "razorpay_secret_set",   # read-only flag
             "platform_email",
+            "skill_intro_session_paise",
+            "skill_bundle_discount_pct",
             "effective_mode",        # read-only, computed
             "updated_at",
         ]

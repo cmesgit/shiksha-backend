@@ -14,9 +14,22 @@ Read it anywhere with ``GlobalSettings.load()`` — it always returns the single
 row, creating it with safe defaults on first access. The table is a single row
 keyed on ``pk=1``; ``save()`` enforces that.
 """
+from datetime import timedelta
+
 from django.db import models
+from django.utils import timezone
 
 from .fields import EncryptedCharField
+
+# Flip these to True one at a time as each provider is fully implemented
+# (backend flow + learner UI + verification path). Lives here (not in
+# serializers.py) because it gates effective_mode's read-time computation too,
+# not just the serializer's save-time validation — one source of truth for
+# "is this payment mode actually safe to route real users into."
+PAID_MODES_LIVE = {
+    "manual_upi": False,
+    "razorpay": False,
+}
 
 
 class GlobalSettings(models.Model):
@@ -44,8 +57,19 @@ class GlobalSettings(models.Model):
         help_text=(
             "Master switch. While ON, the whole platform behaves as FREE "
             "(instant access) regardless of the payment mode above. Turn OFF "
-            "to start charging using the selected payment mode."
+            "to start charging using the selected payment mode. Also turns "
+            "itself off automatically once the trial window below elapses — "
+            "see trial_active / effective_mode."
         ),
+    )
+    trial_started_at = models.DateTimeField(
+        default=timezone.now,
+        help_text="When the current free-trial countdown began. Reset this "
+                   "(e.g. to restart a 6-month trial from today) via the admin UI.",
+    )
+    trial_duration_days = models.PositiveIntegerField(
+        default=180,
+        help_text="Length of the free-trial window in days (default ~6 months).",
     )
 
     # ── Manual UPI (used when payment_mode = manual_upi) ──────────────────
@@ -95,13 +119,43 @@ class GlobalSettings(models.Model):
         super().save(*args, **kwargs)
 
     @property
+    def trial_ends_at(self):
+        return self.trial_started_at + timedelta(days=self.trial_duration_days)
+
+    @property
+    def trial_days_remaining(self):
+        """Whole days left, floored at 0 (never negative once expired)."""
+        remaining = self.trial_ends_at - timezone.now()
+        return max(0, remaining.days)
+
+    @property
+    def trial_active(self):
+        """Whether the countdown itself is still within its window.
+
+        Distinct from ``free_trial_enabled`` (the manual override an admin can
+        flip early) — this is purely date math, combined with the manual
+        switch in ``effective_mode`` below.
+        """
+        return self.free_trial_enabled and timezone.now() < self.trial_ends_at
+
+    @property
     def effective_mode(self):
         """The payment mode actually in force right now.
 
-        The free-trial master switch wins: while it is on, everything is free
-        no matter what ``payment_mode`` says.
+        Free while ``trial_active`` (manual switch ON and still inside the
+        countdown window). Once the trial ends — by date or by the admin
+        manually flipping the switch — falls through to ``payment_mode``, but
+        ONLY if that mode is actually implemented end-to-end (PAID_MODES_LIVE).
+        Neither manual_upi nor razorpay is wired yet, so this fails OPEN to
+        free rather than silently routing real users into a payment flow that
+        can't complete — the admin UI is responsible for surfacing "trial
+        expired, no live payment method" so a human notices and acts.
         """
-        return self.PAYMENT_FREE if self.free_trial_enabled else self.payment_mode
+        if self.trial_active:
+            return self.PAYMENT_FREE
+        if PAID_MODES_LIVE.get(self.payment_mode, True):
+            return self.payment_mode
+        return self.PAYMENT_FREE
 
     @classmethod
     def load(cls):
