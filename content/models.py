@@ -492,6 +492,11 @@ class HomeSection(models.TextChoices):
     RESOURCES = "resources", "Resources & Support"
     COLLABORATE = "collaborate", "Collaborate"
     CTA = "cta", "Closing CTA"
+    # /courses page (not the homepage) — reuses this same singleton-per-
+    # section content-block table so its hero heading/copy/CTAs/illustration
+    # are admin-editable through the identical HomeContentBlock pattern,
+    # rather than inventing a second, courses-specific content model.
+    COURSES_HERO = "courses_hero", "Courses Hero"
 
 
 class HomeContentBlock(TimeStampedModel):
