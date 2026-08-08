@@ -174,3 +174,112 @@ class MaterialsSubscriptionGateTest(TestCase):
             {"chapter_id": str(self.chapter.id), "title": "Grab", "file_ids": [str(stolen.id)]},
         )
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class SecureMediaViewTest(TestCase):
+    """The /media/ alias used to be served by nginx with zero auth — any
+    file, once its path was known, was permanently and anonymously
+    downloadable regardless of the owning API's own permission check.
+    Files now resolve through /api/media/secure/<path>, which re-runs the
+    same authorization the API endpoint would (config.media_security).
+    settings_test sets MEDIA_SERVED_BY_NGINX=False, so an authorized
+    request gets the actual bytes back directly instead of an
+    X-Accel-Redirect header nginx isn't present to resolve."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.core.files.base import ContentFile
+        from courses.models import TeachingAssignment, Batch
+        from materials.models import MaterialFile
+
+        cls.teacher = User.objects.create_user(username="sm_t", email="sm_t@test.com", password="x")
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.create(name="SM_TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        cls.other_teacher = User.objects.create_user(username="sm_t2", email="sm_t2@test.com", password="x")
+        UserRole.objects.create(
+            user=cls.other_teacher, role=Role.objects.get(name="SM_TEACHER"),
+            is_active=True, is_primary=True,
+        )
+
+        cls.course = Course.objects.create(title="Secure Media Course")
+        cls.subject = Subject.objects.create(course=cls.course, name="SM Subject")
+        cls.chapter = Chapter.objects.create(subject=cls.subject, title="SM Chapter")
+        batch = Batch.objects.create(course=cls.course, name="B1", code="SM1")
+        TeachingAssignment.objects.create(batch=batch, subject=cls.subject, teacher=cls.teacher)
+
+        cls.material = StudyMaterial.objects.create(chapter=cls.chapter, title="Notes", uploaded_by=cls.teacher)
+        cls.file = MaterialFile.objects.create(
+            # FileField's own upload_to ("study_materials/") already
+            # prefixes whatever name is given here — don't prefix it again.
+            file=ContentFile(b"secret pdf bytes", name="secure_test.txt"),
+            material=cls.material,
+        )
+
+    def url(self):
+        return f"/api/media/secure/{self.file.file.name}"
+
+    def test_assigned_teacher_can_read_the_bytes(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        res = c.get(self.url())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(b"".join(res.streaming_content), b"secret pdf bytes")
+
+    def test_unassigned_teacher_gets_404_not_the_file(self):
+        c = APIClient()
+        c.force_authenticate(user=self.other_teacher, token={"context": "teacher"})
+        res = c.get(self.url())
+        self.assertEqual(res.status_code, 404)
+
+    def test_unauthenticated_request_gets_404(self):
+        c = APIClient()
+        res = c.get(self.url())
+        self.assertEqual(res.status_code, 404)
+
+    def test_unmapped_prefix_denies_by_default(self):
+        """A path with no registered check (e.g. something under forum/ or
+        documents/ — see MEDIA_SECURITY_TODO.md) must deny non-staff by
+        default, never fall open."""
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        res = c.get("/api/media/secure/forum/whatever.png")
+        self.assertEqual(res.status_code, 404)
+
+    def test_public_prefix_is_not_routed_through_this_view_at_all(self):
+        """SecureLocalStorage.url() must return the plain /media/ path for
+        public zones — confirms the storage-level branch, not just the
+        view's own behavior."""
+        from django.core.files.storage import default_storage
+        url = default_storage.url("content/blog/cover.jpg")
+        self.assertTrue(url.startswith("/media/"))
+        self.assertNotIn("/api/media/secure/", url)
+
+    def test_private_prefix_url_points_at_the_secure_endpoint(self):
+        from django.core.files.storage import default_storage
+        url = default_storage.url(self.file.file.name)
+        self.assertTrue(url.startswith("/api/media/secure/"))
+
+    def test_public_teacher_photo_does_not_leak_a_sibling_private_prefix(self):
+        """Regression cover: bare 'teachers/' (the public bio photo) and
+        'teachers/certificates/' (private KYC doc) share a parent
+        directory. An earlier version of this module checked "is it under
+        any public prefix" and "is it under any private prefix" as two
+        independent passes — name.startswith(PUBLIC_PREFIXES) matched
+        'teachers/certificates/x.pdf' against the public 'teachers/'
+        prefix and returned public before the private check ever ran,
+        which would have exposed every teacher's KYC documents the moment
+        the bio-photo prefix was added. Both must be one length-ordered
+        table now."""
+        from config.media_security import is_public, is_authorized
+        from django.test import RequestFactory
+
+        self.assertTrue(is_public("teachers/photo123.jpg"))
+        self.assertFalse(is_public("teachers/certificates/cert1.pdf"))
+        self.assertFalse(is_public("teachers/id_proofs/front.jpg"))
+
+        rf = RequestFactory()
+        req = rf.get("/")
+        req.user = self.other_teacher
+        self.assertFalse(is_authorized(req, "teachers/certificates/cert1.pdf"))
