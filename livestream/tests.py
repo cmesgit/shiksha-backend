@@ -371,6 +371,44 @@ class StudentCannotEndSessionTests(TestCase):
         r = client.post(f"/api/livestream/sessions/{self.session.id}/end/")
         self.assertEqual(r.status_code, 403, r.content)
 
+    def test_teacher_end_stamps_actual_ended_at(self):
+        client = APIClient()
+        client.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        self.assertIsNone(self.session.actual_ended_at)
+        r = client.post(f"/api/livestream/sessions/{self.session.id}/end/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.session.refresh_from_db()
+        self.assertIsNotNone(self.session.actual_ended_at)
+
+    def test_cannot_cancel_a_session_already_live(self):
+        """Regression cover: cancel used to gate on wall-clock time against
+        start_time, not session status — a teacher who joined early (no
+        time gate on the teacher branch of join_live_session) could have a
+        genuinely LIVE session with the cancel window still technically
+        "before start_time" on the clock, letting it be cancelled out from
+        under connected participants."""
+        client = APIClient()
+        client.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = client.post(f"/api/livestream/sessions/{self.session.id}/cancel/")
+        self.assertEqual(r.status_code, 400, r.content)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, LiveSession.STATUS_LIVE)
+
+    def test_can_cancel_a_session_still_scheduled(self):
+        scheduled = LiveSession.objects.create(
+            course=self.course, subject=self.subject, title="Later",
+            start_time=timezone.now() + timedelta(days=1),
+            end_time=timezone.now() + timedelta(days=1, hours=1),
+            room_name="room_cancel_ok", created_by=self.teacher,
+            status=LiveSession.STATUS_SCHEDULED,
+        )
+        client = APIClient()
+        client.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = client.post(f"/api/livestream/sessions/{scheduled.id}/cancel/")
+        self.assertEqual(r.status_code, 200, r.content)
+        scheduled.refresh_from_db()
+        self.assertEqual(scheduled.status, LiveSession.STATUS_CANCELLED)
+
 
 class RescheduleLiveSessionTests(TestCase):
     """PATCH sessions/<id>/reschedule/ — teacher-only edit of a still-

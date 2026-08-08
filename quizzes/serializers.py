@@ -1,5 +1,6 @@
 from .models import Quiz
 
+from datetime import timedelta
 from django.db.models import Avg, Max, Min, Count
 import uuid
 from django.db import transaction
@@ -18,6 +19,10 @@ from .models import (
     QuizAttempt,
     StudentAnswer,
 )
+
+# Absorbs real network/render lag on a legitimate last-second auto-submit;
+# not meant to give any meaningful extra working time.
+SUBMIT_GRACE_SECONDS = 20
 
 
 class ChoiceAdminSerializer(serializers.ModelSerializer):
@@ -89,8 +94,8 @@ class BulkQuestionCreateSerializer(serializers.Serializer):
 class QuizCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quiz
-        fields = ["id", "subject", "title",
-                  "description", "time_limit_minutes", "quiz_type"]
+        fields = ["id", "subject", "title", "description",
+                  "time_limit_minutes", "quiz_type", "reveal_answers_after"]
         read_only_fields = ["id"]
 
     def validate_subject(self, subject):
@@ -217,6 +222,23 @@ class QuizSubmitSerializer(serializers.Serializer):
             raise ValidationError(
                 "No active attempt found. Please start the quiz first.")
 
+        # time_limit_minutes was previously enforced only by the frontend's
+        # localStorage-backed countdown, which a student can reset by
+        # clearing that key — the deadline itself was never checked here.
+        # A small grace period absorbs real network/render lag on a
+        # legitimate last-second auto-submit; StartQuizView is the one that
+        # actually closes out an attempt that missed even the grace period,
+        # so a stale PENDING attempt never blocks a fresh one.
+        if quiz.time_limit_minutes:
+            deadline = attempt.started_at + timedelta(
+                minutes=quiz.time_limit_minutes, seconds=SUBMIT_GRACE_SECONDS,
+            )
+            if timezone.now() > deadline:
+                raise ValidationError(
+                    "Time's up for this attempt — it has been closed out. "
+                    "Start a new attempt to try again."
+                )
+
         score = 0
         attempt.answers.all().delete()
 
@@ -334,7 +356,7 @@ class QuestionResultSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     text = serializers.CharField()
     selected_choice = serializers.CharField()
-    correct_choice = serializers.CharField()
+    correct_choice = serializers.CharField(allow_blank=True, default="")
     is_correct = serializers.BooleanField()
     explanation = serializers.CharField(
         allow_blank=True, default="No explanation")
@@ -376,6 +398,7 @@ class QuizResultSerializer(serializers.Serializer):
     score = serializers.IntegerField()
     submitted_at = serializers.DateTimeField()
     attempt_number = serializers.IntegerField(default=1)
+    answers_revealed = serializers.BooleanField(default=True)
     questions = QuestionResultSerializer(many=True)
 
     # ── analytics (results + analytics screen) ──────────────────────────

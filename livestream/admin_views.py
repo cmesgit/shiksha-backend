@@ -27,6 +27,7 @@ from .models import (
     StreamHealthSample,
 )
 from .services import attendance as attendance_svc
+from .services.room_admin import close_room
 from .views import broadcast_session_update
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,7 @@ def admin_stream_end(request, session_id):
     if s.actual_ended_at is None:
         s.actual_ended_at = now
     s.save(update_fields=["status", "teacher_left_at", "actual_ended_at"])
+    close_room(s.room_name)
     broadcast_session_update(s)
     return Response({"detail": "Session ended.", "status": "COMPLETED"})
 

@@ -85,6 +85,28 @@ class DeleteRecordingView(APIView):
         recording = get_object_or_404(SessionRecording, id=recording_id)
         if not teaches_subject(request.user, recording.subject):
             return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Deleting only the DB row orphans the Bunny Stream video — it keeps
+        # billing forever with nothing in this app pointing at it. Bunny's
+        # delete is best-effort: a network hiccup or an already-gone video
+        # must never block removing the (broken/duplicate/wrong) DB row the
+        # teacher is actually trying to clear.
+        if recording.bunny_video_id:
+            url = (
+                f"https://video.bunnycdn.com/library/"
+                f"{settings.BUNNY_LIBRARY_ID}/videos/{recording.bunny_video_id}"
+            )
+            try:
+                requests.delete(
+                    url, headers={"AccessKey": settings.BUNNY_API_KEY}, timeout=10,
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Bunny video delete failed for %s: %s",
+                    recording.bunny_video_id, e,
+                )
+
         recording.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -142,17 +164,38 @@ class SaveRecordingView(APIView):
         if not video_id:
             return Response({"error": "video_id is required."}, status=400)
 
+        # live_session_id was accepted by the frontend but silently dropped
+        # here — the model's own FK comment says this link is what lets the
+        # admin console show a recording in the context of its source
+        # session (and is the prerequisite for any future egress
+        # automation). When given, it also backfills batch/session_date so
+        # a teacher recording a real class doesn't have to re-enter what
+        # the LiveSession already knows.
+        live_session = None
+        live_session_id = request.data.get("live_session_id")
+        if live_session_id:
+            from livestream.models import LiveSession
+            live_session = get_object_or_404(
+                LiveSession, id=live_session_id, subject=subject,
+            )
+
         # Optional — NULL means course-wide (every batch of the subject sees
-        # it), the model's own default for a manual upload with no source
-        # LiveSession to inherit scope from.
+        # it). Explicit batch_id wins; otherwise inherit the source live
+        # session's batch when there is one.
         batch = None
         batch_id = request.data.get("batch_id")
         if batch_id:
             batch = get_object_or_404(Batch, id=batch_id)
+        elif live_session:
+            batch = live_session.batch
+
+        if not session_date and live_session:
+            session_date = live_session.start_time.date()
 
         recording = SessionRecording.objects.create(
             subject=subject,
             batch=batch,
+            live_session=live_session,
             title=title,
             description=description,
             session_date=session_date or None,

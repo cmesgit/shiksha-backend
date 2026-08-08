@@ -16,6 +16,8 @@ class SessionRecordingSerializer(serializers.ModelSerializer):
             "subject",
             "subject_name",
             "chapter",
+            "batch",
+            "live_session",
             "title",
             "description",
             "session_date",

@@ -11,11 +11,40 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from .models import StudyMaterial, MaterialFile
 from .serializers import StudyMaterialSerializer
 from .validators import validate_material_file
+from django.db.models import Q
+from django.core.exceptions import PermissionDenied
+
 from courses.models import Chapter, Batch
+from courses.services import teaches_subject
 from enrollments.models import Enrollment
 from livestream.services.notifications import push_ws_notification
 from accounts.auth_flow import get_active_profile
-from enrollments.services import active_batch_id
+from enrollments.services import active_batch_id, has_active_subscription
+
+
+def _authorize_subject_materials(request, subject):
+    """Gate material reads on the same rule the Student* views already
+    enforce: a teacher assigned to the subject, or a learner profile with an
+    active subscription to the subject's course.
+
+    Returns (allowed, batch_id). batch_id is None for a teacher (sees every
+    batch's material) or an unscoped student subscription; when set, callers
+    must filter to Q(batch__isnull=True) | Q(batch_id=batch_id) to preserve
+    the batch isolation StudentSubjectMaterials/StudentCourseMaterials
+    already enforce — ChapterMaterials/SubjectMaterials/StudyMaterialDetail
+    previously skipped both the subscription check AND this filter.
+    """
+    if teaches_subject(request.user, subject):
+        return True, None
+    profile = get_active_profile(request)
+    if has_active_subscription(
+        user=request.user, course=subject.course, learner_profile=profile,
+    ):
+        batch_id = active_batch_id(
+            learner_profile=profile, course_id=subject.course_id,
+        )
+        return True, batch_id
+    return False, None
 
 
 # ===============================
@@ -26,10 +55,16 @@ class ChapterMaterials(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, chapter_id):
-        chapter = get_object_or_404(Chapter, id=chapter_id)
+        chapter = get_object_or_404(
+            Chapter.objects.select_related("subject__course"), id=chapter_id
+        )
+        allowed, batch_id = _authorize_subject_materials(request, chapter.subject)
+        if not allowed:
+            raise PermissionDenied("No active subscription for this course.")
         materials = (
             StudyMaterial.objects
             .filter(chapter=chapter)
+            .filter(Q(batch__isnull=True) | Q(batch_id=batch_id) if batch_id else Q())
             # chapter__subject: the serializer reports subject_id/subject_name.
             .select_related("chapter__subject", "batch")
             .prefetch_related("files")
@@ -54,7 +89,13 @@ class UploadStudyMaterial(APIView):
         custom_chapter = request.data.get("custom_chapter")
 
         if chapter_id:
-            chapter = get_object_or_404(Chapter, id=chapter_id)
+            chapter = get_object_or_404(
+                Chapter.objects.select_related("subject"), id=chapter_id
+            )
+            if not teaches_subject(request.user, chapter.subject):
+                raise PermissionDenied(
+                    "You are not assigned to teach this subject."
+                )
         elif custom_chapter:
             subject_id = request.data.get("subject_id")
             if not subject_id:
@@ -63,6 +104,10 @@ class UploadStudyMaterial(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             subject = get_object_or_404(Subject, id=subject_id)
+            if not teaches_subject(request.user, subject):
+                raise PermissionDenied(
+                    "You are not assigned to teach this subject."
+                )
             chapter = Chapter.objects.create(
                 subject=subject,
                 title=custom_chapter
@@ -98,7 +143,17 @@ class UploadStudyMaterial(APIView):
         )
 
         for fid in file_ids:
-            file = get_object_or_404(MaterialFile, id=fid)
+            # Only an unclaimed temp file this user uploaded (or a legacy
+            # NULL-uploader row, grandfathered per the model's own comment)
+            # can be attached — stops claiming/re-parenting another
+            # teacher's file by guessing or reading its UUID.
+            file = get_object_or_404(
+                MaterialFile.objects.filter(
+                    Q(uploaded_by=request.user) | Q(uploaded_by__isnull=True)
+                ),
+                id=fid,
+                material__isnull=True,
+            )
             file.material = material
             file.save()
 
@@ -154,10 +209,16 @@ class SubjectMaterials(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, subject_id):
-        subject = get_object_or_404(Subject, id=subject_id)
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"), id=subject_id
+        )
+        allowed, batch_id = _authorize_subject_materials(request, subject)
+        if not allowed:
+            raise PermissionDenied("No active subscription for this course.")
         materials = (
             StudyMaterial.objects
             .filter(chapter__subject=subject)
+            .filter(Q(batch__isnull=True) | Q(batch_id=batch_id) if batch_id else Q())
             # chapter__subject: the serializer reports subject_id/subject_name.
             .select_related("chapter__subject", "batch")
             .prefetch_related("files")
@@ -177,7 +238,6 @@ class StudentSubjectMaterials(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, subject_id):
-        from django.db.models import Q
         subject = get_object_or_404(
             Subject.objects.select_related("course"), id=subject_id)
         # Batch isolation: course-wide materials (batch IS NULL) + this
@@ -256,8 +316,6 @@ class StudentCourseMaterials(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, course_id):
-        from django.db.models import Q
-
         # Scope the batch to the ACTIVE PROFILE, not just the account — two
         # children on one account can sit in different batches of one course.
         batch_id = active_batch_id(
@@ -290,10 +348,17 @@ class StudyMaterialDetail(APIView):
     def get(self, request, material_id):
         material = get_object_or_404(
             StudyMaterial.objects
-            .select_related("chapter__subject", "batch")
+            .select_related("chapter__subject__course", "batch")
             .prefetch_related("files"),
             id=material_id
         )
+        allowed, batch_id = _authorize_subject_materials(
+            request, material.chapter.subject
+        )
+        if not allowed:
+            raise PermissionDenied("No active subscription for this course.")
+        if batch_id is not None and material.batch_id not in (None, batch_id):
+            raise PermissionDenied("This material is not available to your batch.")
         serializer = StudyMaterialSerializer(
             material,
             context={"request": request}
@@ -322,7 +387,9 @@ class UploadTempFile(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        temp = MaterialFile.objects.create(file=file, material=None)
+        temp = MaterialFile.objects.create(
+            file=file, material=None, uploaded_by=request.user
+        )
         return Response({
             "id": str(temp.id),
             "file_name": temp.filename(),

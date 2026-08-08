@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import timedelta
 
 import requests
 from django.conf import settings
@@ -755,12 +756,38 @@ class StartQuizView(APIView):
         ).order_by("-attempt_number").first()
 
         if existing_pending:
-            # Student refreshed the page or navigated back — resume the same attempt
-            return Response(
-                {"detail": "Resuming existing attempt.",
-                    "attempt_id": existing_pending.id},
-                status=status.HTTP_200_OK,
-            )
+            expired = False
+            if quiz.time_limit_minutes:
+                from .serializers import SUBMIT_GRACE_SECONDS
+                deadline = existing_pending.started_at + timedelta(
+                    minutes=quiz.time_limit_minutes, seconds=SUBMIT_GRACE_SECONDS,
+                )
+                expired = timezone.now() > deadline
+            if not expired:
+                # Student refreshed the page or navigated back — resume the same attempt
+                return Response(
+                    {
+                        "detail": "Resuming existing attempt.",
+                        "attempt_id": existing_pending.id,
+                        "started_at": existing_pending.started_at,
+                        "expires_at": (
+                            existing_pending.started_at
+                            + timedelta(minutes=quiz.time_limit_minutes)
+                            if quiz.time_limit_minutes else None
+                        ),
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            # Missed the deadline without ever calling submit (tab closed,
+            # browser crashed, or the auto-submit request itself failed) —
+            # close it out as a 0-answer submission rather than resuming it
+            # forever, which would otherwise permanently block a fresh
+            # attempt. No StudentAnswer rows exist yet for this attempt
+            # (they're only written by SubmitQuizView.save()), so there is
+            # nothing to score.
+            existing_pending.status = QuizAttempt.STATUS_SUBMITTED
+            existing_pending.submitted_at = timezone.now()
+            existing_pending.save(update_fields=["status", "submitted_at"])
 
         # Create a new attempt (first attempt or re-attempt after submitting).
         # Attempt numbering is per profile — each child counts from 1.
@@ -780,7 +807,15 @@ class StartQuizView(APIView):
         )
 
         return Response(
-            {"detail": "Quiz started successfully.", "attempt_id": new_attempt.id},
+            {
+                "detail": "Quiz started successfully.",
+                "attempt_id": new_attempt.id,
+                "started_at": new_attempt.started_at,
+                "expires_at": (
+                    new_attempt.started_at + timedelta(minutes=quiz.time_limit_minutes)
+                    if quiz.time_limit_minutes else None
+                ),
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -849,6 +884,16 @@ class CheckAnswerView(APIView):
                 status=403,
             )
 
+        # StartQuizView already required an active subscription to create
+        # the attempt, but a practice attempt is untimed and quizzes never
+        # expire — re-checking here closes the gap where a subscription
+        # lapses while an attempt sits open indefinitely.
+        from enrollments.services import has_active_subscription
+        if not has_active_subscription(
+            user=request.user, course=quiz.subject.course, learner_profile=learner,
+        ):
+            raise PermissionDenied("Your subscription for this course has expired.")
+
         attempt = QuizAttempt.objects.filter(
             quiz=quiz, learner_profile=learner, status=QuizAttempt.STATUS_PENDING,
         ).order_by("-attempt_number").first()
@@ -861,13 +906,22 @@ class CheckAnswerView(APIView):
         except (TypeError, ValueError):
             time_spent = 0
 
-        StudentAnswer.objects.update_or_create(
+        # First answer is final — the frontend already enforces this client
+        # side (feedback locks the question), this closes the same rule
+        # server side so a direct API call can't re-answer after seeing the
+        # correct choice, which would otherwise let practice "accuracy"
+        # (fed into teacher-facing analytics) be gamed for free.
+        existing = StudentAnswer.objects.filter(
+            attempt=attempt, question=question
+        ).first()
+        if existing:
+            raise PermissionDenied("This question has already been answered.")
+
+        StudentAnswer.objects.create(
             attempt=attempt, question=question,
-            defaults={
-                "selected_choice": choice,
-                "is_correct": choice.is_correct,
-                "time_spent_seconds": time_spent,
-            },
+            selected_choice=choice,
+            is_correct=choice.is_correct,
+            time_spent_seconds=time_spent,
         )
 
         correct_choice = next(
@@ -1009,6 +1063,17 @@ class QuizResultView(APIView):
         if not attempt:
             raise ValidationError("No submitted attempt found.")
 
+        # Retakes are unlimited by design (see StartQuizView) — the answer
+        # key is only revealed on a student's first `reveal_answers_after`
+        # attempts, so reading it can't be combined with a fresh retake for
+        # a free score. Practice mode is exempt: instant per-question
+        # feedback is that mode's whole point, already scoped separately
+        # (CheckAnswerView), not this end-of-attempt review.
+        answers_revealed = (
+            quiz.quiz_type == Quiz.TYPE_PRACTICE
+            or attempt.attempt_number <= quiz.reveal_answers_after
+        )
+
         result_questions = []
         topic_stats = {}      # topic -> [correct, total]
         difficulty_stats = {}  # difficulty -> [correct, total]
@@ -1024,9 +1089,12 @@ class QuizResultView(APIView):
                 "id": q.id,
                 "text": q.text,
                 "selected_choice": answer.selected_choice.text,
-                "correct_choice": correct_choice.text if correct_choice else "",
+                "correct_choice": (
+                    correct_choice.text
+                    if answers_revealed and correct_choice else ""
+                ),
                 "is_correct": answer.is_correct,
-                "explanation": q.explanation,
+                "explanation": q.explanation if answers_revealed else "",
                 "topic": q.topic,
                 "difficulty": q.difficulty,
                 "time_spent_seconds": answer.time_spent_seconds,
@@ -1123,6 +1191,7 @@ class QuizResultView(APIView):
             "score": attempt.score,
             "submitted_at": attempt.submitted_at,
             "attempt_number": attempt.attempt_number,
+            "answers_revealed": answers_revealed,
             "questions": result_questions,
             "class_avg_percent": class_avg_percent,
             "percentile": percentile,
@@ -1146,11 +1215,20 @@ class StudentQuizSubjectsView(APIView):
         # through quizzes — so subjects without quizzes also appear
         from django.utils import timezone as _tz
         from enrollments.models import Subscription as _Sub
+        from accounts.auth_flow import get_active_profile
+
+        # Scoped to the ACTIVE PROFILE, not the account — every other
+        # student view in this file does this (e.g. StudentDashboardView);
+        # filtering on `course__subscriptions__user` alone leaked sibling
+        # profiles' subject/teacher metadata into each other's picker.
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response([], status=403)
 
         subjects = (
             Subject.objects
             .filter(
-                course__subscriptions__user=request.user,
+                course__subscriptions__learner_profile=learner,
                 course__subscriptions__status=_Sub.STATUS_ACTIVE,
                 course__subscriptions__expires_at__gt=_tz.now(),
             )

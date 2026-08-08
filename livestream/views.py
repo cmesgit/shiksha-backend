@@ -8,6 +8,7 @@ from .serializers import (
     SessionNoteSerializer,
 )
 from .services.token import generate_livekit_token
+from .services.room_admin import close_room
 from .services import attendance as attendance_svc
 from .models import (
     LiveSession,
@@ -348,9 +349,11 @@ def create_live_session(request):
 @permission_classes([IsAuthenticated])
 def cancel_live_session(request, session_id):
     user = request.user
-    session = get_object_or_404(LiveSession, id=session_id)
-
+    # Role/context check first: a non-teacher gets the same 403 whether or
+    # not session_id exists, instead of a 404-vs-403 split that would leak
+    # which UUIDs are real sessions.
     require_teacher_context(request)
+    session = get_object_or_404(LiveSession, id=session_id)
 
     if session.created_by != user:
         return Response({"detail": "You can only cancel your own sessions."}, status=403)
@@ -361,7 +364,14 @@ def cancel_live_session(request, session_id):
     if session.status == LiveSession.STATUS_COMPLETED:
         return Response({"detail": "Cannot cancel a completed session."}, status=400)
 
-    if timezone.now() >= session.start_time:
+    # A teacher can join (and so move status to WAITING_FOR_TEACHER/LIVE)
+    # before session.start_time — join_live_session has no time gate on the
+    # teacher branch. The old check here only looked at wall-clock time
+    # against start_time, so an early-joined, genuinely-live session with
+    # students already connected could still be "cancelled" out from under
+    # them. Gate on status instead: cancel is only for a session nobody has
+    # joined yet.
+    if session.status != LiveSession.STATUS_SCHEDULED:
         return Response({"detail": "Cannot cancel a session that has already started. Use End instead."}, status=400)
 
     session.status = LiveSession.STATUS_CANCELLED
@@ -379,9 +389,8 @@ def cancel_live_session(request, session_id):
 @permission_classes([IsAuthenticated])
 def reschedule_live_session(request, session_id):
     user = request.user
-    session = get_object_or_404(LiveSession, id=session_id)
-
     require_teacher_context(request)
+    session = get_object_or_404(LiveSession, id=session_id)
 
     if session.created_by != user:
         return Response({"detail": "You can only edit your own sessions."}, status=403)
@@ -411,9 +420,8 @@ def reschedule_live_session(request, session_id):
 @permission_classes([IsAuthenticated])
 def end_live_session(request, session_id):
     user = request.user
-    session = get_object_or_404(LiveSession, id=session_id)
-
     require_teacher_context(request)
+    session = get_object_or_404(LiveSession, id=session_id)
 
     if str(session.created_by_id) != str(user.id):
         return Response({"detail": "Only the session creator can end it."}, status=403)
@@ -426,7 +434,20 @@ def end_live_session(request, session_id):
 
     session.status = LiveSession.STATUS_COMPLETED
     session.teacher_left_at = None
-    session.save(update_fields=["status", "teacher_left_at"])
+    # Unlike admin_stream_end / the room_finished webhook handler, this path
+    # never stamped actual_ended_at — despite being the most common way a
+    # session actually ends. Left NULL forever unless LiveKit's own
+    # room_finished webhook happens to arrive later.
+    if session.actual_ended_at is None:
+        session.actual_ended_at = timezone.now()
+    session.save(update_fields=["status", "teacher_left_at", "actual_ended_at"])
+
+    # Ending a session previously only flipped this DB flag — the LiveKit
+    # room stayed open and every already-connected participant kept
+    # publishing/consuming media regardless, bounded only by their token's
+    # TTL (up to 2h). Close the room server-side so "End" actually ends it.
+    close_room(session.room_name)
+
     broadcast_session_update(session)
     return Response({"detail": "Session ended.", "status": "COMPLETED"})
 
