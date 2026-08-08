@@ -19,6 +19,11 @@ ALLOWED_HOSTS = ["testserver", "localhost", "127.0.0.1"]
 # Avoid channels/redis layer + celery brokers during isolated tests.
 CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+# No Redis in this sandbox — run tasks inline instead of trying (and failing) to
+# reach a broker. Without this, anything that calls .delay() (e.g. seed_demo_data's
+# LiveSession creation, which notifies enrollments) hangs for minutes retrying.
+CELERY_TASK_ALWAYS_EAGER = True
+CELERY_TASK_EAGER_PROPAGATES = True
 
 # Local-only: lets a Vite dev server on any localhost port hit this throwaway
 # server for manual browser verification. Never used outside this settings
