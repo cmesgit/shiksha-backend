@@ -38,3 +38,9 @@ SESSION_COOKIE_SECURE = False
 COOKIE_DOMAIN = None
 SESSION_COOKIE_DOMAIN = None
 CSRF_COOKIE_DOMAIN = None
+
+# No nginx in front of local runserver/test runs — secure_media_view must
+# stream files itself instead of issuing an X-Accel-Redirect nginx would
+# otherwise never resolve, which would make every private-media response
+# come back as literally nothing.
+MEDIA_SERVED_BY_NGINX = False

@@ -7,9 +7,14 @@ from django.conf.urls.static import static
 from django.conf import settings
 
 from content.sitemaps import CONTENT_SITEMAPS
+from .media_views import secure_media_view
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    # Authenticated gate for private media (see config/media_security.py) —
+    # this is the only door in; nginx's own /media/ alias no longer serves
+    # anything outside the explicit public sub-paths.
+    path("api/media/secure/<path:name>", secure_media_view),
     path("sitemap.xml", sitemap, {"sitemaps": CONTENT_SITEMAPS},
          name="django.contrib.sitemaps.views.sitemap"),
     path("api/accounts/", include("accounts.urls")),

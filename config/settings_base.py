@@ -129,6 +129,14 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 MEDIA_URL = "/media/"
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
+# Whether nginx sits in front of this process and understands
+# X-Accel-Redirect (config/media_views.py's secure_media_view relies on
+# it to hand private-file bytes off to nginx's internal-only location
+# instead of streaming them through a Django worker). True for the real
+# dev/prod deployment; settings_test overrides this to False since local
+# `manage.py runserver`/test runs have no nginx in front at all.
+MEDIA_SERVED_BY_NGINX = True
+
 # Bunny Edge Storage (config/bunny_storage.py) — separate product/credentials
 # from the BUNNY_* video (Stream) settings below. Falls back to local disk
 # when unset, so dev/test environments without a real Bunny Storage Zone
@@ -141,7 +149,7 @@ STORAGES = {
     "default": (
         {"BACKEND": "config.bunny_storage.BunnyStorage"}
         if BUNNY_STORAGE_ZONE and BUNNY_STORAGE_API_KEY
-        else {"BACKEND": "django.core.files.storage.FileSystemStorage"}
+        else {"BACKEND": "config.secure_local_storage.SecureLocalStorage"}
     ),
     "staticfiles": {
         "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",

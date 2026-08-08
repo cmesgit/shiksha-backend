@@ -1,0 +1,328 @@
+# Authorization for locally-stored media files served through
+# config.media_views.secure_media_view.
+#
+# Everything under MEDIA_ROOT used to be served directly by nginx with zero
+# auth (`location /media/ { alias ...; }`) — any file URL, once known,
+# leaked, or guessed, was permanently and anonymously downloadable
+# regardless of what the API endpoint that handed the URL out actually
+# checked. Confirmed live on the dev droplet 2026-08-08: this included
+# teacher KYC documents (id proofs, certificates), children's profile
+# photos, payment/enrollment receipts, and scholarship guardian-
+# verification documents — not just study materials.
+#
+# Paths meant to be genuinely public (marketing images, course thumbnails,
+# public bio photos) are tagged PUBLIC in the _RULES table below — nginx's
+# own config keeps serving those directly, unauthenticated, for
+# CDN-cacheability, and normally never reaches this module at all; the
+# PUBLIC branch here exists as defense-in-depth in case nginx's allowlist
+# and this table ever drift apart.
+#
+# Every other prefix MUST resolve through a check function in _RULES, or
+# access is denied by default (see `is_authorized`) — an unmapped path is
+# a bug to fix here, never a reason to silently allow it through.
+#
+# nginx's own /media/ location blocks must mirror this table's PUBLIC
+# entries exactly (see deploy notes) — nginx has no way to consult this
+# Python table directly, so the two are kept in sync by hand.
+
+from django.db.models import Q
+
+
+def _staff_or(user, ok):
+    return bool(user.is_authenticated and (user.is_staff or ok))
+
+
+def _check_study_material(request, name):
+    from materials.models import MaterialFile
+    from materials.views import _authorize_subject_materials
+
+    mf = (
+        MaterialFile.objects
+        .select_related("material__chapter__subject__course")
+        .filter(file=name).first()
+    )
+    if not mf or not mf.material_id:
+        return False
+    allowed, _ = _authorize_subject_materials(request, mf.material.chapter.subject)
+    return allowed
+
+
+def _check_teacher_application_doc(request, name):
+    """teachers/certificates|id_proofs|agreements|skills/videos|skills/files —
+    documents submitted as part of a teacher's own application (KYC, signed
+    agreement, skill-application media). The applying teacher, or staff
+    reviewing the application."""
+    from accounts.models import TeacherProfile
+
+    user = request.user
+    if not user.is_authenticated:
+        return False
+    return _staff_or(user, TeacherProfile.objects.filter(user=user).filter(
+        Q(qualification_certificate=name) | Q(id_proof_front=name) |
+        Q(id_proof_back=name) | Q(signed_agreement=name) |
+        Q(skill_supporting_video=name)
+    ).exists())
+
+
+def _check_teacher_application_video(request, name):
+    """skills/applications/videos/ — TeacherApplication.intro_video, the
+    guest-expert application clip. Unreviewed at submission time, so
+    private like the other application documents above (skill_experts/ is
+    the separate, already-public post-approval directory photo)."""
+    from skills.models import TeacherApplication
+
+    user = request.user
+    if not user.is_authenticated:
+        return False
+    return _staff_or(
+        user, TeacherApplication.objects.filter(user=user, intro_video=name).exists()
+    )
+
+
+def _check_learner_photo(request, name):
+    from accounts.models import LearnerProfile
+
+    user = request.user
+    if not user.is_authenticated:
+        return False
+    return _staff_or(user, LearnerProfile.objects.filter(account=user).filter(
+        Q(profile_photo=name) | Q(avatar_image=name)
+    ).exists())
+
+
+def _check_enrollment_receipt(request, name):
+    from enrollments.models import Enrollment
+
+    user = request.user
+    if not user.is_authenticated:
+        return False
+    return _staff_or(user, Enrollment.objects.filter(user=user, receipt=name).exists())
+
+
+def _check_assignment_file(request, name):
+    """assignments/files/ — a teacher-uploaded attachment (legacy single
+    Assignment.attachment, or the newer AssignmentFile). Any student
+    actively enrolled in the assignment's course, or the assigned teacher."""
+    from assignments.models import Assignment, AssignmentFile
+    from courses.services import teaches_subject
+    from enrollments.models import Enrollment
+
+    user = request.user
+    if not user.is_authenticated:
+        return False
+    if user.is_staff:
+        return True
+
+    af = (
+        AssignmentFile.objects
+        .select_related("assignment__chapter__subject")
+        .filter(file=name).first()
+    )
+    assignment = af.assignment if af else (
+        Assignment.objects.select_related("chapter__subject")
+        .filter(attachment=name).first()
+    )
+    if not assignment:
+        return False
+
+    subject = assignment.chapter.subject
+    if teaches_subject(user, subject):
+        return True
+    return Enrollment.objects.filter(
+        user=user, course=subject.course, status=Enrollment.STATUS_ACTIVE,
+    ).exists()
+
+
+def _check_assignment_submission(request, name):
+    """assignments/submissions/ — a student's own submitted file. Only that
+    student, or the subject's assigned teacher — classmates never see it."""
+    from assignments.models import AssignmentSubmission
+    from courses.services import teaches_subject
+
+    user = request.user
+    if not user.is_authenticated:
+        return False
+    if user.is_staff:
+        return True
+
+    sub = (
+        AssignmentSubmission.objects
+        .select_related("assignment__chapter__subject")
+        .filter(submitted_file=name).first()
+    )
+    if not sub:
+        return False
+    if sub.student_id == user.id:
+        return True
+    return teaches_subject(user, sub.assignment.chapter.subject)
+
+
+def _check_chat_attachment(request, name):
+    """chat_attachments/<conversation_id>/... — the conversation id is
+    already embedded in the path; check the requester is a participant
+    (learner, teacher, or staff side of the polymorphic Participant row)."""
+    import re
+    from chat.models import Conversation
+
+    user = request.user
+    if not user.is_authenticated:
+        return False
+    if user.is_staff:
+        return True
+
+    m = re.match(r"^chat_attachments/([0-9a-fA-F-]{36})/", name)
+    if not m:
+        return False
+    return Conversation.objects.filter(id=m.group(1)).filter(
+        Q(participants__learner_profile__account=user) |
+        Q(participants__teacher_profile__user=user) |
+        Q(participants__staff_user=user)
+    ).exists()
+
+
+def _check_guardian_doc(request, name):
+    """scholarship/guardian_docs/ — the single most sensitive path in this
+    table. Identity-verification documents for the Instant Scholarship
+    module's guardian/parent verification flow (see scholarship/models.py's
+    GuardianVerification docstring for the DPDP Act §9 reasoning). Only the
+    submitting parent/guardian account, or staff reviewing it."""
+    from scholarship.models import GuardianVerification
+
+    user = request.user
+    if not user.is_authenticated:
+        return False
+    return _staff_or(
+        user, GuardianVerification.objects.filter(account=user, manual_document=name).exists()
+    )
+
+
+def _check_counseling_report(request, name):
+    """counselors/reports/ — a SessionReport attachment. The student the
+    session was for (via the appointment's learner profile), the
+    counselor who wrote it, or staff."""
+    from counseling.models import SessionReport
+
+    user = request.user
+    if not user.is_authenticated:
+        return False
+    if user.is_staff:
+        return True
+    report = (
+        SessionReport.objects
+        .select_related("appointment__learner_profile", "counselor")
+        .filter(attachment=name).first()
+    )
+    if not report:
+        return False
+    if report.counselor.user_id == user.id:
+        return True
+    if report.appointment.booked_by_id == user.id:
+        return True
+    profile = getattr(report.appointment, "learner_profile", None)
+    return bool(profile and profile.account_id == user.id)
+
+
+def _check_skill_payment_doc(request, name):
+    """skills/ad_subscriptions/receipts/ + skills/payments/receipts/ —
+    payment-proof uploads. The paying learner/expert, or staff."""
+    from skills.subscription_models import ExpertAdSubscription
+    from skills.payment_models import SkillPaymentRequest
+
+    user = request.user
+    if not user.is_authenticated:
+        return False
+    if user.is_staff:
+        return True
+    if ExpertAdSubscription.objects.filter(
+        expert__teacher_profile__user=user, receipt=name,
+    ).exists():
+        return True
+    return SkillPaymentRequest.objects.filter(
+        learner_profile__account=user, receipt=name,
+    ).exists()
+
+
+# A single sentinel, not a check function — matching this prefix means
+# "genuinely public, no auth needed" and short-circuits before any DB work.
+PUBLIC = object()
+
+# (prefix, check_fn_or_PUBLIC). Deliberately NOT consulted in declaration
+# order — see _ordered_rules() below. This matters because some public
+# prefixes are strict PARENTS of a private one (bare "teachers/" — the
+# public bio photo — contains "teachers/certificates/", which must stay
+# private): checking PUBLIC_PREFIXES and _PRIVATE_CHECKS as two separate
+# passes (the original version of this module did exactly this) meant
+# `name.startswith(PUBLIC_PREFIXES)` matched "teachers/certificates/x.pdf"
+# against the bare "teachers/" public prefix and returned public BEFORE
+# the private check for "teachers/certificates/" ever ran — silently
+# exposing every teacher's KYC documents the moment the bare "teachers/"
+# prefix was added for the bio photo. Both are folded into one table now,
+# resolved strictly by prefix length, so specificity always wins regardless
+# of which was written first or which list it lives in.
+_RULES = (
+    ("content/", PUBLIC),
+    ("subjects/", PUBLIC),
+    ("courses/thumbnails/", PUBLIC),
+    ("boards/logos/", PUBLIC),
+    ("counselors/photos/", PUBLIC),
+    ("counseling/guides/", PUBLIC),
+    ("skills/marketing/", PUBLIC),
+    ("skills/courses/covers/", PUBLIC),
+    ("skills/categories/", PUBLIC),
+    ("skills/experts/", PUBLIC),
+    ("teachers/skills/images/", PUBLIC),  # approved "supporting image" —
+                                            # the *application* video below
+                                            # stays private until reviewed
+    ("teachers/", PUBLIC),  # bio photo — MUST be shorter than every
+                              # teachers/* private prefix below so those
+                              # win on specificity, never this one
+    ("study_materials/", _check_study_material),
+    ("teachers/certificates/", _check_teacher_application_doc),
+    ("teachers/id_proofs/", _check_teacher_application_doc),
+    ("teachers/agreements/", _check_teacher_application_doc),
+    ("teachers/skills/videos/", _check_teacher_application_doc),
+    ("teachers/skills/files/", _check_teacher_application_doc),
+    ("skills/applications/videos/", _check_teacher_application_video),
+    ("learners/photos/", _check_learner_photo),
+    ("learners/avatar/", _check_learner_photo),
+    ("enrollment_receipts/", _check_enrollment_receipt),
+    ("assignments/submissions/", _check_assignment_submission),
+    ("assignments/files/", _check_assignment_file),
+    ("chat_attachments/", _check_chat_attachment),
+    ("scholarship/guardian_docs/", _check_guardian_doc),
+    ("counselors/reports/", _check_counseling_report),
+    ("skills/ad_subscriptions/receipts/", _check_skill_payment_doc),
+    ("skills/payments/receipts/", _check_skill_payment_doc),
+)
+
+# Sorted longest-prefix-first once at import time, so correctness never
+# depends on the declaration order above (which is grouped for
+# readability — public block first, then private — not by length).
+_ORDERED_RULES = sorted(_RULES, key=lambda rule: -len(rule[0]))
+
+
+def _lookup(name):
+    for prefix, rule in _ORDERED_RULES:
+        if name.startswith(prefix):
+            return rule
+    return None
+
+
+def is_public(name):
+    return _lookup(name) is PUBLIC
+
+
+def is_authorized(request, name):
+    """True iff `request.user` may read this media path. Deny-by-default —
+    an unmapped prefix (forum/ attachments, documents/ explore-library
+    files, and a few unidentified legacy paths as of 2026-08-08 — see
+    MEDIA_SECURITY_TODO.md) resolves to staff-only until someone adds a
+    real rule for it above."""
+    rule = _lookup(name)
+    if rule is PUBLIC:
+        return True  # secure_media_view only exists for defense-in-depth
+                       # here — nginx serves public paths directly and
+                       # never reaches this view for them.
+    if rule is not None:
+        return rule(request, name)
+    return bool(request.user.is_authenticated and request.user.is_staff)
