@@ -323,6 +323,19 @@ class ExpertProfile(models.Model):
     def intro_video_ready(self):
         return self.intro_video_status == 4  # Finished
 
+    def sync_primary_category(self):
+        """Keep the legacy single `category` pointing at the first active
+        listing's category, so clients that predate multi-skill keep working.
+
+        Called after every listing write. Deliberately a no-op when the expert
+        has no active listing — blanking `category` would drop them out of every
+        category filter on the public directory.
+        """
+        first = self.listings.filter(is_active=True).order_by("order").first()
+        if first and self.category_id != first.category_id:
+            self.category = first.category
+            self.save(update_fields=["category", "updated_at"])
+
     def intro_video_embed_url(self):
         """Playable Bunny embed URL, or None if there's no finished video."""
         if not (self.intro_video_bunny_id and self.intro_video_ready()):
@@ -567,6 +580,15 @@ class SkillSession(models.Model):
     expert = models.ForeignKey(
         ExpertProfile, on_delete=models.CASCADE, related_name="sessions"
     )
+    # WHICH skill this session was booked for. Nullable + SET_NULL so deleting
+    # an unused listing never destroys session history, and so sessions booked
+    # before multi-skill existed (backfilled to the expert's order=0 listing by
+    # migration 0028) stay valid. This FK is what makes per-skill ratings and
+    # per-skill session counts possible — without it multi-skill is cosmetic.
+    listing = models.ForeignKey(
+        "skills.SkillListing", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="sessions",
+    )
 
     contact_mode = models.CharField(
         max_length=10, choices=CONTACT_CHOICES, default=CONTACT_SESSION
@@ -671,3 +693,6 @@ from .attendance_models import (  # noqa: F401, E402
     SkillSessionAttendance, SkillSessionAttendanceInterval,
 )
 from .blackout_models import ExpertBlackoutDate  # noqa: F401, E402
+from .listing_models import (  # noqa: F401, E402
+    SkillListing, SkillListingSlot, ListingModerationFlag,
+)

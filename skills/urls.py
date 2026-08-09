@@ -4,8 +4,20 @@
 # (the messaging_views module is deleted; all chat now runs through the chat app).
 """skills/urls.py — mounted under /api/skill/ in project urls.py."""
 from django.urls import path
+from .directory_views import ExpertListView, DirectoryStatsView   # replaces views.ExpertListView
+from .listing_views import (
+    TeacherListingListView, TeacherListingDetailView, TeacherListingSlotsView,
+)
+from .listing_intro_video import (
+    ListingIntroVideoView, ListingIntroVideoSaveView, ListingIntroVideoStatusView,
+)
+from .admin_views import (
+    AdminReviewListView, AdminReviewDetailView,
+    AdminListingListView, SuspendListingView,
+    AdminModerationFlagListView, AdminModerationFlagResolveView,
+)
 from .views import (
-    CategoryListView, ExpertListView, ExpertDetailView, StudentRegisterView,
+    CategoryListView, ExpertDetailView, StudentRegisterView,
     TeacherApplicationCreateView, InterviewSlotListView, ScheduleInterviewView,
     ReviewQueueView, SubmitEvaluationView, SessionRequestView, CreateOrderView,
     AdminExpertListView, AdminExpertDetailView, AdminExpertSuspendView,   # NEW
@@ -70,6 +82,7 @@ urlpatterns = [
     path("categories/",                              CategoryListView.as_view()),
     path("marketing/",                               MarketingBlockListView.as_view()),
     path("teachers/",                                ExpertListView.as_view()),
+    path("directory-stats/",                         DirectoryStatsView.as_view()),
     path("teachers/<uuid:expert_id>/",               ExpertDetailView.as_view()),
     # NEW: powers the Book-a-Tutor weekly grid (was unwired → grid showed empty,
     # so every slot looked "closed" and nothing could be booked).
@@ -138,6 +151,14 @@ urlpatterns = [
     path("teacher/sessions/<uuid:session_id>/decline/",      TeacherDeclineSessionView.as_view()),
     path("teacher/sessions/<uuid:session_id>/reschedule/",   TeacherRescheduleSessionView.as_view()),
     path("teacher/profile/",                                 TeacherProfileUpdateView.as_view()),
+    # ── Teacher — multi-skill listings ───────────────────────────────────────
+    path("teacher/listings/",                                TeacherListingListView.as_view()),
+    path("teacher/listings/<uuid:listing_id>/",              TeacherListingDetailView.as_view()),
+    path("teacher/listings/<uuid:listing_id>/slots/",        TeacherListingSlotsView.as_view()),
+    path("teacher/listings/<uuid:listing_id>/intro-video/",  ListingIntroVideoView.as_view()),
+    path("teacher/listings/<uuid:listing_id>/intro-video/save/",   ListingIntroVideoSaveView.as_view()),
+    path("teacher/listings/<uuid:listing_id>/intro-video/status/", ListingIntroVideoStatusView.as_view()),
+
     path("teacher/intro-video/create/",                      CreateIntroVideoSlotView.as_view()),
     path("teacher/intro-video/upload-url/",                  IntroVideoSignedUploadUrlView.as_view()),
     path("teacher/intro-video/save/",                        SaveIntroVideoView.as_view()),
@@ -167,4 +188,12 @@ urlpatterns = [
     path("admin/categories/<uuid:category_id>/",                 AdminSkillCategoryDetailView.as_view()),
     path("admin/marketing/",                                     AdminSkillMarketingBlockListView.as_view()),
     path("admin/marketing/<str:key>/",                           AdminSkillMarketingBlockDetailView.as_view()),
+
+    # ── Admin — review + listing moderation ──────────────────────────────────
+    path("admin/reviews/",                                       AdminReviewListView.as_view()),
+    path("admin/reviews/<uuid:review_id>/",                      AdminReviewDetailView.as_view()),
+    path("admin/listings/",                                      AdminListingListView.as_view()),
+    path("admin/listings/<uuid:listing_id>/suspend/",            SuspendListingView.as_view()),
+    path("admin/moderation-flags/",                              AdminModerationFlagListView.as_view()),
+    path("admin/moderation-flags/<uuid:flag_id>/resolve/",       AdminModerationFlagResolveView.as_view()),
 ]

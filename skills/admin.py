@@ -19,6 +19,32 @@ from .course_models import (
 from .review_models import ExpertReview
 from .payment_models import SkillPaymentRequest
 from .marketing_models import SkillMarketingBlock
+from .listing_models import SkillListing, ListingModerationFlag
+
+
+@admin.register(SkillListing)
+class SkillListingAdmin(admin.ModelAdmin):
+    list_display = ("title", "expert", "category", "price_paise",
+                    "is_active", "is_suspended", "rating", "sessions_count")
+    list_filter = ("is_active", "is_suspended", "category")
+    search_fields = ("title", "description")
+    # `is_suspended` is the admin-only takedown switch — a teacher's own pause
+    # toggle (is_active) cannot lift it. See listing_views.patch.
+    actions = ["suspend_listings", "unsuspend_listings"]
+
+    @admin.action(description="Suspend selected skills")
+    def suspend_listings(self, request, queryset):
+        queryset.update(is_suspended=True)
+
+    @admin.action(description="Lift suspension on selected skills")
+    def unsuspend_listings(self, request, queryset):
+        queryset.update(is_suspended=False)
+
+
+@admin.register(ListingModerationFlag)
+class ListingModerationFlagAdmin(admin.ModelAdmin):
+    list_display = ("expert", "reason", "listing", "is_open", "created_at")
+    list_filter = ("is_open", "reason")
 
 
 # ─────────────────────────────────────────────────────────────────────────

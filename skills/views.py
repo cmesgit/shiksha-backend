@@ -143,53 +143,32 @@ def _slot_to_datetime(slot_key):
 # DIRECTORY (public)
 # =====================================================
 
-def _rank_experts(qs):
-    """Advertised experts first, then by reach, then rating/sessions.
-
-    `is_advertised()` is per-row (depends on billing mode + subscription), so we
-    can't express it as a single ORDER BY. We split into advertised / rest,
-    each ordered by reach→rating→sessions, then concatenate. Directory sizes are
-    small, so materialising is fine.
-    """
-    rows = list(
-        qs.order_by("-reach_count", "-rating", "-sessions_count")
-    )
-    advertised = [e for e in rows if e.is_advertised()]
-    rest       = [e for e in rows if not e.is_advertised()]
-    return advertised + rest
-
-
-def _apply_location_filter(qs, request):
-    """Optional 'find a tutor near me (offline)' filtering.
-
-    Query params:
-      offline=1            → only experts who teach at home / can travel
-      pincode / district / state → location match (any that are provided)
-    Matching is inclusive (OR across the provided location fields); ranking
-    above still floats advertised experts to the top.
-    """
-    p = request.query_params
-    if (p.get("offline") or "").lower() in ("1", "true", "yes"):
-        qs = qs.filter(class_mode__in=[ExpertProfile.MODE_HOME, ExpertProfile.MODE_TRAVEL])
-
-    from django.db.models import Q
-    loc = Q()
-    if p.get("pincode"):
-        loc |= Q(pincode=p["pincode"].strip())
-    if p.get("district"):
-        loc |= Q(district__iexact=p["district"].strip())
-    if p.get("state"):
-        loc |= Q(state__iexact=p["state"].strip())
-    if loc:
-        qs = qs.filter(loc)
-    return qs
-
-
 class CategoryListView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        qs = SkillCategory.objects.filter(is_active=True)
+        from django.db.models import Count, IntegerField, OuterRef, Q, Subquery, Value
+        from django.db.models.functions import Coalesce
+
+        # An expert counts once for a category they teach, whether through
+        # their primary `category` or the `categories` M2M — the same OR the
+        # directory's ?cat= filter uses, so the count matches what clicking it
+        # actually returns. It has to be a DISTINCT subquery rather than two
+        # added Counts: listing writes mirror the primary category into the
+        # M2M, so summing the two would double every expert.
+        per_category = (
+            ExpertProfile.objects
+            .filter(Q(category_id=OuterRef("pk")) | Q(categories=OuterRef("pk")), is_listed=True)
+            .order_by()
+            .values(one=Value(1))
+            .annotate(n=Count("pk", distinct=True))
+            .values("n")
+        )
+        qs = SkillCategory.objects.filter(is_active=True).annotate(
+            expert_count=Coalesce(
+                Subquery(per_category, output_field=IntegerField()), Value(0)
+            )
+        )
         return Response(
             SkillCategorySerializer(qs, many=True, context={"request": request}).data
         )
@@ -205,32 +184,14 @@ class MarketingBlockListView(APIView):
         return Response({row["key"]: row for row in data})
 
 
-class ExpertListView(APIView):
-    permission_classes = [AllowAny]
-
-    def get(self, request):
-        qs = (
-            ExpertProfile.objects
-            .filter(is_listed=True)
-            .select_related("category", "teacher_profile__user")
-        )
-        cat = request.query_params.get("cat") or request.query_params.get("category")
-        if cat:
-            from django.db.models import Q
-            qs = qs.filter(
-                Q(category__slug=cat) | Q(categories__slug=cat)
-            ).distinct()
-
-        search = (request.query_params.get("search") or "").strip()
-        if search:
-            qs = qs.filter(headline__icontains=search)
-
-        qs = _apply_location_filter(qs, request)
-
-        experts = _rank_experts(qs)
-        return Response(
-            ExpertCardSerializer(experts, many=True, context={"request": request}).data
-        )
+# NOTE: the public directory view that used to live here (ExpertListView) moved
+# to skills/directory_views.py in the Skill Browse redesign. It matched ONLY
+# `headline` on ?search= and returned every expert unpaginated; the replacement
+# adds the ten filters the sidebar exposes, widens search to skill tags /
+# subject / listing titles / teacher name, and paginates. Route is unchanged.
+# Its two helpers (_rank_experts, _apply_location_filter) went with it — the
+# advertised-first pass now lives in directory_views._ORDER plus its Python
+# split, and the location filters are ten lines of directory_views.get().
 
 
 class ExpertDetailView(APIView):
@@ -517,13 +478,36 @@ class CreateOrderView(APIView):
             except (TypeError, ValueError):
                 duration = 60
 
+        # WHICH skill is being booked. Multi-skill experts price each listing
+        # separately, so the listing — not the profile's legacy hourly_rate —
+        # decides what the learner owes. Falls back to the primary listing so a
+        # client that predates multi-skill still books something real, and to
+        # the expert rate when they have no listing at all.
+        listing_id = request.data.get("listing") or (
+            draft.get("listing") if isinstance(draft, dict) else None
+        )
+        listing = None
+        if listing_id:
+            listing = expert.listings.filter(id=listing_id).first()
+            if not listing:
+                raise NotFound("That skill isn't offered by this teacher.")
+            if not listing.is_bookable:
+                raise ValidationError(
+                    {"listing": "That skill isn't taking bookings right now."}
+                )
+        else:
+            listing = expert.listings.filter(
+                is_active=True, is_suspended=False
+            ).order_by("order").first()
+
         # The rate the learner owes the expert directly (paise on the model).
-        amount = expert.hourly_rate or 0
+        amount = listing.price_paise if listing else (expert.hourly_rate or 0)
 
         with transaction.atomic():
             session = SkillSession.objects.create(
                 learner_profile=learner,
                 expert=expert,
+                listing=listing,
                 contact_mode=SkillSession.CONTACT_SESSION,
                 # A booking is a REQUEST until the expert accepts it. It must
                 # land in the expert's "Pending requests" queue (status
@@ -549,6 +533,8 @@ class CreateOrderView(APIView):
             "ok":            True,
             "bookingId":     booking_ref,
             "sessionId":     str(session.id),
+            "listing":       str(listing.id) if listing else None,
+            "listing_title": listing.title if listing else None,
             "status":        session.status,   # 'requested' — awaiting expert acceptance
             "amount":        amount,
             "amount_rupees": amount // 100,
