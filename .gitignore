@@ -38,3 +38,11 @@ credentials.json
 
 # OS files
 .DS_Store
+
+# Celery beat's runtime schedule database (last-run timestamps). It is rewritten
+# constantly by the running beat process, so tracking it meant the deploy box
+# always had a dirty working tree — and any commit touching it made `git pull`
+# on the server refuse outright. Generated state, never source.
+celerybeat-schedule
+celerybeat-schedule.*
+celerybeat.pid
