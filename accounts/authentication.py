@@ -1,3 +1,4 @@
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import InvalidToken
 
@@ -29,4 +30,26 @@ class CookieJWTAuthentication(JWTAuthentication):
         if is_revoked(validated_token.get("sid")):
             return None
 
-        return self.get_user(validated_token), validated_token
+        # get_user() raises AuthenticationFailed when the token is perfectly
+        # valid but its subject can't be used — "User not found" (the row is
+        # gone) or "User is inactive". Because that propagated, a browser
+        # holding such a cookie got 401 on EVERY endpoint, including the two it
+        # needs to recover: /accounts/login/ and /accounts/logout/. AllowAny
+        # never got a look in, since authentication runs first. The user could
+        # not log in, could not log out, and had no way to clear an httpOnly
+        # cookie from the UI — the account was unreachable until they manually
+        # cleared site data.
+        #
+        # That is reachable in normal operation, not just in theory: SignupView
+        # hard-deletes unverified accounts older than 24h, so anyone still
+        # holding an access cookie for one gets locked out this way.
+        #
+        # Anonymous is the correct answer — same treatment this class already
+        # gives a malformed token and a revoked session. Protected endpoints
+        # still 401 (via IsAuthenticated), and public ones work again.
+        try:
+            user = self.get_user(validated_token)
+        except AuthenticationFailed:
+            return None
+
+        return user, validated_token
