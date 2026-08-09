@@ -357,7 +357,26 @@ class FormFillupView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def _is_teacher(self, user):
-        return "TEACHER" in user.get_active_roles()
+        """Serve the teacher form to anyone who HAS a teacher identity, not just
+        an approved one.
+
+        This used to be `"TEACHER" in user.get_active_roles()`, and
+        get_active_roles() filters is_active=True. A faculty applicant's TEACHER
+        role is created is_active=False and only flipped on approval, so a
+        pending applicant was served the LEARNER form — which has no
+        signed_agreement field. That made the signed agreement impossible to
+        supply: this endpoint gave them the wrong form, and the teacher-app
+        editor that does handle it sits behind teacher context, which returns
+        403 not_approved until the track is live. So the one document the
+        signup flow promises they'll upload "right after you verify your email"
+        had nowhere to go, while admins were asked to approve on the strength
+        of it.
+
+        Presence of a TeacherProfile is the right test: it means they applied.
+        Approval still gates everything else (teacher context, dashboards) —
+        this only decides which form to render and write.
+        """
+        return getattr(user, "teacher_profile", None) is not None
 
     def get(self, request):
         user = request.user

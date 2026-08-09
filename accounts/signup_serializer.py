@@ -414,8 +414,16 @@ class SignupSerializer(serializers.Serializer):
             raise ValidationError(tp.track_add_block_reason(track))
         tp.set_track_status(track, self._initial_status_for(track))
         tp.sync_type_from_tracks()
-        tp.save(update_fields=["academy_status", "skill_status",
-                               "teacher_type", "is_approved"])
+        fields = ["academy_status", "skill_status", "teacher_type", "is_approved"]
+        # Re-applying after a rejection must clear the old verdict, otherwise
+        # academy_rejection_reason/academy_rejected_at survive onto the fresh
+        # PENDING application and the profile picker keeps showing the previous
+        # rejection reason for an application nobody has looked at yet.
+        if track == TeacherProfile.TRACK_ACADEMY:
+            tp.academy_rejection_reason = ""
+            tp.academy_rejected_at = None
+            fields += ["academy_rejection_reason", "academy_rejected_at"]
+        tp.save(update_fields=fields)
 
         # If the newly added track is live (skill), make sure the role is
         # active so they can enter that dashboard right away.
