@@ -93,6 +93,23 @@ def _profile_target(request):
 # Profile/avatar edits go through StudentProfileView / TeacherProfileView.
 
 
+def _api_base_url(request):
+    """Absolute base URL of THIS api host, for building emailed links.
+
+    An explicit API_BASE_URL still wins, so deployments that pin it are
+    unaffected. Otherwise we derive it from the incoming request rather than
+    falling back to the hardcoded "https://api.shikshacom.com" this used to
+    use: on the dev droplet, with no API_BASE_URL exported, that default made
+    dev signups email PRODUCTION verification links, so clicking one verified
+    nothing on the environment that had sent it. Deriving from the request is
+    also what both callers' docstrings always claimed to do.
+    """
+    explicit = os.getenv("API_BASE_URL")
+    if explicit:
+        return explicit.rstrip("/")
+    return request.build_absolute_uri("/").rstrip("/")
+
+
 # =====================================================
 # SIGNUP — PUBLIC
 # =====================================================
@@ -102,8 +119,7 @@ class SignupView(APIView):
     throttle_classes = [SignupRateThrottle]
 
     def _get_api_base_url(self, request):
-        """Return the correct API base URL based on the current host."""
-        return os.getenv("API_BASE_URL", "https://api.shikshacom.com")
+        return _api_base_url(request)
 
     def post(self, request):
         # Free the email if a previous unverified signup was abandoned.
@@ -191,8 +207,17 @@ class VerifyEmailView(APIView):
     permission_classes = [AllowAny]
 
     def _get_frontend_base_url(self, request):
-        """Return the correct frontend URL based on the current host."""
-        return os.getenv("FRONTEND_BASE_URL", "https://shikshacom.com")
+        """Where to send the browser after verifying — the FRONTEND host.
+
+        Reads the Django setting, not os.getenv. settings_dev.py already sets
+        FRONTEND_BASE_URL = "https://dev.shikshacom.com", but this used to call
+        os.getenv("FRONTEND_BASE_URL", "https://shikshacom.com") which ignores
+        the setting entirely: unless the OS env var happened to be exported on
+        the droplet, a DEV signup's verification link bounced the user into
+        PRODUCTION. settings_base still honours the env var, so deployments that
+        do set it are unaffected.
+        """
+        return getattr(settings, "FRONTEND_BASE_URL", None) or "https://www.shikshacom.com"
 
     def get(self, request):
         token_value = request.query_params.get("token")
@@ -237,8 +262,7 @@ class ResendVerificationEmailView(APIView):
     throttle_classes = [ResendVerificationRateThrottle]
 
     def _get_api_base_url(self, request):
-        """Return the correct API base URL based on the current host."""
-        return os.getenv("API_BASE_URL", "https://api.shikshacom.com")
+        return _api_base_url(request)
 
     def post(self, request):
         email = request.data.get("email", "").strip().lower()
