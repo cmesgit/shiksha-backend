@@ -14,7 +14,7 @@ from accounts.auth_flow import get_active_profile
 from quizzes.models import Quiz, QuizAttempt
 from assignments.models import Assignment
 from courses.progress_stats import average_quiz_score_pct
-from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream, BoardNotifyRequest
+from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream, BoardNotifyRequest, CourseNotifyRequest
 from content.models import ShowcaseCourse
 from .serializers import (
     CourseSerializer, SubjectSerializer, BoardSerializer, CourseDetailSerializer,
@@ -1444,6 +1444,7 @@ class CourseCatalogView(APIView):
                 "id": str(c.id),
                 "title": c.title,
                 "description": c.description,
+                "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
                 "price": c.price,  # paise (₹1 = 100 paise); 0 = free
                 "mrp": c.mrp,
                 "discount_label": c.discount_label,
@@ -1539,6 +1540,24 @@ class BoardNotifyMeView(APIView):
         if not email or "@" not in email:
             return Response({"detail": "A valid email is required."}, status=status.HTTP_400_BAD_REQUEST)
         BoardNotifyRequest.objects.get_or_create(board=board, email=email)
+        return Response({"ok": True}, status=status.HTTP_201_CREATED)
+
+
+class CourseNotifyMeView(APIView):
+    """POST /courses/public/<course_id>/notify/ — anonymous "notify me when
+    {course} launches" lead capture from a coming-soon course card/quick-view.
+    Mirrors BoardNotifyMeView exactly (same throttle scope, same
+    get_or_create dedup by (course, email))."""
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "board_notify"
+
+    def post(self, request, course_id):
+        course = get_object_or_404(Course, id=course_id)
+        email = (request.data.get("email") or "").strip().lower()
+        if not email or "@" not in email:
+            return Response({"detail": "A valid email is required."}, status=status.HTTP_400_BAD_REQUEST)
+        CourseNotifyRequest.objects.get_or_create(course=course, email=email)
         return Response({"ok": True}, status=status.HTTP_201_CREATED)
 
 

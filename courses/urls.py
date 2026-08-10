@@ -21,6 +21,7 @@ from .views import (
     PublicCourseBySlugView,
     PublicFeaturedView,
     PublicNavMenuView,
+    CourseNotifyMeView,
     AdminCourseListView,
     AdminBoardListCreateView,
     AdminBoardDetailView,
@@ -131,6 +132,7 @@ urlpatterns = [
     path("public/nav-menu/",           PublicNavMenuView.as_view()),
     path("public/by-slug/<slug:slug>/", PublicCourseBySlugView.as_view()),
     path("public/<uuid:course_id>/",   PublicCourseDetailView.as_view()),
+    path("public/<uuid:course_id>/notify/", CourseNotifyMeView.as_view()),
     # PER-BATCH PROGRESS — teacher-ticked chapter coverage, per batch.
     # "batches" and "my-batch-progress" are static segments, so the bare
     # <uuid:course_id> routes further down never capture them.

@@ -590,3 +590,27 @@ class BoardNotifyRequest(models.Model):
 
     def __str__(self):
         return f"{self.email} → {self.board.name}"
+
+
+class CourseNotifyRequest(models.Model):
+    """A "notify me when {course} launches" lead, captured anonymously from a
+    coming-soon course's "Notify me" button on the public catalog. Same shape
+    and convention as BoardNotifyRequest above — visible only via Django
+    admin, no dedicated review UI requested."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="notify_requests")
+    email = models.EmailField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["course", "email"], name="unique_notify_per_course_email"),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.email = self.email.strip().lower()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.email} → {self.course.title}"

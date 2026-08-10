@@ -4,7 +4,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from .models import Course, Subject, Chapter, SubjectTeacher, Batch
 from .models_recordings import SessionRecording
-from .models import Board, BoardNotifyRequest
+from .models import Board, BoardNotifyRequest, CourseNotifyRequest
 
 # =========================
 # COURSE ADMIN
@@ -172,6 +172,14 @@ class BoardNotifyRequestAdmin(admin.ModelAdmin):
     list_display = ("board", "email", "created_at")
     list_filter = ("board",)
     search_fields = ("email", "board__name")
+    ordering = ("-created_at",)
+
+
+@admin.register(CourseNotifyRequest)
+class CourseNotifyRequestAdmin(admin.ModelAdmin):
+    list_display = ("course", "email", "created_at")
+    list_filter = ("course",)
+    search_fields = ("email", "course__title")
     ordering = ("-created_at",)
 
 

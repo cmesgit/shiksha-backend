@@ -431,7 +431,15 @@ class ShowcaseCourse(TimeStampedModel):
     )
     icon = models.CharField(
         max_length=12, default="book",
-        choices=[("book", "Book"), ("flask", "Flask"), ("calc", "Calculator")],
+        # Keys must match shiksha-frontend's FeaturedCourses.jsx CAT_ICON_PATHS,
+        # which already has SVGs for all of these — this choices list previously
+        # only exposed 3 of the 7+ icons the public frontend could already render.
+        choices=[
+            ("book", "Book"), ("flask", "Flask"), ("calc", "Calculator"),
+            ("compass", "Compass"), ("pulse", "Pulse"), ("target", "Target"),
+            ("bank", "Bank"), ("shield", "Shield"), ("medal", "Medal"),
+            ("institution", "Institution"),
+        ],
     )
     link_path = models.CharField(max_length=200, blank=True, default="/courses")
     link_state = models.JSONField(
