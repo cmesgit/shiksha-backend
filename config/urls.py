@@ -1,12 +1,22 @@
 # Place at: config/urls.py
 
 from django.contrib import admin
+from django.contrib.sitemaps.views import sitemap
 from django.urls import path, include
 from django.conf.urls.static import static
 from django.conf import settings
 
+from content.sitemaps import CONTENT_SITEMAPS
+from .media_views import secure_media_view
+
 urlpatterns = [
     path("admin/", admin.site.urls),
+    # Authenticated gate for private media (see config/media_security.py) —
+    # this is the only door in; nginx's own /media/ alias no longer serves
+    # anything outside the explicit public sub-paths.
+    path("api/media/secure/<path:name>", secure_media_view),
+    path("sitemap.xml", sitemap, {"sitemaps": CONTENT_SITEMAPS},
+         name="django.contrib.sitemaps.views.sitemap"),
     path("api/accounts/", include("accounts.urls")),
     path("api/courses/", include("courses.urls")),
     path("api/assignments/", include("assignments.urls")),
@@ -31,6 +41,7 @@ urlpatterns = [
     path("api/counseling/", include("counseling.urls")),
     path("api/content/", include("content.urls")),  # ← ADDED (content CMS app)
     path("api/news/", include("news.urls")),  # ← ADDED (GNews proxy)
+    path("api/scholarship/", include("scholarship.urls")),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

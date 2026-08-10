@@ -1,5 +1,6 @@
 from .models import Quiz
 
+from datetime import timedelta
 from django.db.models import Avg, Max, Min, Count
 import uuid
 from django.db import transaction
@@ -18,6 +19,10 @@ from .models import (
     QuizAttempt,
     StudentAnswer,
 )
+
+# Absorbs real network/render lag on a legitimate last-second auto-submit;
+# not meant to give any meaningful extra working time.
+SUBMIT_GRACE_SECONDS = 20
 
 
 class ChoiceAdminSerializer(serializers.ModelSerializer):
@@ -89,8 +94,8 @@ class BulkQuestionCreateSerializer(serializers.Serializer):
 class QuizCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quiz
-        fields = ["id", "subject", "title",
-                  "description", "time_limit_minutes", "quiz_type"]
+        fields = ["id", "subject", "title", "description",
+                  "time_limit_minutes", "quiz_type", "reveal_answers_after"]
         read_only_fields = ["id"]
 
     def validate_subject(self, subject):
@@ -109,6 +114,7 @@ class QuizCreateSerializer(serializers.ModelSerializer):
 
 
 class QuizDashboardSerializer(serializers.ModelSerializer):
+    subject_id = serializers.UUIDField(read_only=True)
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
@@ -118,13 +124,14 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
     score = serializers.SerializerMethodField()
     attempts_count = serializers.SerializerMethodField()
+    best_score = serializers.SerializerMethodField()
 
     class Meta:
         model = Quiz
         fields = [
-            "id", "title", "subject_name", "course_title", "teacher_name",
+            "id", "title", "subject_id", "subject_name", "course_title", "teacher_name",
             "created_at", "total_marks", "questions_count", "time_limit_minutes",
-            "status", "score", "is_published", "attempts_count", "quiz_type",
+            "status", "score", "best_score", "is_published", "attempts_count", "quiz_type",
         ]
 
     def get_status(self, obj):
@@ -155,6 +162,19 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
         # Fallback: at least 1 if in submitted_ids
         submitted_ids = self.context.get("submitted_ids", set())
         return 1 if obj.id in submitted_ids else 0
+
+    def get_best_score(self, obj):
+        # Best-ever percent across every submitted attempt (not just the
+        # latest, which `score` above reflects) — reuses the same prefetch,
+        # no extra query.
+        attempts = getattr(obj, "user_submitted_attempts", [])
+        if not attempts or not obj.total_marks:
+            return None
+        best = max(a.score for a in attempts)
+        # Clamped: a quiz whose total_marks fell out of sync with its
+        # questions (edited after an attempt was scored) can otherwise
+        # divide out to well over 100% — seen live on a dev-seeded quiz.
+        return round(min(100.0, best * 100.0 / obj.total_marks), 1)
 
 
 class QuizSubmitSerializer(serializers.Serializer):
@@ -201,6 +221,23 @@ class QuizSubmitSerializer(serializers.Serializer):
         if not attempt:
             raise ValidationError(
                 "No active attempt found. Please start the quiz first.")
+
+        # time_limit_minutes was previously enforced only by the frontend's
+        # localStorage-backed countdown, which a student can reset by
+        # clearing that key — the deadline itself was never checked here.
+        # A small grace period absorbs real network/render lag on a
+        # legitimate last-second auto-submit; StartQuizView is the one that
+        # actually closes out an attempt that missed even the grace period,
+        # so a stale PENDING attempt never blocks a fresh one.
+        if quiz.time_limit_minutes:
+            deadline = attempt.started_at + timedelta(
+                minutes=quiz.time_limit_minutes, seconds=SUBMIT_GRACE_SECONDS,
+            )
+            if timezone.now() > deadline:
+                raise ValidationError(
+                    "Time's up for this attempt — it has been closed out. "
+                    "Start a new attempt to try again."
+                )
 
         score = 0
         attempt.answers.all().delete()
@@ -291,6 +328,7 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
     Teacher draft preview — includes correct answers and explanations.
     Used by QuizDetailDraftView for unpublished quiz review.
     """
+    subject_id = serializers.UUIDField(source="subject.id", read_only=True)
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
@@ -302,8 +340,8 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quiz
         fields = [
-            "id", "title", "description", "subject_name", "course_title",
-            "teacher_name", "created_at", "time_limit_minutes",
+            "id", "title", "description", "subject_id", "subject_name",
+            "course_title", "teacher_name", "created_at", "time_limit_minutes",
             "is_published", "questions", "quiz_type", "review_status",
             "review_note", "reviewed_at", "submitted_for_review_at",
             "is_editable",
@@ -318,7 +356,7 @@ class QuestionResultSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     text = serializers.CharField()
     selected_choice = serializers.CharField()
-    correct_choice = serializers.CharField()
+    correct_choice = serializers.CharField(allow_blank=True, default="")
     is_correct = serializers.BooleanField()
     explanation = serializers.CharField(
         allow_blank=True, default="No explanation")
@@ -360,6 +398,7 @@ class QuizResultSerializer(serializers.Serializer):
     score = serializers.IntegerField()
     submitted_at = serializers.DateTimeField()
     attempt_number = serializers.IntegerField(default=1)
+    answers_revealed = serializers.BooleanField(default=True)
     questions = QuestionResultSerializer(many=True)
 
     # ── analytics (results + analytics screen) ──────────────────────────
@@ -403,6 +442,9 @@ class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
 
 class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="subject.name", read_only=True)
+    # The flat faculty Quizzes list needs the id, not just the name, to build
+    # subject pills and to target per-subject actions at the right class.
+    subject_id = serializers.UUIDField(source="subject.id", read_only=True)
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
     questions_count = serializers.IntegerField(read_only=True)
@@ -415,7 +457,8 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quiz
         fields = [
-            "id", "title", "created_at", "subject_name", "course_title",
+            "id", "title", "created_at", "subject_name", "subject_id",
+            "course_title",
             "is_published", "questions_count",
             "total_attempts", "submission_rate", "average_score",
             "highest_score", "lowest_score", "quiz_type", "review_status",

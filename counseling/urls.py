@@ -4,9 +4,14 @@
 
 from django.urls import path
 
+from .guide_views import (
+    AdminGuideDetailView, AdminGuideListView, AdminGuidePublishView,
+    AdminGuideReorderView, AdminGuideSectionListView, AdminSectionDetailView,
+    GuideChapterDetailView, GuideDetailView, GuideListView, GuideViewCountView,
+)
 from .views import (
     ListSpecializationsView, CounselorDirectoryView, CounselorDetailView,
-    CounselorSlotsView,
+    CounselorSlotsView, PublicStatsView,
     IntakeView, MatchView,
     CreateAppointmentView, MyAppointmentsView, CancelAppointmentView,
     AssessmentView, SubmitAssessmentView, MyReportsView,
@@ -23,6 +28,7 @@ urlpatterns = [
     path("counselors/", CounselorDirectoryView.as_view()),
     path("counselors/<int:counselor_id>/", CounselorDetailView.as_view()),
     path("counselors/<int:counselor_id>/slots/", CounselorSlotsView.as_view()),
+    path("stats/", PublicStatsView.as_view()),
 
     # Student
     path("intake/", IntakeView.as_view()),
@@ -50,4 +56,18 @@ urlpatterns = [
     path("admin/applications/", AdminApplicationsView.as_view()),
     path("admin/applications/<int:profile_id>/action/", AdminApplicationActionView.as_view()),
     path("admin/appointments/", AdminAppointmentsView.as_view()),
+
+    # Career guide library — public
+    path("guides/", GuideListView.as_view()),
+    path("guides/<slug:slug>/", GuideDetailView.as_view()),
+    path("guides/<slug:slug>/chapters/<slug:chapter_slug>/", GuideChapterDetailView.as_view()),
+    path("guides/<slug:slug>/view/", GuideViewCountView.as_view()),
+
+    # Career guide library — staff CRUD
+    path("admin/guides/", AdminGuideListView.as_view()),
+    path("admin/guides/<int:pk>/", AdminGuideDetailView.as_view()),
+    path("admin/guides/<int:pk>/sections/", AdminGuideSectionListView.as_view()),
+    path("admin/guides/<int:pk>/reorder/", AdminGuideReorderView.as_view()),
+    path("admin/guides/<int:pk>/publish/", AdminGuidePublishView.as_view()),
+    path("admin/sections/<int:pk>/", AdminSectionDetailView.as_view()),
 ]

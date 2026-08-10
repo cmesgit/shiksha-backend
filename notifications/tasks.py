@@ -192,6 +192,41 @@ def send_session_reminders():
                   f"/sessions/group/{gs.short_code or gs.pk}")
                  for u in people])
 
+        # ── Scheduled live class sessions (course/batch) ────────────────
+        # Previously uncovered by this sweep — enrolled students got no
+        # email reminder at all for a scheduled course class, only an
+        # in-app nudge to the teacher via a separate, email-less task.
+        from livestream.models import LiveSession
+        from enrollments.models import Enrollment
+
+        for ls in (LiveSession.objects
+                   .filter(status=LiveSession.STATUS_SCHEDULED,
+                           start_time__gte=lo, start_time__lt=hi)
+                   .select_related("course", "subject", "created_by", "batch")):
+            when = _fmt_when(ls.start_time)
+            label = ls.title or ls.subject.name
+            body = f"{label} starts at {when}."
+            sms_vars = {"title": label[:30], "when": when}
+            verb = f"livestream.reminder_{tag}"
+
+            enroll_qs = (Enrollment.objects
+                         .filter(course_id=ls.course_id, status=Enrollment.STATUS_ACTIVE)
+                         .select_related("learner_profile"))
+            if ls.batch_id:
+                enroll_qs = enroll_qs.filter(Q(batch_id=ls.batch_id) | Q(batch__isnull=True))
+
+            recipients = [
+                (e.user, verb, f"Upcoming class: {label}", body, sms_vars,
+                 e.learner_profile, f"/live-sessions/{ls.id}")
+                for e in enroll_qs
+            ]
+            if ls.created_by_id:
+                recipients.append((
+                    ls.created_by, verb, f"Upcoming class: {label}", body,
+                    sms_vars, None, f"/teacher/live-sessions/{ls.id}",
+                ))
+            total += _remind("livestream", ls.pk, offset, recipients)
+
     if total:
         logger.info("reminders: sent %s notification(s)", total)
     return total

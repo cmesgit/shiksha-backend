@@ -423,9 +423,44 @@ class TeacherSubjectAssignmentsView(generics.ListAPIView):
         return (
             Assignment.objects
             .filter(chapter__subject=subject)
-            .select_related("chapter")
+            .select_related("chapter__subject", "batch")
             .prefetch_related("files")
             .annotate(total_submissions=Count("submissions", distinct=True))
+            .order_by("-created_at")
+        )
+
+
+# ==========================================
+# TEACHER — ALL ASSIGNMENTS ACROSS THEIR SUBJECTS
+# ==========================================
+
+class TeacherAllAssignmentsView(generics.ListAPIView):
+    """Every assignment across every subject this teacher is assigned to.
+
+    The faculty Assignments screen is one flat, subject-filtered list (design
+    handoff screen 11). Before this existed the frontend called
+    TeacherSubjectAssignmentsView once per subject and flattened client-side —
+    an N+1 that grew with the teacher's timetable.
+
+    Scope is the same as the per-subject view's permission check, expressed as
+    a filter instead: subjects where a SubjectTeacher row links this user.
+    """
+
+    serializer_class = TeacherAssignmentListSerializer
+    permission_classes = [IsAuthenticated, IsTeacherContext]
+
+    def get_queryset(self):
+        return (
+            Assignment.objects
+            .filter(chapter__subject__subject_teachers__teacher=self.request.user)
+            # chapter__subject + batch: the serializer reports subject_id/
+            # subject_name and batch_id/batch_name off these.
+            .select_related("chapter__subject", "batch")
+            .prefetch_related("files")
+            .annotate(total_submissions=Count("submissions", distinct=True))
+            # distinct(): a teacher listed twice on one subject would otherwise
+            # duplicate every assignment on it.
+            .distinct()
             .order_by("-created_at")
         )
 

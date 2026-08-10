@@ -2,34 +2,48 @@ from .serializers import ChapterSerializer
 from .models import Chapter
 from django.db.models import Count, Prefetch, Q
 from .models import SubjectTeacher
-from accounts.models import Role
+from accounts.models import LearnerProfile, Role
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework import status
 from enrollments.models import Enrollment, EnrollmentRequest, Subscription
 from accounts.permissions import IsTeacherContext, IsAdmin
 from accounts.auth_flow import get_active_profile
-from quizzes.models import Quiz
+from quizzes.models import Quiz, QuizAttempt
 from assignments.models import Assignment
-from .models import Course, Subject, Board
-from .serializers import CourseSerializer, SubjectSerializer, BoardSerializer
+from courses.progress_stats import average_quiz_score_pct
+from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream, BoardNotifyRequest
+from content.models import ShowcaseCourse
+from .serializers import (
+    CourseSerializer, SubjectSerializer, BoardSerializer, CourseDetailSerializer,
+    CourseCategorySerializer,
+)
+from .cache import LIST_TTL, list_cache_key
+from django.core.cache import cache
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from datetime import timedelta
+import json
 
 
 # =========================
 # CREATE COURSE
 # =========================
 
-class PublicCourseDetailView(APIView):
-    """Lightweight course detail for the enrollment page — any authenticated user can read."""
+class EnrollCourseSummaryView(APIView):
+    """Lightweight course detail for the enrollment page — any authenticated user
+    can read. (Renamed from PublicCourseDetailView: despite the old name this was
+    never anonymous-accessible, and a genuinely public/AllowAny detail view now
+    lives at PublicCourseDetailView below, `/courses/public/<id>/`.)"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, course_id):
         course = get_object_or_404(
-            Course.objects.select_related("board", "stream"),
+            Course.objects.select_related("board", "stream").filter(
+                status__in=[Course.STATUS_PUBLISHED, Course.STATUS_ARCHIVED],
+            ),
             id=course_id,
         )
         data = {
@@ -362,6 +376,22 @@ class SubjectDashboardView(APIView):
         completed_quizzes = quiz_counts["completed"] or 0 if is_student else 0
         pending_quizzes = total_quizzes - completed_quizzes
 
+        # Avg quiz score for this subject — same score/total_marks% math as
+        # the Progress screen's stats block (courses.progress_stats), just
+        # scoped to one subject's submitted attempts instead of a whole
+        # course. None for teachers (they don't take their own quizzes) or
+        # when the student has no submitted attempts yet.
+        quiz_avg_pct = None
+        if is_student:
+            attempts = list(
+                QuizAttempt.objects.filter(
+                    quiz__subject=subject,
+                    student=user,
+                    status=QuizAttempt.STATUS_SUBMITTED,
+                ).select_related("quiz")
+            )
+            quiz_avg_pct = average_quiz_score_pct(attempts)
+
         # ── Misc counts: 1 query ──
         from courses.models_recordings import SessionRecording
         from materials.models import StudyMaterial
@@ -406,6 +436,7 @@ class SubjectDashboardView(APIView):
                 "completed": completed_quizzes,
                 "total": total_quizzes,
             },
+            "quizAvgPct": quiz_avg_pct,
             "recordingsCount": recordings_count,
             "recordings_count": recordings_count,
             "studyMaterialsCount": study_materials_count,
@@ -479,6 +510,125 @@ class SubjectChaptersView(APIView):
 
 
 # =========================
+# TEACHER ROSTER ROWS
+# =========================
+# A "student" in this app is a LearnerProfile, NOT a User: one account holds
+# many learner profiles, so a parent with three enrolled children is 1 user and
+# 3 students. Teacher rosters are therefore keyed on the learner profile —
+# keying them on the account (as these views used to) collapses siblings into a
+# single row and hands the frontend an id that identifies the family rather
+# than the student. The admin-side equivalent of these helpers is
+# ``accounts.admin_student_views._student_row`` / ``AdminStudentListView``.
+
+
+def _resolve_enrollment_profiles(enrollments):
+    """Map ``enrollment.id -> LearnerProfile or None`` for ``enrollments``.
+
+    Enrollments predating per-profile enrollment have ``learner_profile=NULL``
+    and belong to the account's DEFAULT profile — the same rule
+    ``courses.progress_stats._dual_key_q`` applies when reading a student's
+    activity. Applying it here keeps legacy students on the roster with a real
+    learner-profile id instead of dropping them or falling back to their
+    account id.
+
+    The default profile is resolved with ONE extra query covering every legacy
+    account, then picked in Python so the preference order matches
+    ``User.default_learner_profile()`` exactly: an ``is_default`` profile, else
+    a SELF profile, else the first in ``LearnerProfile.Meta.ordering``.
+    """
+    resolved = {e.id: e.learner_profile for e in enrollments if e.learner_profile_id}
+
+    legacy_account_ids = {e.user_id for e in enrollments if not e.learner_profile_id}
+    if not legacy_account_ids:
+        return resolved
+
+    by_account = {}
+    for profile in LearnerProfile.objects.filter(
+        account_id__in=legacy_account_ids, is_active=True
+    ):
+        by_account.setdefault(profile.account_id, []).append(profile)
+
+    for enrollment in enrollments:
+        if enrollment.learner_profile_id:
+            continue
+        candidates = by_account.get(enrollment.user_id, [])
+        resolved[enrollment.id] = (
+            next((p for p in candidates if p.is_default), None)
+            or next(
+                (
+                    p for p in candidates
+                    if p.relationship == LearnerProfile.RELATIONSHIP_SELF
+                ),
+                None,
+            )
+            or (candidates[0] if candidates else None)
+        )
+    return resolved
+
+
+def _roster_row_key(enrollment, profile):
+    """Dedupe key for a roster row: the STUDENT, falling back to the account
+    for rows whose profile couldn't be resolved, so those neither collapse into
+    each other nor into a real student's row."""
+    if profile is not None:
+        return ("profile", profile.id)
+    return ("account", enrollment.user_id)
+
+
+def _roster_row(enrollment, profile):
+    """One roster row. ``profile`` is the resolved LearnerProfile (see
+    ``_resolve_enrollment_profiles``), so ``id`` identifies the student; the
+    account is reported separately as ``account_id``/``email``/``username`` so
+    a teacher can still tell which family a student belongs to.
+
+    ⚠️ Several rows legitimately share the same ``account_id`` and ``email``
+    (siblings), so never treat those as a student identifier.
+    """
+    account = enrollment.user
+    row = {
+        "account_id": str(account.id),
+        "email": account.email,
+        "username": account.username,
+        "enrolled_at": enrollment.enrolled_at,
+        "batch_code": enrollment.batch_code or "",
+    }
+
+    if profile is None:
+        # The account has no active learner profile at all, so this enrollment
+        # can't be attributed to a student. Kept rather than dropped so the
+        # gap is visible instead of silently shortening the roster.
+        row.update({
+            "id": None,
+            "display_name": "",
+            "full_name": "",
+            "phone": "",
+            "student_id": "",
+            "avatar_type": None,
+            "avatar": None,
+            "unresolved_profile": True,
+        })
+        return row
+
+    row.update({
+        "id": str(profile.id),
+        # display_name is what the profile picker shows, and the only field
+        # that reliably distinguishes siblings on one account.
+        "display_name": profile.display_name,
+        "full_name": profile.full_name or f"{profile.first_name} {profile.last_name}".strip(),
+        "phone": profile.phone,
+        "student_id": profile.student_id or "",
+        "avatar_type": profile.avatar_type(),
+        "avatar": profile.avatar_value(),
+        "unresolved_profile": False,
+    })
+    return row
+
+
+def _roster_sort_key(row):
+    return (row["full_name"] or row["display_name"]).lower()
+
+
+# =========================
 # SUBJECT STUDENTS
 # =========================
 
@@ -504,32 +654,34 @@ class SubjectStudentsView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        enrollments = (
+        # Not ordered in SQL: legacy rows have learner_profile=NULL, so
+        # order_by("learner_profile__full_name") sorted them by NULL rather
+        # than by the default profile they actually resolve to. Sorted in
+        # Python below, after resolution.
+        enrollments = list(
             Enrollment.objects.filter(
                 course=subject.course,
                 status=Enrollment.STATUS_ACTIVE,
             )
             .select_related("user", "learner_profile")
-            .order_by("learner_profile__full_name")
         )
+        profiles = _resolve_enrollment_profiles(enrollments)
 
+        # Deduped even though `unique_together = ("learner_profile", "course")`
+        # already bounds it: that constraint doesn't bind NULL profiles, so an
+        # account carrying both a legacy and a migrated row for this course
+        # would otherwise emit the same student twice.
+        seen = set()
         students = []
         for enrollment in enrollments:
-            u = enrollment.user
-            profile = enrollment.learner_profile
+            profile = profiles.get(enrollment.id)
+            key = _roster_row_key(enrollment, profile)
+            if key in seen:
+                continue
+            seen.add(key)
+            students.append(_roster_row(enrollment, profile))
 
-            students.append({
-                "id": str(u.id),
-                "email": u.email,
-                "username": u.username,
-                "full_name": profile.full_name if profile else "",
-                "phone": profile.phone if profile else "",
-                "student_id": profile.student_id if profile else "",
-                "avatar_type": profile.avatar_type() if profile else None,
-                "avatar": profile.avatar_value() if profile else None,
-                "enrolled_at": enrollment.enrolled_at,
-                "batch_code": enrollment.batch_code or "",
-            })
+        students.sort(key=_roster_sort_key)
 
         return Response({
             "subject_name": subject.name,
@@ -596,40 +748,74 @@ class TeacherAllStudentsView(APIView):
 
         course_ids = [s.course_id for s in subjects]
 
-        enrollments = (
+        # Sorted in Python after profile resolution — see SubjectStudentsView.
+        enrollments = list(
             Enrollment.objects.filter(
                 course_id__in=course_ids,
                 status=Enrollment.STATUS_ACTIVE,
             )
             .select_related("user", "learner_profile", "course")
-            .order_by("learner_profile__full_name")
         )
+        profiles = _resolve_enrollment_profiles(enrollments)
 
-        seen = set()
+        # Deduped per STUDENT, not per account: this used to key `seen` on
+        # User.id, so a parent with three enrolled children showed up as one
+        # row instead of three.
+        rows_by_key = {}
         students = []
 
         for enrollment in enrollments:
-            u = enrollment.user
+            profile = profiles.get(enrollment.id)
+            key = _roster_row_key(enrollment, profile)
+            course_title = enrollment.course.title
 
-            if u.id in seen:
+            existing = rows_by_key.get(key)
+            if existing is not None:
+                # Same student, another of this teacher's courses.
+                if course_title not in existing["course_titles"]:
+                    existing["course_titles"].append(course_title)
                 continue
-            seen.add(u.id)
 
-            profile = enrollment.learner_profile
+            row = _roster_row(enrollment, profile)
+            # One student can sit in several of this teacher's courses, and
+            # dedupe keeps a single row — so list every course rather than
+            # letting whichever enrollment happened to come first decide.
+            # `course_title` stays for the existing frontend column.
+            row["course_title"] = course_title
+            row["course_titles"] = [course_title]
+            rows_by_key[key] = row
+            students.append(row)
 
-            students.append({
-                "id": str(u.id),
-                "email": u.email,
-                "username": u.username,
-                "full_name": profile.full_name if profile else "",
-                "phone": profile.phone if profile else "",
-                "student_id": profile.student_id if profile else "",
-                "avatar_type": profile.avatar_type() if profile else None,
-                "avatar": profile.avatar_value() if profile else None,
-                "course_title": enrollment.course.title,
-                "enrolled_at": enrollment.enrolled_at,
-                "batch_code": enrollment.batch_code or "",
-            })
+        students.sort(key=_roster_sort_key)
+
+        # One grouped query for every student's quiz average, rather than
+        # the N+1 you'd get calling the per-student helper once per row.
+        # Same real computation `build_progress_stats` uses for a single
+        # learner (Avg(score/quiz.total_marks*100) over SUBMITTED attempts
+        # on the teacher's own subjects) — just batched.
+        profile_ids = [row["id"] for row in students if row["id"]]
+        attempts_by_profile = {}
+        if profile_ids:
+            subject_ids = [s.id for s in subjects]
+            attempts = (
+                QuizAttempt.objects
+                .filter(
+                    quiz__subject_id__in=subject_ids,
+                    status=QuizAttempt.STATUS_SUBMITTED,
+                    learner_profile_id__in=profile_ids,
+                )
+                .select_related("quiz")
+            )
+            for attempt in attempts:
+                attempts_by_profile.setdefault(
+                    str(attempt.learner_profile_id), []
+                ).append(attempt)
+
+        for row in students:
+            row["avg_quiz_score"] = (
+                average_quiz_score_pct(attempts_by_profile.get(row["id"], []))
+                if row["id"] else None
+            )
 
         return Response({
             "total_students": len(students),
@@ -705,6 +891,8 @@ class AdminCourseListView(APIView):
                 "title": c.title,
                 "description": c.description,
                 "price": c.price,
+                "status": c.status,
+                "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
                 "enrollment_count": c.enrollment_count,
                 "created_at": c.created_at,
             }
@@ -732,6 +920,9 @@ class AdminBoardListCreateView(APIView):
                 "name": b.name,
                 "board_type": b.board_type,
                 "description": b.description,
+                "slug": b.slug,
+                "logo": request.build_absolute_uri(b.logo.url) if b.logo else None,
+                "display_order": b.display_order,
                 "is_active": b.is_active,
                 "course_count": b.course_count,
             }
@@ -739,25 +930,36 @@ class AdminBoardListCreateView(APIView):
         ])
 
     def post(self, request):
-        serializer = BoardSerializer(data=request.data)
+        serializer = BoardSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         board = serializer.save()
+        if request.FILES.get("logo"):
+            board.logo = request.FILES["logo"]
+            board.save(update_fields=["logo"])
         return Response(
-            BoardSerializer(board).data,
+            BoardSerializer(board, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
 
 
 class AdminBoardDetailView(APIView):
-    """PATCH (toggle is_active / rename) and DELETE a board."""
+    """PATCH (toggle is_active / rename / logo / display_order) and DELETE a
+    board. `logo` arrives as a multipart file, handled separately like
+    Course.thumbnail — see AdminCourseDetailView.patch."""
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def patch(self, request, board_id):
         board = get_object_or_404(Board, id=board_id)
-        serializer = BoardSerializer(board, data=request.data, partial=True)
+        serializer = BoardSerializer(
+            board, data=request.data, partial=True, context={"request": request},
+        )
         serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(serializer.data)
+        board = serializer.save()
+        if request.FILES.get("logo"):
+            board.logo = request.FILES["logo"]
+            board.save(update_fields=["logo"])
+            board.refresh_from_db()
+        return Response(BoardSerializer(board, context={"request": request}).data)
 
     def delete(self, request, board_id):
         board = get_object_or_404(Board, id=board_id)
@@ -767,6 +969,55 @@ class AdminBoardDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         board.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# =========================
+# ADMIN COURSE CATEGORY CRUD
+# =========================
+# CourseCategory powers the public catalog's category/group filters and the
+# navbar mega-menu's "competitive" tab (see PublicCourseCatalogView /
+# PublicNavMenuView above). Admin-authenticated the same way as the other
+# course-admin endpoints (IsAuthenticated + IsAdmin), following the same
+# plain APIView + path() convention as the Board CRUD immediately above
+# (courses/urls.py has no router-based ViewSet setup to match instead).
+
+class AdminCourseCategoryListCreateView(APIView):
+    """GET → list every category (active + inactive). POST → create one."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        categories = CourseCategory.objects.all()
+        return Response(CourseCategorySerializer(categories, many=True).data)
+
+    def post(self, request):
+        serializer = CourseCategorySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        category = serializer.save()
+        return Response(
+            CourseCategorySerializer(category).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AdminCourseCategoryDetailView(APIView):
+    """GET a single category; PATCH edits it; DELETE removes it."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, category_id):
+        category = get_object_or_404(CourseCategory, id=category_id)
+        return Response(CourseCategorySerializer(category).data)
+
+    def patch(self, request, category_id):
+        category = get_object_or_404(CourseCategory, id=category_id)
+        serializer = CourseCategorySerializer(category, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, category_id):
+        category = get_object_or_404(CourseCategory, id=category_id)
+        category.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -790,7 +1041,8 @@ class AdminBoardCoursesView(APIView):
                 ),
                 subject_count=Count("subjects", distinct=True),
             )
-            .select_related("stream")
+            .select_related("stream", "details")
+            .prefetch_related("categories")
             .order_by("title")
         )
         return Response([
@@ -799,31 +1051,116 @@ class AdminBoardCoursesView(APIView):
                 "title": c.title,
                 "description": c.description,
                 "price": c.price,
+                "status": c.status,
+                "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
                 "subscription_duration_days": c.subscription_duration_days,
                 "stream_name": c.stream.name if c.stream else None,
                 "enrollment_count": c.enrollment_count,
                 "subject_count": c.subject_count,
                 "created_at": c.created_at,
+                # Fields needed for the admin course-list "content complete" /
+                # "shows up on" columns — mirrors what openEditCourse already
+                # fetches per-course via getCourse(), but at list scope so the
+                # completeness score can render without a fetch per row.
+                "details": (
+                    {"syllabus": c.details.syllabus, "highlights": c.details.highlights}
+                    if hasattr(c, "details") else None
+                ),
+                "is_featured": c.is_featured,
+                "categories": [
+                    {"id": cat.id, "slug": cat.slug, "name": cat.name, "group": cat.group}
+                    for cat in c.categories.all()
+                ],
+                "seo_title": c.seo_title,
             }
             for c in courses
         ])
+
+
+def _parse_maybe_json(value):
+    """`details` (dict) and `categories` (list) both arrive as the real
+    JSON type in a plain JSON body, but multipart requests can only carry
+    strings, so the frontend JSON-encodes them there. Parse the string form;
+    pass anything else (already a dict/list, or None) straight through."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+    return value
+
+
+def _apply_course_details_and_categories(course, request):
+    """Upsert CourseDetail and set the categories M2M from the `details` /
+    `categories` keys in request.data. Shared by AdminCourseCreateView.post
+    and AdminCourseDetailView.patch so create and edit can't drift — this
+    used to live only in the PATCH view, silently dropping `details` (and
+    now `categories`) on course creation."""
+    details_data = _parse_maybe_json(request.data.get("details"))
+    if isinstance(details_data, dict):
+        detail, _ = CourseDetail.objects.get_or_create(course=course)
+        detail_serializer = CourseDetailSerializer(detail, data=details_data, partial=True)
+        detail_serializer.is_valid(raise_exception=True)
+        detail_serializer.save()
+
+    categories_data = _parse_maybe_json(request.data.get("categories"))
+    if isinstance(categories_data, list):
+        # Filter to real ids rather than letting a stale/typo'd id 500 the
+        # request via the M2M through-table's FK constraint.
+        course.categories.set(
+            CourseCategory.objects.filter(id__in=categories_data)
+        )
 
 
 class AdminCourseCreateView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request):
-        serializer = CourseSerializer(data=request.data)
+        serializer = CourseSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         course = serializer.save()
+        if request.FILES.get("thumbnail"):
+            course.thumbnail = request.FILES["thumbnail"]
+            course.save(update_fields=["thumbnail"])
+        _apply_course_details_and_categories(course, request)
+        course.refresh_from_db()
         return Response(
-            CourseSerializer(course).data,
+            CourseSerializer(course, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
 
 
-class AdminCourseDeleteView(APIView):
+class AdminCourseDetailView(APIView):
+    """GET a single course (admin shape); PATCH edits it, including a nested
+    ``details`` object (create-or-update the course's CourseDetail row), a
+    ``categories`` id list (M2M `.set()`), and a multipart ``thumbnail``
+    file; DELETE removes it."""
     permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, course_id):
+        course = get_object_or_404(
+            Course.objects.select_related("board", "stream", "details"),
+            id=course_id,
+        )
+        return Response(CourseSerializer(course, context={"request": request}).data)
+
+    def patch(self, request, course_id):
+        course = get_object_or_404(Course.objects.select_related("details"), id=course_id)
+
+        serializer = CourseSerializer(
+            course, data=request.data, partial=True, context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        course = serializer.save()
+
+        if request.FILES.get("thumbnail"):
+            course.thumbnail = request.FILES["thumbnail"]
+            course.save(update_fields=["thumbnail"])
+
+        _apply_course_details_and_categories(course, request)
+
+        course.refresh_from_db()
+        return Response(CourseSerializer(course, context={"request": request}).data)
 
     def delete(self, request, course_id):
         course = get_object_or_404(Course, id=course_id)
@@ -841,14 +1178,24 @@ class AdminCourseSubjectsView(APIView):
 
     def get(self, request, course_id):
         get_object_or_404(Course, id=course_id)
-        subjects = Subject.objects.filter(course_id=course_id).order_by("order", "name")
+        subjects = (
+            Subject.objects.filter(course_id=course_id)
+            .prefetch_related("chapters")
+            .order_by("order", "name")
+        )
         return Response([
             {
                 "id": str(s.id),
                 "name": s.name,
                 "order": s.order,
+                "textbook": s.textbook,
                 "image": request.build_absolute_uri(s.image.url) if s.image else None,
                 "created_at": s.created_at,
+                "chapters": [
+                    {"id": str(ch.id), "title": ch.title, "order": ch.order,
+                     "content_html": ch.content_html, "trusted_html": ch.trusted_html}
+                    for ch in s.chapters.all()
+                ],
             }
             for s in subjects
         ])
@@ -882,6 +1229,7 @@ class AdminCourseSubjectsView(APIView):
             course=course,
             name=name,
             order=order,
+            textbook=(request.data.get("textbook") or "").strip(),
             image=request.FILES.get("image"),
         )
         return Response(
@@ -889,8 +1237,10 @@ class AdminCourseSubjectsView(APIView):
                 "id": str(subject.id),
                 "name": subject.name,
                 "order": subject.order,
+                "textbook": subject.textbook,
                 "image": request.build_absolute_uri(subject.image.url) if subject.image else None,
                 "created_at": subject.created_at,
+                "chapters": [],
             },
             status=status.HTTP_201_CREATED,
         )
@@ -899,9 +1249,107 @@ class AdminCourseSubjectsView(APIView):
 class AdminSubjectDeleteView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
+    def patch(self, request, subject_id):
+        subject = get_object_or_404(Subject, id=subject_id)
+        if "name" in request.data and request.data.get("name"):
+            subject.name = str(request.data["name"]).strip()
+        if "order" in request.data and request.data.get("order") not in (None, ""):
+            subject.order = request.data["order"]
+        if "textbook" in request.data:
+            subject.textbook = (request.data.get("textbook") or "").strip()
+        if request.FILES.get("image"):
+            subject.image = request.FILES["image"]
+        subject.save()
+        return Response({
+            "id": str(subject.id),
+            "name": subject.name,
+            "order": subject.order,
+            "textbook": subject.textbook,
+            "image": request.build_absolute_uri(subject.image.url) if subject.image else None,
+            "created_at": subject.created_at,
+        })
+
     def delete(self, request, subject_id):
         subject = get_object_or_404(Subject, id=subject_id)
         subject.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminSubjectChaptersView(APIView):
+    """POST creates a new chapter under a subject (admin authoring)."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, subject_id):
+        subject = get_object_or_404(Subject, id=subject_id)
+        title = (request.data.get("title") or "").strip()
+        if not title:
+            return Response(
+                {"detail": "Chapter title is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        order = request.data.get("order")
+        if order in (None, ""):
+            next_order = (
+                Chapter.objects.filter(subject=subject)
+                .order_by("-order")
+                .values_list("order", flat=True)
+                .first()
+            )
+            order = (next_order or 0) + 1
+
+        if Chapter.objects.filter(subject=subject, title__iexact=title).exists():
+            return Response(
+                {"detail": f"A chapter titled '{title}' already exists in this subject."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        chapter = Chapter(
+            subject=subject,
+            title=title,
+            order=order,
+            content_html=request.data.get("content_html") or "",
+            trusted_html=bool(request.data.get("trusted_html", False)),
+        )
+        chapter.save()
+        return Response(
+            {
+                "id": str(chapter.id),
+                "title": chapter.title,
+                "order": chapter.order,
+                "content_html": chapter.content_html,
+                "trusted_html": chapter.trusted_html,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AdminChapterDetailView(APIView):
+    """PATCH edits a chapter's title/order/content; DELETE removes it."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def patch(self, request, chapter_id):
+        chapter = get_object_or_404(Chapter, id=chapter_id)
+        if "title" in request.data and request.data.get("title"):
+            chapter.title = str(request.data["title"]).strip()
+        if "order" in request.data and request.data.get("order") not in (None, ""):
+            chapter.order = request.data["order"]
+        if "trusted_html" in request.data:
+            chapter.trusted_html = bool(request.data["trusted_html"])
+        if "content_html" in request.data:
+            chapter.content_html = request.data.get("content_html") or ""
+        chapter.save()
+        return Response({
+            "id": str(chapter.id),
+            "title": chapter.title,
+            "order": chapter.order,
+            "content_html": chapter.content_html,
+            "trusted_html": chapter.trusted_html,
+        })
+
+    def delete(self, request, chapter_id):
+        chapter = get_object_or_404(Chapter, id=chapter_id)
+        chapter.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -920,6 +1368,11 @@ class CourseCatalogView(APIView):
     enrolled rather than purchasable. Matches the same "active enrollment for
     this user" rule that /courses/my/ uses, so the two stay in sync.
 
+    Also includes COMING_SOON courses (no batch required — they're
+    intentionally not purchasable yet) alongside PUBLISHED-with-an-active-batch
+    courses, carrying the same mrp/discount_label/category fields as the public
+    catalog so the shop can render strikethrough pricing and category chips.
+
     Optional query params:
         ?q=<text>        title / description search
         ?board=<uuid>    filter to one board
@@ -927,14 +1380,19 @@ class CourseCatalogView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # Only published courses that have at least one open (active) batch are
-        # purchasable — this keeps DRAFT/half-built courses and courses with no
-        # running cohort out of the buy flow. Owned courses still appear via
-        # /courses/my/ regardless of status.
+        # Purchasable: published with at least one open (active) batch — keeps
+        # DRAFT/half-built courses and courses with no running cohort out of
+        # the buy flow. Coming-soon courses need no batch (not purchasable
+        # yet); owned courses still appear via /courses/my/ regardless of
+        # status.
         qs = (
             Course.objects
-            .filter(status=Course.STATUS_PUBLISHED, batches__is_active=True)
+            .filter(
+                Q(status=Course.STATUS_PUBLISHED, batches__is_active=True)
+                | Q(status=Course.STATUS_COMING_SOON)
+            )
             .select_related("board", "stream")
+            .prefetch_related("categories")
             .annotate(subject_count=Count("subjects", distinct=True))
             .order_by("board__name", "title")
             .distinct()
@@ -987,6 +1445,10 @@ class CourseCatalogView(APIView):
                 "title": c.title,
                 "description": c.description,
                 "price": c.price,  # paise (₹1 = 100 paise); 0 = free
+                "mrp": c.mrp,
+                "discount_label": c.discount_label,
+                "is_coming_soon": c.status == Course.STATUS_COMING_SOON,
+                "category_slugs": [cat.slug for cat in c.categories.all()],
                 "subscription_duration_days": c.subscription_duration_days,
                 "board": (
                     {
@@ -1007,4 +1469,465 @@ class CourseCatalogView(APIView):
             }
             for c in qs
         ]
+        return Response(data)
+
+
+# =========================
+# PUBLIC (ANONYMOUS) CATALOG — the real /courses browse page + course detail.
+# Unlike CourseCatalogView above (any *authenticated* learner), these three
+# views are AllowAny: the marketing site's course browser works for guests.
+# Only ever exposes status=PUBLISHED courses; never leaks DRAFT/ARCHIVED.
+# =========================
+
+class PublicBoardListView(APIView):
+    """GET /courses/public/boards/ — active boards + whether each currently has
+    any published course, so the frontend can compute "Coming Soon" without a
+    hardcoded per-board flag."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        key = list_cache_key(request)
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+
+        # NOTE (Phase B): dropped the previous `is_active=True` filter so that
+        # coming-soon (inactive) boards are also returned, each flagged via the
+        # explicit `coming_soon` boolean below. Without this the flag would be
+        # dead weight (always False), and the public /courses page + navbar need
+        # coming-soon boards to render as dormant chips.
+        boards = (
+            Board.objects
+            .annotate(
+                published_count=Count(
+                    "courses", filter=Q(courses__status=Course.STATUS_PUBLISHED), distinct=True,
+                )
+            )
+            .order_by("display_order", "name")
+        )
+        data = [
+            {
+                "id": str(b.id),
+                "name": b.name,
+                "board_type": b.board_type,
+                "description": b.description,
+                "slug": b.slug,
+                "logo": request.build_absolute_uri(b.logo.url) if b.logo else None,
+                "display_order": b.display_order,
+                "coming_soon": not b.is_active,
+                "has_published_courses": b.published_count > 0,
+            }
+            for b in boards
+        ]
+        cache.set(key, data, LIST_TTL)
+        return Response(data)
+
+
+class BoardNotifyMeView(APIView):
+    """POST /courses/public/boards/<board_id>/notify/ — anonymous "notify me
+    when {board} launches" lead capture from a locked board chip. The first
+    anonymous-write endpoint in this codebase, so it's throttled (see
+    board_notify in DEFAULT_THROTTLE_RATES) and de-duped via the model's
+    (board, email) unique constraint rather than trusting client behavior."""
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "board_notify"
+
+    def post(self, request, board_id):
+        board = get_object_or_404(Board, id=board_id)
+        email = (request.data.get("email") or "").strip().lower()
+        if not email or "@" not in email:
+            return Response({"detail": "A valid email is required."}, status=status.HTTP_400_BAD_REQUEST)
+        BoardNotifyRequest.objects.get_or_create(board=board, email=email)
+        return Response({"ok": True}, status=status.HTTP_201_CREATED)
+
+
+def _catalog_seats_left(course):
+    """Sum capacity - seats_taken across all is_active batches (there is no
+    single "current batch" flag, so a course can have several concurrently
+    active cohorts). None if any active batch is uncapped or there are no
+    active batches at all — the frontend hides the seats line in that case
+    rather than showing a misleading number."""
+    batches = getattr(course, "active_batches", [])
+    if not batches:
+        return None
+    total = 0
+    for b in batches:
+        if b.capacity is None:
+            return None
+        total += max(0, b.capacity - b._seats)
+    return total
+
+
+class PublicCourseCatalogView(APIView):
+    """GET /courses/public/catalog/ — same shop-card shape as CourseCatalogView,
+    minus the per-user `is_enrolled` query (the public site has no logged-in
+    user to key it to; the frontend checks enrollment separately once signed in).
+    Optional ?q=, ?board=, ?stream= — same semantics as CourseCatalogView."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        key = list_cache_key(request)
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+
+        # Both PUBLISHED and COMING_SOON are publicly visible; only PUBLISHED is
+        # purchasable (the frontend gates the buy flow on `is_coming_soon`).
+        qs = (
+            Course.objects
+            .filter(status__in=[Course.STATUS_PUBLISHED, Course.STATUS_COMING_SOON])
+            .select_related("board", "stream", "details")
+            .prefetch_related(
+                "categories",
+                Prefetch(
+                    "batches",
+                    queryset=Batch.objects.filter(is_active=True).annotate(
+                        _seats=Count("enrollments", filter=Q(enrollments__status="ACTIVE"))
+                    ),
+                    to_attr="active_batches",
+                ),
+            )
+            .annotate(subject_count=Count("subjects", distinct=True))
+            .order_by("board__name", "title")
+            .distinct()
+        )
+
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q))
+
+        board_id = request.query_params.get("board")
+        if board_id:
+            qs = qs.filter(board_id=board_id)
+
+        stream_id = request.query_params.get("stream")
+        if stream_id:
+            qs = qs.filter(stream_id=stream_id)
+
+        category = request.query_params.get("category")
+        if category:
+            qs = qs.filter(categories__slug=category)
+
+        group = request.query_params.get("group")
+        if group:
+            qs = qs.filter(categories__group=group)
+
+        kind = request.query_params.get("kind")
+        if kind:
+            qs = qs.filter(kind=kind)
+
+        from global_settings.models import GlobalSettings
+        is_free = GlobalSettings.load().effective_mode == GlobalSettings.PAYMENT_FREE
+
+        data = [
+            {
+                "id": str(c.id),
+                "title": c.title,
+                "slug": c.slug,
+                "description": c.description,
+                "class_level": c.class_level,
+                "price": c.price,
+                # price_override is a per-Batch concern (Batch.effective_price);
+                # a catalog card has no batch context, so effective_price == the
+                # course-level price here. See report notes.
+                "effective_price": c.price,
+                "mrp": c.mrp,
+                "discount_label": c.discount_label,
+                "badge": c.badge,
+                "is_free": is_free,
+                "is_coming_soon": c.status == Course.STATUS_COMING_SOON,
+                "subscription_duration_days": c.subscription_duration_days,
+                "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
+                "board": (
+                    {"id": str(c.board.id), "name": c.board.name, "board_type": c.board.board_type}
+                    if c.board else None
+                ),
+                "stream_name": c.stream.name if c.stream else None,
+                "category_slugs": [cat.slug for cat in c.categories.all()],
+                "subject_count": c.subject_count,
+                "duration_weeks": getattr(getattr(c, "details", None), "duration_weeks", None) or None,
+                "seats_left": _catalog_seats_left(c),
+            }
+            for c in qs
+        ]
+        cache.set(key, data, LIST_TTL)
+        return Response(data)
+
+
+# Courses publicly visible on the marketing site: purchasable (PUBLISHED) plus
+# coming-soon teasers (COMING_SOON). DRAFT/ARCHIVED are never exposed.
+PUBLIC_COURSE_STATUSES = [Course.STATUS_PUBLISHED, Course.STATUS_COMING_SOON]
+
+
+def _public_course_detail_queryset():
+    """Shared queryset (with prefetches) for the by-id and by-slug detail views."""
+    return (
+        Course.objects.filter(status__in=PUBLIC_COURSE_STATUSES)
+        .select_related("board", "stream", "details")
+        .prefetch_related(
+            "categories",
+            Prefetch(
+                "subjects",
+                queryset=Subject.objects.order_by("order").prefetch_related(
+                    Prefetch("chapters", queryset=Chapter.objects.order_by("order")),
+                ),
+            ),
+            Prefetch("batches", queryset=Batch.objects.filter(is_active=True)),
+        )
+    )
+
+
+def _serialize_public_course_detail(course, request):
+    """Build the full public course-detail dict. Shared by the by-id and by-slug
+    detail endpoints so their shapes never drift."""
+    from global_settings.models import GlobalSettings
+
+    details = getattr(course, "details", None)
+    return {
+        "id": str(course.id),
+        "title": course.title,
+        "slug": course.slug,
+        "description": course.description,
+        "price": course.price,
+        # price_override is a per-Batch concern (see Batch.effective_price on each
+        # batch below); the course-level effective_price is just Course.price.
+        "effective_price": course.price,
+        "mrp": course.mrp,
+        "discount_label": course.discount_label,
+        "badge": course.badge,
+        "is_free": GlobalSettings.load().effective_mode == GlobalSettings.PAYMENT_FREE,
+        "is_coming_soon": course.status == Course.STATUS_COMING_SOON,
+        "thumbnail": request.build_absolute_uri(course.thumbnail.url) if course.thumbnail else None,
+        "board": (
+            {"id": str(course.board.id), "name": course.board.name, "board_type": course.board.board_type}
+            if course.board else None
+        ),
+        "stream_name": course.stream.name if course.stream else None,
+        "category_slugs": [cat.slug for cat in course.categories.all()],
+        "details": CourseDetailSerializer(details).data if details else None,
+        "subjects": [
+            {
+                "id": str(s.id),
+                "name": s.name,
+                "order": s.order,
+                "textbook": s.textbook,
+                "image": request.build_absolute_uri(s.image.url) if s.image else None,
+                "chapters": [
+                    {
+                        "id": str(ch.id),
+                        "title": ch.title,
+                        "order": ch.order,
+                        "content_html": ch.content_html,
+                    }
+                    for ch in s.chapters.all()
+                ],
+            }
+            for s in course.subjects.all()
+        ],
+        "batches": [
+            {
+                "id": str(b.id),
+                "name": b.name,
+                "code": b.code,
+                "effective_price": b.effective_price,
+                "is_full": b.is_full,
+            }
+            for b in course.batches.all()
+        ],
+    }
+
+
+class PublicCourseDetailView(APIView):
+    """GET /courses/public/<id>/ — full anonymous course detail: subjects →
+    chapters (with content), active batches (with effective price), course
+    details and thumbnail. Only PUBLISHED / COMING_SOON courses; anything else
+    404s (never 403 — a status split would let a caller distinguish "exists but
+    draft" from "doesn't exist" by UUID probing). Not cached (single-row lookup;
+    matches content app's convention of caching only list endpoints)."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, course_id):
+        course = get_object_or_404(_public_course_detail_queryset(), id=course_id)
+        return Response(_serialize_public_course_detail(course, request))
+
+
+class PublicCourseBySlugView(APIView):
+    """GET /courses/public/by-slug/<slug>/ — identical response shape to
+    PublicCourseDetailView, looked up by slug instead of UUID. Additive; the
+    by-id route keeps working unchanged."""
+    permission_classes = [AllowAny]
+
+    def get(self, request, slug):
+        course = get_object_or_404(_public_course_detail_queryset(), slug=slug)
+        return Response(_serialize_public_course_detail(course, request))
+
+
+class PublicFeaturedView(APIView):
+    """GET /courses/public/featured/ — homepage 'Featured courses' grid.
+    Cards derive title/price/thumbnail from a linked Course/Board when set,
+    computed fresh on every request (never written back to ShowcaseCourse)."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        key = list_cache_key(request)
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+
+        cards_qs = (
+            ShowcaseCourse.objects.filter(is_active=True)
+            .select_related("course", "board")
+            .order_by("order")
+        )
+
+        cards = []
+        for card in cards_qs:
+            course = card.course
+            board = card.board
+
+            # title
+            if course:
+                title = course.title
+            elif board:
+                title = board.name
+            else:
+                title = card.title
+
+            # price_label — course price is in paise; format as "₹X,XXX/month".
+            if course:
+                price_label = f"₹{course.price // 100:,}/month"
+            elif board:
+                price_label = None
+            else:
+                price_label = card.price_label
+
+            # is_coming_soon
+            if course:
+                is_coming_soon = course.status == Course.STATUS_COMING_SOON
+            elif board:
+                is_coming_soon = board.is_active is False
+            else:
+                is_coming_soon = False
+
+            # thumbnail (absolute URL)
+            if course and course.thumbnail:
+                thumbnail = request.build_absolute_uri(course.thumbnail.url)
+            elif board and board.logo:
+                thumbnail = request.build_absolute_uri(board.logo.url)
+            elif card.image:
+                thumbnail = request.build_absolute_uri(card.image.url)
+            else:
+                thumbnail = card.image_url or None
+
+            cards.append({
+                "id": card.id,
+                "title": title,
+                "price_label": price_label,
+                "mrp": course.mrp if course else None,
+                "discount_label": course.discount_label if course else None,
+                "is_coming_soon": is_coming_soon,
+                "thumbnail": thumbnail,
+                "tutor_name": card.tutor_name,
+                "level_label": card.level_label,
+                "ribbon": card.ribbon,
+                "stars": card.stars,
+                "review_count": card.review_count,
+                "fact_line": card.fact_line,
+                "is_explore_card": card.is_explore_card,
+                "categories": card.categories,
+                "gradient_css": card.gradient_css,
+                "icon": card.icon,
+                "link_path": card.link_path,
+                "link_state": card.link_state,
+                "course_id": str(card.course_id) if card.course_id else None,
+                "board_id": str(card.board_id) if card.board_id else None,
+                "order": card.order,
+            })
+
+        data = {"cards": cards}
+        cache.set(key, data, LIST_TTL)
+        return Response(data)
+
+
+class PublicNavMenuView(APIView):
+    """GET /courses/public/nav-menu/ — the navbar Courses mega-menu payload.
+    Returns exactly two categories the backend can back with data: "school"
+    (board tabs grouped by board_type) and "competitive" (courses tagged with a
+    CourseCategory whose group == 'competitive'). The frontend merges its static
+    "Skill & Career" category client-side; it is deliberately NOT returned here."""
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        key = list_cache_key(request)
+        cached = cache.get(key)
+        if cached is not None:
+            return Response(cached)
+
+        # --- "school" category: one tab per board_type present ---
+        boards = list(Board.objects.order_by("display_order", "name"))
+        type_display = dict(Board.TYPE_CHOICES)  # {"CENTRAL": "Central", ...}
+
+        tabs = []
+        seen_types = []
+        for b in boards:
+            if b.board_type not in seen_types:
+                seen_types.append(b.board_type)
+        for board_type in seen_types:
+            group_key = board_type.lower()
+            disp = type_display.get(board_type, board_type.title())
+            label = f"{disp} Boards"
+            links = []
+            for b in boards:
+                if b.board_type != board_type:
+                    continue
+                if b.is_active:
+                    links.append({
+                        "label": b.name,
+                        "to": "/courses",
+                        "state": {"selectedBoardGroup": group_key, "selectedBoard": b.slug},
+                    })
+                else:
+                    links.append({"label": b.name, "soon": True})
+            tabs.append({
+                "id": group_key,
+                "label": label,
+                "heading": f"{disp} Board Courses",
+                "links": links,
+                "viewAll": {
+                    "label": f"View All {label}",
+                    "to": "/courses",
+                    "state": {"selectedBoardGroup": group_key},
+                },
+            })
+
+        # --- "competitive" category: courses tagged group == "competitive" ---
+        competitive_courses = (
+            Course.objects
+            .filter(
+                status__in=PUBLIC_COURSE_STATUSES,
+                categories__group=CourseCategory.GROUP_COMPETITIVE,
+            )
+            .order_by("display_order", "title")
+            .distinct()
+        )
+        competitive_links = []
+        for c in competitive_courses:
+            if c.status == Course.STATUS_COMING_SOON:
+                competitive_links.append({"label": c.title, "soon": True})
+            else:
+                competitive_links.append({"label": c.title, "to": f"/courses/{c.slug}"})
+
+        data = {
+            "categories": [
+                {"key": "school", "tabs": tabs},
+                {
+                    "key": "competitive",
+                    "sections": [
+                        {"heading": "Competitive Exams", "links": competitive_links},
+                    ],
+                },
+            ]
+        }
+        cache.set(key, data, LIST_TTL)
         return Response(data)

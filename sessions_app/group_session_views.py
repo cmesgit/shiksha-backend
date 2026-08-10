@@ -22,15 +22,23 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import GroupSession, GroupSessionInvite, GroupSessionChatMessage
+from .models import (
+    GroupSession, GroupSessionInvite, GroupSessionChatMessage, GroupSessionNote,
+    GroupSessionGuestSession, GroupSessionJoinRequest, GroupSessionAttendance,
+)
+from enrollments.models import Enrollment
+from global_settings.models import GlobalSettings
 from .permissions import IsStudent
 from .serializers import get_user_name
+from accounts.permissions import IsAdmin
 from .services.group_session_token import generate_group_session_token
 from .group_session_serializers import (
+    GroupSessionNoteSerializer,
     GroupSessionCreateSerializer,
     GroupSessionDetailSerializer,
     GroupSessionInviteMoreSerializer,
     GroupSessionListSerializer,
+    GroupSessionUpdateSerializer,
 )
 
 User = get_user_model()
@@ -150,6 +158,20 @@ def _notify_user(user, title, session):
         if timezone.is_naive(scheduled_dt):
             scheduled_dt = timezone.make_aware(scheduled_dt)
 
+        # ``user`` here is either the host (always a student in this
+        # marketplace) or an invitee — invitees can be either role
+        # (invite_role="teacher" for an invited co-teacher). Tag
+        # audience/learner_profile from that, same fix as private sessions'
+        # _push_session_bell — a NULL learner_profile on a LEARNER row is
+        # visible to every profile on the account, reopening the sibling
+        # leak fixed for quizzes/assignments.
+        is_teacher_role = (
+            (session.invited_teacher_id and session.invited_teacher_id == user.id)
+            or session.invites.filter(user=user, invite_role="teacher").exists()
+        )
+        audience = Activity.AUDIENCE_TEACHER if is_teacher_role else Activity.AUDIENCE_LEARNER
+        learner_profile = None if is_teacher_role else user.default_learner_profile()
+
         activity, created = Activity.objects.get_or_create(
             user=user,
             type=Activity.TYPE_SESSION,
@@ -164,6 +186,8 @@ def _notify_user(user, title, session):
                 "subject_id": session.subject_id,
                 "subject_name": session.subject_name,
                 "due_date": scheduled_dt,
+                "audience": audience,
+                "learner_profile": learner_profile,
             },
         )
         if created:
@@ -808,9 +832,12 @@ def my_group_sessions(request):
     return Response(GroupSessionDetailSerializer(items, many=True).data)
 
 
-@api_view(["GET"])
+@api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
 def group_session_detail(request, session_id):
+    if request.method == "PATCH":
+        return _update_group_session(request, session_id)
+
     try:
         session = _gs_qs().get(pk=session_id)
     except GroupSession.DoesNotExist:
@@ -821,6 +848,75 @@ def group_session_detail(request, session_id):
             {"error": "You do not have access to this group session."}, status=403
         )
     return Response(GroupSessionDetailSerializer(session).data)
+
+
+def _update_group_session(request, session_id):
+    """Edit a still-``scheduled`` group session (host only): topic, date,
+    time, duration, plus additive invitee changes. Existing invites (accepted
+    or pending) are never removed here — revoking an invite is a separate,
+    more sensitive action this endpoint doesn't attempt; only ids in
+    ``invited_user_ids`` that aren't already invited get added, exactly like
+    ``invite_more``. ``invited_teacher_id`` from the same payload is ignored —
+    there's no established "change the invited teacher" flow to reuse, and
+    guessing at one risks silently dropping a session's original co-teacher.
+    """
+    try:
+        session = GroupSession.objects.select_related(
+            "subject", "subject__course"
+        ).get(pk=session_id, host=request.user)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    if session.status != "scheduled":
+        return Response(
+            {"error": f"Cannot edit a group session that is {session.status}."},
+            status=400,
+        )
+
+    ser = GroupSessionUpdateSerializer(data=request.data, context={"session": session})
+    ser.is_valid(raise_exception=True)
+    data = ser.validated_data
+
+    fields = []
+    for key in ("scheduled_date", "scheduled_time", "duration_minutes", "topic"):
+        if key in data:
+            setattr(session, key, data[key])
+            fields.append(key)
+    if fields:
+        fields.append("updated_at")
+        session.save(update_fields=fields)
+
+    raw_ids = request.data.get("invited_user_ids")
+    if raw_ids:
+        from enrollments.models import Enrollment
+
+        ids = [str(uid) for uid in raw_ids]
+        valid = {
+            str(uid) for uid in Enrollment.objects.filter(
+                course=session.subject.course,
+                status=Enrollment.STATUS_ACTIVE,
+                user_id__in=ids,
+            ).values_list("user_id", flat=True)
+        }
+        existing = {str(uid) for uid in session.invites.values_list("user_id", flat=True)}
+        room_left = session.max_invitees - session.invites.count()
+        to_add_ids = [uid for uid in ids if uid in valid and uid not in existing][:max(room_left, 0)]
+
+        if to_add_ids:
+            GroupSessionInvite.objects.bulk_create([
+                GroupSessionInvite(session=session, user_id=uid, invite_role="student")
+                for uid in to_add_ids
+            ])
+            host_name = get_user_name(request.user)
+            for inv in session.invites.filter(user_id__in=to_add_ids).select_related("user"):
+                _notify_user(
+                    inv.user,
+                    f"📚 {host_name} invited you to a {session.subject_name} group session",
+                    session,
+                )
+
+    full = _gs_qs().get(pk=session.pk)
+    return Response(GroupSessionDetailSerializer(full).data)
 
 
 # ---------------------------------------------------------------------------
@@ -976,8 +1072,9 @@ def join_group_session(request, session_id):
         # Implicit accept; no further gate.
         pass
     elif is_instant:
-        # Open join for instant meetings — auth + paywall above are the only gates.
-        # (Admit-mode='lobby' is a Phase-2 addition; until then 'open' is enforced.)
+        # Open join for instant meetings — auth + paywall above are the only
+        # gates. (admit_mode='lobby' is enforced separately below, after this
+        # branch, for any non-host caller regardless of session type.)
         pass
     elif invite is None:
         return Response(
@@ -1007,6 +1104,24 @@ def join_group_session(request, session_id):
                           f"({INSTANT_MAX_PARTICIPANTS} participants max). "
                           f"Please try again once someone leaves."},
                 status=http_status.HTTP_403_FORBIDDEN,
+            )
+
+    # "Knock to join" — a non-host caller must be admitted before they get a
+    # token. Re-knocking after a prior denial resets that same row back to
+    # pending (one row per session+user, not a history of attempts).
+    if session.admit_mode == "lobby" and not is_host:
+        join_req, _created = GroupSessionJoinRequest.objects.get_or_create(
+            session=session, user=user
+        )
+        if join_req.status == "denied":
+            join_req.status = "pending"
+            join_req.resolved_at = None
+            join_req.deny_message = ""
+            join_req.save(update_fields=["status", "resolved_at", "deny_message"])
+        if join_req.status != "admitted":
+            return Response(
+                {"status": "pending", "join_request_id": str(join_req.id)},
+                status=http_status.HTTP_202_ACCEPTED,
             )
 
     # Early terminal states
@@ -1098,11 +1213,25 @@ def join_group_session(request, session_id):
         invite.joined_at = timezone.now()
         invite.save(update_fields=["joined_at"])
 
-    # Compute remaining ms for client countdown
+    # Compute remaining ms for client countdown.
+    # Host is always unlimited (no entitlement check, by design). A non-host
+    # who's entitled (enrolled, or platform is in free-launch mode) is also
+    # unlimited. A non-entitled guest is capped at GUEST_TRIAL_MINUTES,
+    # anchored to THEIR OWN first join (not each /join/ call's "now", and not
+    # the room's own duration_minutes) so a refresh/reconnect can't reset the
+    # clock and a room's own longer duration can't be used to bypass the cap.
     remaining_ms = None
-    if session.room_started_at:
-        hard_end = session.room_started_at + timedelta(minutes=session.duration_minutes)
-        remaining_ms = max(0, int((hard_end - timezone.now()).total_seconds() * 1000))
+    if not is_host and not _guest_entitlement(user):
+        guest_session, _created = GroupSessionGuestSession.objects.get_or_create(
+            session=session, user=user
+        )
+        guest_cap_end = guest_session.first_joined_at + timedelta(minutes=GUEST_TRIAL_MINUTES)
+        room_hard_end = (
+            session.room_started_at + timedelta(minutes=session.duration_minutes)
+            if session.room_started_at else guest_cap_end
+        )
+        cap_end = min(guest_cap_end, room_hard_end)
+        remaining_ms = max(0, int((cap_end - timezone.now()).total_seconds() * 1000))
 
     return Response({
         "livekit_url": settings.LIVEKIT_URL,
@@ -1242,6 +1371,48 @@ def send_group_session_chat_message(request, session_id):
 
 
 # ===========================================================================
+# NOTES — private per-user scratchpad, no review counterpart (spec: group
+# sessions never show a post-call review modal).
+# ===========================================================================
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def group_session_note(request, session_id):
+    """GET/PATCH group-sessions/<session_id>/notes/ — the requesting user's
+    own private notes for this session. Uses the same participant gate as
+    chat (host / accepted invite / instant meeting) rather than the looser
+    `_can_view` used for read-only session info, since this is a
+    write-capable per-user resource.
+    """
+    try:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    allowed, err = _chat_participant_check(session, request.user)
+    if not allowed:
+        return err
+
+    if request.method == "GET":
+        note = GroupSessionNote.objects.filter(session=session, user=request.user).first()
+        return Response(
+            GroupSessionNoteSerializer(note).data if note else {"content": "", "updated_at": None}
+        )
+
+    serializer = GroupSessionNoteSerializer(data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+
+    note, _ = GroupSessionNote.objects.update_or_create(
+        session=session,
+        user=request.user,
+        defaults=serializer.validated_data,
+    )
+
+    return Response(GroupSessionNoteSerializer(note).data)
+
+
+# ===========================================================================
 # INSTANT MEETING + END SESSION + ADMIT MODE
 # ===========================================================================
 
@@ -1270,6 +1441,28 @@ def _is_paid_user(user):
     if explicit is not None:
         return bool(explicit)
     return True
+
+
+GUEST_TRIAL_MINUTES = 15
+
+
+def _guest_entitlement(user):
+    """
+    True = unlimited time in a group session; False = capped at
+    GUEST_TRIAL_MINUTES. Deliberately separate from ``_is_paid_user`` — that
+    stub still gates whether someone may join/host at all; this only decides
+    the *duration* for a non-host joiner, and must never gate the host path
+    (the host is always unlimited, per spec, regardless of their own status).
+    """
+    if GlobalSettings.load().effective_mode == GlobalSettings.PAYMENT_FREE:
+        # Whole platform is in a free-launch phase — the enrolled/not-enrolled
+        # distinction is moot, so nobody is capped.
+        return True
+    return Enrollment.objects.filter(
+        status=Enrollment.STATUS_ACTIVE
+    ).filter(
+        Q(user=user) | Q(learner_profile__account=user)
+    ).exists()
 
 
 def _broadcast_session_ended(session, reason="ended"):
@@ -1394,10 +1587,9 @@ def end_group_session(request, session_id):
 def set_admit_mode(request, session_id):
     """Host-only: toggle the room between 'open' and 'lobby' admit modes.
 
-    NOTE: the lobby (knock-to-enter) flow is not fully wired through to
-    the join handler yet — this endpoint persists the field so the host
-    UI toggle is functional, but join_group_session still admits all
-    accepted invitees. The lobby gate is a Phase-2 addition.
+    When 'lobby', join_group_session holds any non-host caller in a
+    GroupSessionJoinRequest ('pending') instead of issuing a token, until
+    the host admits them via admit_join_request.
     """
     try:
         session = GroupSession.objects.get(pk=session_id)
@@ -1420,6 +1612,96 @@ def set_admit_mode(request, session_id):
     session.admit_mode = mode
     session.save(update_fields=["admit_mode", "updated_at"])
     return Response({"admit_mode": session.admit_mode}, status=http_status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Knock-to-join: the waiting guest polls my_join_status/ (no LiveKit room to
+# receive a data-channel nudge on yet); the host's classroom UI polls
+# join_requests/ and calls admit/deny. Polling over a WS consumer, deliberately
+# — admit/deny is low-frequency and a ~2s poll is invisible for a one-time
+# approval.
+# ---------------------------------------------------------------------------
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def my_join_status(request, session_id):
+    try:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    if session.host_id == request.user.id:
+        return Response({"status": "admitted"})
+
+    join_req = GroupSessionJoinRequest.objects.filter(
+        session=session, user=request.user
+    ).first()
+    if not join_req:
+        return Response({"status": "admitted"})  # no lobby gate applies to this caller
+    return Response({"status": join_req.status, "deny_message": join_req.deny_message})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_join_requests(request, session_id):
+    try:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    if session.host_id != request.user.id:
+        return Response(
+            {"error": "Only the host can view join requests."},
+            status=http_status.HTTP_403_FORBIDDEN,
+        )
+
+    pending = session.join_requests.filter(status="pending").select_related("user")
+    return Response([
+        {"id": str(r.id), "user_id": str(r.user_id), "name": get_user_name(r.user),
+         "requested_at": r.requested_at.isoformat()}
+        for r in pending
+    ])
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def admit_join_request(request, session_id, request_id):
+    try:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+    if session.host_id != request.user.id:
+        return Response({"error": "Only the host can admit."}, status=http_status.HTTP_403_FORBIDDEN)
+
+    join_req = GroupSessionJoinRequest.objects.filter(session=session, pk=request_id).first()
+    if not join_req:
+        return Response({"error": "Join request not found."}, status=404)
+
+    join_req.status = "admitted"
+    join_req.resolved_at = timezone.now()
+    join_req.save(update_fields=["status", "resolved_at"])
+    return Response({"status": "admitted"})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def deny_join_request(request, session_id, request_id):
+    try:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+    if session.host_id != request.user.id:
+        return Response({"error": "Only the host can deny."}, status=http_status.HTTP_403_FORBIDDEN)
+
+    join_req = GroupSessionJoinRequest.objects.filter(session=session, pk=request_id).first()
+    if not join_req:
+        return Response({"error": "Join request not found."}, status=404)
+
+    join_req.status = "denied"
+    join_req.resolved_at = timezone.now()
+    join_req.deny_message = (request.data.get("message") or "").strip()[:255]
+    join_req.save(update_fields=["status", "resolved_at", "deny_message"])
+    return Response({"status": "denied"})
 
 
 # ---------------------------------------------------------------------------
@@ -1496,3 +1778,45 @@ def join_by_code(request):
         "session_type": session.session_type,
         "host_id": str(session.host_id) if session.host_id else None,
     })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsAdmin])
+def admin_group_session_list(request):
+    """GET /sessions/admin/group-sessions/  → every group session with real
+    per-user attendance (join/leave/watch-seconds), for the Admin-dashboard.
+    This data has existed since the LiveKit webhook attendance pipeline was
+    built for livestream/group sessions — this endpoint is the first thing
+    to actually surface it in the admin app.
+    """
+    qs = (GroupSession.objects
+          .select_related("host")
+          .prefetch_related(
+              Prefetch("attendances",
+                       queryset=GroupSessionAttendance.objects.select_related("user"))
+          )
+          .order_by("-created_at")[:100])
+
+    rows = []
+    for gs in qs:
+        attendance = [
+            {
+                "user_id": str(a.user_id),
+                "name": get_user_name(a.user),
+                "joined_at": a.joined_at,
+                "left_at": a.left_at,
+                "total_seconds": a.total_seconds,
+            }
+            for a in gs.attendances.all()
+        ]
+        rows.append({
+            "id": str(gs.id),
+            "topic": gs.topic or gs.subject_name or "Group session",
+            "host": get_user_name(gs.host) if gs.host else None,
+            "session_type": gs.session_type,
+            "status": gs.status,
+            "scheduled_date": gs.scheduled_date,
+            "scheduled_time": gs.scheduled_time,
+            "attendance": attendance,
+        })
+    return Response({"sessions": rows})

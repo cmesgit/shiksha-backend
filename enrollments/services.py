@@ -23,6 +23,35 @@ from .models import Enrollment, Subscription
 # ACCESS CHECKS
 # =====================================================
 
+def active_batch_id(*, learner_profile, course_id):
+    """The batch this learner sits in for ``course_id``, or None.
+
+    Content that is batch-scoped (materials, recordings, assignments) is shown
+    as "course-wide (batch IS NULL) OR this learner's batch". Resolving that
+    batch is the step that has to be PROFILE-scoped, not account-scoped: one
+    account can hold two children enrolled in different batches of the same
+    course, and an account-scoped ``.first()`` picks whichever row the database
+    happens to return — so a sibling could be shown the other's batch content.
+
+    Returns None when there's no active profile (e.g. a teacher-context
+    request) or no matching enrollment. Callers treat None as "course-wide
+    content only", which fails closed rather than leaking another batch's.
+    """
+    if learner_profile is None:
+        return None
+    enrollment = (
+        Enrollment.objects
+        .filter(
+            learner_profile=learner_profile,
+            course_id=course_id,
+            status=Enrollment.STATUS_ACTIVE,
+        )
+        .only("batch_id")
+        .first()
+    )
+    return enrollment.batch_id if enrollment else None
+
+
 def is_user_enrolled(*, user, course, learner_profile=None) -> bool:
     """Legacy helper — kept for callers that only need the Enrollment row.
 

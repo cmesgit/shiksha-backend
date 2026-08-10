@@ -349,8 +349,13 @@ class AdminSkillCourseQueueView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def get(self, request):
-        st    = request.query_params.get("status", SkillCourse.STATUS_SUBMITTED)
-        qs    = SkillCourse.objects.filter(status=st).select_related("teacher_profile__user","category")
+        st = request.query_params.get("status", SkillCourse.STATUS_SUBMITTED)
+        qs = SkillCourse.objects.select_related("teacher_profile__user", "category")
+        # status=all → every course regardless of review state, for the SkillDev
+        # CMS media-moderation tab (which needs to reach any course's cover,
+        # not just the submitted-review queue).
+        if st != "all":
+            qs = qs.filter(status=st)
         return Response(SkillCourseListSerializer(qs, many=True, context={"request": request}).data)
 
 
@@ -376,3 +381,21 @@ class AdminSkillCourseReviewView(APIView):
         c.reviewed_at = timezone.now()
         c.save(update_fields=["status","reject_reason","reviewed_by","reviewed_at","updated_at"])
         return Response({"detail": f"Course {c.status}.", "id": str(c.id)})
+
+
+class AdminSkillCourseMediaView(APIView):
+    """PATCH /skill/admin/courses/<id>/media/  → media moderation: replace
+    a course's cover image regardless of its review status."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def patch(self, request, course_id):
+        c = SkillCourse.objects.filter(id=course_id).first()
+        if not c:
+            raise NotFound("Course not found.")
+        cover_image = request.data.get("cover_image")
+        if cover_image is None:
+            raise ValidationError("cover_image is required.")
+        c.cover_image = cover_image
+        c.save(update_fields=["cover_image", "updated_at"])
+        return Response(SkillCourseListSerializer(c, context={"request": request}).data)

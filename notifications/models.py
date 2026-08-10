@@ -124,10 +124,26 @@ class NotificationPreference(models.Model):
         on_delete=models.CASCADE,
         related_name="notification_preference",
     )
+    # Languages the platform can address a user in. Settings → Notifications
+    # writes this; sms.py / email templates read it to pick a locale. Kept here
+    # rather than on User because it is a *communication* preference and the
+    # rest of that decision already lives on this row.
+    LANGUAGE_CHOICES = [
+        ("en", "English"),
+        ("hi", "हिन्दी (Hindi)"),
+        ("bn", "বাংলা (Bengali)"),
+        ("mr", "मराठी (Marathi)"),
+        ("ta", "தமிழ் (Tamil)"),
+        ("te", "తెలుగు (Telugu)"),
+        ("kn", "ಕನ್ನಡ (Kannada)"),
+        ("lus", "Mizo (Lushai)"),
+    ]
+
     email_enabled = models.BooleanField(default=True)
     sms_enabled = models.BooleanField(default=True)
     push_enabled = models.BooleanField(default=True)
     muted_categories = models.JSONField(default=list, blank=True)
+    language = models.CharField(max_length=8, choices=LANGUAGE_CHOICES, default="en")
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):

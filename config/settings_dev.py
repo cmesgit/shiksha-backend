@@ -51,5 +51,7 @@ CORS_ALLOWED_ORIGINS = [
 
 CORS_ALLOW_CREDENTIALS = True
 
+FRONTEND_BASE_URL = "https://dev.shikshacom.com"
+
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"

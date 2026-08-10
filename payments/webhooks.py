@@ -1,5 +1,6 @@
 import hmac
 import hashlib
+import json
 from django.conf import settings
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -7,6 +8,7 @@ from django.views.decorators.csrf import csrf_exempt
 from payments.models import Order, Payment
 from enrollments.models import Enrollment
 from accounts.models import Role, UserRole
+from notifications.services import notify
 
 
 @csrf_exempt
@@ -51,7 +53,19 @@ def razorpay_webhook(request):
         Enrollment.objects.get_or_create(
             user=order.user,
             course=order.course,
-            defaults={"status": Enrollment.STATUS_ACTIVE},
+            defaults={
+                "status": Enrollment.STATUS_ACTIVE,
+                "learner_profile": order.user.default_learner_profile(),
+            },
+        )
+
+        notify(
+            recipient=order.user,
+            verb="payments.receipt",
+            title=f"Payment received for {order.course.title}",
+            body=f"₹{order.amount / 100:.2f} paid via Razorpay (payment ID {payment_data['id']}).",
+            link_url=f"/my-courses/{order.course_id}",
+            learner_profile=order.user.default_learner_profile(),
         )
 
         # Role switch (GUEST → STUDENT)

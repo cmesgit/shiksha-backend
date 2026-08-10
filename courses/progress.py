@@ -6,6 +6,21 @@ including students who join later. Course % is chapter-weighted:
 across every chapter in every subject of the course.
 """
 
+from .admin_academy_views import _teacher_name
+from .models import SubjectTeacher
+
+
+def _course_subject_teacher_name(subject):
+    """No batch context here (course-wide fallback), so this can only use the
+    legacy course-wide SubjectTeacher assignment."""
+    st = (
+        SubjectTeacher.objects
+        .filter(subject=subject)
+        .select_related("teacher")
+        .first()
+    )
+    return _teacher_name(st.teacher) if st else ""
+
 
 def build_course_progress(course):
     """Return a nested progress payload for one course."""
@@ -39,6 +54,7 @@ def build_course_progress(course):
             "id": str(subject.id),
             "name": subject.name,
             "order": subject.order,
+            "teacher_name": _course_subject_teacher_name(subject),
             "chapters_total": s_total,
             "chapters_done": s_done,
             "percent": round(s_done / s_total * 100) if s_total else 0,

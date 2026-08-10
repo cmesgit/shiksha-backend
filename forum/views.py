@@ -1109,9 +1109,21 @@ class ForumDashboardView(APIView):
         answers_given = answers.count()
         saved_count = SavedPost.objects.filter(user=u).count()
 
-        # Notifications (site-wide notifications app).
+        # Deltas over the last 7 days power the "+N this week" trend pills on
+        # the dashboard stat cards.
+        questions_week = questions.filter(created_at__gte=week_start).count()
+        answers_week = answers.filter(created_at__gte=week_start).count()
+        saved_week = SavedPost.objects.filter(
+            user=u, created_at__gte=week_start).count()
+
+        # Forum-scoped notifications only: the dashboard shows forum activity,
+        # not the global feed (all forum notifications use a "forum." verb —
+        # forum.reply / forum.accepted / forum.banned). The global bell in the
+        # site navbar remains the place for cross-app notifications.
         from notifications.models import Notification
-        notif_qs = Notification.objects.filter(recipient=u).order_by("-created_at")
+        notif_qs = (Notification.objects
+                    .filter(recipient=u, verb__startswith="forum.")
+                    .order_by("-created_at"))
         unread = notif_qs.filter(is_read=False).count()
         notif_preview = [{
             "id": n.id, "title": n.title, "body": n.body, "verb": n.verb,
@@ -1173,6 +1185,9 @@ class ForumDashboardView(APIView):
                 "answers_given": answers_given,
                 "unread_notifications": unread,
                 "saved": saved_count,
+                "questions_this_week": questions_week,
+                "answers_this_week": answers_week,
+                "saved_this_week": saved_week,
             },
             "recent_activity": activity,
             "notifications_preview": notif_preview,

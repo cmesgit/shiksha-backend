@@ -41,10 +41,14 @@ Signup cases:
   Case 7  EXISTING teacher + signup for a track they already hold → BLOCK
   Case 8  EXISTING Faculty teacher + signup for Skill/Guest → BLOCK (asymmetry)
 """
+import base64
+import binascii
+
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth import authenticate
+from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils import timezone
 
@@ -410,8 +414,16 @@ class SignupSerializer(serializers.Serializer):
             raise ValidationError(tp.track_add_block_reason(track))
         tp.set_track_status(track, self._initial_status_for(track))
         tp.sync_type_from_tracks()
-        tp.save(update_fields=["academy_status", "skill_status",
-                               "teacher_type", "is_approved"])
+        fields = ["academy_status", "skill_status", "teacher_type", "is_approved"]
+        # Re-applying after a rejection must clear the old verdict, otherwise
+        # academy_rejection_reason/academy_rejected_at survive onto the fresh
+        # PENDING application and the profile picker keeps showing the previous
+        # rejection reason for an application nobody has looked at yet.
+        if track == TeacherProfile.TRACK_ACADEMY:
+            tp.academy_rejection_reason = ""
+            tp.academy_rejected_at = None
+            fields += ["academy_rejection_reason", "academy_rejected_at"]
+        tp.save(update_fields=fields)
 
         # If the newly added track is live (skill), make sure the role is
         # active so they can enter that dashboard right away.
@@ -463,6 +475,55 @@ class SignupSerializer(serializers.Serializer):
         return ep
 
     # ── Faculty-application provisioning (academy track) ───────────────────
+    # Documents a faculty applicant may attach on signup step 2. Deliberately
+    # narrow: this decodes user-supplied base64 on an AnonymousUser request, so
+    # only the three types the form's file picker advertises are accepted.
+    _SIGNUP_DOC_TYPES = {
+        "application/pdf": ".pdf",
+        "image/jpeg":      ".jpg",
+        "image/jpg":       ".jpg",
+        "image/png":       ".png",
+    }
+    # Matches MAX_DOC_MB in FacultySignup.jsx — the client already refuses
+    # anything larger, this is the server-side half of the same limit.
+    _SIGNUP_DOC_MAX_BYTES = 5 * 1024 * 1024
+
+    @classmethod
+    def _save_signup_document(cls, tp, field_name, doc):
+        """Decode one {name, type, data} base64 document onto tp.<field_name>.
+
+        Returns `field_name` when a file was attached (caller batches the
+        save), or None. Best-effort like the rest of _provision_faculty:
+        anything malformed, oversized or of an unexpected type is dropped
+        rather than raised, so a bad attachment can never cost someone their
+        account.
+        """
+        if not isinstance(doc, dict):
+            return None
+        ext = cls._SIGNUP_DOC_TYPES.get((doc.get("type") or "").strip().lower())
+        if not ext:
+            return None
+        raw = doc.get("data")
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        raw = raw.strip()
+        # FileReader.readAsDataURL yields "data:<mime>;base64,<payload>"; the
+        # form sends that string verbatim, so strip the prefix if present.
+        if raw.startswith("data:") and "," in raw:
+            raw = raw.split(",", 1)[1]
+        try:
+            blob = base64.b64decode(raw, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+        if not blob or len(blob) > cls._SIGNUP_DOC_MAX_BYTES:
+            return None
+        # Name by profile + field so two applicants' certificates never collide
+        # and an admin can trace a file back to its TeacherProfile.
+        getattr(tp, field_name).save(
+            f"{tp.pk}_{field_name}{ext}", ContentFile(blob), save=False
+        )
+        return field_name
+
     def _provision_faculty(self, teacher_profile, payload):
         """Apply optional faculty-application background captured at signup to
         the EXISTING TeacherProfile columns (and one TeacherCourseApplication).
@@ -524,6 +585,16 @@ class SignupSerializer(serializers.Serializer):
                     str(c).strip() for c in certs if str(c).strip()
                 ][:20]
                 changed.append("teaching_certifications")
+
+            # --- Verification documents (base64 from signup step 2) ---
+            # These three keys used to be dropped on the floor: nothing here
+            # read them and nothing in accounts/ decoded base64 at all, so an
+            # applicant could upload three files, be told it "speeds up
+            # review", and have the bytes silently discarded — while the admin
+            # was asked to approve them on the strength of those documents.
+            for key in ("qualification_certificate", "id_proof_front", "id_proof_back"):
+                if self._save_signup_document(tp, key, payload.get(key)):
+                    changed.append(key)
 
             if changed:
                 tp.save(update_fields=sorted(set(changed)))

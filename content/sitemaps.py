@@ -1,25 +1,42 @@
 # PLACEMENT: backend/content/sitemaps.py
 #
-# Optional SEO sitemaps. To enable, add to config/settings*.py:
-#     INSTALLED_APPS += ["django.contrib.sitemaps"]
-# and to config/urls.py:
-#     from django.contrib.sitemaps.views import sitemap
-#     from content.sitemaps import CONTENT_SITEMAPS
-#     urlpatterns += [
-#         path("sitemap.xml", sitemap, {"sitemaps": CONTENT_SITEMAPS},
-#              name="django.contrib.sitemaps.views.sitemap"),
-#     ]
-#
-# NOTE: locations are frontend paths (get_absolute_url), served from the
-# www domain. If the API lives on api.shikshacom.com, set the request's
-# host correctly at the proxy or expose sitemap.xml through the www vhost.
+# Mounted at config/urls.py's "sitemap.xml" (see CONTENT_SITEMAPS below).
+# This API lives on api.shikshacom.com, but every <loc> must point at the
+# marketing site (www.shikshacom.com / dev.shikshacom.com). Sitemap._urls()
+# unconditionally builds each <loc> as f"{protocol}://{domain}{location}" —
+# it does NOT check whether location() already returned an absolute URL, so
+# just returning one (as an earlier version of this file did) doubles up
+# into "https://api...https://dev...". The correct fix is to force the
+# domain/protocol Django uses via get_urls(), while location() stays a plain
+# relative path exactly as get_absolute_url() already returns.
 
+from urllib.parse import urlparse
+
+from django.conf import settings
 from django.contrib.sitemaps import Sitemap
+
+from courses.models import Course
 
 from .models import BlogPost, CurrentAffair
 
+# Imported here (content -> counseling) rather than the other way around;
+# counseling/guide_models.py explains why the guide models themselves live
+# in counseling and not content.
+from counseling.guide_models import CareerGuide
 
-class BlogPostSitemap(Sitemap):
+_frontend = urlparse(settings.FRONTEND_BASE_URL)
+
+
+class _FrontendSite:
+    domain = _frontend.netloc
+
+
+class FrontendSitemap(Sitemap):
+    def get_urls(self, page=1, site=None, protocol=None):
+        return super().get_urls(page=page, site=_FrontendSite(), protocol=_frontend.scheme)
+
+
+class BlogPostSitemap(FrontendSitemap):
     changefreq = "monthly"
     priority = 0.7
 
@@ -30,7 +47,7 @@ class BlogPostSitemap(Sitemap):
         return obj.updated_at
 
 
-class CurrentAffairSitemap(Sitemap):
+class CurrentAffairSitemap(FrontendSitemap):
     changefreq = "daily"
     priority = 0.5
 
@@ -41,7 +58,31 @@ class CurrentAffairSitemap(Sitemap):
         return obj.updated_at
 
 
+class CourseSitemap(FrontendSitemap):
+    changefreq = "weekly"
+    priority = 0.8
+
+    def items(self):
+        return Course.objects.filter(status=Course.STATUS_PUBLISHED).order_by("slug")
+
+
+class CareerGuideSitemap(FrontendSitemap):
+    changefreq = "monthly"
+    priority = 0.6
+
+    def items(self):
+        return CareerGuide.objects.published()
+
+    def lastmod(self, obj):
+        return obj.updated_at
+
+    def location(self, obj):
+        return obj.get_absolute_url()
+
+
 CONTENT_SITEMAPS = {
     "blog": BlogPostSitemap,
     "current-affairs": CurrentAffairSitemap,
+    "courses": CourseSitemap,
+    "career-guides": CareerGuideSitemap,
 }

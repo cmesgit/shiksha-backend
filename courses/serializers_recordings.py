@@ -1,17 +1,23 @@
 from rest_framework import serializers
-from .models_recordings import SessionRecording
+from .models_recordings import SessionRecording, RecordingNote
 
 
 class SessionRecordingSerializer(serializers.ModelSerializer):
 
     uploaded_by_name = serializers.SerializerMethodField()
+    # The flat faculty Recordings grid spans subjects, so a card has to
+    # name its own. `subject` above is the raw FK id.
+    subject_name = serializers.CharField(source="subject.name", read_only=True)
 
     class Meta:
         model = SessionRecording
         fields = [
             "id",
             "subject",
+            "subject_name",
             "chapter",
+            "batch",
+            "live_session",
             "title",
             "description",
             "session_date",
@@ -32,3 +38,10 @@ class SessionRecordingSerializer(serializers.ModelSerializer):
         if profile and getattr(profile, "full_name", None):
             return profile.full_name
         return user.get_full_name() or user.username
+
+
+class RecordingNoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RecordingNote
+        fields = ["content", "updated_at"]
+        read_only_fields = ["updated_at"]

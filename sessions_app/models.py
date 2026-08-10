@@ -148,6 +148,126 @@ class SessionParticipant(models.Model):
         return f"{self.user} in {self.session.id}"
 
 
+class PrivateSessionAttendance(models.Model):
+    """Per-user attendance ROLLUP for a PrivateSession (teacher AND the
+    requesting student — not just SessionParticipant's "additional students"
+    concern). Populated from the LiveKit webhook the same way livestream/
+    GroupSession already are; previously PrivateSession had no per-participant
+    join/leave/duration tracking at all.
+
+    Mirrors GroupSessionAttendance exactly — see
+    sessions_app/services/private_attendance.py.
+    """
+    session = models.ForeignKey(
+        PrivateSession,
+        on_delete=models.CASCADE,
+        related_name="attendances",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+    )
+    joined_at = models.DateTimeField(null=True, blank=True)
+    left_at = models.DateTimeField(null=True, blank=True)
+    total_seconds = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = ("session", "user")
+        indexes = [
+            models.Index(fields=["session", "user"]),
+            models.Index(fields=["session", "joined_at"]),
+        ]
+
+    def duration(self):
+        if self.total_seconds:
+            from datetime import timedelta
+            return timedelta(seconds=self.total_seconds)
+        if self.joined_at and self.left_at:
+            return self.left_at - self.joined_at
+        return None
+
+
+class PrivateSessionAttendanceInterval(models.Model):
+    """Append-only, one row per join→leave cycle — mirrors
+    GroupSessionAttendanceInterval exactly."""
+    session = models.ForeignKey(
+        PrivateSession,
+        on_delete=models.CASCADE,
+        related_name="attendance_intervals",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+    )
+    joined_at = models.DateTimeField()
+    left_at = models.DateTimeField(null=True, blank=True)
+    closed_by_reconcile = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["joined_at"]
+        indexes = [
+            models.Index(fields=["session", "user"]),
+            models.Index(fields=["session", "joined_at"]),
+            models.Index(fields=["session", "left_at"]),
+        ]
+
+    def duration_seconds(self):
+        if self.joined_at and self.left_at:
+            return int((self.left_at - self.joined_at).total_seconds())
+        return 0
+
+
+class PrivateSessionReview(models.Model):
+    """A participant's post-class rating for one PrivateSession.
+
+    One review per (session, user) — resubmitting overwrites via
+    update_or_create rather than erroring. Mirrors livestream.SessionReview.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        PrivateSession, on_delete=models.CASCADE, related_name="reviews"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+    )
+    rating = models.PositiveSmallIntegerField(
+        choices=[(1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")]
+    )
+    description = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("session", "user")
+
+    def __str__(self):
+        return f"{self.user_id} rated {self.session_id}: {self.rating}"
+
+
+class PrivateSessionNote(models.Model):
+    """A participant's private notes for one PrivateSession.
+
+    Private per (session, user) — mirrors livestream.SessionNote. Distinct
+    from PrivateSession.notes (a single shared free-text field on the
+    session itself, unrelated to this per-user in-call scratchpad).
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        PrivateSession, on_delete=models.CASCADE, related_name="participant_notes"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+    )
+    content = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("session", "user")
+
+    def __str__(self):
+        return f"{self.user_id} notes on {self.session_id}"
+
+
 class SessionRescheduleHistory(models.Model):
     """Audit log for every reschedule proposal on a session."""
 
@@ -376,7 +496,13 @@ class GroupSession(models.Model):
     cancel_reason = models.TextField(blank=True, default="")
 
     # --- LiveKit ---
-    room_name = models.CharField(max_length=255, blank=True, default="")
+    # null=True (not just blank) so pre-live rows can share the "not set yet"
+    # state without violating uniqueness — many sessions never go live and
+    # would otherwise collide on "". Set once, at go-live, to
+    # f"group_session_{id}" (inherently unique).
+    room_name = models.CharField(
+        max_length=255, null=True, blank=True, default=None, unique=True
+    )
 
     # --- Timestamps ---
     created_at = models.DateTimeField(auto_now_add=True)
@@ -475,3 +601,170 @@ class GroupSessionInvite(models.Model):
 
     def __str__(self):
         return f"{self.user} → {self.session.id} [{self.status}]"
+
+
+class GroupSessionGuestSession(models.Model):
+    """
+    Anchors a non-entitled guest's 15-minute free-trial clock to their FIRST
+    join, so a page refresh / reconnect doesn't reset it back to a fresh 15
+    minutes. One row per (session, user) — created lazily on first non-host,
+    non-entitled join in ``join_group_session``.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        GroupSession,
+        on_delete=models.CASCADE,
+        related_name="guest_sessions",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="group_session_guest_sessions",
+    )
+    first_joined_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("session", "user")
+
+    def __str__(self):
+        return f"guest {self.user} → {self.session.id} since {self.first_joined_at}"
+
+
+class GroupSessionJoinRequest(models.Model):
+    """
+    A guest's "knock to join" request when ``GroupSession.admit_mode ==
+    'lobby'``. Separate from ``GroupSessionInvite``: invites are host-initiated
+    and pre-arranged (re-invite semantics, decline tracking); this is
+    guest-initiated and ad-hoc, and applies to instant meetings that have no
+    invite rows at all.
+    """
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("admitted", "Admitted"),
+        ("denied", "Denied"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        GroupSession,
+        on_delete=models.CASCADE,
+        related_name="join_requests",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="group_session_join_requests",
+    )
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="pending")
+    requested_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    deny_message = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        unique_together = ("session", "user")
+        indexes = [
+            models.Index(fields=["session", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user} knocking on {self.session.id} [{self.status}]"
+
+
+class GroupSessionAttendance(models.Model):
+    session = models.ForeignKey(
+        GroupSession,
+        on_delete=models.CASCADE,
+        related_name="attendances",
+    )
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+    )
+
+    # ── ROLLUP semantics ──
+    # joined_at = FIRST join, left_at = LAST leave, total_seconds = summed watch
+    # time across every join/leave cycle (see GroupSessionAttendanceInterval for
+    # the append-only per-cycle rows). unique_together keeps exactly one rollup
+    # row per (session, user); rejoins no longer overwrite prior attendance —
+    # they extend total_seconds instead.
+    joined_at = models.DateTimeField(null=True, blank=True)
+    left_at = models.DateTimeField(null=True, blank=True)
+    total_seconds = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = ("session", "user")
+        indexes = [
+            models.Index(fields=["session", "user"]),
+            models.Index(fields=["session", "joined_at"]),
+        ]
+
+    def duration(self):
+        if self.total_seconds:
+            from datetime import timedelta
+            return timedelta(seconds=self.total_seconds)
+        if self.joined_at and self.left_at:
+            return self.left_at - self.joined_at
+        return None
+
+
+class GroupSessionNote(models.Model):
+    """A participant's private notes for one GroupSession.
+
+    Private per (session, user) — mirrors livestream.SessionNote /
+    PrivateSessionNote. No review-model counterpart: group sessions never
+    show a post-call review modal per the design spec.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        GroupSession, on_delete=models.CASCADE, related_name="notes"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+    )
+    content = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("session", "user")
+
+    def __str__(self):
+        return f"{self.user_id} notes on {self.session_id}"
+
+
+class GroupSessionAttendanceInterval(models.Model):
+    """Append-only, one row per join→leave cycle.
+
+    The authoritative attendance record. `GroupSessionAttendance` is a derived
+    rollup over these. A user who disconnects and rejoins produces multiple
+    rows, so reconnect history, total watch time, and true presence intervals
+    are all recoverable — which the single-interval rollup alone can't do.
+    `closed_by_reconcile` marks rows we closed defensively (missed
+    participant_left webhook) rather than a real leave.
+    """
+    session = models.ForeignKey(
+        GroupSession,
+        on_delete=models.CASCADE,
+        related_name="attendance_intervals",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+    )
+    joined_at = models.DateTimeField()
+    left_at = models.DateTimeField(null=True, blank=True)
+    closed_by_reconcile = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["joined_at"]
+        indexes = [
+            models.Index(fields=["session", "user"]),
+            models.Index(fields=["session", "joined_at"]),
+            models.Index(fields=["session", "left_at"]),
+        ]
+
+    def duration_seconds(self):
+        if self.joined_at and self.left_at:
+            return int((self.left_at - self.joined_at).total_seconds())
+        return 0

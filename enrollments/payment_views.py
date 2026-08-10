@@ -63,6 +63,31 @@ def _create_or_extend_subscription(*, user, learner, course):
     return Subscription.objects.create(**kwargs)
 
 
+def _redeem_scholarship_award_if_any(*, learner, course, enrollment, subscription):
+    """Mark a scholarship award redeemed on successful enrollment, if this
+    learner earned one for this course. Best-effort and defensive: the free
+    path must keep working even if the scholarship app is absent, mid-deploy,
+    or errors — a missed redemption mark is recoverable from the admin
+    awards list, but a broken free-enroll flow is not.
+
+    While GlobalSettings.free_trial_enabled is True the award was only ever
+    "locked" (informational) and the real ManualUpi/Razorpay providers don't
+    apply a discount yet — see scholarship/models.py ScholarshipAward and
+    scholarship/services.py get_active_award for the redemption story once
+    paid pricing goes live.
+    """
+    try:
+        from scholarship.services import get_active_award, redeem_award
+        award = get_active_award(learner, course)
+        if award is not None:
+            redeem_award(award, enrollment=enrollment, subscription=subscription)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Failed to mark scholarship award redeemed for learner=%s course=%s", learner.id, course.id,
+        )
+
+
 class PaymentConfigView(APIView):
     """What payment mode is live right now. Frontends use this to decide
     whether to show the UPI form, a gateway button, or a one-tap free enroll."""
@@ -102,10 +127,11 @@ class FreeEnrollView(APIView):
 
         # Grant access (idempotent on the unique (learner_profile, course) pair).
         enroll_defaults = {"user": request.user, "status": Enrollment.STATUS_ACTIVE}
-        Enrollment.objects.get_or_create(
+        enrollment, _ = Enrollment.objects.get_or_create(
             learner_profile=learner, course=course, defaults=enroll_defaults
         )
         sub = _create_or_extend_subscription(user=request.user, learner=learner, course=course)
+        _redeem_scholarship_award_if_any(learner=learner, course=course, enrollment=enrollment, subscription=sub)
 
         return Response(
             {

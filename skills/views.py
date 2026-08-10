@@ -22,6 +22,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.exceptions import ValidationError, PermissionDenied, NotFound
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from accounts.models import LearnerProfile, Role, UserRole
 from accounts.permissions import IsAdmin
@@ -40,8 +41,12 @@ from .models import (
     Evaluation,
     SkillSession,
 )
+from .marketing_models import SkillMarketingBlock
 from .serializers import (
     SkillCategorySerializer,
+    SkillCategoryAdminSerializer,
+    SkillMarketingBlockSerializer,
+    SkillMarketingBlockAdminSerializer,
     ExpertCardSerializer,
     TeacherApplicationCreateSerializer,
     InterviewSlotSerializer,
@@ -138,82 +143,55 @@ def _slot_to_datetime(slot_key):
 # DIRECTORY (public)
 # =====================================================
 
-def _rank_experts(qs):
-    """Advertised experts first, then by reach, then rating/sessions.
-
-    `is_advertised()` is per-row (depends on billing mode + subscription), so we
-    can't express it as a single ORDER BY. We split into advertised / rest,
-    each ordered by reach→rating→sessions, then concatenate. Directory sizes are
-    small, so materialising is fine.
-    """
-    rows = list(
-        qs.order_by("-reach_count", "-rating", "-sessions_count")
-    )
-    advertised = [e for e in rows if e.is_advertised()]
-    rest       = [e for e in rows if not e.is_advertised()]
-    return advertised + rest
-
-
-def _apply_location_filter(qs, request):
-    """Optional 'find a tutor near me (offline)' filtering.
-
-    Query params:
-      offline=1            → only experts who teach at home / can travel
-      pincode / district / state → location match (any that are provided)
-    Matching is inclusive (OR across the provided location fields); ranking
-    above still floats advertised experts to the top.
-    """
-    p = request.query_params
-    if (p.get("offline") or "").lower() in ("1", "true", "yes"):
-        qs = qs.filter(class_mode__in=[ExpertProfile.MODE_HOME, ExpertProfile.MODE_TRAVEL])
-
-    from django.db.models import Q
-    loc = Q()
-    if p.get("pincode"):
-        loc |= Q(pincode=p["pincode"].strip())
-    if p.get("district"):
-        loc |= Q(district__iexact=p["district"].strip())
-    if p.get("state"):
-        loc |= Q(state__iexact=p["state"].strip())
-    if loc:
-        qs = qs.filter(loc)
-    return qs
-
-
 class CategoryListView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        qs = SkillCategory.objects.filter(is_active=True)
-        return Response(SkillCategorySerializer(qs, many=True).data)
+        from django.db.models import Count, IntegerField, OuterRef, Q, Subquery, Value
+        from django.db.models.functions import Coalesce
+
+        # An expert counts once for a category they teach, whether through
+        # their primary `category` or the `categories` M2M — the same OR the
+        # directory's ?cat= filter uses, so the count matches what clicking it
+        # actually returns. It has to be a DISTINCT subquery rather than two
+        # added Counts: listing writes mirror the primary category into the
+        # M2M, so summing the two would double every expert.
+        per_category = (
+            ExpertProfile.objects
+            .filter(Q(category_id=OuterRef("pk")) | Q(categories=OuterRef("pk")), is_listed=True)
+            .order_by()
+            .values(one=Value(1))
+            .annotate(n=Count("pk", distinct=True))
+            .values("n")
+        )
+        qs = SkillCategory.objects.filter(is_active=True).annotate(
+            expert_count=Coalesce(
+                Subquery(per_category, output_field=IntegerField()), Value(0)
+            )
+        )
+        return Response(
+            SkillCategorySerializer(qs, many=True, context={"request": request}).data
+        )
 
 
-class ExpertListView(APIView):
+class MarketingBlockListView(APIView):
+    """GET /skill/marketing/  → active marketing blocks keyed by `key`."""
     permission_classes = [AllowAny]
 
     def get(self, request):
-        qs = (
-            ExpertProfile.objects
-            .filter(is_listed=True)
-            .select_related("category", "teacher_profile__user")
-        )
-        cat = request.query_params.get("cat") or request.query_params.get("category")
-        if cat:
-            from django.db.models import Q
-            qs = qs.filter(
-                Q(category__slug=cat) | Q(categories__slug=cat)
-            ).distinct()
+        qs = SkillMarketingBlock.objects.filter(is_active=True)
+        data = SkillMarketingBlockSerializer(qs, many=True, context={"request": request}).data
+        return Response({row["key"]: row for row in data})
 
-        search = (request.query_params.get("search") or "").strip()
-        if search:
-            qs = qs.filter(headline__icontains=search)
 
-        qs = _apply_location_filter(qs, request)
-
-        experts = _rank_experts(qs)
-        return Response(
-            ExpertCardSerializer(experts, many=True, context={"request": request}).data
-        )
+# NOTE: the public directory view that used to live here (ExpertListView) moved
+# to skills/directory_views.py in the Skill Browse redesign. It matched ONLY
+# `headline` on ?search= and returned every expert unpaginated; the replacement
+# adds the ten filters the sidebar exposes, widens search to skill tags /
+# subject / listing titles / teacher name, and paginates. Route is unchanged.
+# Its two helpers (_rank_experts, _apply_location_filter) went with it — the
+# advertised-first pass now lives in directory_views._ORDER plus its Python
+# split, and the location filters are ten lines of directory_views.get().
 
 
 class ExpertDetailView(APIView):
@@ -500,13 +478,36 @@ class CreateOrderView(APIView):
             except (TypeError, ValueError):
                 duration = 60
 
+        # WHICH skill is being booked. Multi-skill experts price each listing
+        # separately, so the listing — not the profile's legacy hourly_rate —
+        # decides what the learner owes. Falls back to the primary listing so a
+        # client that predates multi-skill still books something real, and to
+        # the expert rate when they have no listing at all.
+        listing_id = request.data.get("listing") or (
+            draft.get("listing") if isinstance(draft, dict) else None
+        )
+        listing = None
+        if listing_id:
+            listing = expert.listings.filter(id=listing_id).first()
+            if not listing:
+                raise NotFound("That skill isn't offered by this teacher.")
+            if not listing.is_bookable:
+                raise ValidationError(
+                    {"listing": "That skill isn't taking bookings right now."}
+                )
+        else:
+            listing = expert.listings.filter(
+                is_active=True, is_suspended=False
+            ).order_by("order").first()
+
         # The rate the learner owes the expert directly (paise on the model).
-        amount = expert.hourly_rate or 0
+        amount = listing.price_paise if listing else (expert.hourly_rate or 0)
 
         with transaction.atomic():
             session = SkillSession.objects.create(
                 learner_profile=learner,
                 expert=expert,
+                listing=listing,
                 contact_mode=SkillSession.CONTACT_SESSION,
                 # A booking is a REQUEST until the expert accepts it. It must
                 # land in the expert's "Pending requests" queue (status
@@ -532,6 +533,8 @@ class CreateOrderView(APIView):
             "ok":            True,
             "bookingId":     booking_ref,
             "sessionId":     str(session.id),
+            "listing":       str(listing.id) if listing else None,
+            "listing_title": listing.title if listing else None,
             "status":        session.status,   # 'requested' — awaiting expert acceptance
             "amount":        amount,
             "amount_rupees": amount // 100,
@@ -564,12 +567,14 @@ def _sub_summary(ep):
     }
 
 
-def _admin_expert_row(ep):
+def _admin_expert_row(ep, request=None):
     return {
         "id":           str(ep.id),
         "name":         ep.display_name(),
         "email":        _expert_email(ep),
-        "category":     ep.category.name if ep.category else None,
+        # NOTE: SkillCategory has no `name` field (only `label`) — this used to
+        # raise AttributeError for any expert with a category set. Fixed here.
+        "category":     ep.category.label if ep.category else None,
         "headline":     ep.headline,
         "rating":       float(ep.rating) if ep.rating is not None else None,
         "sessions":     ep.sessions_count,
@@ -578,7 +583,14 @@ def _admin_expert_row(ep):
         "is_featured":  ep.is_featured,
         "is_suspended": ep.is_suspended,
         "subscription": _sub_summary(ep),
+        "photo":        _absolute_url(ep.photo, request),
     }
+
+
+def _absolute_url(field_file, request=None):
+    if not field_file:
+        return None
+    return request.build_absolute_uri(field_file.url) if request else field_file.url
 
 
 class AdminExpertListView(APIView):
@@ -589,12 +601,14 @@ class AdminExpertListView(APIView):
         qs = (ExpertProfile.objects
               .select_related("category", "teacher_profile__user")
               .order_by("-is_listed", "-rating", "-sessions_count"))
-        return Response([_admin_expert_row(ep) for ep in qs])
+        return Response([_admin_expert_row(ep, request) for ep in qs])
 
 
 class AdminExpertDetailView(APIView):
-    """GET /skill/admin/experts/<id>/  → full detail for the expert profile modal."""
+    """GET /skill/admin/experts/<id>/  → full detail for the expert profile modal.
+    PATCH — media moderation only: replace the expert's public photo."""
     permission_classes = [IsAuthenticated, IsAdmin]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request, expert_id):
         ep = (ExpertProfile.objects
@@ -602,13 +616,24 @@ class AdminExpertDetailView(APIView):
               .filter(id=expert_id).first())
         if not ep:
             raise NotFound("Expert not found.")
-        row = _admin_expert_row(ep)
+        row = _admin_expert_row(ep, request)
         row.update({
             "bio":          ep.bio,
             "skill_tags":   ep.skill_tags or [],
             "availability": ep.availability,
         })
         return Response(row)
+
+    def patch(self, request, expert_id):
+        ep = ExpertProfile.objects.filter(id=expert_id).first()
+        if not ep:
+            raise NotFound("Expert not found.")
+        photo = request.data.get("photo")
+        if photo is None:
+            raise ValidationError("photo is required.")
+        ep.photo = photo
+        ep.save(update_fields=["photo", "updated_at"])
+        return Response(_admin_expert_row(ep, request))
 
 
 class AdminExpertSuspendView(APIView):
@@ -643,4 +668,89 @@ class AdminExpertSuspendView(APIView):
             raise ValidationError("action must be 'suspend' or 'unsuspend'.")
 
         ep.refresh_from_db()
-        return Response({"ok": True, **_admin_expert_row(ep)})
+        return Response({"ok": True, **_admin_expert_row(ep, request)})
+
+
+# =====================================================
+# ADMIN — SKILLDEV CMS  (categories + marketing copy)
+# =====================================================
+
+class AdminSkillCategoryListView(APIView):
+    """GET list / POST create — SkillDev CMS "Categories" tab."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request):
+        qs = SkillCategory.objects.all()
+        return Response(
+            SkillCategoryAdminSerializer(qs, many=True, context={"request": request}).data
+        )
+
+    def post(self, request):
+        serializer = SkillCategoryAdminSerializer(
+            data=request.data, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class AdminSkillCategoryDetailView(APIView):
+    """GET / PATCH / DELETE one category — SkillDev CMS "Categories" tab."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def _get(self, category_id):
+        cat = SkillCategory.objects.filter(id=category_id).first()
+        if not cat:
+            raise NotFound("Category not found.")
+        return cat
+
+    def get(self, request, category_id):
+        cat = self._get(category_id)
+        return Response(
+            SkillCategoryAdminSerializer(cat, context={"request": request}).data
+        )
+
+    def patch(self, request, category_id):
+        cat = self._get(category_id)
+        serializer = SkillCategoryAdminSerializer(
+            cat, data=request.data, partial=True, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, category_id):
+        cat = self._get(category_id)
+        cat.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminSkillMarketingBlockListView(APIView):
+    """GET the 3 fixed marketing blocks (created on first read if missing) —
+    SkillDev CMS "Marketing" tab. No create/delete: keys are fixed."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        for key, _label in SkillMarketingBlock.KEY_CHOICES:
+            SkillMarketingBlock.objects.get_or_create(key=key)
+        qs = SkillMarketingBlock.objects.all()
+        return Response(
+            SkillMarketingBlockAdminSerializer(qs, many=True, context={"request": request}).data
+        )
+
+
+class AdminSkillMarketingBlockDetailView(APIView):
+    """PATCH one marketing block by key — SkillDev CMS "Marketing" tab."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def patch(self, request, key):
+        block, _created = SkillMarketingBlock.objects.get_or_create(key=key)
+        serializer = SkillMarketingBlockAdminSerializer(
+            block, data=request.data, partial=True, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

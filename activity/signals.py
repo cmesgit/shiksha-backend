@@ -219,7 +219,7 @@ def quiz_published(sender, instance, created, **kwargs):
         obj=instance,
         activity_type=Activity.TYPE_QUIZ,
         title=f"Quiz available: {instance.title}",
-        due_date=instance.due_date,
+        due_date=None,  # quizzes have no due date
         subject_id=subject.id,
         subject_name=subject.name,
     )
@@ -259,7 +259,7 @@ def quiz_submitted(sender, instance, created, **kwargs):
         obj=quiz,
         activity_type=Activity.TYPE_SUBMISSION,
         title=f"{student_name} submitted: {quiz.title}",
-        due_date=quiz.due_date,
+        due_date=None,  # quizzes have no due date
         subject_id=subject.id,
         subject_name=subject.name,
         # The teacher bell routes quiz submissions to /quizzes, not the

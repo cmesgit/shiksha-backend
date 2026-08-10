@@ -56,4 +56,16 @@ app.conf.beat_schedule.update({
         "task": "chat.tasks.expire_old_attachments",
         "schedule": crontab(hour=3, minute=30),  # daily, off-peak
     },
+    "auto-decline-stale-skill-requests": {
+        "task": "skills.tasks.auto_decline_stale_requests",
+        "schedule": crontab(minute="*/15"),  # 24h SLA sweep
+    },
+    "expire-scholarship-exam-sessions": {
+        "task": "scholarship.tasks.expire_exam_sessions",
+        "schedule": crontab(minute="*/1"),  # backstop only — views.py enforces the deadline on read/write
+    },
+    "expire-scholarship-awards": {
+        "task": "scholarship.tasks.expire_scholarship_awards",
+        "schedule": crontab(hour=2, minute=45),  # daily, off-peak
+    },
 })

@@ -23,9 +23,11 @@ from .models import (
     LiveSession,
     LiveSessionChatMessage,
     LiveSessionViewerSample,
+    LiveKitWebhookEvent,
     StreamHealthSample,
 )
 from .services import attendance as attendance_svc
+from .services.room_admin import close_room
 from .views import broadcast_session_update
 
 logger = logging.getLogger(__name__)
@@ -101,6 +103,10 @@ def admin_stream_detail(request, session_id):
         id=session_id,
     )
 
+    intervals_by_user = {}
+    for iv in s.attendance_intervals.all():
+        intervals_by_user.setdefault(iv.user_id, []).append(iv)
+
     attendance = [
         {
             "user_name": (a.user.get_full_name() if a.user_id and hasattr(a.user, "get_full_name") else ""),
@@ -109,6 +115,8 @@ def admin_stream_detail(request, session_id):
             "left_at": a.left_at.isoformat() if a.left_at else None,
             "total_seconds": a.total_seconds,
             "online": a.left_at is None and a.joined_at is not None,
+            "rejoin_count": max(len(intervals_by_user.get(a.user_id, [])) - 1, 0),
+            "reconciled": any(iv.closed_by_reconcile for iv in intervals_by_user.get(a.user_id, [])),
         }
         for a in s.attendances.select_related("user").all()
     ]
@@ -123,8 +131,9 @@ def admin_stream_detail(request, session_id):
         for m in s.chat_messages.all().order_by("created_at")[:200]
     ]
 
-    presenter_health = s.health_samples.filter(is_presenter=True).order_by("-ts").first()
-    latest_health = presenter_health or s.health_samples.order_by("-ts").first()
+    presenter_samples = list(s.health_samples.filter(is_presenter=True).order_by("-ts")[:200])
+    health_qs_samples = presenter_samples or list(s.health_samples.order_by("-ts")[:200])
+    latest_health = health_qs_samples[0] if health_qs_samples else None
     health = None
     if latest_health:
         health = {
@@ -135,6 +144,18 @@ def admin_stream_detail(request, session_id):
             "quality": latest_health.quality,
             "ts": latest_health.ts.isoformat(),
         }
+    # Windowed trend, oldest→newest, for the Monitor's health-over-time chart.
+    health_samples = [
+        {
+            "ts": h.ts.isoformat(),
+            "bitrate_kbps": h.bitrate_kbps,
+            "fps": h.fps,
+            "latency_ms": h.latency_ms,
+            "packet_loss": h.packet_loss,
+            "quality": h.quality,
+        }
+        for h in reversed(health_qs_samples)
+    ]
 
     viewer_samples = [
         {"ts": v.ts.isoformat(), "viewers": v.viewers}
@@ -146,6 +167,7 @@ def admin_stream_detail(request, session_id):
         "attendance": attendance,
         "chat": chat,
         "health": health,
+        "health_samples": health_samples,
         "viewer_samples": viewer_samples,
     })
 
@@ -203,6 +225,7 @@ def admin_stream_end(request, session_id):
     if s.actual_ended_at is None:
         s.actual_ended_at = now
     s.save(update_fields=["status", "teacher_left_at", "actual_ended_at"])
+    close_room(s.room_name)
     broadcast_session_update(s)
     return Response({"detail": "Session ended.", "status": "COMPLETED"})
 
@@ -285,3 +308,55 @@ def ingest_health(request, session_id):
         is_presenter=is_presenter,
     )
     return Response({"ok": True}, status=http_status.HTTP_201_CREATED)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Webhook audit trail — surfaces LiveKitWebhookEvent (the idempotent,
+# write-before-dispatch log every inbound LiveKit webhook already lands in)
+# so ops can diagnose processing failures instead of only ever seeing them
+# in server logs.
+# ─────────────────────────────────────────────────────────────────────────
+def _webhook_event_row(w):
+    return {
+        "id": str(w.id),
+        "event_id": w.event_id,
+        "event_type": w.event_type,
+        "room_name": w.room_name,
+        "session_id": str(w.session_id) if w.session_id else None,
+        "processed": w.processed,
+        "error": w.error,
+        "received_at": w.received_at.isoformat(),
+        "payload": w.payload,
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, IsAdmin])
+def admin_webhook_events(request):
+    """GET /livestream/admin/webhook-events/?status=failed|unprocessed|all&event_type=&room_name=&q="""
+    status_q = (request.query_params.get("status") or "failed").lower()
+    qs = LiveKitWebhookEvent.objects.all()
+
+    if status_q == "failed":
+        qs = qs.exclude(error="")
+    elif status_q == "unprocessed":
+        qs = qs.filter(processed=False)
+    # else "all": no filter
+
+    event_type = request.query_params.get("event_type")
+    if event_type:
+        qs = qs.filter(event_type=event_type)
+    room_name = request.query_params.get("room_name")
+    if room_name:
+        qs = qs.filter(room_name__icontains=room_name)
+
+    qs = qs.order_by("-received_at")[:300]
+
+    all_events = LiveKitWebhookEvent.objects.all()
+    counts = {
+        "total": all_events.count(),
+        "unprocessed": all_events.filter(processed=False).count(),
+        "failed": all_events.exclude(error="").count(),
+    }
+
+    return Response({"data": [_webhook_event_row(w) for w in qs], "counts": counts})

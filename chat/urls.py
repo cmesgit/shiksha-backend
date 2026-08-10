@@ -34,6 +34,7 @@ from .views import (
     AdminReportsQueueView,
     AdminResolveReportView,
     AdminRemoveMessageView,
+    AdminMessageSearchView,
     AdminSuspensionsView,
     AdminLiftSuspensionView,
     AdminBroadcastView,
@@ -41,6 +42,8 @@ from .views import (
     AdminAssignTicketView,
     AdminTicketStatusView,
     AdminLogsView,
+    AdminConversationMessagesView,
+    ChatModerationOverviewView,
     # Stage E — preferences
     CommPreferenceView,
 )
@@ -91,6 +94,7 @@ urlpatterns = [
     # Stage D — CC-023 Administrator Console
     path("admin/reports/", AdminReportsQueueView.as_view()),
     path("admin/reports/<uuid:report_id>/resolve/", AdminResolveReportView.as_view()),
+    path("admin/messages/", AdminMessageSearchView.as_view()),
     path("admin/messages/<uuid:message_id>/remove/", AdminRemoveMessageView.as_view()),
     path("admin/suspensions/", AdminSuspensionsView.as_view()),
     path("admin/suspensions/<str:identity_key>/lift/", AdminLiftSuspensionView.as_view()),
@@ -99,4 +103,6 @@ urlpatterns = [
     path("admin/support/tickets/<uuid:ticket_id>/assign/", AdminAssignTicketView.as_view()),
     path("admin/support/tickets/<uuid:ticket_id>/status/", AdminTicketStatusView.as_view()),
     path("admin/logs/", AdminLogsView.as_view()),
+    path("admin/conversations/<uuid:conversation_id>/messages/", AdminConversationMessagesView.as_view()),
+    path("admin/moderation-overview/", ChatModerationOverviewView.as_view()),
 ]

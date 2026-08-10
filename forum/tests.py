@@ -145,6 +145,11 @@ class ForumHardeningTests(TestCase):
         self.assertEqual(d["stats"]["questions_asked"], 1)
         self.assertEqual(len(d["engagement"]), 7)
         self.assertIn("recent_activity", d)
+        # Weekly deltas powering the dashboard trend pills.
+        for k in ("questions_this_week", "answers_this_week", "saved_this_week"):
+            self.assertIn(k, d["stats"])
+        # The question created in setUp is within the last 7 days.
+        self.assertEqual(d["stats"]["questions_this_week"], 1)
 
     def test_me_exposes_permissions(self):
         r = auth_client(self.author).get("/api/forum/me/")

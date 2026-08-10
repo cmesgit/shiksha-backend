@@ -364,6 +364,12 @@ class BatchStudentSerializer(serializers.ModelSerializer):
     batch_code = serializers.CharField(read_only=True, default=None)
     batch_id = serializers.UUIDField(source="batch.id", read_only=True, default=None)
     batch_name = serializers.CharField(source="batch.name", read_only=True, default=None)
+    # The learner profile IS the student (an account can hold several), so
+    # callers that want to link to a student page need this, not user id.
+    learner_profile_id = serializers.UUIDField(
+        source="learner_profile.id", read_only=True, default=None,
+    )
+    course_id = serializers.UUIDField(source="course.id", read_only=True, default=None)
 
     class Meta:
         model = Enrollment
@@ -371,6 +377,8 @@ class BatchStudentSerializer(serializers.ModelSerializer):
             "id",
             "user_email",
             "user_name",
+            "learner_profile_id",
+            "course_id",
             "course_title",
             "batch_id",
             "batch_name",

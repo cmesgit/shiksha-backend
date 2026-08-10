@@ -2,10 +2,12 @@ from django.urls import path
 
 from .views import (
     CreateQuizView,
+    TeacherUpdateQuizView,
     AddQuestionView,
     BulkAddQuestionsView,
     SubmitQuizForReviewView,
     StudentDashboardView,
+    StudentQuizStatsView,
     StartQuizView,
     SubmitQuizView,
     CheckAnswerView,
@@ -15,10 +17,15 @@ from .views import (
     StudentQuizSubjectsView,
     StudentQuizAttemptsView,
     TeacherDeleteQuizView,
+    TeacherQuizDuplicateView,
     TeacherQuizAttemptDetailView,
     TeacherStudentAttemptsView,
     TeacherSubjectQuizListView,
+    TeacherAllQuizListView,
     TeacherQuizAttemptsView,
+    TeacherQuizAnalyticsView,
+    TeacherQuizRemindView,
+    TeacherGenerateAIQuestionsView,
     TeacherQuestionBankView,
     TeacherBankFiltersView,
     AdminQuizListView,
@@ -30,15 +37,28 @@ urlpatterns = [
 
     # ── Teacher ──────────────────────────────────────────────────────────────
     path("teacher/quizzes/", CreateQuizView.as_view()),
+    # Builder edit-load-meta (questions load via quizzes/<pk>/draft/, save via
+    # the bulk endpoint's PUT below).
+    path("teacher/quizzes/<uuid:pk>/", TeacherUpdateQuizView.as_view()),
     path("teacher/quizzes/<uuid:pk>/questions/", AddQuestionView.as_view()),
+    # POST appends (bulk-paste/bank), PUT replaces the full set (builder save).
     path("teacher/quizzes/<uuid:pk>/questions/bulk/", BulkAddQuestionsView.as_view()),
     # "publish" kept for backward compatibility; both now submit for admin review.
     path("teacher/quizzes/<uuid:pk>/publish/", SubmitQuizForReviewView.as_view()),
     path("teacher/quizzes/<uuid:pk>/submit-for-review/", SubmitQuizForReviewView.as_view()),
     path("teacher/quizzes/<uuid:pk>/delete/", TeacherDeleteQuizView.as_view()),
+    path("teacher/quizzes/<uuid:pk>/duplicate/", TeacherQuizDuplicateView.as_view()),
+    path("teacher/quizzes/<uuid:pk>/analytics/", TeacherQuizAnalyticsView.as_view()),
+    path("teacher/quizzes/<uuid:pk>/remind/", TeacherQuizRemindView.as_view()),
+    path("teacher/quizzes/generate-ai/", TeacherGenerateAIQuestionsView.as_view()),
     path(
         "teacher/subjects/<uuid:subject_id>/quizzes/",
         TeacherSubjectQuizListView.as_view(),
+    ),
+    # Flat: every quiz across the subjects this teacher is assigned to.
+    path(
+        "teacher/quizzes/all/",
+        TeacherAllQuizListView.as_view(),
     ),
     path(
         "teacher/quizzes/<uuid:pk>/attempts/",
@@ -59,6 +79,7 @@ urlpatterns = [
 
     # ── Student ───────────────────────────────────────────────────────────────
     path("student/quizzes/", StudentDashboardView.as_view()),
+    path("student/quizzes/stats/", StudentQuizStatsView.as_view()),
     path("student/quiz-subjects/", StudentQuizSubjectsView.as_view()),
     path("student/quizzes/<uuid:pk>/submit/", SubmitQuizView.as_view()),
     # Student's own attempts history for a quiz

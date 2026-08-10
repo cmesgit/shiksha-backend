@@ -48,6 +48,15 @@ class Quiz(models.Model):
     # visible to every batch of the course); set = scoped to one batch
     # (e.g. "Batch A13 weekly test"). SET_NULL: deleting a batch demotes
     # its quizzes to course-wide instead of destroying them.
+    #
+    # ⚠️ NOT CURRENTLY ENFORCED. QuizCreateSerializer.Meta.fields omits
+    # `batch`, so no API path ever sets it today — every quiz is batch=NULL
+    # and this is harmless. The moment batch assignment ships on quizzes,
+    # StudentDashboardView/QuizDetailView (quizzes/views.py) MUST filter on
+    # it the same way materials/views.py's StudentSubjectMaterials does
+    # (Q(batch__isnull=True) | Q(batch_id=<learner's batch for this
+    # course>)) — those two views were audited and found to leak nothing
+    # only because this field is always NULL, not because they check it.
     batch = models.ForeignKey(
         "courses.Batch",
         on_delete=models.SET_NULL,
@@ -65,8 +74,17 @@ class Quiz(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
 
-    due_date = models.DateTimeField(null=True, blank=True)
+    # Quizzes never expire (product decision: a quiz stays attemptable for as
+    # long as it's published, gated only by is_published / review_status).
     time_limit_minutes = models.PositiveIntegerField(null=True, blank=True)
+
+    # Retakes stay unlimited by design (see StartQuizView) — this instead
+    # bounds how many of a student's own attempts get the full answer-key
+    # review (correct_choice + explanation in QuizResultView), so a retake
+    # can't be used to read the key and then resubmit for a free 100%.
+    # Ignored for TYPE_PRACTICE, where instant per-question feedback is the
+    # whole point of the mode.
+    reveal_answers_after = models.PositiveIntegerField(default=1)
 
     quiz_type = models.CharField(
         max_length=10, choices=TYPE_CHOICES, default=TYPE_MOCK,
@@ -142,6 +160,23 @@ class Question(models.Model):
     topic = models.CharField(max_length=120, blank=True, default="")
     difficulty = models.CharField(
         max_length=10, choices=DIFFICULTY_CHOICES, default=DIFFICULTY_MEDIUM,
+    )
+
+    # Provenance for the builder's per-question badge (AI-drafted, imported
+    # from bulk-paste, pulled from the question bank) — purely informational,
+    # never affects grading or visibility.
+    SOURCE_MANUAL = "manual"
+    SOURCE_AI = "ai"
+    SOURCE_BANK = "bank"
+    SOURCE_IMPORT = "import"
+    SOURCE_CHOICES = [
+        (SOURCE_MANUAL, "Manual"),
+        (SOURCE_AI, "AI-drafted"),
+        (SOURCE_BANK, "From question bank"),
+        (SOURCE_IMPORT, "Bulk import"),
+    ]
+    source = models.CharField(
+        max_length=10, choices=SOURCE_CHOICES, default=SOURCE_MANUAL,
     )
 
     created_at = models.DateTimeField(auto_now_add=True)

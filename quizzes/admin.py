@@ -15,14 +15,12 @@ class QuizAdmin(admin.ModelAdmin):
         "subject",
         "created_by",
         "is_published",
-        "due_date",
         "total_marks",
         "created_at",
     )
 
     list_filter = (
         "is_published",
-        "due_date",
         "subject__course",
         "subject",
     )

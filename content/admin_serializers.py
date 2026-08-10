@@ -20,7 +20,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import (
-    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem, ShowcaseCourse,
+    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
+    HomeContentBlock, HomeFloater, HomeListItem, ShowcaseCourse,
 )
 
 
@@ -177,6 +178,10 @@ class ShowcaseCourseAdminSerializer(FullCleanMixin, serializers.ModelSerializer)
     # is out of scope; ShowcaseCourse.clean()'s own `isinstance(..., list)`
     # check still runs regardless and still catches genuinely malformed input.
     full_clean_exclude = ("categories",)
+    course_title = serializers.SerializerMethodField()
+
+    def get_course_title(self, obj):
+        return obj.course.title if obj.course_id else None
 
     class Meta:
         model = ShowcaseCourse
@@ -184,10 +189,27 @@ class ShowcaseCourseAdminSerializer(FullCleanMixin, serializers.ModelSerializer)
             "id", "title", "level_label", "ribbon", "stars", "review_count",
             "fact_line", "price_label", "tutor_name", "is_explore_card",
             "categories", "gradient_css", "image", "image_url", "icon",
-            "link_path", "link_state", "order", "is_active",
+            "link_path", "link_state", "course", "course_title", "board",
+            "order", "is_active",
             "created_at", "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]
+
+    def validate(self, attrs):
+        # When linked to a real course, link_path/link_state are derived
+        # server-side rather than trusting the manual link_state JSON textarea
+        # (which previously had no relationship to what was actually linked).
+        if "course" in attrs and attrs["course"] is not None:
+            course = attrs["course"]
+            attrs["link_path"] = "/courses"
+            attrs["link_state"] = (
+                {
+                    "selectedBoardGroup": course.board.board_type.lower(),
+                    "selectedBoard": course.board.name.lower(),
+                }
+                if course.board else {}
+            )
+        return super().validate(attrs)
 
 
 class ContentTagSerializer(serializers.ModelSerializer):
@@ -195,3 +217,38 @@ class ContentTagSerializer(serializers.ModelSerializer):
         model = ContentTag
         fields = ["id", "name", "slug"]
         read_only_fields = ["slug"]
+
+
+# ── Homepage content ───────────────────────────────────────────────
+
+class HomeContentBlockAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
+    class Meta:
+        model = HomeContentBlock
+        fields = [
+            "id", "section", "eyebrow", "heading", "heading_secondary",
+            "subhead", "body", "cta_primary_label", "cta_primary_href",
+            "cta_secondary_label", "cta_secondary_href", "image", "image_url",
+            "extra", "is_active", "created_at", "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at"]
+
+
+class HomeListItemAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
+    class Meta:
+        model = HomeListItem
+        fields = [
+            "id", "section", "variant", "icon", "title", "subtitle", "body",
+            "pills", "stat_text", "cta_label", "cta_href", "tint", "order",
+            "is_active", "created_at", "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at"]
+
+
+class HomeFloaterAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
+    class Meta:
+        model = HomeFloater
+        fields = [
+            "id", "section", "slot", "icon", "label", "sublabel", "is_active",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at"]

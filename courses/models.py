@@ -1,8 +1,44 @@
 import uuid
 from django.db import models
 from django.conf import settings
+from django.utils.text import slugify
 from imagekit.models import ProcessedImageField
 from imagekit.processors import ResizeToFill
+
+
+class CourseCategory(models.Model):
+    GROUP_BOARDS = "boards"
+    GROUP_SCHOOL = "class8-12"
+    GROUP_COMPETITIVE = "competitive"
+    GROUP_CHOICES = [
+        (GROUP_BOARDS, "Boards"),
+        (GROUP_SCHOOL, "Class 8-12"),
+        (GROUP_COMPETITIVE, "Competitive"),
+    ]
+
+    name = models.CharField(max_length=120)
+    slug = models.SlugField(max_length=140, unique=True, blank=True)
+    group = models.CharField(max_length=20, choices=GROUP_CHOICES)
+    blurb = models.TextField(blank=True, default="")
+    icon = models.CharField(max_length=120, blank=True, default="")
+    display_order = models.IntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["display_order", "name"]
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            base = slugify(self.name)[:130] or "category"
+            slug, n = base, 2
+            while CourseCategory.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base}-{n}"
+                n += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
 
 
 class Course(models.Model):
@@ -23,10 +59,12 @@ class Course(models.Model):
     STATUS_DRAFT = "DRAFT"
     STATUS_PUBLISHED = "PUBLISHED"
     STATUS_ARCHIVED = "ARCHIVED"
+    STATUS_COMING_SOON = "COMING_SOON"
     STATUS_CHOICES = [
         (STATUS_DRAFT, "Draft"),
         (STATUS_PUBLISHED, "Published"),
         (STATUS_ARCHIVED, "Archived"),
+        (STATUS_COMING_SOON, "Coming Soon"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -54,6 +92,16 @@ class Course(models.Model):
         help_text="How many days of access a single approved enrollment grants (default = 1 month)",
     )
 
+    thumbnail = ProcessedImageField(
+        upload_to="courses/thumbnails/",
+        processors=[ResizeToFill(1200, 675)],
+        format="WEBP",
+        options={"quality": 80},
+        blank=True,
+        null=True,
+        help_text="Cover image shown on course cards and the course detail hero (16:9).",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -71,6 +119,35 @@ class Course(models.Model):
         blank=True,
         related_name="courses"
     )
+
+    slug = models.SlugField(max_length=220, unique=True, blank=True)
+    mrp = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Original/list price in paise (₹1 = 100 paise); shown struck-through against price.",
+    )
+    discount_label = models.CharField(max_length=60, blank=True, default="")
+    badge = models.CharField(max_length=60, blank=True, default="")
+    is_featured = models.BooleanField(default=False)
+    display_order = models.IntegerField(default=0)
+    seo_title = models.CharField(max_length=200, blank=True, default="")
+    seo_description = models.TextField(blank=True, default="")
+    promo_video_url = models.URLField(blank=True, default="")
+    categories = models.ManyToManyField(
+        CourseCategory, blank=True, related_name="courses",
+    )
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            base = slugify(self.title)[:180] or "course"
+            slug, n = base, 2
+            while Course.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base}-{n}"
+                n += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
+
+    def get_absolute_url(self):
+        return f"/courses/{self.slug}"
 
     def __str__(self):
         base = self.title
@@ -110,6 +187,10 @@ class Subject(models.Model):
         blank=True,
         null=True
     )
+    textbook = models.CharField(
+        max_length=200, blank=True, default="",
+        help_text="Textbook reference shown under the subject, e.g. 'Our Pasts III'.",
+    )
     order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -137,6 +218,16 @@ class Chapter(models.Model):
 
     title = models.CharField(max_length=255)
     order = models.PositiveIntegerField(default=0)
+
+    content_html = models.TextField(
+        blank=True, default="",
+        help_text="Chapter notes/content as HTML. Sanitized on save unless "
+                  "'trusted html' is ticked.",
+    )
+    trusted_html = models.BooleanField(
+        default=False,
+        help_text="Skip HTML sanitization — only for first-party content.",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -166,6 +257,12 @@ class Chapter(models.Model):
             )
         ]
 
+    def save(self, *args, **kwargs):
+        if not self.trusted_html:
+            from content.sanitize import clean_html
+            self.content_html = clean_html(self.content_html)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.title
 
@@ -177,12 +274,21 @@ class CourseDetail(models.Model):
         related_name="details"
     )
 
-    level = models.CharField(max_length=50)
-    duration_weeks = models.PositiveIntegerField()
+    level = models.CharField(max_length=50, blank=True, default="")
+    duration_weeks = models.PositiveIntegerField(default=0)
     syllabus = models.TextField(blank=True)
 
     language = models.CharField(max_length=50, default="English")
     requirements = models.TextField(blank=True)
+
+    highlights = models.TextField(
+        blank=True, default="",
+        help_text="One item per line — the 'What you'll learn' list.",
+    )
+    includes = models.TextField(
+        blank=True, default="",
+        help_text="One item per line — the 'This course includes' list.",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -247,15 +353,26 @@ class Board(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     name = models.CharField(max_length=100, unique=True, db_index=True)
+    slug = models.SlugField(max_length=140, unique=True, blank=True)
     board_type = models.CharField(
         max_length=20,
         choices=TYPE_CHOICES
     )
     description = models.CharField(max_length=255, blank=True, default="")
+    logo = ProcessedImageField(
+        upload_to="boards/logos/",
+        processors=[ResizeToFill(1200, 675)],
+        format="WEBP",
+        options={"quality": 80},
+        blank=True,
+        null=True,
+        help_text="Board logo shown on board cards / filters.",
+    )
     is_active = models.BooleanField(
         default=True,
         help_text="Inactive boards render as 'Coming Soon' / dormant on the public site.",
     )
+    display_order = models.IntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -264,6 +381,16 @@ class Board(models.Model):
         indexes = [
             models.Index(fields=["name"]),
         ]
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            base = slugify(self.name)[:130] or "board"
+            slug, n = base, 2
+            while Board.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base}-{n}"
+                n += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.name} ({self.board_type})"
@@ -317,6 +444,12 @@ class Batch(models.Model):
         help_text="Max active students; leave blank for unlimited.",
     )
 
+    price_override = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Paise; overrides Course.price for this batch. Leave blank to use the course price.",
+    )
+
     is_active = models.BooleanField(
         default=True,
         help_text="Inactive batches are hidden from new enrollments.",
@@ -350,6 +483,10 @@ class Batch(models.Model):
     @property
     def is_full(self):
         return self.capacity is not None and self.seats_taken >= self.capacity
+
+    @property
+    def effective_price(self):
+        return self.course.price if self.price_override is None else self.price_override
 
 
 # Delivery-plane teaching roster: who teaches which subject *in which batch*.
@@ -430,3 +567,26 @@ class TeachingAssignment(models.Model):
 
     def __str__(self):
         return f"{self.batch.code} · {self.subject.name} → {self.teacher.email} ({self.role})"
+
+
+class BoardNotifyRequest(models.Model):
+    """A "notify me when {board} launches" lead, captured anonymously from a
+    locked board chip on the public catalog. Visible only via Django admin —
+    no dedicated review UI was requested."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    board = models.ForeignKey(Board, on_delete=models.CASCADE, related_name="notify_requests")
+    email = models.EmailField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["board", "email"], name="unique_notify_per_board_email"),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.email = self.email.strip().lower()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.email} → {self.board.name}"

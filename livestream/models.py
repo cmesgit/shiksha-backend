@@ -1,11 +1,3 @@
-# PLACEMENT: backend/backend/livestream/models.py   (FULL FILE — REPLACE THE WHOLE FILE)
-# DEPLOY:    /app/shiksha-backend/livestream/models.py
-#
-# This is your original models.py with ONE addition: LiveSession.sync_status()
-# (inserted right after computed_status). Nothing else is changed. It replaces
-# the earlier "add this method" note from patch set 3. No migration needed —
-# no fields changed.
-
 import uuid
 from django.db import models
 from django.conf import settings
@@ -261,6 +253,64 @@ class LiveSessionAttendance(models.Model):
         if self.joined_at and self.left_at:
             return self.left_at - self.joined_at
         return None
+
+
+class SessionReview(models.Model):
+    """A participant's post-class rating for one LiveSession.
+
+    One review per (session, user) — resubmitting overwrites via
+    update_or_create rather than erroring, so the "review on leave" prompt
+    can be re-shown/re-submitted without a unique-constraint 500.
+    """
+    session = models.ForeignKey(
+        LiveSession,
+        on_delete=models.CASCADE,
+        related_name="reviews",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+    )
+    rating = models.PositiveSmallIntegerField(
+        choices=[(1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")]
+    )
+    description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("session", "user")
+        indexes = [models.Index(fields=["session", "user"])]
+
+    def __str__(self):
+        return f"{self.user_id} rated {self.session_id}: {self.rating}"
+
+
+class SessionNote(models.Model):
+    """A participant's private notes for one LiveSession.
+
+    Private per (session, user) — a user only ever sees their own note for a
+    session, never another participant's. Upserted via update_or_create so the
+    in-call Notes panel can autosave without worrying about create-vs-update.
+    """
+    session = models.ForeignKey(
+        LiveSession,
+        on_delete=models.CASCADE,
+        related_name="notes",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+    )
+    content = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("session", "user")
+        indexes = [models.Index(fields=["session", "user"])]
+
+    def __str__(self):
+        return f"{self.user_id} notes on {self.session_id}"
 
 
 class LiveSessionAttendanceInterval(models.Model):

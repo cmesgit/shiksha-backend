@@ -47,10 +47,11 @@ class TeacherRescheduleSessionView(APIView):
         sess.proposed_slot_key = new_slot_key
         sess.proposed_scheduled_for = _slot_to_datetime(new_slot_key)
         sess.reschedule_reason = request.data.get("reason", "")
+        sess.status_before_reschedule = sess.status
         sess.status = SkillSession.STATUS_NEEDS_RECONFIRMATION
         sess.save(update_fields=[
             "proposed_slot_key", "proposed_scheduled_for",
-            "reschedule_reason", "status", "updated_at",
+            "reschedule_reason", "status_before_reschedule", "status", "updated_at",
         ])
         push_skill_bell(sess, "reschedule_proposed")
         return Response({"ok": True, "status": sess.status})
@@ -81,10 +82,14 @@ class StudentConfirmRescheduleView(APIView):
         sess.scheduled_for = sess.proposed_scheduled_for
         sess.proposed_slot_key = ""
         sess.proposed_scheduled_for = None
+        sess.status_before_reschedule = ""
+        # Accepting a proposed time is what officially books the class
+        # (WORKFLOW.md §3) — always CONFIRMED, regardless of whether the
+        # session was only REQUESTED before the proposal.
         sess.status = SkillSession.STATUS_CONFIRMED
         sess.save(update_fields=[
             "slot_key", "scheduled_for", "proposed_slot_key",
-            "proposed_scheduled_for", "status", "updated_at",
+            "proposed_scheduled_for", "status_before_reschedule", "status", "updated_at",
         ])
         push_skill_bell(sess, "reschedule_confirmed")
         return Response({"ok": True, "status": sess.status})
@@ -105,9 +110,18 @@ class StudentDeclineRescheduleView(APIView):
         if sess.status != SkillSession.STATUS_NEEDS_RECONFIRMATION:
             raise ValidationError("This session isn't awaiting reconfirmation.")
 
-        if sess.slot_key:
-            free_slot(sess.expert, sess.slot_key)
-        sess.status = SkillSession.STATUS_CANCELLED
-        sess.save(update_fields=["status", "updated_at"])
+        # "Keep original time" — the original slot_key was never released by
+        # the proposal, so it's still a valid hold. Revert to whatever status
+        # this session was in before the teacher proposed, per WORKFLOW.md §3
+        # — do NOT cancel the session or free its (still-good) original slot.
+        sess.status = sess.status_before_reschedule or SkillSession.STATUS_CONFIRMED
+        sess.status_before_reschedule = ""
+        sess.proposed_slot_key = ""
+        sess.proposed_scheduled_for = None
+        sess.reschedule_reason = ""
+        sess.save(update_fields=[
+            "status", "status_before_reschedule", "proposed_slot_key",
+            "proposed_scheduled_for", "reschedule_reason", "updated_at",
+        ])
         push_skill_bell(sess, "reschedule_declined")
         return Response({"ok": True, "status": sess.status})

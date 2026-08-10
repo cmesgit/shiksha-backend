@@ -3,7 +3,8 @@
 from rest_framework import serializers
 
 from .models import (
-    Announcement, BlogPost, CurrentAffair, FAQItem, ShowcaseCourse,
+    Announcement, BlogPost, CurrentAffair, FAQItem, HomeContentBlock,
+    HomeFloater, HomeListItem, ShowcaseCourse,
 )
 
 
@@ -102,10 +103,44 @@ class ShowcaseCourseSerializer(serializers.ModelSerializer):
             "id", "title", "level_label", "ribbon", "stars", "review_count",
             "fact_line", "price_label", "tutor_name", "is_explore_card",
             "categories", "gradient_css", "img", "icon",
-            "link_path", "link_state", "order",
+            "link_path", "link_state", "course", "board", "order",
         ]
 
     def get_img(self, obj):
         if obj.image:
             return _absolute(self.context.get("request"), obj.image.url)
         return obj.image_url or ""
+
+
+# ── Homepage content ───────────────────────────────────────────────
+
+class HomeContentBlockSerializer(serializers.ModelSerializer):
+    img = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HomeContentBlock
+        fields = [
+            "id", "section", "eyebrow", "heading", "heading_secondary",
+            "subhead", "body", "cta_primary_label", "cta_primary_href",
+            "cta_secondary_label", "cta_secondary_href", "img", "extra",
+        ]
+
+    def get_img(self, obj):
+        if obj.image:
+            return _absolute(self.context.get("request"), obj.image.url)
+        return obj.image_url or ""
+
+
+class HomeListItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HomeListItem
+        fields = [
+            "id", "section", "variant", "icon", "title", "subtitle", "body",
+            "pills", "stat_text", "cta_label", "cta_href", "tint", "order",
+        ]
+
+
+class HomeFloaterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HomeFloater
+        fields = ["id", "section", "slot", "icon", "label", "sublabel"]

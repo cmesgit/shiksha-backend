@@ -1,0 +1,2819 @@
+{
+  "cbse": {
+    "class8": {
+      "id": "class8",
+      "title": "Class 8",
+      "desc": "Complete Class 8 academic program with subject-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1: Mathematics",
+          "textbook": "NCERT Mathematics — Class 8",
+          "chapters": [
+            "Rational Numbers",
+            "Linear Equations in One Variable",
+            "Understanding Quadrilaterals",
+            "Practical Geometry",
+            "Data Handling",
+            "Squares and Square Roots",
+            "Cubes and Cube Roots",
+            "Comparing Quantities",
+            "Algebraic Expressions and Identities",
+            "Visualising Solid Shapes",
+            "Mensuration",
+            "Exponents and Powers",
+            "Direct and Inverse Proportions",
+            "Factorisation",
+            "Introduction to Graphs",
+            "Playing with Numbers"
+          ]
+        },
+        {
+          "title": "Topic 2: Science",
+          "textbook": "NCERT Science — Class 8",
+          "chapters": [
+            "Crop Production and Management",
+            "Microorganisms: Friend and Foe",
+            "Synthetic Fibres and Plastics",
+            "Materials: Metals and Non-Metals",
+            "Coal and Petroleum",
+            "Combustion and Flame",
+            "Conservation of Plants and Animals",
+            "Cell - Structure and Functions",
+            "Reproduction in Animals",
+            "Reaching the Age of Adolescence",
+            "Force and Pressure",
+            "Friction",
+            "Sound",
+            "Chemical Effects of Electric Current",
+            "Some Natural Phenomena",
+            "Stars and the Solar System",
+            "Pollution of Air and Water"
+          ]
+        },
+        {
+          "title": "Topic 3A: Social Science — History (Our Pasts III)",
+          "textbook": "NCERT Our Pasts III — Class 8",
+          "chapters": [
+            "How, When and Where",
+            "From Trade to Territory",
+            "Ruling the Countryside",
+            "Tribals, Dikus and the Vision of a Golden Age",
+            "When People Rebel",
+            "Weavers, Iron Smelters and Factory Owners",
+            "Civilising the Native, Educating the Nation",
+            "Women, Caste and Reform",
+            "The Making of the National Movement",
+            "India After Independence"
+          ]
+        },
+        {
+          "title": "Topic 3B: Social Science — Geography (Resources and Development)",
+          "textbook": "NCERT Resources and Development — Class 8",
+          "chapters": [
+            "Resources",
+            "Land, Soil, Water, Natural Vegetation and Wildlife Resources",
+            "Mineral and Power Resources",
+            "Agriculture",
+            "Industries",
+            "Human Resources"
+          ]
+        },
+        {
+          "title": "Topic 3C: Social Science — Civics (Social and Political Life III)",
+          "textbook": "NCERT Social and Political Life III — Class 8",
+          "chapters": [
+            "The Indian Constitution",
+            "Understanding Secularism",
+            "Why Do We Need a Parliament",
+            "Understanding Laws",
+            "Judiciary",
+            "Understanding Our Criminal Justice System",
+            "Understanding Marginalisation",
+            "Confronting Marginalisation",
+            "Public Facilities",
+            "Law and Social Justice"
+          ]
+        },
+        {
+          "title": "Topic 4A: English — Honeydew (Main Reader)",
+          "textbook": "NCERT Honeydew — Class 8",
+          "chapters": [
+            "The Best Christmas Present in the World",
+            "The Tsunami",
+            "Glimpses of the Past",
+            "Bepin Choudhury's Lapse of Memory",
+            "The Summit Within",
+            "This is Jody's Fawn",
+            "A Visit to Cambridge",
+            "A Short Monsoon Diary",
+            "The Great Stone Face - Part I",
+            "The Great Stone Face - Part II"
+          ]
+        },
+        {
+          "title": "Topic 4B: English — It So Happened (Supplementary Reader)",
+          "textbook": "NCERT It So Happened — Class 8",
+          "chapters": [
+            "How the Camel Got His Hump",
+            "Children at Work",
+            "The Selfish Giant",
+            "The Treasure Within",
+            "Princess September",
+            "The Fight",
+            "The Open Window",
+            "Jalebis",
+            "Ancient Education System of India"
+          ]
+        },
+        {
+          "title": "Topic 4C: English — Grammar and Writing Skills",
+          "textbook": "CBSE English Grammar — Class 8",
+          "chapters": [
+            "Tenses",
+            "Modals",
+            "Active and Passive Voice",
+            "Reported Speech",
+            "Letter Writing",
+            "Essay and Paragraph Writing",
+            "Comprehension Passages"
+          ]
+        }
+      ]
+    },
+    "class9": {
+      "id": "class9",
+      "title": "Class 9",
+      "desc": "Complete Class 9 academic program with subject-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1: Mathematics",
+          "textbook": "NCERT Mathematics — Class 9",
+          "chapters": [
+            "Number Systems",
+            "Polynomials",
+            "Coordinate Geometry",
+            "Linear Equations in Two Variables",
+            "Introduction to Euclid's Geometry",
+            "Lines and Angles",
+            "Triangles",
+            "Quadrilaterals",
+            "Circles",
+            "Heron's Formula",
+            "Surface Areas and Volumes",
+            "Statistics",
+            "Probability"
+          ]
+        },
+        {
+          "title": "Topic 2: Science",
+          "textbook": "NCERT Science — Class 9",
+          "chapters": [
+            "Matter in Our Surroundings",
+            "Is Matter Around Us Pure",
+            "Atoms and Molecules",
+            "Structure of the Atom",
+            "The Fundamental Unit of Life",
+            "Tissues",
+            "Motion",
+            "Force and Laws of Motion",
+            "Gravitation",
+            "Work and Energy",
+            "Sound",
+            "Improvement in Food Resources",
+            "Natural Resources"
+          ]
+        },
+        {
+          "title": "Topic 3A: Social Science — History",
+          "textbook": "NCERT India and the Contemporary World I — Class 9",
+          "chapters": [
+            "The French Revolution",
+            "Socialism in Europe and the Russian Revolution",
+            "Nazism and the Rise of Hitler",
+            "Forest Society and Colonialism",
+            "Pastoralists in the Modern World"
+          ]
+        },
+        {
+          "title": "Topic 3B: Social Science — Geography",
+          "textbook": "NCERT Contemporary India I — Class 9",
+          "chapters": [
+            "India — Size and Location",
+            "Physical Features of India",
+            "Drainage",
+            "Climate",
+            "Natural Vegetation and Wildlife",
+            "Population"
+          ]
+        },
+        {
+          "title": "Topic 3C: Social Science — Civics (Political Science)",
+          "textbook": "NCERT Democratic Politics I — Class 9",
+          "chapters": [
+            "What is Democracy? Why Democracy?",
+            "Constitutional Design",
+            "Electoral Politics",
+            "Working of Institutions",
+            "Democratic Rights"
+          ]
+        },
+        {
+          "title": "Topic 3D: Social Science — Economics",
+          "textbook": "NCERT Economics — Class 9",
+          "chapters": [
+            "The Story of Village Palampur",
+            "People as Resource",
+            "Poverty as a Challenge",
+            "Food Security in India"
+          ]
+        },
+        {
+          "title": "Topic 4A: English — Main Reader (Beehive)",
+          "textbook": "NCERT Beehive — Class 9",
+          "chapters": [
+            "The Fun They Had",
+            "The Sound of Music",
+            "The Little Girl",
+            "A Truly Beautiful Mind",
+            "The Snake and the Mirror",
+            "My Childhood",
+            "Packing",
+            "Reach for the Top",
+            "The Bond of Love",
+            "Kathmandu",
+            "If I Were You"
+          ]
+        },
+        {
+          "title": "Topic 4B: English — Supplementary (Moments)",
+          "textbook": "NCERT Moments — Class 9",
+          "chapters": [
+            "The Lost Child",
+            "The Adventures of Toto",
+            "Iswaran the Storyteller",
+            "In the Kingdom of Fools",
+            "The Happy Prince",
+            "Weathering the Storm in Ersama",
+            "The Last Leaf",
+            "A House Is Not a Home",
+            "The Accidental Tourist",
+            "The Beggar"
+          ]
+        },
+        {
+          "title": "Topic 4C: English — Grammar & Writing Skills",
+          "textbook": "CBSE English Grammar — Class 9",
+          "chapters": [
+            "Tenses (Advanced)",
+            "Modals and Voice",
+            "Reported Speech",
+            "Determiners and Prepositions",
+            "Formal Letter Writing",
+            "Essay and Descriptive Writing",
+            "Unseen Comprehension Passages"
+          ]
+        }
+      ]
+    },
+    "class10": {
+      "id": "class10",
+      "title": "Class 10",
+      "desc": "Complete Class 10 academic program with subject-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1: Mathematics",
+          "textbook": "NCERT Mathematics — Class 10",
+          "chapters": [
+            "Real Numbers",
+            "Polynomials",
+            "Pair of Linear Equations in Two Variables",
+            "Quadratic Equations",
+            "Arithmetic Progressions",
+            "Triangles",
+            "Coordinate Geometry",
+            "Introduction to Trigonometry",
+            "Some Applications of Trigonometry",
+            "Circles",
+            "Areas Related to Circles",
+            "Surface Areas and Volumes",
+            "Statistics",
+            "Probability"
+          ]
+        },
+        {
+          "title": "Topic 2: Science",
+          "textbook": "NCERT Science — Class 10",
+          "chapters": [
+            "Chemical Reactions and Equations",
+            "Acids, Bases and Salts",
+            "Metals and Non-Metals",
+            "Carbon and Its Compounds",
+            "Life Processes",
+            "Control and Coordination",
+            "How Do Organisms Reproduce",
+            "Heredity",
+            "Light — Reflection and Refraction",
+            "The Human Eye and the Colourful World",
+            "Electricity",
+            "Magnetic Effects of Electric Current",
+            "Our Environment"
+          ]
+        },
+        {
+          "title": "Topic 3A: Social Science — History",
+          "textbook": "NCERT India and the Contemporary World II — Class 10",
+          "chapters": [
+            "The Rise of Nationalism in Europe",
+            "Nationalism in India",
+            "The Making of a Global World",
+            "The Age of Industrialisation",
+            "Print Culture and the Modern World"
+          ]
+        },
+        {
+          "title": "Topic 3B: Social Science — Geography",
+          "textbook": "NCERT Contemporary India II — Class 10",
+          "chapters": [
+            "Resources and Development",
+            "Forest and Wildlife Resources",
+            "Water Resources",
+            "Agriculture",
+            "Minerals and Energy Resources",
+            "Manufacturing Industries",
+            "Lifelines of National Economy"
+          ]
+        },
+        {
+          "title": "Topic 3C: Social Science — Civics (Political Science)",
+          "textbook": "NCERT Democratic Politics II — Class 10",
+          "chapters": [
+            "Power Sharing",
+            "Federalism",
+            "Gender, Religion and Caste",
+            "Political Parties",
+            "Outcomes of Democracy",
+            "Challenges to Democracy",
+            "Popular Struggles and Movements",
+            "Democracy and Diversity"
+          ]
+        },
+        {
+          "title": "Topic 3D: Social Science — Economics",
+          "textbook": "NCERT Understanding Economic Development — Class 10",
+          "chapters": [
+            "Development",
+            "Sectors of the Indian Economy",
+            "Money and Credit",
+            "Globalisation and the Indian Economy",
+            "Consumer Rights"
+          ]
+        },
+        {
+          "title": "Topic 4A: English — Main Reader (First Flight)",
+          "textbook": "NCERT First Flight — Class 10",
+          "chapters": [
+            "A Letter to God",
+            "Nelson Mandela: Long Walk to Freedom",
+            "Two Stories About Flying",
+            "From the Diary of Anne Frank",
+            "The Hundred Dresses — Part I",
+            "The Hundred Dresses — Part II",
+            "Glimpses of India",
+            "Mijbil the Otter",
+            "Madam Rides the Bus",
+            "The Sermon at Benares",
+            "The Proposal"
+          ]
+        },
+        {
+          "title": "Topic 4B: English — Supplementary (Footprints Without Feet)",
+          "textbook": "NCERT Footprints Without Feet — Class 10",
+          "chapters": [
+            "A Triumph of Surgery",
+            "The Thief's Story",
+            "The Midnight Visitor",
+            "A Question of Trust",
+            "Footprints Without Feet",
+            "The Making of a Scientist",
+            "The Necklace",
+            "The Hack Driver",
+            "Bholi",
+            "The Book That Saved the Earth"
+          ]
+        },
+        {
+          "title": "Topic 4C: English — Grammar & Writing Skills",
+          "textbook": "CBSE English Grammar — Class 10",
+          "chapters": [
+            "Tenses and Subject-Verb Agreement",
+            "Modals, Voice and Reported Speech",
+            "Determiners and Connectors",
+            "Formal Letter and Application Writing",
+            "Article and Paragraph Writing",
+            "Story and Diary Entry Writing",
+            "Unseen Comprehension Passages"
+          ]
+        }
+      ]
+    },
+    "class11arts": {
+      "id": "class11arts",
+      "title": "Class 11 (Arts)",
+      "desc": "Arts & Humanities stream with structured subject-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1: History",
+          "textbook": "NCERT Themes in World History — Class 11",
+          "chapters": [
+            "From the Beginning of Time",
+            "Early Cities",
+            "An Empire Across Three Continents",
+            "The Central Islamic Lands",
+            "Nomadic Empires",
+            "The Three Orders",
+            "Changing Cultural Traditions",
+            "Confrontation of Cultures",
+            "The Industrial Revolution",
+            "Displacing Indigenous Peoples",
+            "Paths to Modernisation"
+          ]
+        },
+        {
+          "title": "Topic 2A: Political Science — Political Theory",
+          "textbook": "NCERT Political Theory — Class 11",
+          "chapters": [
+            "Political Theory: An Introduction",
+            "Freedom",
+            "Equality",
+            "Social Justice",
+            "Rights",
+            "Citizenship",
+            "Nationalism",
+            "Secularism",
+            "Peace",
+            "Development"
+          ]
+        },
+        {
+          "title": "Topic 2B: Political Science — Indian Constitution at Work",
+          "textbook": "NCERT Indian Constitution at Work — Class 11",
+          "chapters": [
+            "Constitution: Why and How?",
+            "Rights in the Indian Constitution",
+            "Election and Representation",
+            "Executive",
+            "Legislature",
+            "Judiciary",
+            "Federalism",
+            "Local Governments",
+            "Constitution as a Living Document",
+            "The Philosophy of the Constitution"
+          ]
+        },
+        {
+          "title": "Topic 3A: Geography — Fundamentals of Physical Geography",
+          "textbook": "NCERT Fundamentals of Physical Geography — Class 11",
+          "chapters": [
+            "Geography as a Discipline",
+            "The Origin and Evolution of the Earth",
+            "Interior of the Earth",
+            "Distribution of Oceans and Continents",
+            "Minerals and Rocks",
+            "Geomorphic Processes",
+            "Landforms and Their Evolution",
+            "Composition and Structure of Atmosphere",
+            "Solar Radiation, Heat Balance and Temperature",
+            "Atmospheric Circulation and Weather Systems",
+            "Water in the Atmosphere",
+            "World Climate and Climate Change",
+            "Water (Oceans)",
+            "Movements of Ocean Water",
+            "Life on the Earth",
+            "Biodiversity and Conservation"
+          ]
+        },
+        {
+          "title": "Topic 3B: Geography — India: Physical Environment",
+          "textbook": "NCERT India: Physical Environment — Class 11",
+          "chapters": [
+            "India — Location",
+            "Structure and Physiography",
+            "Drainage System",
+            "Climate",
+            "Natural Vegetation",
+            "Soils",
+            "Natural Hazards and Disasters"
+          ]
+        },
+        {
+          "title": "Topic 4A: Economics — Statistics for Economics (Optional)",
+          "textbook": "NCERT Statistics for Economics — Class 11",
+          "chapters": [
+            "Introduction to Statistics",
+            "Collection of Data",
+            "Organisation of Data",
+            "Presentation of Data",
+            "Measures of Central Tendency",
+            "Measures of Dispersion",
+            "Correlation",
+            "Index Numbers"
+          ]
+        },
+        {
+          "title": "Topic 4B: Economics — Indian Economic Development (Optional)",
+          "textbook": "NCERT Indian Economic Development — Class 11",
+          "chapters": [
+            "Indian Economy on the Eve of Independence",
+            "Indian Economy (1950–1990)",
+            "Liberalisation, Privatisation and Globalisation",
+            "Poverty",
+            "Human Capital Formation in India",
+            "Rural Development",
+            "Employment and Informalisation",
+            "Infrastructure",
+            "Environment and Sustainable Development",
+            "Comparative Development Experiences"
+          ]
+        },
+        {
+          "title": "Topic 5A: Sociology — Introducing Sociology (Optional)",
+          "textbook": "NCERT Introducing Sociology — Class 11",
+          "chapters": [
+            "Society and Sociology",
+            "Social Change and Social Order in Rural and Urban Society",
+            "Environment and Society",
+            "Introducing Western Sociologists",
+            "Indian Sociologists"
+          ]
+        },
+        {
+          "title": "Topic 5B: Sociology — Understanding Society (Optional)",
+          "textbook": "NCERT Understanding Society — Class 11",
+          "chapters": [
+            "Social Structure, Stratification and Social Processes in Society",
+            "Social Institutions: Continuity and Change",
+            "Social Inequality and Exclusion",
+            "The Challenges of Cultural Diversity",
+            "Change and Development in Rural Society"
+          ]
+        },
+        {
+          "title": "Topic 6A: English — Hornbill (Main Reader)",
+          "textbook": "NCERT Hornbill — Class 11",
+          "chapters": [
+            "The Portrait of a Lady",
+            "We are Not Afraid to Die",
+            "Discovering Tut: The Saga Continues",
+            "Landscape of the Soul",
+            "The Ailing Planet: The Green Movement's Role",
+            "The Browning Version",
+            "The Adventure",
+            "Silk Road"
+          ]
+        },
+        {
+          "title": "Topic 6B: English — Snapshots (Supplementary)",
+          "textbook": "NCERT Snapshots — Class 11",
+          "chapters": [
+            "The Summer of the Beautiful White Horse",
+            "The Address",
+            "Ranga's Marriage",
+            "Albert Einstein at School",
+            "Mother's Day",
+            "The Ghat of the Only World",
+            "Birth",
+            "The Tale of Melon City"
+          ]
+        },
+        {
+          "title": "Topic 6C: English — Grammar & Writing Skills",
+          "textbook": "CBSE English Grammar — Class 11",
+          "chapters": [
+            "Advanced Grammar — Clauses and Sentence Types",
+            "Note-Making and Summarising",
+            "Report and Article Writing",
+            "Formal and Informal Letter Writing",
+            "Comprehension Passages"
+          ]
+        }
+      ]
+    },
+    "class11commerce": {
+      "id": "class11commerce",
+      "title": "Class 11 (Commerce)",
+      "desc": "Commerce stream with structured subject-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1: Accountancy",
+          "textbook": "NCERT Accountancy Part I & II — Class 11",
+          "chapters": [
+            "Introduction to Accounting",
+            "Theory Base of Accounting",
+            "Recording of Transactions I",
+            "Recording of Transactions II",
+            "Bank Reconciliation Statement",
+            "Trial Balance and Rectification of Errors",
+            "Depreciation, Provisions and Reserves",
+            "Bill of Exchange",
+            "Financial Statements — I",
+            "Financial Statements — II",
+            "Accounts from Incomplete Records",
+            "Applications of Computers in Accounting",
+            "Computerised Accounting System"
+          ]
+        },
+        {
+          "title": "Topic 2: Business Studies",
+          "textbook": "NCERT Business Studies — Class 11",
+          "chapters": [
+            "Business, Trade and Commerce",
+            "Forms of Business Organisation",
+            "Private, Public and Global Enterprises",
+            "Business Services",
+            "Emerging Modes of Business",
+            "Social Responsibilities of Business and Business Ethics",
+            "Formation of a Company",
+            "Sources of Business Finance",
+            "Small Business",
+            "Internal Trade",
+            "International Business"
+          ]
+        },
+        {
+          "title": "Topic 3A: Economics — Statistics for Economics",
+          "textbook": "NCERT Statistics for Economics — Class 11",
+          "chapters": [
+            "Introduction to Statistics",
+            "Collection of Data",
+            "Organisation of Data",
+            "Presentation of Data",
+            "Measures of Central Tendency",
+            "Measures of Dispersion",
+            "Correlation",
+            "Index Numbers",
+            "Use of Statistical Tools"
+          ]
+        },
+        {
+          "title": "Topic 3B: Economics — Indian Economic Development",
+          "textbook": "NCERT Indian Economic Development — Class 11",
+          "chapters": [
+            "Indian Economy on the Eve of Independence",
+            "Indian Economy (1950–1990)",
+            "Liberalisation, Privatisation and Globalisation",
+            "Poverty",
+            "Human Capital Formation in India",
+            "Rural Development",
+            "Employment: Growth, Informalisation and Other Issues",
+            "Infrastructure",
+            "Environment and Sustainable Development",
+            "Comparative Development Experiences of India and Its Neighbours"
+          ]
+        },
+        {
+          "title": "Topic 4: Mathematics (If Opted)",
+          "textbook": "NCERT Mathematics — Class 11",
+          "chapters": [
+            "Sets",
+            "Relations and Functions",
+            "Trigonometric Functions",
+            "Complex Numbers and Quadratic Equations",
+            "Linear Inequalities",
+            "Permutations and Combinations",
+            "Binomial Theorem",
+            "Sequences and Series",
+            "Straight Lines",
+            "Conic Sections",
+            "Statistics"
+          ]
+        },
+        {
+          "title": "Topic 5A: English — Hornbill (Main Reader)",
+          "textbook": "NCERT Hornbill — Class 11",
+          "chapters": [
+            "The Portrait of a Lady",
+            "We are Not Afraid to Die",
+            "Discovering Tut: The Saga Continues",
+            "Landscape of the Soul",
+            "The Ailing Planet: The Green Movement's Role",
+            "The Browning Version",
+            "The Adventure",
+            "Silk Road"
+          ]
+        },
+        {
+          "title": "Topic 5B: English — Snapshots (Supplementary)",
+          "textbook": "NCERT Snapshots — Class 11",
+          "chapters": [
+            "The Summer of the Beautiful White Horse",
+            "The Address",
+            "Ranga's Marriage",
+            "Albert Einstein at School",
+            "Mother's Day",
+            "The Ghat of the Only World",
+            "Birth",
+            "The Tale of Melon City"
+          ]
+        },
+        {
+          "title": "Topic 5C: English — Grammar & Writing Skills",
+          "textbook": "CBSE English Grammar — Class 11",
+          "chapters": [
+            "Advanced Grammar — Clauses and Sentence Types",
+            "Note-Making and Summarising",
+            "Report and Article Writing",
+            "Formal and Informal Letter Writing",
+            "Comprehension Passages"
+          ]
+        }
+      ]
+    },
+    "class11science": {
+      "id": "class11science",
+      "title": "Class 11 (Science)",
+      "desc": "Science stream with structured subject-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1: Physics",
+          "textbook": "NCERT Physics Part I & II — Class 11",
+          "chapters": [
+            "Physical World",
+            "Units and Measurements",
+            "Motion in a Straight Line",
+            "Motion in a Plane",
+            "Laws of Motion",
+            "Work, Energy and Power",
+            "System of Particles and Rotational Motion",
+            "Gravitation",
+            "Mechanical Properties of Solids",
+            "Mechanical Properties of Fluids",
+            "Thermal Properties of Matter",
+            "Thermodynamics",
+            "Kinetic Theory",
+            "Oscillations",
+            "Waves"
+          ]
+        },
+        {
+          "title": "Topic 2: Chemistry",
+          "textbook": "NCERT Chemistry Part I & II — Class 11",
+          "chapters": [
+            "Some Basic Concepts of Chemistry",
+            "Structure of Atom",
+            "Classification of Elements and Periodicity in Properties",
+            "Chemical Bonding and Molecular Structure",
+            "Thermodynamics",
+            "Equilibrium",
+            "Redox Reactions",
+            "Organic Chemistry — Some Basic Principles and Techniques",
+            "Hydrocarbons",
+            "The s-Block Elements",
+            "The p-Block Elements",
+            "Environmental Chemistry"
+          ]
+        },
+        {
+          "title": "Topic 3: Biology",
+          "textbook": "NCERT Biology — Class 11",
+          "chapters": [
+            "The Living World",
+            "Biological Classification",
+            "Plant Kingdom",
+            "Animal Kingdom",
+            "Morphology of Flowering Plants",
+            "Anatomy of Flowering Plants",
+            "Structural Organisation in Animals",
+            "Cell: The Unit of Life",
+            "Biomolecules",
+            "Cell Cycle and Cell Division",
+            "Photosynthesis in Higher Plants",
+            "Respiration in Plants",
+            "Plant Growth and Development",
+            "Digestion and Absorption",
+            "Breathing and Exchange of Gases",
+            "Body Fluids and Circulation",
+            "Excretory Products and Their Elimination",
+            "Locomotion and Movement",
+            "Neural Control and Coordination",
+            "Chemical Coordination and Integration"
+          ]
+        },
+        {
+          "title": "Topic 4: Mathematics",
+          "textbook": "NCERT Mathematics — Class 11",
+          "chapters": [
+            "Sets",
+            "Relations and Functions",
+            "Trigonometric Functions",
+            "Complex Numbers and Quadratic Equations",
+            "Linear Inequalities",
+            "Permutations and Combinations",
+            "Binomial Theorem",
+            "Sequences and Series",
+            "Straight Lines",
+            "Conic Sections",
+            "Introduction to Three Dimensional Geometry",
+            "Limits and Derivatives",
+            "Statistics",
+            "Probability"
+          ]
+        },
+        {
+          "title": "Topic 5A: English — Hornbill (Main Reader)",
+          "textbook": "NCERT Hornbill — Class 11",
+          "chapters": [
+            "The Portrait of a Lady",
+            "We are Not Afraid to Die",
+            "Discovering Tut: The Saga Continues",
+            "Landscape of the Soul",
+            "The Ailing Planet: The Green Movement's Role",
+            "The Browning Version",
+            "The Adventure",
+            "Silk Road"
+          ]
+        },
+        {
+          "title": "Topic 5B: English — Snapshots (Supplementary)",
+          "textbook": "NCERT Snapshots — Class 11",
+          "chapters": [
+            "The Summer of the Beautiful White Horse",
+            "The Address",
+            "Ranga's Marriage",
+            "Albert Einstein at School",
+            "Mother's Day",
+            "The Ghat of the Only World",
+            "Birth",
+            "The Tale of Melon City"
+          ]
+        },
+        {
+          "title": "Topic 5C: English — Grammar & Writing Skills",
+          "textbook": "CBSE English Grammar — Class 11",
+          "chapters": [
+            "Advanced Grammar — Clauses and Sentence Types",
+            "Note-Making and Summarising",
+            "Report and Article Writing",
+            "Formal and Informal Letter Writing",
+            "Comprehension Passages"
+          ]
+        }
+      ]
+    },
+    "class12arts": {
+      "id": "class12arts",
+      "title": "Class 12 (Arts)",
+      "desc": "Arts & Humanities stream with structured subject-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1: History",
+          "textbook": "NCERT Themes in Indian History Part I, II & III — Class 12",
+          "chapters": [
+            "Bricks, Beads and Bones — The Harappan Civilisation",
+            "Kings, Farmers and Towns — Early States and Economies",
+            "Kinship, Caste and Class — Early Societies",
+            "Thinkers, Beliefs and Buildings — Cultural Developments",
+            "Through the Eyes of Travellers — Perceptions of Society",
+            "Bhakti-Sufi Traditions — Changes in Religious Beliefs",
+            "An Imperial Capital: Vijayanagara",
+            "Peasants, Zamindars and the State — Agrarian Society",
+            "Kings and Chronicles — The Mughal Courts",
+            "Colonialism and the Countryside",
+            "Rebels and the Raj — The 1857 Revolt",
+            "Colonial Cities — Urbanisation, Planning and Architecture",
+            "Mahatma Gandhi and the Nationalist Movement",
+            "Understanding Partition",
+            "Framing the Constitution"
+          ]
+        },
+        {
+          "title": "Topic 2A: Political Science — Contemporary World Politics",
+          "textbook": "NCERT Contemporary World Politics — Class 12",
+          "chapters": [
+            "The Cold War Era",
+            "The End of Bipolarity",
+            "US Hegemony in World Politics",
+            "Alternative Centres of Power",
+            "Contemporary South Asia",
+            "International Organisations",
+            "Security in the Contemporary World",
+            "Environment and Natural Resources",
+            "Globalisation"
+          ]
+        },
+        {
+          "title": "Topic 2B: Political Science — Politics in India Since Independence",
+          "textbook": "NCERT Politics in India Since Independence — Class 12",
+          "chapters": [
+            "Challenges of Nation Building",
+            "Era of One-Party Dominance",
+            "Politics of Planned Development",
+            "India's External Relations",
+            "Challenges to the Congress System",
+            "The Crisis of Democratic Order",
+            "Rise of Popular Movements",
+            "Regional Aspirations",
+            "Recent Developments in Indian Politics"
+          ]
+        },
+        {
+          "title": "Topic 3A: Geography — Fundamentals of Human Geography",
+          "textbook": "NCERT Fundamentals of Human Geography — Class 12",
+          "chapters": [
+            "Human Geography: Nature and Scope",
+            "The World Population: Distribution, Density and Growth",
+            "Population Composition",
+            "Human Development",
+            "Primary Activities",
+            "Secondary Activities",
+            "Tertiary and Quaternary Activities",
+            "Transport and Communication",
+            "International Trade",
+            "Human Settlements"
+          ]
+        },
+        {
+          "title": "Topic 3B: Geography — India: People and Economy",
+          "textbook": "NCERT India: People and Economy — Class 12",
+          "chapters": [
+            "Population: Distribution, Density, Growth and Composition",
+            "Migration: Types, Causes and Consequences",
+            "Human Development",
+            "Human Settlements",
+            "Land Resources and Agriculture",
+            "Water Resources",
+            "Mineral and Energy Resources",
+            "Manufacturing Industries",
+            "Planning and Sustainable Development",
+            "Transport and Communication",
+            "International Trade",
+            "Geographical Perspective on Selected Issues"
+          ]
+        },
+        {
+          "title": "Topic 4A: Economics — Introductory Microeconomics (Optional)",
+          "textbook": "NCERT Introductory Microeconomics — Class 12",
+          "chapters": [
+            "Introduction to Microeconomics",
+            "Theory of Consumer Behaviour",
+            "Production and Costs",
+            "The Theory of the Firm Under Perfect Competition",
+            "Market Equilibrium",
+            "Non-Competitive Markets"
+          ]
+        },
+        {
+          "title": "Topic 4B: Economics — Introductory Macroeconomics (Optional)",
+          "textbook": "NCERT Introductory Macroeconomics — Class 12",
+          "chapters": [
+            "Introduction to Macroeconomics",
+            "National Income Accounting",
+            "Money and Banking",
+            "Income Determination",
+            "Government Budget and the Economy",
+            "Open Economy Macroeconomics"
+          ]
+        },
+        {
+          "title": "Topic 5A: Sociology — Indian Society (Optional)",
+          "textbook": "NCERT Indian Society — Class 12",
+          "chapters": [
+            "Introducing Indian Society",
+            "The Demographic Structure of the Indian Society",
+            "Social Institutions: Continuity and Change",
+            "The Market as a Social Institution",
+            "Patterns of Social Inequality and Exclusion",
+            "The Challenges of Cultural Diversity",
+            "Suggestions for Project Work"
+          ]
+        },
+        {
+          "title": "Topic 5B: Sociology — Social Change and Development (Optional)",
+          "textbook": "NCERT Social Change and Development in India — Class 12",
+          "chapters": [
+            "Structural Change",
+            "Cultural Change",
+            "The Story of Indian Democracy",
+            "Change and Development in Rural Society",
+            "Change and Development in Industrial Society",
+            "Globalisation and Social Change",
+            "Mass Media and Communications",
+            "Social Movements"
+          ]
+        },
+        {
+          "title": "Topic 6A: English — Flamingo (Main Reader)",
+          "textbook": "NCERT Flamingo — Class 12",
+          "chapters": [
+            "The Last Lesson",
+            "Lost Spring",
+            "Deep Water",
+            "The Rattrap",
+            "Indigo",
+            "Poets and Pancakes",
+            "The Interview",
+            "Going Places"
+          ]
+        },
+        {
+          "title": "Topic 6B: English — Vistas (Supplementary)",
+          "textbook": "NCERT Vistas — Class 12",
+          "chapters": [
+            "The Third Level",
+            "The Tiger King",
+            "Journey to the End of the Earth",
+            "The Enemy",
+            "Should Wizard Hit Mommy",
+            "On the Face of It",
+            "Evans Tries an O-Level",
+            "Memories of Childhood"
+          ]
+        },
+        {
+          "title": "Topic 6C: English — Grammar & Writing Skills",
+          "textbook": "CBSE English Grammar — Class 12",
+          "chapters": [
+            "Reading Comprehension — Unseen Passages",
+            "Note-Making and Summarising",
+            "Advertisement and Notice Writing",
+            "Report and Article Writing",
+            "Letter Writing — Job Applications and Official",
+            "Speech and Debate Writing",
+            "Poster and Invitation Writing"
+          ]
+        }
+      ]
+    },
+    "class12commerce": {
+      "id": "class12commerce",
+      "title": "Class 12 (Commerce)",
+      "desc": "Commerce stream with structured subject-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1: Accountancy",
+          "textbook": "NCERT Accountancy Part I & II — Class 12",
+          "chapters": [
+            "Accounting for Partnership: Basic Concepts",
+            "Change in Profit Sharing Ratio Among Existing Partners",
+            "Admission of a Partner",
+            "Retirement and Death of a Partner",
+            "Dissolution of Partnership Firm",
+            "Accounting for Share Capital",
+            "Issue and Redemption of Debentures",
+            "Financial Statements of a Company",
+            "Analysis of Financial Statements",
+            "Accounting Ratios",
+            "Cash Flow Statement",
+            "Computerised Accounting System"
+          ]
+        },
+        {
+          "title": "Topic 2: Business Studies",
+          "textbook": "NCERT Business Studies Part I & II — Class 12",
+          "chapters": [
+            "Nature and Significance of Management",
+            "Principles of Management",
+            "Business Environment",
+            "Planning",
+            "Organising",
+            "Staffing",
+            "Directing",
+            "Controlling",
+            "Financial Management",
+            "Financial Markets",
+            "Marketing Management",
+            "Consumer Protection"
+          ]
+        },
+        {
+          "title": "Topic 3A: Economics — Introductory Microeconomics",
+          "textbook": "NCERT Introductory Microeconomics — Class 12",
+          "chapters": [
+            "Introduction to Microeconomics",
+            "Theory of Consumer Behaviour",
+            "Production and Costs",
+            "The Theory of the Firm Under Perfect Competition",
+            "Market Equilibrium",
+            "Non-Competitive Markets"
+          ]
+        },
+        {
+          "title": "Topic 3B: Economics — Introductory Macroeconomics",
+          "textbook": "NCERT Introductory Macroeconomics — Class 12",
+          "chapters": [
+            "Introduction to Macroeconomics",
+            "National Income Accounting",
+            "Money and Banking",
+            "Income Determination",
+            "Government Budget and the Economy",
+            "Open Economy Macroeconomics"
+          ]
+        },
+        {
+          "title": "Topic 4: Mathematics (If Opted)",
+          "textbook": "NCERT Mathematics Part I & II — Class 12",
+          "chapters": [
+            "Relations and Functions",
+            "Inverse Trigonometric Functions",
+            "Matrices",
+            "Determinants",
+            "Continuity and Differentiability",
+            "Application of Derivatives",
+            "Integrals",
+            "Application of Integrals",
+            "Differential Equations",
+            "Linear Programming",
+            "Probability"
+          ]
+        },
+        {
+          "title": "Topic 5A: English — Flamingo (Main Reader)",
+          "textbook": "NCERT Flamingo — Class 12",
+          "chapters": [
+            "The Last Lesson",
+            "Lost Spring",
+            "Deep Water",
+            "The Rattrap",
+            "Indigo",
+            "Poets and Pancakes",
+            "The Interview",
+            "Going Places"
+          ]
+        },
+        {
+          "title": "Topic 5B: English — Vistas (Supplementary)",
+          "textbook": "NCERT Vistas — Class 12",
+          "chapters": [
+            "The Third Level",
+            "The Tiger King",
+            "Journey to the End of the Earth",
+            "The Enemy",
+            "Should Wizard Hit Mommy",
+            "On the Face of It",
+            "Evans Tries an O-Level",
+            "Memories of Childhood"
+          ]
+        },
+        {
+          "title": "Topic 5C: English — Grammar & Writing Skills",
+          "textbook": "CBSE English Grammar — Class 12",
+          "chapters": [
+            "Reading Comprehension — Unseen Passages",
+            "Note-Making and Summarising",
+            "Advertisement and Notice Writing",
+            "Report and Article Writing",
+            "Letter Writing — Job Applications and Official",
+            "Speech and Debate Writing",
+            "Poster and Invitation Writing"
+          ]
+        }
+      ]
+    },
+    "class12science": {
+      "id": "class12science",
+      "title": "Class 12 (Science)",
+      "desc": "Science stream with structured subject-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1: Physics",
+          "textbook": "NCERT Physics Part I & II — Class 12",
+          "chapters": [
+            "Electric Charges and Fields",
+            "Electrostatic Potential and Capacitance",
+            "Current Electricity",
+            "Moving Charges and Magnetism",
+            "Magnetism and Matter",
+            "Electromagnetic Induction",
+            "Alternating Current",
+            "Electromagnetic Waves",
+            "Ray Optics and Optical Instruments",
+            "Wave Optics",
+            "Dual Nature of Radiation and Matter",
+            "Atoms",
+            "Nuclei",
+            "Semiconductor Electronics: Materials, Devices and Simple Circuits"
+          ]
+        },
+        {
+          "title": "Topic 2: Chemistry",
+          "textbook": "NCERT Chemistry Part I & II — Class 12",
+          "chapters": [
+            "Solutions",
+            "Electrochemistry",
+            "Chemical Kinetics",
+            "d and f Block Elements",
+            "Coordination Compounds",
+            "Haloalkanes and Haloarenes",
+            "Alcohols, Phenols and Ethers",
+            "Aldehydes, Ketones and Carboxylic Acids",
+            "Amines",
+            "Biomolecules",
+            "Polymers",
+            "Chemistry in Everyday Life"
+          ]
+        },
+        {
+          "title": "Topic 3: Biology",
+          "textbook": "NCERT Biology — Class 12",
+          "chapters": [
+            "Reproduction in Organisms",
+            "Sexual Reproduction in Flowering Plants",
+            "Human Reproduction",
+            "Reproductive Health",
+            "Principles of Inheritance and Variation",
+            "Molecular Basis of Inheritance",
+            "Evolution",
+            "Human Health and Disease",
+            "Strategies for Enhancement in Food Production",
+            "Microbes in Human Welfare",
+            "Biotechnology: Principles and Processes",
+            "Biotechnology and Its Applications",
+            "Organisms and Populations",
+            "Ecosystem",
+            "Biodiversity and Conservation",
+            "Environmental Issues"
+          ]
+        },
+        {
+          "title": "Topic 4: Mathematics",
+          "textbook": "NCERT Mathematics Part I & II — Class 12",
+          "chapters": [
+            "Relations and Functions",
+            "Inverse Trigonometric Functions",
+            "Matrices",
+            "Determinants",
+            "Continuity and Differentiability",
+            "Application of Derivatives",
+            "Integrals",
+            "Application of Integrals",
+            "Differential Equations",
+            "Vector Algebra",
+            "Three Dimensional Geometry",
+            "Linear Programming",
+            "Probability"
+          ]
+        },
+        {
+          "title": "Topic 5A: English — Flamingo (Main Reader)",
+          "textbook": "NCERT Flamingo — Class 12",
+          "chapters": [
+            "The Last Lesson",
+            "Lost Spring",
+            "Deep Water",
+            "The Rattrap",
+            "Indigo",
+            "Poets and Pancakes",
+            "The Interview",
+            "Going Places"
+          ]
+        },
+        {
+          "title": "Topic 5B: English — Vistas (Supplementary)",
+          "textbook": "NCERT Vistas — Class 12",
+          "chapters": [
+            "The Third Level",
+            "The Tiger King",
+            "Journey to the End of the Earth",
+            "The Enemy",
+            "Should Wizard Hit Mommy",
+            "On the Face of It",
+            "Evans Tries an O-Level",
+            "Memories of Childhood"
+          ]
+        },
+        {
+          "title": "Topic 5C: English — Grammar & Writing Skills",
+          "textbook": "CBSE English Grammar — Class 12",
+          "chapters": [
+            "Reading Comprehension — Unseen Passages",
+            "Note-Making and Summarising",
+            "Advertisement and Notice Writing",
+            "Report and Article Writing",
+            "Letter Writing — Job Applications and Official",
+            "Speech and Debate Writing",
+            "Poster and Invitation Writing"
+          ]
+        }
+      ]
+    }
+  },
+  "mbse": {
+    "class8": {
+      "id": "class8",
+      "title": "Class 8",
+      "desc": "MBSE Class 8 academic program with subject-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1: English — Main Book",
+          "textbook": "MBSE English Main Book — Class 8",
+          "chapters": [
+            "The Best Christmas Present in the World",
+            "The Tsunami",
+            "Glimpses of the Past",
+            "Bepin Choudhury's Lapse of Memory",
+            "The Summit Within",
+            "This is Jody's Fawn",
+            "A Visit to Cambridge",
+            "A Short Monsoon Diary",
+            "The Great Stone Face – I",
+            "The Great Stone Face – II"
+          ]
+        },
+        {
+          "title": "Topic 2: English Grammar",
+          "textbook": "MBSE English Grammar — Class 8",
+          "chapters": [
+            "Parts of Speech",
+            "Determiners",
+            "Non-Finite Verbs",
+            "Continuous Tenses",
+            "Perfect Tenses",
+            "Degrees of Comparison",
+            "Phrases and Clauses",
+            "Relative Clauses",
+            "Conjunctions",
+            "Active and Passive Voice",
+            "Direct and Indirect Speech",
+            "Synonyms and Antonyms",
+            "Spellings"
+          ]
+        },
+        {
+          "title": "Topic 3: English Zo Nun (Mizo)",
+          "textbook": "MBSE English Zo Nun — Class 8",
+          "chapters": [
+            "Chite Lui",
+            "Mizo Puan",
+            "Lalnu Ropuiliani (1829–1895)",
+            "Mizo Rituals for the Deceased",
+            "Medicinal Plants",
+            "The Fearless Chief – Zakapa",
+            "Birds of Mizoram",
+            "Insaihruipawh",
+            "Fruits of Mizoram"
+          ]
+        },
+        {
+          "title": "Topic 4: Mathematics",
+          "textbook": "MBSE Mathematics — Class 8",
+          "chapters": [
+            "Rational Numbers (Part 1 & 2)",
+            "Linear Equations in One Variable (Part 1 & 2)",
+            "Understanding Quadrilaterals",
+            "Data Handling (Part 1 & 2)",
+            "Square and Square Roots (Part 1 & 2)",
+            "Cube and Cube Roots",
+            "Comparing Quantities (Part 1 & 2)",
+            "Algebraic Expressions and Identities (Part 1 & 2)",
+            "Visualising Solid Shapes",
+            "Mensuration",
+            "Exponents and Powers",
+            "Direct and Inverse Proportions (Part 1 & 2)",
+            "Factorisation",
+            "Introduction to Graphs"
+          ]
+        },
+        {
+          "title": "Topic 5: Science",
+          "textbook": "MBSE Science — Class 8",
+          "chapters": [
+            "Crop Production and Management",
+            "Microorganisms: Friend and Foe",
+            "Coal and Petroleum",
+            "Combustion and Flame",
+            "Conservation of Plants and Animals",
+            "Reproduction in Animals",
+            "Reaching the Age of Adolescence",
+            "Force and Pressure",
+            "Friction",
+            "Sound",
+            "Chemical Effects of Electric Current",
+            "Some Natural Phenomena",
+            "Light"
+          ]
+        },
+        {
+          "title": "Topic 6A: Social Science — History",
+          "textbook": "MBSE Social Science — History — Class 8",
+          "chapters": [
+            "How, When and Where",
+            "From Trade to Territory",
+            "Ruling the Countryside",
+            "Tribals, Dikus and the Vision of a Golden Age",
+            "When People Rebel",
+            "Civilising the Native, Educating the Nation",
+            "Women, Caste and Reform",
+            "The Making of the National Movement",
+            "India After Independence"
+          ]
+        },
+        {
+          "title": "Topic 6B: Social Science — Geography",
+          "textbook": "MBSE Social Science — Geography — Class 8",
+          "chapters": [
+            "Resources",
+            "Land, Soil, Water, Natural Vegetation and Wildlife Resources",
+            "Agriculture",
+            "Industries",
+            "Human Resources"
+          ]
+        },
+        {
+          "title": "Topic 6C: Social Science — Civics / Polity",
+          "textbook": "MBSE Social Science — Civics — Class 8",
+          "chapters": [
+            "The Indian Constitution",
+            "Understanding Secularism",
+            "Why Do We Need a Parliament?",
+            "Understanding Laws",
+            "Judiciary",
+            "Understanding Our Criminal Justice System",
+            "Understanding Marginalisation",
+            "Confronting Marginalisation",
+            "Public Facilities",
+            "Law and Social Justice"
+          ]
+        },
+        {
+          "title": "Topic 6D: Economics",
+          "textbook": "MBSE Economics — Class 8",
+          "chapters": [
+            "Basic Economic Ideas",
+            "Needs and Wants",
+            "Goods and Services",
+            "Economic Activities"
+          ]
+        },
+        {
+          "title": "Topic 7: Mizo",
+          "textbook": "MBSE Mizo — Class 8",
+          "chapters": [
+            "Rimawi ram – R.L. Thanmawia",
+            "Aw Lal Pathian, i kutchuak",
+            "Thu ziah zawm loh turte",
+            "Kei leh ka chenna – C. Lalawia",
+            "Vanapa",
+            "I hun i hmang tha em? – Rokunga",
+            "Thalaite leh mass media",
+            "Mizo tawng hman dan dik leh dik lote",
+            "Zuk leh hmuam tel lo nun hlutna",
+            "Esopa thufing • Fanghmir leh khauchher • Sihal leh nghalchang thu",
+            "Ka thleng thei ngei ang",
+            "Thlanrawkpa khuangchawi – Nuchhungi",
+            "Ka tiang kha – Zikpuii pa",
+            "Mauruangi",
+            "Verb leh tense",
+            "Ka nu chhanhimu",
+            "Adverb",
+            "Tu nge lehkha thiam chu? – A. Sawihliara",
+            "Ngaihdamna kut – B. Lalhriattira",
+            "Mizo thufing",
+            "Mizo tawng upa",
+            "I lenna ram – C. Lalsangliana",
+            "Mizo chanchin – C. Chhuanvawra"
+          ]
+        }
+      ]
+    },
+    "class9": {
+      "id": "class9",
+      "title": "Class 9",
+      "desc": "MBSE Class 9 academic program with subject-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "ENGLISH (MBSE) — Essential English Coursebook",
+          "textbook": "Essential English Coursebook",
+          "chapters": [
+            "Tsunami: The Killer Waves",
+            "A Lesson for Tyler",
+            "Sound Sensations from Evelyn Glennie",
+            "Mysterious Phenomena",
+            "Blind Date",
+            "The Mahatma's Marksheet",
+            "Tangerine the Wasp",
+            "Operation Indian Ocean",
+            "Yang the Youngest",
+            "Mother Teresa"
+          ]
+        },
+        {
+          "title": "ENGLISH (MBSE) — Poems",
+          "textbook": "Poems",
+          "chapters": [
+            "Life — Henry Van Dyke",
+            "Eldorado — Edgar Allan Poe",
+            "Neighbours — Rudyard Kipling",
+            "A Tiger in the Zoo-Leslie Norris",
+            "I Think I Could Turn and Live with Animals — Walt Whitman",
+            "In the Bazaars of Hyderabad",
+            "The Listeners"
+          ]
+        },
+        {
+          "title": "ENGLISH (MBSE) — Essential English Literature Reader",
+          "textbook": "Essential English Literature Reader",
+          "chapters": [
+            "The Night We Won the Buick",
+            "Let's Go Home",
+            "Pip's Adventure",
+            "A Bond with the Wild",
+            "The Surgeon",
+            "Rimenhawihi",
+            "Michael",
+            "Guilty"
+          ]
+        },
+        {
+          "title": "ENGLISH (MBSE) — Essential English Workbook",
+          "textbook": "Essential English Workbook",
+          "chapters": [
+            "Tsunami: The Killer Waves",
+            "A Lesson for Tyler",
+            "Sound Sensations from Evelyn Glennie",
+            "Mysterious Phenomena",
+            "Blind Date",
+            "The Mahatma's Marksheet",
+            "Tangerine the Wasp",
+            "Operation Indian Ocean",
+            "Yang the Youngest",
+            "Mother Teresa"
+          ]
+        },
+        {
+          "title": "MATHEMATICS (MBSE)",
+          "textbook": "MATHEMATICS (MBSE)",
+          "chapters": [
+            "Unit I: Number System — Real Numbers",
+            "Unit I: Number System — Sets",
+            "Unit II: Commercial Mathematics — Compound Interest, Growth and Depreciation",
+            "Unit II: Commercial Mathematics — Ratio and Proportion",
+            "Unit II: Commercial Mathematics — Cost of Living Index",
+            "Unit II: Commercial Mathematics — Sales Tax",
+            "Unit III: Algebra — Polynomials",
+            "Unit III: Algebra — G.C.D. and L.C.M. of Polynomials",
+            "Unit III: Algebra — Linear Equations in Two Variables",
+            "Unit IV: Geometry — Lines and Angles",
+            "Unit IV: Geometry — Congruence of Triangles",
+            "Unit IV: Geometry — Properties of a Triangle",
+            "Unit IV: Geometry — Quadrilaterals and Parallelograms",
+            "Unit IV: Geometry — Area",
+            "Unit IV: Geometry — Constructions",
+            "Unit IV: Geometry — Circles",
+            "Unit V: Coordinate Geometry — Coordinate Geometry",
+            "Unit VI: Trigonometry — Trigonometric Ratios",
+            "Unit VI: Trigonometry — Trigonometric Identities",
+            "Unit VII: Mensuration — Area of Triangle and Quadrilateral (Heron's Formula)",
+            "Unit VII: Mensuration — Surface Areas and Volumes",
+            "Unit VIII: Statistics & Probability — Statistics",
+            "Unit VIII: Statistics & Probability — Probability"
+          ]
+        },
+        {
+          "title": "SCIENCE (MBSE) — Physics",
+          "textbook": "Physics",
+          "chapters": [
+            "Motion",
+            "Force and Laws of Motion",
+            "Gravitation and Floatation",
+            "Work and Energy",
+            "Sound"
+          ]
+        },
+        {
+          "title": "SCIENCE (MBSE) — Chemistry",
+          "textbook": "Chemistry",
+          "chapters": [
+            "Matter in Our Surroundings",
+            "Is Matter Around Us Pure",
+            "Atoms and Molecules",
+            "Structure of Atom"
+          ]
+        },
+        {
+          "title": "SCIENCE (MBSE) — Biology",
+          "textbook": "Biology",
+          "chapters": [
+            "The Fundamental Unit of Life",
+            "Tissues",
+            "Diversity in Living Organisms",
+            "Why Do We Fall Ill?",
+            "Natural Resources",
+            "Improvement in Food Resources"
+          ]
+        },
+        {
+          "title": "SOCIAL SCIENCE (MBSE) — History",
+          "textbook": "History",
+          "chapters": [
+            "The French Revolution",
+            "The Russian Revolution",
+            "Nazism and the Rise of Hitler",
+            "Pastoralists in the Modern World",
+            "Forest Society and Colonialism",
+            "Peasants and Farmers",
+            "History and Sport: The Story of Cricket",
+            "Clothing: A Social History"
+          ]
+        },
+        {
+          "title": "SOCIAL SCIENCE (MBSE) — Geography",
+          "textbook": "Geography",
+          "chapters": [
+            "India — Size and Location",
+            "India — Physical Features",
+            "Drainage",
+            "Climate of India",
+            "Vegetation and Wildlife in India",
+            "Population"
+          ]
+        },
+        {
+          "title": "SOCIAL SCIENCE (MBSE) — Civics / Polity",
+          "textbook": "Civics / Polity",
+          "chapters": [
+            "What is Democracy? Why Democracy?",
+            "Constitutional Design",
+            "Electoral Politics",
+            "Working of Institutions",
+            "Democratic Rights"
+          ]
+        },
+        {
+          "title": "ECONOMICS (MBSE – Geeta Publication)",
+          "textbook": "ECONOMICS (MBSE – Geeta Publication)",
+          "chapters": [
+            "Basic Concepts of Economics",
+            "Types of Economic Activities",
+            "Agriculture",
+            "Industry",
+            "Services",
+            "Population and Human Resources",
+            "Poverty",
+            "Economic Development"
+          ]
+        },
+        {
+          "title": "MIZO (MBSE) — Poetry",
+          "textbook": "Poetry",
+          "chapters": [
+            "A saw raltiang tlanngah",
+            "Hrihniang an liamna thlafam khua chu e",
+            "Ka pian ka seilenna ram",
+            "Kan Zoram nuam",
+            "Lam ang ka lo let leh ta e",
+            "Min then lul suh",
+            "Buannel",
+            "Sem sem dam dam",
+            "Luah loh run",
+            "Hmangaihna lenrual dan ang"
+          ]
+        },
+        {
+          "title": "MIZO (MBSE) — Prose",
+          "textbook": "Prose",
+          "chapters": [
+            "A lem leh a tak",
+            "Mihring dikna leh chhanvo",
+            "Tlawngngaihna leh aia upa zah",
+            "Huaina",
+            "Rilru puitling",
+            "Incheina",
+            "Mahni inhneh",
+            "Sumdawna",
+            "Chhiatni thatni",
+            "Nungcha leh zofate",
+            "Lungawina"
+          ]
+        },
+        {
+          "title": "MIZO (MBSE) — Grammar",
+          "textbook": "Grammar",
+          "chapters": [
+            "Noun",
+            "Pronoun",
+            "Gender",
+            "Number",
+            "Punctuation",
+            "Mizo tawng ziah dan",
+            "Tawng Upa"
+          ]
+        },
+        {
+          "title": "MIZO (MBSE) — Drama",
+          "textbook": "Drama",
+          "chapters": [
+            "Lungrem a chim"
+          ]
+        },
+        {
+          "title": "MIZO (MBSE) — Thawnthu",
+          "textbook": "Thawnthu",
+          "chapters": [
+            "Pathian samsuih"
+          ]
+        }
+      ]
+    },
+    "class10": {
+      "id": "class10",
+      "title": "Class 10",
+      "desc": "MBSE Class 10 academic program with subject-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "ENGLISH (MBSE) — Essential English Coursebook",
+          "textbook": "Essential English Coursebook",
+          "chapters": [
+            "David's Story",
+            "Don't Die, Graham! Don't Die!",
+            "Wangari Maathai",
+            "The Lap of Honour",
+            "A Face on the Wall",
+            "Two Gentlemen of Verona",
+            "The Day of an American Journalist in 2889",
+            "Adventures in Antarctica"
+          ]
+        },
+        {
+          "title": "ENGLISH (MBSE) — Poems",
+          "textbook": "Poems",
+          "chapters": [
+            "The Brook — Alfred Tennyson",
+            "The Poplar Field — William Cowper",
+            "Be the Best — Douglas Malloch",
+            "The Hero — Rabindranath Tagore",
+            "Money-Madness — D.H. Lawrence",
+            "Written in the Fields — John Keats"
+          ]
+        },
+        {
+          "title": "ENGLISH (MBSE) — Essential English Literature Reader",
+          "textbook": "Essential English Literature Reader",
+          "chapters": [
+            "The Merchant of Venice",
+            "The Story of My Life",
+            "The Paper Plague",
+            "The Corner Shop",
+            "The Stalled Ox",
+            "Science is My Best Friend",
+            "The Adventure of the Three Students"
+          ]
+        },
+        {
+          "title": "ENGLISH (MBSE) — Poems",
+          "textbook": "Poems",
+          "chapters": [
+            "The Louse and the Mosquito",
+            "The Land of Beyond"
+          ]
+        },
+        {
+          "title": "ENGLISH (MBSE) — Essential English Workbook",
+          "textbook": "Essential English Workbook",
+          "chapters": [
+            "David's Story",
+            "Don't Die, Graham! Don't Die!",
+            "Wangari Maathai",
+            "The Lap of Honour",
+            "A Face on the Wall",
+            "Two Gentlemen of Verona",
+            "The Day of an American Journalist in 2889",
+            "Adventures in Antarctica"
+          ]
+        },
+        {
+          "title": "MATHEMATICS (MBSE)",
+          "textbook": "MATHEMATICS (MBSE)",
+          "chapters": [
+            "Unit I: Commercial Mathematics — Instalments",
+            "Unit II: Time, Distance & Work — Time and Distance, Time and Work",
+            "Unit III: Algebra — Polynomials",
+            "Unit III: Algebra — Linear Equations in Two Variables",
+            "Unit III: Algebra — Quadratic Equations",
+            "Unit III: Algebra — Arithmetic Progression (AP)",
+            "Unit III: Algebra — Sets",
+            "Unit IV: Geometry — Triangles",
+            "Unit IV: Geometry — Circles",
+            "Unit IV: Geometry — Constructions",
+            "Unit V: Coordinate Geometry — Coordinate Geometry",
+            "Unit VI: Trigonometry — Trigonometric Identities",
+            "Unit VI: Trigonometry — Trigonometric Ratios of Complementary Angles",
+            "Unit VI: Trigonometry — Heights and Distances",
+            "Unit VII: Mensuration — Areas Related to Circles",
+            "Unit VII: Mensuration — Surface Areas and Volumes",
+            "Unit VIII: Statistics & Probability — Mean, Median and Mode",
+            "Unit VIII: Statistics & Probability — Probability",
+            "Unit VIII: Statistics & Probability — Pictorial Representation of Data"
+          ]
+        },
+        {
+          "title": "SCIENCE (MBSE) — Physics",
+          "textbook": "Physics",
+          "chapters": [
+            "Light — Reflection and Refraction",
+            "The Human Eye and the Colourful World",
+            "Electricity",
+            "Magnetic Effects of Electric Current",
+            "Sources of Energy"
+          ]
+        },
+        {
+          "title": "SCIENCE (MBSE) — Chemistry",
+          "textbook": "Chemistry",
+          "chapters": [
+            "Chemical Reactions and Equations",
+            "Acids, Bases and Salts",
+            "Metals and Non-metals",
+            "Carbon and Its Compounds",
+            "Periodic Classification of Elements"
+          ]
+        },
+        {
+          "title": "SCIENCE (MBSE) — Biology",
+          "textbook": "Biology",
+          "chapters": [
+            "Life Processes",
+            "Control and Coordination",
+            "How do Organisms Reproduce",
+            "Heredity and Evolution",
+            "Our Environment",
+            "Management of Natural Resources"
+          ]
+        },
+        {
+          "title": "SOCIAL SCIENCE (MBSE) — History",
+          "textbook": "History",
+          "chapters": [
+            "The Rise of Nationalism in Europe",
+            "Nationalism in India",
+            "The Making of a Global World",
+            "The Age of Industrialisation",
+            "Print Culture and the Modern World"
+          ]
+        },
+        {
+          "title": "SOCIAL SCIENCE (MBSE) — Geography",
+          "textbook": "Geography",
+          "chapters": [
+            "Resources and Development",
+            "Forest and Wildlife Resources",
+            "Water Resources",
+            "Agriculture",
+            "Minerals and Power Resources",
+            "Manufacturing Industries",
+            "Transport, Communication and Trade"
+          ]
+        },
+        {
+          "title": "SOCIAL SCIENCE (MBSE) — Civics / Polity",
+          "textbook": "Civics / Polity",
+          "chapters": [
+            "Power Sharing",
+            "Federalism",
+            "Democracy and Diversity",
+            "Gender, Religion and Caste",
+            "Popular Struggles and Movements",
+            "Political Parties",
+            "Outcomes of Democracy",
+            "Challenges to Democracy"
+          ]
+        },
+        {
+          "title": "ECONOMICS (MBSE – Geeta Publication)",
+          "textbook": "ECONOMICS (MBSE – Geeta Publication)",
+          "chapters": [
+            "Development",
+            "Sectors of Economy",
+            "Money and Banking",
+            "Globalisation",
+            "Consumer Rights",
+            "Economic Planning",
+            "Employment",
+            "Infrastructure"
+          ]
+        },
+        {
+          "title": "MIZO (MBSE) — Poetry",
+          "textbook": "Poetry",
+          "chapters": [
+            "Aw lalpa, Davida leh a thlah arsi",
+            "Kum sul liam hnu",
+            "Chhul khat kal",
+            "Zofate inpumkhatna",
+            "Zo bawmtu chhawkhlei par",
+            "Zirtu kawng",
+            "Mahriak ten ar ang ka vai e",
+            "Awmhar niin ka chuan ang",
+            "Chhingkhual len mawi",
+            "Hmangaihna"
+          ]
+        },
+        {
+          "title": "MIZO (MBSE) — Prose",
+          "textbook": "Prose",
+          "chapters": [
+            "Nun kawng",
+            "Thalaite khawvel",
+            "Mizo thufing",
+            "Ral a lian e",
+            "Zawlbuk",
+            "Kei ka pianna Mizoram",
+            "Peihna",
+            "Nihna",
+            "Mizote leh an nihna",
+            "Tihdan tha",
+            "Tlemte ka chhiar a, ka pass tho"
+          ]
+        },
+        {
+          "title": "MIZO (MBSE) — Grammar",
+          "textbook": "Grammar",
+          "chapters": [
+            "Parts of Speech",
+            "Mizo tawng hman dan",
+            "Mizo tawng thenkhat",
+            "Tawng Upa"
+          ]
+        },
+        {
+          "title": "MIZO (MBSE) — Drama",
+          "textbook": "Drama",
+          "chapters": [
+            "Sual man thihna"
+          ]
+        },
+        {
+          "title": "MIZO (MBSE) — Thawnthu",
+          "textbook": "Thawnthu",
+          "chapters": [
+            "Tualte vanglai"
+          ]
+        }
+      ]
+    },
+    "class11science": {
+      "id": "class11science",
+      "title": "Class 11 (Science)",
+      "desc": "MBSE Science stream with common subjects and stream-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1A: English — Hornbill (Prose)",
+          "textbook": "MBSE Hornbill — Class 11",
+          "chapters": [
+            "The Portrait of a Lady",
+            "We're Not Afraid to Die… If We Can All Be Together",
+            "Discovering Tut: The Saga Continues",
+            "Landscape of the Soul",
+            "The Ailing Planet: The Green Movement's Role",
+            "Silk Road"
+          ]
+        },
+        {
+          "title": "Topic 1B: English — Hornbill (Poetry)",
+          "textbook": "MBSE Hornbill Poetry — Class 11",
+          "chapters": [
+            "A Photograph",
+            "The Laburnum Top",
+            "The Voice of the Rain",
+            "Childhood",
+            "Father to Son"
+          ]
+        },
+        {
+          "title": "Topic 1C: English — Snapshots",
+          "textbook": "MBSE Snapshots — Class 11",
+          "chapters": [
+            "The Summer of the Beautiful White Horse",
+            "The Address",
+            "Mother's Day (Play)",
+            "Birth",
+            "The Tale of Melon City"
+          ]
+        },
+        {
+          "title": "Topic 1D: English — Writing Skills & Grammar",
+          "textbook": "MBSE English Writing Skills & Grammar — Class 11",
+          "chapters": [
+            "Reading Skills — Unseen Passage Type I & II",
+            "Letter Writing — Complaints; Application for a Job",
+            "Report Writing",
+            "Short Compilation — Advertisements, Notice",
+            "Grammar — Tenses",
+            "Grammar — Determiners",
+            "Grammar — Punctuations"
+          ]
+        },
+        {
+          "title": "Topic 2A: Mizo — Hla (Poetry)",
+          "textbook": "MBSE Mizo — Class 11",
+          "chapters": [
+            "Ka va ngai em Lal ram ropui – Hleia",
+            "Pathian ralthuam hmangtute chu – Saihnuna",
+            "Piallei hmun rem kan bel – Dozinga",
+            "Ram hmangaihna – R.L. Kamlala",
+            "Chhingkhual Thalengheri – Laltanpuia",
+            "Lenna khua hmun lo – Lalzova",
+            "Lei mite hunbi an chhiar e – Rokunga",
+            "Khawngai hnuchham – Vankhama",
+            "Ka lungkham – Vanlalbeli",
+            "Nungchate – R. Rochungnunga",
+            "Thlawhhma hla – Romani",
+            "German run zai"
+          ]
+        },
+        {
+          "title": "Topic 2B: Mizo — Thu / Drama / Fiction / Grammar",
+          "textbook": "MBSE Mizo — Class 11",
+          "chapters": [
+            "Hmangaihna – Lalhmingliana Saiawi",
+            "Mi puitling – Lalena",
+            "Zoram par mawi – C. Rokhuma",
+            "Khawvel mawi hi – R. Lalzarmawia",
+            "Mizo ka ni ka zak dawn lo – James Dokhuma",
+            "Mizo tlangval rual leh Japan ral – Zokima",
+            "Mizo, Hnam leh Sakhua – Lalrinawma",
+            "Ram nghahfak chu keimahni – Lalrintluanga",
+            "Mizo tawng khawvel – C. Sangzuala",
+            "Anni leh keini – Siamkima Khawlhring",
+            "Chanchin Tha malsawmna – Z.T. Sangkhuma",
+            "Nunna tui – C. Lalnunnema",
+            "Hausakna Nun dik tak – Chawngzika",
+            "Lali (Lalawmpuii) – Biakliana",
+            "Mood",
+            "Tawng Upa",
+            "Report ziah dan",
+            "Minute ziah dan",
+            "Thu lak tawi dan (Precis)"
+          ]
+        },
+        {
+          "title": "Topic 3: Mathematics",
+          "textbook": "MBSE Mathematics — Class 11",
+          "chapters": [
+            "Sets",
+            "Relations and Functions",
+            "Trigonometric Functions",
+            "Complex Numbers and Quadratic Equations",
+            "Linear Inequalities",
+            "Permutations and Combinations",
+            "Sequence and Series (AP & GP)",
+            "Straight Lines",
+            "Conic Sections",
+            "Introduction to Three Dimensional Geometry",
+            "Limits and Derivatives",
+            "Statistics",
+            "Probability"
+          ]
+        },
+        {
+          "title": "Topic 4: Physics",
+          "textbook": "MBSE Physics — Class 11",
+          "chapters": [
+            "Physical World",
+            "Units and Measurements",
+            "Motion in a Straight Line",
+            "Motion in a Plane",
+            "Laws of Motion",
+            "Work, Energy and Power",
+            "System of Particles and Rotational Motion",
+            "Gravitation",
+            "Mechanical Properties of Solids",
+            "Mechanical Properties of Fluids",
+            "Thermal Properties of Matter",
+            "Thermodynamics",
+            "Kinetic Theory",
+            "Oscillations",
+            "Waves"
+          ]
+        },
+        {
+          "title": "Topic 5: Chemistry",
+          "textbook": "MBSE Chemistry — Class 11",
+          "chapters": [
+            "Some Basic Concepts of Chemistry",
+            "Structure of Atom",
+            "Classification of Elements and Periodicity in Properties",
+            "Chemical Bonding and Molecular Structure",
+            "States of Matter",
+            "Thermodynamics",
+            "Equilibrium",
+            "Redox Reactions",
+            "Hydrogen",
+            "The s-Block Elements",
+            "The p-Block Elements",
+            "Organic Chemistry — Basic Principles and Techniques",
+            "Hydrocarbons"
+          ]
+        },
+        {
+          "title": "Topic 6: Biology",
+          "textbook": "MBSE Biology — Class 11",
+          "chapters": [
+            "The Living World",
+            "Biological Classification",
+            "Plant Kingdom",
+            "Animal Kingdom",
+            "Morphology of Flowering Plants",
+            "Anatomy of Flowering Plants",
+            "Structural Organisation in Animals (Animal Tissues)",
+            "Cell: The Unit of Life",
+            "Biomolecules",
+            "Cell Cycle and Cell Division",
+            "Transport in Plants",
+            "Mineral Nutrition",
+            "Photosynthesis in Higher Plants",
+            "Respiration in Plants",
+            "Plant Growth and Development",
+            "Digestion and Absorption",
+            "Breathing and Exchange of Gases",
+            "Body Fluids and Circulation",
+            "Excretory Products and their Elimination",
+            "Locomotion and Movement",
+            "Neural Control and Coordination",
+            "Chemical Coordination and Integration"
+          ]
+        }
+      ]
+    },
+    "class11commerce": {
+      "id": "class11commerce",
+      "title": "Class 11 (Commerce)",
+      "desc": "MBSE Commerce stream with common subjects and stream-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1A: English — Hornbill / Snapshots / Writing",
+          "textbook": "MBSE English — Class 11",
+          "chapters": [
+            "The Portrait of a Lady",
+            "We're Not Afraid to Die… If We Can All Be Together",
+            "Discovering Tut: The Saga Continues",
+            "Landscape of the Soul",
+            "The Ailing Planet: The Green Movement's Role",
+            "Silk Road",
+            "A Photograph",
+            "The Laburnum Top",
+            "The Voice of the Rain",
+            "Childhood",
+            "Father to Son",
+            "The Summer of the Beautiful White Horse",
+            "The Address",
+            "Mother's Day (Play)",
+            "Birth",
+            "The Tale of Melon City",
+            "Reading Skills — Unseen Passage Type I & II",
+            "Letter Writing — Complaints; Application for a Job",
+            "Report Writing",
+            "Short Compilation — Advertisements, Notice",
+            "Grammar — Tenses",
+            "Grammar — Determiners",
+            "Grammar — Punctuations"
+          ]
+        },
+        {
+          "title": "Topic 2: Mizo",
+          "textbook": "MBSE Mizo — Class 11",
+          "chapters": [
+            "Ka va ngai em Lal ram ropui – Hleia",
+            "Pathian ralthuam hmangtute chu – Saihnuna",
+            "Piallei hmun rem kan bel – Dozinga",
+            "Ram hmangaihna – R.L. Kamlala",
+            "Chhingkhual Thalengheri – Laltanpuia",
+            "Lenna khua hmun lo – Lalzova",
+            "Lei mite hunbi an chhiar e – Rokunga",
+            "Khawngai hnuchham – Vankhama",
+            "Ka lungkham – Vanlalbeli",
+            "Nungchate – R. Rochungnunga",
+            "Thlawhhma hla – Romani",
+            "German run zai"
+          ]
+        },
+        {
+          "title": "Topic 3: Business Studies",
+          "textbook": "MBSE Business Studies — Class 11",
+          "chapters": [
+            "Nature and Purpose of Business",
+            "Forms of Business Organisations",
+            "Public, Private and Global Enterprises",
+            "Business Services (Banking, E-Banking, Insurance)",
+            "Emerging Modes of Business (E-Business)",
+            "Social Responsibility of Business and Business Ethics",
+            "Sources of Business Finance",
+            "Small Business",
+            "Internal Trade",
+            "International Trade"
+          ]
+        },
+        {
+          "title": "Topic 4: Economics",
+          "textbook": "MBSE Economics — Class 11",
+          "chapters": [
+            "Introduction: Definition, Central Problem, Opportunity Cost",
+            "Demand, Supply and Market Mechanism",
+            "Elasticity (Price, Income and Cross Elasticity)",
+            "Behaviour of Consumers and Producers",
+            "Forms of Market and Price Determination",
+            "Introduction to Statistics",
+            "Collection, Presentation and Organisation of Data",
+            "Statistical Averages and Dispersion",
+            "Correlation and Index Numbers"
+          ]
+        },
+        {
+          "title": "Topic 5: Accountancy",
+          "textbook": "MBSE Accountancy — Class 11",
+          "chapters": [
+            "Introduction to Accounting",
+            "Theory Base of Accounting",
+            "Recording of Transactions I",
+            "Recording of Transactions II",
+            "Bank Reconciliation Statement",
+            "Trial Balance and Rectification of Errors",
+            "Depreciation, Provisions and Reserves",
+            "Bill of Exchange",
+            "Financial Statements — I",
+            "Financial Statements — II",
+            "Accounts from Incomplete Records",
+            "Applications of Computers in Accounting",
+            "Computerised Accounting System"
+          ]
+        },
+        {
+          "title": "Topic 6: Mathematics (If Opted)",
+          "textbook": "MBSE Mathematics — Class 11",
+          "chapters": [
+            "Sets",
+            "Relations and Functions",
+            "Trigonometric Functions",
+            "Complex Numbers and Quadratic Equations",
+            "Linear Inequalities",
+            "Permutations and Combinations",
+            "Sequence and Series (AP & GP)",
+            "Straight Lines",
+            "Conic Sections",
+            "Statistics"
+          ]
+        }
+      ]
+    },
+    "class11arts": {
+      "id": "class11arts",
+      "title": "Class 11 (Arts)",
+      "desc": "MBSE Arts stream with common subjects and stream-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1A: English — Hornbill / Snapshots / Writing",
+          "textbook": "MBSE English — Class 11",
+          "chapters": [
+            "The Portrait of a Lady",
+            "We're Not Afraid to Die… If We Can All Be Together",
+            "Discovering Tut: The Saga Continues",
+            "Landscape of the Soul",
+            "The Ailing Planet: The Green Movement's Role",
+            "Silk Road",
+            "A Photograph",
+            "The Laburnum Top",
+            "The Voice of the Rain",
+            "Childhood",
+            "Father to Son",
+            "The Summer of the Beautiful White Horse",
+            "The Address",
+            "Mother's Day (Play)",
+            "Birth",
+            "The Tale of Melon City",
+            "Reading Skills — Unseen Passage Type I & II",
+            "Letter Writing — Complaints; Application for a Job",
+            "Report Writing",
+            "Short Compilation — Advertisements, Notice",
+            "Grammar — Tenses",
+            "Grammar — Determiners",
+            "Grammar — Punctuations"
+          ]
+        },
+        {
+          "title": "Topic 2: Mizo",
+          "textbook": "MBSE Mizo — Class 11",
+          "chapters": [
+            "Ka va ngai em Lal ram ropui – Hleia",
+            "Pathian ralthuam hmangtute chu – Saihnuna",
+            "Piallei hmun rem kan bel – Dozinga",
+            "Ram hmangaihna – R.L. Kamlala",
+            "Chhingkhual Thalengheri – Laltanpuia",
+            "Lenna khua hmun lo – Lalzova",
+            "Lei mite hunbi an chhiar e – Rokunga",
+            "Khawngai hnuchham – Vankhama",
+            "Ka lungkham – Vanlalbeli",
+            "Nungchate – R. Rochungnunga",
+            "Thlawhhma hla – Romani",
+            "German run zai",
+            "Hmangaihna – Lalhmingliana Saiawi",
+            "Mi puitling – Lalena",
+            "Zoram par mawi – C. Rokhuma",
+            "Khawvel mawi hi – R. Lalzarmawia",
+            "Mizo ka ni ka zak dawn lo – James Dokhuma",
+            "Mizo tlangval rual leh Japan ral – Zokima",
+            "Mizo, Hnam leh Sakhua – Lalrinawma",
+            "Ram nghahfak chu keimahni – Lalrintluanga",
+            "Mizo tawng khawvel – C. Sangzuala",
+            "Anni leh keini – Siamkima Khawlhring"
+          ]
+        },
+        {
+          "title": "Topic 3: Political Science",
+          "textbook": "MBSE Political Science — Class 11",
+          "chapters": [
+            "The Constitution: Why and how?",
+            "Rights in the Indian Constitution",
+            "Election and Representation",
+            "Executive",
+            "Legislature",
+            "Judiciary",
+            "Federalism",
+            "Local Governments",
+            "Constitution as a Living Document",
+            "The Philosophy of the Constitution",
+            "Political Theory: An Introduction",
+            "Freedom",
+            "Equality",
+            "Social Justice",
+            "Rights",
+            "Citizenship",
+            "Nationalism",
+            "Secularism"
+          ]
+        },
+        {
+          "title": "Topic 4: Geography",
+          "textbook": "MBSE Geography — Class 11",
+          "chapters": [
+            "Geography as a Discipline",
+            "The Origin and Evolution of the Earth",
+            "Interior of the Earth",
+            "Distribution of Oceans and Continents",
+            "Minerals and Rocks",
+            "Geomorphic Processes",
+            "Landforms and Their Evolution",
+            "Composition and Structure of Atmosphere",
+            "Solar Radiation, Heat Balance and Temperature",
+            "Atmospheric Circulation and Weather Systems",
+            "Water in the Atmosphere",
+            "World Climate and Climate Change",
+            "Water (Oceans)",
+            "Movements of Ocean Water",
+            "Life on the Earth",
+            "Biodiversity and Conservation",
+            "India — Location",
+            "Structure and Physiography",
+            "Drainage System",
+            "Climate",
+            "Natural Vegetation",
+            "Soils",
+            "Natural Hazards and Disasters"
+          ]
+        },
+        {
+          "title": "Topic 5: History",
+          "textbook": "MBSE History — Class 11",
+          "chapters": [
+            "From the Beginning of Time",
+            "Early Cities",
+            "An Empire Across Three Continents",
+            "The Central Islamic Lands",
+            "Nomadic Empires",
+            "The Three Orders",
+            "Changing Cultural Traditions",
+            "Confrontation of Cultures",
+            "The Industrial Revolution",
+            "Displacing Indigenous Peoples",
+            "Paths to Modernisation"
+          ]
+        },
+        {
+          "title": "Topic 6: Sociology / Economics (Optional)",
+          "textbook": "MBSE Optional Subjects — Class 11",
+          "chapters": [
+            "Society and Sociology",
+            "Social Change and Social Order in Rural and Urban Society",
+            "Environment and Society",
+            "Introducing Western Sociologists",
+            "Indian Sociologists",
+            "Social Structure, Stratification and Social Processes in Society",
+            "Social Institutions: Continuity and Change",
+            "Social Inequality and Exclusion",
+            "The Challenges of Cultural Diversity",
+            "Change and Development in Rural Society",
+            "Introduction to Statistics",
+            "Collection of Data",
+            "Organisation of Data",
+            "Presentation of Data",
+            "Measures of Central Tendency",
+            "Measures of Dispersion",
+            "Correlation",
+            "Index Numbers",
+            "Indian Economy on the Eve of Independence",
+            "Indian Economy (1950–1990)",
+            "Liberalisation, Privatisation and Globalisation",
+            "Poverty",
+            "Human Capital Formation in India",
+            "Rural Development"
+          ]
+        }
+      ]
+    },
+    "class12science": {
+      "id": "class12science",
+      "title": "Class 12 (Science)",
+      "desc": "MBSE Science stream with common subjects and stream-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1A: English — Reading, Writing and Flamingo",
+          "textbook": "MBSE English — Class 12",
+          "chapters": [
+            "Unseen Passages and Note-Making",
+            "Short Compositions — Notices, Invitations and Replies",
+            "Letter Writing — Business / Official / Job Application",
+            "Article / Report Writing",
+            "The Last Lesson",
+            "Lost Spring",
+            "Deep Water",
+            "The Rattrap",
+            "Indigo",
+            "Poets and Pancakes",
+            "The Interview",
+            "Going Places",
+            "My Mother at Sixty-Six",
+            "Keeping Quiet",
+            "A Thing of Beauty",
+            "A Roadside Stand",
+            "Aunt Jennifer's Tigers"
+          ]
+        },
+        {
+          "title": "Topic 1B: English — Vistas",
+          "textbook": "MBSE Vistas — Class 12",
+          "chapters": [
+            "The Third Level",
+            "The Tiger King",
+            "Journey to the End of the Earth",
+            "The Enemy",
+            "On the Face of It",
+            "Memories of Childhood",
+            "The Cutting of My Long Hair",
+            "We Too Are Human Beings"
+          ]
+        },
+        {
+          "title": "Topic 2: Mathematics",
+          "textbook": "MBSE Mathematics — Class 12",
+          "chapters": [
+            "Relations and Functions",
+            "Inverse Trigonometric Functions",
+            "Matrices",
+            "Determinants",
+            "Continuity and Differentiability",
+            "Applications of Derivatives",
+            "Integrals",
+            "Applications of Integrals",
+            "Differential Equations",
+            "Vectors",
+            "Three-Dimensional Geometry",
+            "Linear Programming",
+            "Probability"
+          ]
+        },
+        {
+          "title": "Topic 3: Physics",
+          "textbook": "MBSE Physics — Class 12",
+          "chapters": [
+            "Electrostatics",
+            "Current Electricity",
+            "Magnetic Effects of Current and Magnetism",
+            "Electromagnetic Induction and Alternating Currents",
+            "Electromagnetic Waves",
+            "Optics",
+            "Dual Nature of Radiation and Matter",
+            "Atoms and Nuclei",
+            "Electronic Devices"
+          ]
+        },
+        {
+          "title": "Topic 4: Chemistry",
+          "textbook": "MBSE Chemistry — Class 12",
+          "chapters": [
+            "Solutions",
+            "Electrochemistry",
+            "Chemical Kinetics",
+            "The d- and f-Block Elements",
+            "Coordination Compounds",
+            "Haloalkanes and Haloarenes",
+            "Alcohols, Phenols and Ethers",
+            "Aldehydes, Ketones and Carboxylic Acids",
+            "Amines",
+            "Biomolecules",
+            "Polymers",
+            "Chemistry in Everyday Life"
+          ]
+        },
+        {
+          "title": "Topic 5: Biology",
+          "textbook": "MBSE Biology — Class 12",
+          "chapters": [
+            "Reproduction in Organisms",
+            "Sexual Reproduction in Flowering Plants",
+            "Human Reproduction",
+            "Reproductive Health",
+            "Principles of Inheritance and Variation",
+            "Molecular Basis of Inheritance",
+            "Evolution",
+            "Human Health and Disease",
+            "Strategies for Enhancement in Food Production",
+            "Microbes in Human Welfare",
+            "Biotechnology: Principles and Processes",
+            "Biotechnology and Its Applications",
+            "Organisms and Populations",
+            "Ecosystem",
+            "Biodiversity and Conservation",
+            "Environmental Issues"
+          ]
+        }
+      ]
+    },
+    "class12commerce": {
+      "id": "class12commerce",
+      "title": "Class 12 (Commerce)",
+      "desc": "MBSE Commerce stream with common subjects and stream-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1A: English — Reading, Writing and Literature",
+          "textbook": "MBSE English — Class 12",
+          "chapters": [
+            "Unseen Passages and Note-Making",
+            "Short Compositions — Notices, Invitations and Replies",
+            "Letter Writing — Business / Official / Job Application",
+            "Article / Report Writing",
+            "The Last Lesson",
+            "Lost Spring",
+            "Deep Water",
+            "The Rattrap",
+            "Indigo",
+            "Poets and Pancakes",
+            "The Interview",
+            "Going Places",
+            "My Mother at Sixty-Six",
+            "Keeping Quiet",
+            "A Thing of Beauty",
+            "A Roadside Stand",
+            "Aunt Jennifer's Tigers",
+            "The Third Level",
+            "The Tiger King",
+            "Journey to the End of the Earth",
+            "The Enemy",
+            "On the Face of It",
+            "Memories of Childhood"
+          ]
+        },
+        {
+          "title": "Topic 2: Economics",
+          "textbook": "MBSE Economics — Class 12",
+          "chapters": [
+            "National Income and Related Aggregates",
+            "Theory of Income and Employment",
+            "Money and Banking",
+            "Government Budget and the Economy",
+            "Balance of Payments",
+            "Development Experience (1947–1990)",
+            "Economic Reforms since 1991",
+            "Current Challenges Facing Indian Economy",
+            "A Comparison with Neighbours",
+            "Project Work"
+          ]
+        },
+        {
+          "title": "Topic 3: Business Studies",
+          "textbook": "MBSE Business Studies — Class 12",
+          "chapters": [
+            "Nature and Significance of Management",
+            "Principles of Management",
+            "Business Environment",
+            "Planning",
+            "Organising",
+            "Staffing",
+            "Directing",
+            "Controlling",
+            "Financial Management",
+            "Financial Markets",
+            "Marketing Management",
+            "Consumer Protection"
+          ]
+        },
+        {
+          "title": "Topic 4: Accountancy",
+          "textbook": "MBSE Accountancy — Class 12",
+          "chapters": [
+            "Partnership Firms — Fundamentals and Goodwill",
+            "Reconstitution — Change in Profit Sharing Ratio",
+            "Reconstitution — Admission of a Partner",
+            "Reconstitution — Retirement and Death of a Partner",
+            "Dissolution of a Partnership Firm",
+            "Accounting for Share Capital",
+            "Accounting for Debentures",
+            "Analysis of Financial Statements",
+            "Cash Flow Statement",
+            "Project Work"
+          ]
+        },
+        {
+          "title": "Topic 5: Business Mathematics",
+          "textbook": "MBSE Business Mathematics — Class 12",
+          "chapters": [
+            "Ratio and Proportion",
+            "Commission, Brokerage and Insurance",
+            "Partnership",
+            "Tender and Quotation",
+            "Permutations and Combinations",
+            "Binomial Theorem",
+            "Sequence and Series",
+            "Probability",
+            "Matrices and Determinants",
+            "Linear Programming",
+            "Functions, Limits and Continuity",
+            "Differentiation and Integration"
+          ]
+        }
+      ]
+    },
+    "class12arts": {
+      "id": "class12arts",
+      "title": "Class 12 (Arts)",
+      "desc": "MBSE Arts stream with common subjects and stream-wise lesson plan.",
+      "price": "₹1,500",
+      "topics": [
+        {
+          "title": "Topic 1A: English — Reading, Writing and Literature",
+          "textbook": "MBSE English — Class 12",
+          "chapters": [
+            "Unseen Passages and Note-Making",
+            "Short Compositions — Notices, Invitations and Replies",
+            "Letter Writing — Business / Official / Job Application",
+            "Article / Report Writing",
+            "The Last Lesson",
+            "Lost Spring",
+            "Deep Water",
+            "The Rattrap",
+            "Indigo",
+            "Poets and Pancakes",
+            "The Interview",
+            "Going Places",
+            "My Mother at Sixty-Six",
+            "Keeping Quiet",
+            "A Thing of Beauty",
+            "A Roadside Stand",
+            "Aunt Jennifer's Tigers",
+            "The Third Level",
+            "The Tiger King",
+            "Journey to the End of the Earth",
+            "The Enemy",
+            "On the Face of It",
+            "Memories of Childhood"
+          ]
+        },
+        {
+          "title": "Topic 2: Mizo",
+          "textbook": "MBSE Mizo — Class 12",
+          "chapters": [
+            "Phungrual an tin ang a — Laithangpuia",
+            "Enchimloh chawi lai — Ralngama",
+            "I tan ka ding zel ang — T. Zorampela",
+            "Zoram! Ka ram! — Kaphleia",
+            "Kar a hla — Lalhmingthanga",
+            "Tleitirah tleitiri — Durra Chawngthu",
+            "Kan dam chhung ni — P.S. Chawngthu",
+            "Phengphe nunnem — Zirsangzela Hnamte",
+            "Pi pu chhuahtlang hlui — Liandala",
+            "Hmanah pi pu lenlai chul hnu — Damhauhva",
+            "Pan lai ka ram tuanna — Lalsangzuali Sailo",
+            "Hausiampa Zai",
+            "Dawhtheihna — R.L. Thanmawia",
+            "Lung in malsawmna thuruk — H. Lallungmuana",
+            "Zirlaite hnena thuchah — Zikpuii pa",
+            "Ngaihtuahna — C.H. Thangkhuma",
+            "I Thinrim elo — C. Lalhrekima",
+            "Lungphang lo la — L. Keivom",
+            "Leilung hi Pathian siam a ni — P.L. Liandinga",
+            "Mizo thu leh hla tobul — B. Lalthangliana",
+            "Mizo hnam zai leh hla thlavang hauhna — C. Lalsiamthanga",
+            "Tawrhna — Zairema",
+            "Mi huaisen — Thanpuii pa",
+            "Kan nun khuarei an chang tur hi — C. Thuamluaia",
+            "Thangzawra — Lalsangzuala",
+            "Lal hlau lo thi — Lalzuia Colney",
+            "Adverb",
+            "Tawng upa",
+            "Lehkhathawn — Complaint and FIR",
+            "Essay ziah dan"
+          ]
+        },
+        {
+          "title": "Topic 3: Sociology",
+          "textbook": "MBSE Sociology — Class 12",
+          "chapters": [
+            "Introducing Indian Society",
+            "The Demographic Structure of Indian Society",
+            "Social Institutions: Continuity and Change",
+            "The Market as a Social Institution",
+            "Patterns of Social Inequality and Exclusion",
+            "The Challenges of Cultural Diversity",
+            "Suggestions for Project Work",
+            "Structural Change",
+            "Cultural Change",
+            "The Story of Indian Democracy",
+            "Change and Development in Rural Society",
+            "Change and Development in Industrial Society",
+            "Globalisation and Social Change",
+            "Mass Media and Communications",
+            "Social Movements"
+          ]
+        },
+        {
+          "title": "Topic 4: Political Science",
+          "textbook": "MBSE Political Science — Class 12",
+          "chapters": [
+            "The Cold War Era",
+            "The End of Bipolarity",
+            "US Hegemony in World Politics",
+            "Alternative Centres of Power",
+            "Contemporary South Asia",
+            "International Organisations",
+            "Security in the Contemporary World",
+            "Environment and Natural Resources",
+            "Globalisation",
+            "Challenges of Nation Building",
+            "Era of One-Party Dominance",
+            "Politics of Planned Development",
+            "India's External Relations",
+            "Challenges to the Congress System",
+            "The Crisis of Democratic Order",
+            "Rise of Popular Movements",
+            "Regional Aspirations",
+            "Recent Developments in Indian Politics"
+          ]
+        },
+        {
+          "title": "Topic 5: History / Geography / Economics",
+          "textbook": "MBSE Arts Stream Supporting Subjects — Class 12",
+          "chapters": [
+            "Bricks, Beads and Bones — The Harappan Civilisation",
+            "Kings, Farmers and Towns",
+            "Kinship, Caste and Class",
+            "Thinkers, Beliefs and Buildings",
+            "Through the Eyes of Travellers",
+            "Bhakti-Sufi Traditions",
+            "An Imperial Capital: Vijayanagara",
+            "Peasants, Zamindars and the State",
+            "Kings and Chronicles",
+            "Colonialism and the Countryside",
+            "Rebels and the Raj",
+            "Colonial Cities",
+            "Mahatma Gandhi and the Nationalist Movement",
+            "Understanding Partition",
+            "Framing the Constitution",
+            "Human Geography: Nature and Scope",
+            "The World Population: Distribution, Density and Growth",
+            "Population Composition",
+            "Human Development",
+            "Primary Activities",
+            "Secondary Activities",
+            "Tertiary and Quaternary Activities",
+            "Transport and Communication",
+            "International Trade",
+            "Human Settlements",
+            "Population: Distribution, Density, Growth and Composition",
+            "Migration: Types, Causes and Consequences",
+            "Land Resources and Agriculture",
+            "Water Resources",
+            "Manufacturing Industries",
+            "National Income and Related Aggregates",
+            "Theory of Income and Employment",
+            "Money and Banking",
+            "Government Budget and the Economy",
+            "Balance of Payments"
+          ]
+        }
+      ]
+    }
+  }
+}

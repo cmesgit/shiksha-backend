@@ -6,6 +6,8 @@ from .models import (
     LiveKitWebhookEvent,
     LiveSessionViewerSample,
     StreamHealthSample,
+    SessionReview,
+    SessionNote,
 )
 
 
@@ -95,3 +97,20 @@ class StreamHealthSampleAdmin(admin.ModelAdmin):
     search_fields = ("session__title", "user__email")
     ordering = ("-ts",)
     readonly_fields = ("session", "user", "is_presenter", "bitrate_kbps", "fps", "latency_ms", "packet_loss", "quality", "ts")
+
+
+@admin.register(SessionReview)
+class SessionReviewAdmin(admin.ModelAdmin):
+    list_display = ("session", "user", "rating", "created_at")
+    list_filter = ("rating",)
+    search_fields = ("session__title", "user__email")
+    ordering = ("-created_at",)
+    readonly_fields = ("session", "user", "created_at")
+
+
+@admin.register(SessionNote)
+class SessionNoteAdmin(admin.ModelAdmin):
+    list_display = ("session", "user", "updated_at")
+    search_fields = ("session__title", "user__email")
+    ordering = ("-updated_at",)
+    readonly_fields = ("session", "user", "created_at", "updated_at")

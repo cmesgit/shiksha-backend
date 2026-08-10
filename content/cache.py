@@ -42,12 +42,12 @@ def _register():
     # fully ready (apps.py imports us inside ready()).
     from .models import (
         Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-        ShowcaseCourse,
+        HomeContentBlock, HomeFloater, HomeListItem, ShowcaseCourse,
     )
 
     tracked = (
         BlogPost, CurrentAffair, FAQItem, Announcement, ShowcaseCourse,
-        ContentTag,
+        ContentTag, HomeContentBlock, HomeListItem, HomeFloater,
     )
 
     def _bump(*args, **kwargs):

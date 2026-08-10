@@ -5,6 +5,9 @@ from .models import (
     ChatMessage,
     GroupSession,
     GroupSessionInvite,
+    PrivateSessionReview,
+    PrivateSessionNote,
+    GroupSessionNote,
 )
 
 
@@ -175,3 +178,28 @@ class GroupSessionInviteAdmin(admin.ModelAdmin):
     readonly_fields = (
         "created_at", "responded_at", "reinvited_at", "joined_at",
     )
+
+
+@admin.register(PrivateSessionReview)
+class PrivateSessionReviewAdmin(admin.ModelAdmin):
+    list_display = ("session", "user", "rating", "created_at")
+    list_filter = ("rating",)
+    search_fields = ("session__id", "user__email")
+    ordering = ("-created_at",)
+    readonly_fields = ("session", "user", "created_at")
+
+
+@admin.register(PrivateSessionNote)
+class PrivateSessionNoteAdmin(admin.ModelAdmin):
+    list_display = ("session", "user", "updated_at")
+    search_fields = ("session__id", "user__email")
+    ordering = ("-updated_at",)
+    readonly_fields = ("session", "user", "created_at", "updated_at")
+
+
+@admin.register(GroupSessionNote)
+class GroupSessionNoteAdmin(admin.ModelAdmin):
+    list_display = ("session", "user", "updated_at")
+    search_fields = ("session__id", "user__email")
+    ordering = ("-updated_at",)
+    readonly_fields = ("session", "user", "created_at", "updated_at")

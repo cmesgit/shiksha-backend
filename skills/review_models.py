@@ -18,7 +18,12 @@ class ExpertReview(models.Model):
     rating = models.PositiveSmallIntegerField()          # 1–5
     body   = models.TextField(blank=True)
     is_public = models.BooleanField(default=True)
+    # Explicit flag rather than comparing created_at/updated_at timestamps —
+    # both would be set by the same .save() call at creation, making a
+    # timestamp-diff check for "edited" unreliable at microsecond precision.
+    is_edited = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-created_at"]

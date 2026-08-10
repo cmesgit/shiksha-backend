@@ -89,3 +89,32 @@ class SessionRecording(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class RecordingNote(models.Model):
+    """A viewer's private notes on one recording — same shape as
+    livestream.SessionNote / sessions_app.GroupSessionNote (one per
+    (recording, user), upserted via update_or_create, never shown to anyone
+    but its author). The live session itself already has this via
+    SessionNote; this is the same capability for its recording afterward,
+    since a teacher revisiting a class's recording has nowhere today to jot
+    anything down."""
+    recording = models.ForeignKey(
+        SessionRecording,
+        on_delete=models.CASCADE,
+        related_name="notes",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+    )
+    content = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("recording", "user")
+        indexes = [models.Index(fields=["recording", "user"])]
+
+    def __str__(self):
+        return f"{self.user_id} notes on {self.recording_id}"

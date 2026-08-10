@@ -17,10 +17,19 @@ from rest_framework.response import Response
 from accounts.auth_flow import get_active_profile
 from sessions_app.services.private_token import generate_private_token
 
-from .models import PrivateSession, SessionParticipant, SessionRescheduleHistory, ChatMessage
+from .models import (
+    PrivateSession,
+    SessionParticipant,
+    SessionRescheduleHistory,
+    ChatMessage,
+    PrivateSessionReview,
+    PrivateSessionNote,
+)
 from .permissions import IsStudent
 from accounts.permissions import IsTeacherContext
 from .serializers import (
+    PrivateSessionReviewSerializer,
+    PrivateSessionNoteSerializer,
     SessionListSerializer,
     PrivateSessionSerializer,
     SessionRequestSerializer,
@@ -104,6 +113,17 @@ def _push_session_bell(session, cancelled_by=None):
             if not recipient or not title:
                 continue
 
+            # recipient is always either the learner side (requested_by) or
+            # the teacher — tag audience/learner_profile accordingly so this
+            # row is scoped to the right dashboard identity and (for the
+            # learner side) the right sibling profile on a multi-profile
+            # account. Omitting these left both fields at their LEARNER/NULL
+            # defaults even for teacher-directed rows, which is both a wrong
+            # audience tag and a "visible to every profile" leak.
+            is_learner_side = recipient.id == session.requested_by_id
+            audience = Activity.AUDIENCE_LEARNER if is_learner_side else Activity.AUDIENCE_TEACHER
+            learner_profile = session.learner_profile if is_learner_side else None
+
             # get_or_create avoids duplicate bell entries on retries
             activity, created = Activity.objects.get_or_create(
                 user=recipient,
@@ -114,6 +134,8 @@ def _push_session_bell(session, cancelled_by=None):
                 defaults={
                     "subject_name": session.subject,
                     "due_date": scheduled_dt,
+                    "audience": audience,
+                    "learner_profile": learner_profile,
                 },
             )
 
@@ -859,6 +881,83 @@ def send_chat_message(request, session_id):
 
 
 # ==========================================================
+# REVIEW + NOTES
+# ==========================================================
+
+
+def _is_private_session_participant(session, user):
+    return (
+        session.teacher == user
+        or session.requested_by == user
+        or session.participants.filter(user=user, status="accepted").exists()
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def submit_private_session_review(request, session_id):
+    """POST <session_id>/review/ — 1-5 star rating + optional description,
+    submitted from the end-call review modal shown whenever a participant
+    leaves the call. Not gated on session.status == "completed": a
+    participant stepping out (teacher's plain Leave, distinct from the
+    explicit End Session action) is a normal path here, and their review
+    reflects their own experience up to that point. Resubmitting overwrites
+    via update_or_create rather than erroring on the unique constraint.
+    """
+    try:
+        session = PrivateSession.objects.get(pk=session_id)
+    except PrivateSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if not _is_private_session_participant(session, request.user):
+        return Response({"error": "Not a participant."}, status=status.HTTP_403_FORBIDDEN)
+
+    serializer = PrivateSessionReviewSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    review, _ = PrivateSessionReview.objects.update_or_create(
+        session=session,
+        user=request.user,
+        defaults=serializer.validated_data,
+    )
+
+    return Response(PrivateSessionReviewSerializer(review).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def private_session_notes(request, session_id):
+    """GET/PATCH <session_id>/notes/ — the requesting user's own private
+    notes for this session (never another participant's). PATCH upserts via
+    update_or_create so the in-call Notes panel can autosave.
+    """
+    try:
+        session = PrivateSession.objects.get(pk=session_id)
+    except PrivateSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if not _is_private_session_participant(session, request.user):
+        return Response({"error": "Not a participant."}, status=status.HTTP_403_FORBIDDEN)
+
+    if request.method == "GET":
+        note = PrivateSessionNote.objects.filter(session=session, user=request.user).first()
+        return Response(
+            PrivateSessionNoteSerializer(note).data if note else {"content": "", "updated_at": None}
+        )
+
+    serializer = PrivateSessionNoteSerializer(data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+
+    note, _ = PrivateSessionNote.objects.update_or_create(
+        session=session,
+        user=request.user,
+        defaults=serializer.validated_data,
+    )
+
+    return Response(PrivateSessionNoteSerializer(note).data)
+
+
+# ==========================================================
 # SUBJECT → AVAILABLE TEACHERS
 # ==========================================================
 
@@ -896,7 +995,7 @@ def subject_teachers(request, subject_id):
     data = [
         {
             "id": str(st.teacher.id),
-            "name": getattr(st.teacher.default_learner_profile(), "full_name", None) or st.teacher.username,
+            "name": get_user_name(st.teacher),
         }
         for st in qs
     ]

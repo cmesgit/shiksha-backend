@@ -5,6 +5,8 @@ from .views import (
     DeleteStudyMaterial, 
     SubjectMaterials, 
     StudentSubjectMaterials,
+    StudentCourseMaterials,
+    TeacherAllMaterials,
     StudyMaterialDetail,
     UploadTempFile
 )
@@ -37,6 +39,17 @@ urlpatterns = [
     path(
         "student/subjects/<uuid:subject_id>/materials/",
         StudentSubjectMaterials.as_view(),
+    ),
+    # Course-wide: the learner's flat Study Material list (one request instead
+    # of one per subject).
+    path(
+        "student/courses/<uuid:course_id>/materials/",
+        StudentCourseMaterials.as_view(),
+    ),
+    # Flat: every material across the subjects this teacher is assigned to.
+    path(
+        "teacher/materials/all/",
+        TeacherAllMaterials.as_view(),
     ),
     path("files/upload/", UploadTempFile.as_view()),
 

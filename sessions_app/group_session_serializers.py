@@ -8,7 +8,7 @@ the original serializers module where useful.
 
 from rest_framework import serializers
 
-from .models import GroupSession, GroupSessionInvite
+from .models import GroupSession, GroupSessionInvite, GroupSessionNote
 from .serializers import get_user_name, get_student_id
 
 
@@ -211,3 +211,44 @@ class GroupSessionInviteMoreSerializer(serializers.Serializer):
         child=serializers.UUIDField(),
         allow_empty=False,
     )
+
+
+class GroupSessionUpdateSerializer(serializers.Serializer):
+    """
+    PATCH /group-sessions/<id>/ — edit a session while it's still
+    ``scheduled``. Topic/date/time/duration only: subject is fixed once a
+    session exists (existing invites are validated against the subject's
+    course, so changing it after invites exist would leave them validated
+    against the wrong course) — a subject change would need to be a new
+    session, not an edit of this one.
+    """
+
+    scheduled_date = serializers.DateField(required=False)
+    scheduled_time = serializers.TimeField(required=False)
+    duration_minutes = serializers.ChoiceField(
+        choices=[30, 45, 60, 90, 120, 150, 180], required=False
+    )
+    topic = serializers.CharField(
+        required=False, allow_blank=True, max_length=255
+    )
+
+    def validate(self, data):
+        from django.utils import timezone
+        from datetime import datetime
+
+        session = self.context["session"]
+        date = data.get("scheduled_date", session.scheduled_date)
+        time_ = data.get("scheduled_time", session.scheduled_time)
+        scheduled_dt = timezone.make_aware(datetime.combine(date, time_))
+        if scheduled_dt < timezone.now():
+            raise serializers.ValidationError(
+                {"scheduled_date": "Cannot reschedule to a time in the past."}
+            )
+        return data
+
+
+class GroupSessionNoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GroupSessionNote
+        fields = ["content", "updated_at"]
+        read_only_fields = ["updated_at"]

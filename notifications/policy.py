@@ -76,6 +76,8 @@ POLICY = {
     "group.cancelled":    {"category": "classes",   "email": OPT_OUT, "sms": OFF,     "push": REQUIRED},
     "group.reminder_24h": {"category": "reminders", "email": OPT_OUT, "sms": OFF,     "push": REQUIRED},
     "group.reminder_1h":  {"category": "reminders", "email": OFF,     "sms": OPT_OUT, "push": REQUIRED, "sms_template": "session_reminder"},
+    "livestream.reminder_24h": {"category": "reminders", "email": OPT_OUT, "sms": OFF,     "push": REQUIRED},
+    "livestream.reminder_1h":  {"category": "reminders", "email": OFF,     "sms": REQUIRED, "push": REQUIRED, "sms_template": "session_reminder"},
 
     # ── Live classes / learning ────────────────────────────────────────
     "livestream.started":  {"category": "classes",  "email": OFF,     "sms": OFF, "push": REQUIRED},
@@ -83,6 +85,9 @@ POLICY = {
     "assignment.graded":   {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
     "quiz.posted":         {"category": "learning", "email": OFF,     "sms": OFF, "push": OPT_OUT},
     "quiz.deadline":       {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": REQUIRED},
+    # Teacher-triggered nudge for students who haven't attempted a
+    # published quiz yet (Quiz Analytics "Send reminder" action).
+    "quiz.reminder":       {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": REQUIRED},
     "materials.uploaded":  {"category": "learning", "email": OFF,     "sms": OFF, "push": OPT_OUT},
 
     # ── Social (high volume — NEVER email/SMS these) ───────────────────

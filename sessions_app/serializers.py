@@ -2,7 +2,13 @@ from rest_framework import serializers
 from django.utils import timezone
 from datetime import datetime
 
-from .models import PrivateSession, SessionParticipant, ChatMessage
+from .models import (
+    PrivateSession,
+    SessionParticipant,
+    ChatMessage,
+    PrivateSessionReview,
+    PrivateSessionNote,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +124,12 @@ class SessionListSerializer(serializers.ModelSerializer):
             "scheduled_date",
             "scheduled_time",
             "duration_minutes",
+            "rescheduled_date",
+            "rescheduled_time",
+            "reschedule_reason",
+            "notes",
+            "decline_reason",
+            "cancel_reason",
             "started_at",
             "ended_at",
             "actual_duration_minutes",
@@ -233,6 +245,20 @@ class ChatMessageSerializer(serializers.ModelSerializer):
                   "sender_role", "message", "created_at"]
         read_only_fields = ["id", "sender_id",
                             "sender_name", "sender_role", "created_at"]
+
+
+class PrivateSessionReviewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PrivateSessionReview
+        fields = ["id", "rating", "description", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+
+class PrivateSessionNoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PrivateSessionNote
+        fields = ["content", "updated_at"]
+        read_only_fields = ["updated_at"]
 
 
 # ---------------------------------------------------------------------------

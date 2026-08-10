@@ -28,7 +28,9 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from .device import open_session, touch_session
 from .models import LearnerProfile, Role
+from .throttles import PinVerifyRateThrottle
 
 ACCESS_MAX_AGE  = 60 * 60            # 1 hour
 REFRESH_MAX_AGE = 60 * 60 * 24 * 7  # 1 week
@@ -67,9 +69,20 @@ def verify_account_password(request):
 # Token & cookie helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_tokens(user, *, context, profile=None, active_track=None):
+def build_tokens(user, *, context, profile=None, active_track=None, sid=None):
+    """Mint a fresh refresh token carrying the account's context claims.
+
+    `sid` is the UserSession this token belongs to (Settings → Sessions &
+    devices). It is minted ONCE per login and then threaded through every later
+    mint — profile select, track switch, hourly refresh — because all of those
+    are the *same* browser and must stay one row in the sessions list rather
+    than appearing as a new device each time. Callers get it from
+    `session_id_for(request)`.
+    """
     refresh = RefreshToken.for_user(user)
     refresh["context"] = context
+    if sid:
+        refresh["sid"] = str(sid)
     if profile is not None:
         refresh["active_profile"] = str(profile.id)
     if active_track is not None:
@@ -91,6 +104,20 @@ def build_tokens(user, *, context, profile=None, active_track=None):
             refresh["identity"] = f"T:{teacher.id}"
 
     return refresh
+
+
+def session_id_for(request):
+    """The `sid` claim on the caller's current token, or None.
+
+    Every view that re-mints tokens for an already-signed-in caller (profile
+    select, teacher context, track switch) must pass this into `build_tokens`,
+    or the browser silently forks into a second row in Sessions & devices on
+    every switch.
+    """
+    token = getattr(request, "auth", None)
+    if token is None:
+        return None
+    return token.get("sid")
 
 
 def set_auth_cookies(response, refresh):
@@ -137,6 +164,7 @@ def serialize_profile_card(p):
         # faculty application form, which reads the same fields off this profile.
         "first_name":       p.first_name or "",
         "last_name":        p.last_name or "",
+        "bio":              p.bio or "",
         "phone":            p.phone or "",
         "gender":           p.gender or "",
         "date_of_birth":    p.date_of_birth.isoformat() if p.date_of_birth else "",
@@ -176,6 +204,127 @@ def serialize_profile_detail(p):
     for f in _PROFILE_CHOICE_FIELDS:
         data[f] = getattr(p, f, "") or ""
     return data
+
+
+def apply_profile_edits(profile, data, files=None, *, allow_student_id=False):
+    """Validate + apply an edit payload onto a LearnerProfile (does NOT save).
+
+    Extracted from ``ProfileDetailView.patch`` so the admin student editor
+    (accounts.admin_student_views) applies byte-identical validation instead of
+    a second, drifting copy. Model ``choices`` and ``max_length`` are NOT
+    enforced by ``.save()``, so they are checked here.
+
+    ``allow_student_id`` is admin-only: ``student_id`` is deliberately not
+    self-editable (it is an institution-assigned identifier), which is why
+    ProfileDetailView serializes it but never accepts it.
+    """
+    files = files or {}
+
+    if "display_name" in data:
+        dn = (data["display_name"] or "").strip()
+        if not dn:
+            raise ValidationError({"display_name": "Display name cannot be empty."})
+        profile.display_name = dn
+
+    for f in ("first_name", "last_name"):
+        if f in data:
+            setattr(profile, f, data[f])
+
+    if "bio" in data:
+        bio = (data.get("bio") or "").strip()
+        limit = LearnerProfile._meta.get_field("bio").max_length
+        if len(bio) > limit:
+            raise ValidationError({"bio": f"Keep this under {limit} characters."})
+        profile.bio = bio
+
+    # Optional personal data (Manage profile). None of these is required;
+    # an empty value clears the field. These are the same fields the faculty
+    # application form reads, so editing them here keeps that form in sync.
+    for f in ("phone", "state", "district", "city_town", "pin_code"):
+        if f in data:
+            val = data.get(f)
+            setattr(profile, f, val.strip() if isinstance(val, str) else (val or ""))
+
+    if "gender" in data:
+        g = (data.get("gender") or "").strip()
+        allowed = {c[0] for c in LearnerProfile.GENDER_CHOICES}
+        if g and g not in allowed:
+            raise ValidationError({"gender": "Invalid choice."})
+        profile.gender = g
+
+    if "date_of_birth" in data:
+        dob = (data.get("date_of_birth") or "").strip()
+        if dob:
+            from datetime import date
+            try:
+                y, m, d = (int(x) for x in dob.split("-"))
+                profile.date_of_birth = date(y, m, d)
+            except Exception:
+                raise ValidationError({"date_of_birth": "Use YYYY-MM-DD."})
+        else:
+            profile.date_of_birth = None
+
+    # Academic + guardian fields — parents edit a child's full profile from
+    # Manage profile. Same validation as StudentProfileView: model `choices`
+    # are NOT enforced by .save(), so validate choices + max lengths here.
+    errors = {}
+    for f in _PROFILE_EXTRA_TEXT_FIELDS:
+        if f not in data:
+            continue
+        val = data.get(f)
+        val = val.strip() if isinstance(val, str) else (val or "")
+        max_len = LearnerProfile._meta.get_field(f).max_length
+        if max_len and isinstance(val, str) and len(val) > max_len:
+            errors[f] = f"Max {max_len} characters."
+            continue
+        setattr(profile, f, val)
+    for f, choices_attr in _PROFILE_CHOICE_FIELDS.items():
+        if f not in data:
+            continue
+        val = (data.get(f) or "")
+        val = val.strip() if isinstance(val, str) else val
+        allowed = {c[0] for c in getattr(LearnerProfile, choices_attr)}
+        if val and val not in allowed:
+            errors[f] = "Invalid choice."
+            continue
+        setattr(profile, f, val)
+
+    if allow_student_id and "student_id" in data:
+        sid = data.get("student_id")
+        sid = sid.strip() if isinstance(sid, str) else (sid or "")
+        max_len = LearnerProfile._meta.get_field("student_id").max_length
+        if len(sid) > max_len:
+            errors["student_id"] = f"Max {max_len} characters."
+        else:
+            # student_id is unique AND nullable: blank must persist as NULL,
+            # because several profiles storing "" would collide on the unique
+            # constraint. The caller catches IntegrityError for real conflicts.
+            profile.student_id = sid or None
+
+    if errors:
+        raise ValidationError(errors)
+
+    if "profile_photo" in files:
+        profile.profile_photo = files["profile_photo"]
+
+    # PIN changes are NOT accepted here: they require account-password
+    # re-auth and go through ProfilePinView (/accounts/profiles/pin/).
+    # Accepting a bare `pin` on this generic edit would reopen the bypass
+    # where any session on the account strips/overwrites a profile's PIN.
+    if "pin" in data:
+        raise ValidationError({
+            "pin": "Change the PIN from the PIN screen (account password required).",
+            "code": "pin_requires_password",
+        })
+
+    if "avatar_emoji" in data:
+        profile.avatar_emoji = data["avatar_emoji"]
+        profile.avatar_image = None
+    if "avatar_image" in files:
+        profile.avatar_image = files["avatar_image"]
+        profile.avatar_emoji = ""
+
+    return profile
 
 
 def serialize_teacher(teacher, *, active_track=None):
@@ -239,11 +388,18 @@ class LoginView(APIView):
         # can pick the learner side or an approved teaching track.
         has_teacher_identity = teacher is not None
 
+        # One UserSession per login — this is the only place one is opened. Its
+        # id rides every token this browser is issued from now on so Settings →
+        # Sessions & devices shows one row per device, not one per switch.
+        session = open_session(user, request)
+
         # Auto-select: single PIN-free profile, no teacher identity at all.
         if len(profiles) == 1 and not has_teacher_identity:
             profile = profiles[0]
             if not profile.has_pin():
-                refresh = build_tokens(user, context=CTX_LEARNER, profile=profile)
+                refresh = build_tokens(
+                    user, context=CTX_LEARNER, profile=profile, sid=session.id
+                )
                 body = {
                     "context":      CTX_LEARNER,
                     "profile":      serialize_profile_card(profile),
@@ -255,7 +411,7 @@ class LoginView(APIView):
 
         # Multiple profiles or a teacher identity → return account token, let
         # the frontend show the profile picker.
-        refresh = build_tokens(user, context=CTX_ACCOUNT)
+        refresh = build_tokens(user, context=CTX_ACCOUNT, sid=session.id)
         body = {
             "context":  CTX_ACCOUNT,
             "profiles": [serialize_profile_card(p) for p in profiles],
@@ -270,6 +426,7 @@ class LoginView(APIView):
 
 class ProfileSelectView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [PinVerifyRateThrottle]
 
     def post(self, request):
         profile_id = request.data.get("profile_id")
@@ -288,7 +445,12 @@ class ProfileSelectView(APIView):
         if profile.has_pin() and not profile.check_pin(pin or ""):
             raise ValidationError({"pin": "Incorrect PIN."})
 
-        refresh = build_tokens(request.user, context=CTX_LEARNER, profile=profile)
+        # Same browser, same session — carry the sid rather than minting a new one.
+        sid = session_id_for(request)
+        touch_session(sid, request)
+        refresh = build_tokens(
+            request.user, context=CTX_LEARNER, profile=profile, sid=sid
+        )
         body = {"context": CTX_LEARNER, "profile": serialize_profile_card(profile)}
         return set_auth_cookies(Response(body, status=status.HTTP_200_OK), refresh)
 
@@ -362,7 +524,11 @@ class TeacherContextView(APIView):
             # Default: prefer academy when approved, else the first approved.
             track = teacher.TRACK_ACADEMY if teacher.TRACK_ACADEMY in approved else approved[0]
 
-        refresh = build_tokens(request.user, context=CTX_TEACHER, active_track=track)
+        sid = session_id_for(request)
+        touch_session(sid, request)
+        refresh = build_tokens(
+            request.user, context=CTX_TEACHER, active_track=track, sid=sid
+        )
         body = {
             "context": CTX_TEACHER,
             "teacher": serialize_teacher(teacher, active_track=track),
@@ -425,7 +591,11 @@ class TeacherTrackSwitchView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        refresh = build_tokens(request.user, context=CTX_TEACHER, active_track=track)
+        sid = session_id_for(request)
+        touch_session(sid, request)
+        refresh = build_tokens(
+            request.user, context=CTX_TEACHER, active_track=track, sid=sid
+        )
         body = {
             "context": CTX_TEACHER,
             "teacher": serialize_teacher(teacher, active_track=track),
@@ -503,10 +673,36 @@ class MeView(APIView):
         profiles = list(user.learner_profiles.filter(is_active=True))
         teacher  = getattr(user, "teacher_profile", None)
 
+        # The account's real human name lives on its SELF learner profile —
+        # NOT on User or TeacherProfile, neither of which has a name field.
+        # `active_profile` is None while browsing in TEACHER context (no
+        # active_profile claim), so without this a teacher's dashboard
+        # greeting and sidebar footer had nothing but `username`/email to
+        # fall back on. `display_name` (required at profile-creation time,
+        # see ProfileListCreateView) is populated on every profile, so it's
+        # a reliable non-empty fallback — but it's a one-time, email-derived
+        # snapshot that never re-syncs after signup. first_name/last_name
+        # ARE kept fresh (edited via FacultyProfile.jsx / ExpertProfileEdit.jsx),
+        # so prefer the composed name whenever the teacher has actually filled
+        # it in, and only fall back to display_name when they haven't —
+        # otherwise a teacher who edits their name never sees the change
+        # reflected in their own dashboard header/sidebar.
+        self_profile = user.default_learner_profile()
+        composed_name = (
+            f"{self_profile.first_name} {self_profile.last_name}".strip()
+            if self_profile else ""
+        )
+        full_name = (
+            composed_name or self_profile.display_name
+        ) if self_profile else ""
+
         return Response({
             "id":             str(user.id),
             "email":          user.email,
             "username":       user.username,
+            "first_name":     self_profile.first_name if self_profile else "",
+            "last_name":      self_profile.last_name if self_profile else "",
+            "full_name":      full_name,
             "context":        context,
             "roles":          user.get_active_roles(),
             "permissions":    sorted(user.get_permissions()),
@@ -598,92 +794,9 @@ class ProfileDetailView(APIView):
 
     def patch(self, request, profile_id):
         profile = self._get_profile(request, profile_id)
-        data    = request.data
-
-        if "display_name" in data:
-            dn = data["display_name"].strip()
-            if not dn:
-                raise ValidationError({"display_name": "Display name cannot be empty."})
-            profile.display_name = dn
-
-        for f in ("first_name", "last_name"):
-            if f in data:
-                setattr(profile, f, data[f])
-
-        # Optional personal data (Manage profile). None of these is required;
-        # an empty value clears the field. These are the same fields the faculty
-        # application form reads, so editing them here keeps that form in sync.
-        for f in ("phone", "state", "district", "city_town", "pin_code"):
-            if f in data:
-                val = data.get(f)
-                setattr(profile, f, val.strip() if isinstance(val, str) else (val or ""))
-
-        if "gender" in data:
-            g = (data.get("gender") or "").strip()
-            allowed = {c[0] for c in LearnerProfile.GENDER_CHOICES}
-            if g and g not in allowed:
-                raise ValidationError({"gender": "Invalid choice."})
-            profile.gender = g
-
-        if "date_of_birth" in data:
-            dob = (data.get("date_of_birth") or "").strip()
-            if dob:
-                from datetime import date
-                try:
-                    y, m, d = (int(x) for x in dob.split("-"))
-                    profile.date_of_birth = date(y, m, d)
-                except Exception:
-                    raise ValidationError({"date_of_birth": "Use YYYY-MM-DD."})
-            else:
-                profile.date_of_birth = None
-
-        # Academic + guardian fields — parents edit a child's full profile from
-        # Manage profile. Same validation as StudentProfileView: model `choices`
-        # are NOT enforced by .save(), so validate choices + max lengths here.
-        errors = {}
-        for f in _PROFILE_EXTRA_TEXT_FIELDS:
-            if f not in data:
-                continue
-            val = data.get(f)
-            val = val.strip() if isinstance(val, str) else (val or "")
-            max_len = LearnerProfile._meta.get_field(f).max_length
-            if max_len and isinstance(val, str) and len(val) > max_len:
-                errors[f] = f"Max {max_len} characters."
-                continue
-            setattr(profile, f, val)
-        for f, choices_attr in _PROFILE_CHOICE_FIELDS.items():
-            if f not in data:
-                continue
-            val = (data.get(f) or "")
-            val = val.strip() if isinstance(val, str) else val
-            allowed = {c[0] for c in getattr(LearnerProfile, choices_attr)}
-            if val and val not in allowed:
-                errors[f] = "Invalid choice."
-                continue
-            setattr(profile, f, val)
-        if errors:
-            raise ValidationError(errors)
-
-        if "profile_photo" in request.FILES:
-            profile.profile_photo = request.FILES["profile_photo"]
-
-        # PIN changes are NOT accepted here: they require account-password
-        # re-auth and go through ProfilePinView (/accounts/profiles/pin/).
-        # Accepting a bare `pin` on this generic edit would reopen the bypass
-        # where any session on the account strips/overwrites a profile's PIN.
-        if "pin" in data:
-            raise ValidationError({
-                "pin": "Change the PIN from the PIN screen (account password required).",
-                "code": "pin_requires_password",
-            })
-
-        if "avatar_emoji" in data:
-            profile.avatar_emoji = data["avatar_emoji"]
-            profile.avatar_image = None
-        if "avatar_image" in request.FILES:
-            profile.avatar_image = request.FILES["avatar_image"]
-            profile.avatar_emoji = ""
-
+        # Validation lives in apply_profile_edits so the admin student editor
+        # shares it verbatim. student_id stays admin-only (not self-editable).
+        apply_profile_edits(profile, request.data, request.FILES)
         profile.save()
         return Response(serialize_profile_detail(profile))
 

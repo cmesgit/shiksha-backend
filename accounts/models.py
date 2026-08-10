@@ -181,6 +181,12 @@ class LearnerProfile(models.Model):
     avatar_image = models.ImageField(upload_to="learners/avatar/", null=True, blank=True)
     avatar_emoji = models.CharField(max_length=10, blank=True)
 
+    # One-line self-description shown next to the display name in Settings →
+    # Profiles. Previously kept per-device in localStorage by SettingsModal,
+    # which meant a parent's edit vanished on any other browser — this is the
+    # server-side home for it.
+    bio = models.CharField(max_length=280, blank=True)
+
     student_id = models.CharField(max_length=50, unique=True, null=True, blank=True)
 
     # --- Address ---
@@ -1239,3 +1245,16 @@ class Identity(models.Model):
 
     def __str__(self):
         return f"Identity<{self.key}> {self.display_name}".strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Settings-surface models (Sessions & devices, Learning goals, Account
+# deletion) live in a side module to keep this file navigable — same pattern as
+# skills/payment_models.py. Imported here so Django registers them under the
+# `accounts` app label.
+# ─────────────────────────────────────────────────────────────────────────────
+from .settings_models import (  # noqa: F401, E402
+    AccountDeletionRequest,
+    LearningGoal,
+    UserSession,
+)

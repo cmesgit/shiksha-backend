@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.sitemaps',
     'rest_framework',
     'accounts.apps.AccountsConfig',
     "courses",
@@ -66,6 +67,7 @@ INSTALLED_APPS = [
     "notifications",
     "content",
     "news",
+    "scholarship.apps.ScholarshipConfig",
     # counseling has migrations, seed data and mounted URLs but was
     # missing here (likely a server-side settings edit that never made it
     # back to the repo — see settings.py.save.1). Required by
@@ -127,6 +129,33 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 MEDIA_URL = "/media/"
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
+# Whether nginx sits in front of this process and understands
+# X-Accel-Redirect (config/media_views.py's secure_media_view relies on
+# it to hand private-file bytes off to nginx's internal-only location
+# instead of streaming them through a Django worker). True for the real
+# dev/prod deployment; settings_test overrides this to False since local
+# `manage.py runserver`/test runs have no nginx in front at all.
+MEDIA_SERVED_BY_NGINX = True
+
+# Bunny Edge Storage (config/bunny_storage.py) — separate product/credentials
+# from the BUNNY_* video (Stream) settings below. Falls back to local disk
+# when unset, so dev/test environments without a real Bunny Storage Zone
+# keep working exactly as before this was added.
+BUNNY_STORAGE_ZONE = os.getenv("BUNNY_STORAGE_ZONE", "")
+BUNNY_STORAGE_API_KEY = os.getenv("BUNNY_STORAGE_API_KEY", "")
+BUNNY_STORAGE_HOSTNAME = os.getenv("BUNNY_STORAGE_HOSTNAME", "storage.bunnycdn.com")
+
+STORAGES = {
+    "default": (
+        {"BACKEND": "config.bunny_storage.BunnyStorage"}
+        if BUNNY_STORAGE_ZONE and BUNNY_STORAGE_API_KEY
+        else {"BACKEND": "config.secure_local_storage.SecureLocalStorage"}
+    ),
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
+
 DATA_UPLOAD_MAX_MEMORY_SIZE = 52428800
 FILE_UPLOAD_MAX_MEMORY_SIZE = 52428800
 
@@ -151,6 +180,9 @@ REST_FRAMEWORK = {
         "resend_verification": "3/hour",
         "password_reset_request": "5/hour",
         "password_reset_verify": "10/hour",
+        # PIN guesses on profile-switch — a 4-6 digit PIN with no rate
+        # limit at all is brute-forceable within seconds.
+        "pin_verify": "10/min",
         # Forum anti-abuse: cap how fast a single user can create content
         # or file reports (spam / flood protection).
         "forum_post": "20/hour",
@@ -159,6 +191,13 @@ REST_FRAMEWORK = {
         # Explore library anti-abuse.
         "documents_upload": "30/hour",
         "documents_report": "30/hour",
+        # Quiz builder's AI question drafting — costs real money per call.
+        "quiz_ai_generate": "10/hour",
+        # Scholarship question-bank AI drafting — same reasoning as above.
+        "scholarship_ai_generate": "10/hour",
+        # Anonymous "notify me when {board} launches" lead capture — the
+        # only unauthenticated write endpoint in the app, so throttled hard.
+        "board_notify": "5/hour",
     },
 }
 
@@ -176,6 +215,11 @@ COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN", ".shikshacom.com")
 SESSION_COOKIE_DOMAIN = COOKIE_DOMAIN
 CSRF_COOKIE_DOMAIN = COOKIE_DOMAIN
 
+# The marketing site's own domain (not this API's), for building absolute
+# frontend URLs from backend code — e.g. sitemap.xml, whose <loc> entries
+# must point at the frontend host, never at api.shikshacom.com.
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "https://www.shikshacom.com")
+
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = list(default_headers) + ["authorization"]
 
@@ -191,6 +235,20 @@ LOGGING = {
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "Shiksha <onboarding@resend.dev>")
 
+# Quiz builder's "Generate with AI" action (quizzes/views.py
+# TeacherGenerateAIQuestionsView). Unset by default — the endpoint raises a
+# clear RuntimeError until an operator adds a real key to the environment.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+# Scholarship eligibility dedup (scholarship/services.py compute_dedup_hash).
+# A server-side pepper mixed into the hash of {guardian verification
+# reference, child name, child DOB} so the stored hash isn't a bare,
+# realistically-reversible digest of low-entropy identity data. Falls back to
+# SECRET_KEY so this works out of the box in dev/tests; production should set
+# a dedicated value so rotating SECRET_KEY doesn't also reshuffle every
+# existing eligibility record's hash.
+SCHOLARSHIP_DEDUP_PEPPER = os.getenv("SCHOLARSHIP_DEDUP_PEPPER", "") or SECRET_KEY
+
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
@@ -199,6 +257,17 @@ BUNNY_API_KEY = os.getenv("BUNNY_API_KEY")
 BUNNY_CDN_HOST = os.getenv("BUNNY_CDN_HOST", "")
 BUNNY_STREAM_URL = os.getenv("BUNNY_STREAM_URL", "https://video.bunnycdn.com")
 BUNNY_EMBED = os.getenv("BUNNY_EMBED", "https://iframe.mediadelivery.net/embed")
+
+# Razorpay — referenced by payments/services.py (order creation, at module
+# import time) and payments/webhooks.py (signature verification) but never
+# actually defined here before now; both would raise AttributeError the
+# moment either code path ran. Dormant while GlobalSettings.payment_mode
+# is "free"/"manual_upi", but must exist so switching to "razorpay" doesn't
+# immediately break checkout and payment confirmation.
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
+
 ASGI_APPLICATION = "config.asgi.application"
 # ── Redis DB layout (M0 — Phase 3 §25/§32) ─────────────
 # Previously channels used the implicit default db (0) and Celery used db 1,

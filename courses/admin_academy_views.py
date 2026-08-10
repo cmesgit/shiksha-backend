@@ -121,6 +121,8 @@ def _batch_payload(b):
         "start_date": b.start_date.isoformat() if b.start_date else None,
         "end_date": b.end_date.isoformat() if b.end_date else None,
         "capacity": b.capacity,
+        "price_override": b.price_override,
+        "effective_price": b.effective_price,
         "is_active": b.is_active,
         "seats_taken": seats,
         "is_full": (b.capacity is not None and seats >= b.capacity),
@@ -152,6 +154,8 @@ def _apply_optional_batch_fields(batch, data):
         batch.year = _parse_int_or_none(data.get("year"))
     if "capacity" in data:
         batch.capacity = _parse_int_or_none(data.get("capacity"))
+    if "price_override" in data:
+        batch.price_override = _parse_int_or_none(data.get("price_override"))
     if "start_date" in data:
         batch.start_date = _parse_date_or_none(data.get("start_date"))
     if "end_date" in data:

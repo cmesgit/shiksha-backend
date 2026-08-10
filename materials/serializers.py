@@ -46,6 +46,17 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
 
     files = serializers.SerializerMethodField()
     chapter_title = serializers.SerializerMethodField()
+    # The learner's Study Material screen is one flat, subject-filtered list, so
+    # a row has to say which subject it belongs to. Method fields rather than a
+    # dotted source because `chapter` is nullable (get_chapter_title below falls
+    # back to custom_chapter) — a dotted source would raise on those rows.
+    # Callers listing across subjects should select_related("chapter__subject")
+    # so this doesn't cost a query per row.
+    subject_id = serializers.SerializerMethodField()
+    subject_name = serializers.SerializerMethodField()
+    # NULL = course-wide (the model's own default — see materials/models.py).
+    # Method field, not a dotted source, since `batch` is nullable.
+    batch_name = serializers.SerializerMethodField()
 
     class Meta:
         model = StudyMaterial
@@ -55,6 +66,9 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
             "description",
             "created_at",
             "chapter_title",
+            "subject_id",
+            "subject_name",
+            "batch_name",
             "files",
         ]
 
@@ -70,3 +84,14 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
         if obj.chapter:
             return obj.chapter.title
         return getattr(obj, "custom_chapter", None) or "No chapter"
+
+    def get_subject_id(self, obj):
+        subject = getattr(obj.chapter, "subject", None) if obj.chapter else None
+        return str(subject.id) if subject else None
+
+    def get_subject_name(self, obj):
+        subject = getattr(obj.chapter, "subject", None) if obj.chapter else None
+        return subject.name if subject else None
+
+    def get_batch_name(self, obj):
+        return obj.batch.name if obj.batch_id else None

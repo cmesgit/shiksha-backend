@@ -5,7 +5,7 @@ from datetime import timedelta
 import uuid
 from zoneinfo import ZoneInfo
 
-from .models import LiveSession
+from .models import LiveSession, SessionReview, SessionNote
 from courses.models import Subject, Batch
 from courses.services import is_teacher_of
 
@@ -144,6 +144,60 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
         )
 
 
+class LiveSessionUpdateSerializer(serializers.ModelSerializer):
+    """
+    Edit a session that hasn't started yet — title/description/time only.
+    Subject and batch are fixed at creation; changing either would make this
+    a different class's timetable entry, not a reschedule of this one.
+    """
+
+    class Meta:
+        model = LiveSession
+        fields = ["title", "description", "start_time", "end_time"]
+
+    def validate(self, data):
+        session = self.instance
+        start_time = data.get("start_time", session.start_time)
+        end_time = data.get("end_time", session.end_time)
+
+        if timezone.is_naive(start_time):
+            start_time = timezone.make_aware(start_time, IST)
+        if timezone.is_naive(end_time):
+            end_time = timezone.make_aware(end_time, IST)
+        data["start_time"] = start_time
+        data["end_time"] = end_time
+
+        if start_time >= end_time:
+            raise serializers.ValidationError(
+                {"end_time": ["End time must be after start time."]}
+            )
+
+        if start_time <= timezone.now():
+            raise serializers.ValidationError(
+                {"start_time": ["Cannot reschedule to a time in the past."]}
+            )
+
+        # Same overlap rule as create, scoped to this batch+subject and
+        # excluding the session being edited (it always "overlaps" itself).
+        overlap_exists = LiveSession.objects.filter(
+            subject=session.subject, batch=session.batch,
+        ).exclude(id=session.id).exclude(
+            status__in=[LiveSession.STATUS_CANCELLED,
+                        LiveSession.STATUS_COMPLETED]
+        ).filter(
+            Q(start_time__lt=end_time) & Q(end_time__gt=start_time)
+        ).exists()
+
+        if overlap_exists:
+            raise serializers.ValidationError(
+                {"non_field_errors": [
+                    "This time overlaps with another session."
+                ]}
+            )
+
+        return data
+
+
 class LiveSessionListSerializer(serializers.ModelSerializer):
     teacher = serializers.CharField(source="created_by.email", read_only=True)
     can_join = serializers.SerializerMethodField()
@@ -154,6 +208,8 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
     teacher_left_at = serializers.DateTimeField(read_only=True)
     status = serializers.CharField(read_only=True)
     description = serializers.CharField(read_only=True)
+    batch_name = serializers.CharField(source="batch.name", read_only=True, default=None)
+    batch_student_count = serializers.SerializerMethodField()
 
     class Meta:
         model = LiveSession
@@ -171,7 +227,17 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
             "course_name",
             "teacher_left_at",
             "status",
+            "batch_name",
+            "batch_student_count",
         ]
+
+    def get_batch_student_count(self, obj):
+        if not obj.batch_id:
+            return None
+        from enrollments.models import Enrollment
+        return Enrollment.objects.filter(
+            batch_id=obj.batch_id, status=Enrollment.STATUS_ACTIVE
+        ).count()
 
     def get_computed_status(self, obj):
         now = timezone.now()
@@ -224,3 +290,17 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
             return True
 
         return now >= obj.start_time - timedelta(minutes=15)
+
+
+class SessionReviewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SessionReview
+        fields = ["id", "rating", "description", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+
+class SessionNoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SessionNote
+        fields = ["content", "updated_at"]
+        read_only_fields = ["updated_at"]

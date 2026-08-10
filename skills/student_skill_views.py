@@ -17,7 +17,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.exceptions import PermissionDenied, NotFound
 
 from accounts.auth_flow import get_active_profile
-from .models import ExpertProfile, SkillSession, SkillCategory
+from .models import ExpertProfile, SkillSession, SkillCategory, mastery_progress
 from .course_models import SkillCourseEnrollment, SkillLectureProgress, SkillCourseLecture
 from .review_models import ExpertReview
 
@@ -211,27 +211,95 @@ class StudentSkillDashboardView(APIView):
         total_lessons_done = sum(c["done"] for c in skill_courses + completed_courses)
         hours_learned      = max(0, round(total_lessons_done * 5 / 60))
 
-        # ── Experts the learner has sessions with ────────────────────
+        # ── Experts the learner has sessions with (+ mastery progress) ────
         expert_ids_seen = set()
         experts_data    = []
+        experts_by_id   = {}
         for s in all_sessions:
             eid = str(s.expert.id)
             if eid not in expert_ids_seen:
                 expert_ids_seen.add(eid)
+                experts_by_id[eid] = s.expert
+                m = mastery_progress(s.expert, learner)
                 experts_data.append({
-                    "id":         eid,
-                    "teacher_id": str(s.expert.teacher_profile_id),  # TeacherProfile UUID for chat
-                    "name":       s.expert.display_name(),
-                    "skill":      s.expert.headline or "",
-                    "rating":     float(s.expert.rating) if s.expert.rating else None,
-                    "rate":       s.expert.rate_rupees,
+                    "id":               eid,
+                    "teacher_id":       str(s.expert.teacher_profile_id),  # TeacherProfile UUID for chat
+                    "name":             s.expert.display_name(),
+                    "skill":            s.expert.headline or "",
+                    "rating":           float(s.expert.rating) if s.expert.rating else None,
+                    "rate":             s.expert.rate_rupees,
+                    "mastery_progress": m["progress"],
+                    "mastery_target":   m["target"],
+                    "mastered":         m["mastered"],
                 })
+
+        # ── Mastery courses — "N sessions with X to master {skill}" cards.
+        # One card per expert the learner has ever booked a session with,
+        # progress derived the same way as `experts_data` above (never
+        # stored). This backs the "My courses" mastery-tracking page — a
+        # different concept from the removed self-paced SkillCourse* rows
+        # above, which are left untouched for backward compatibility.
+        mastery_courses = []
+        for eid, expert in experts_by_id.items():
+            m = mastery_progress(expert, learner)
+            last = max(
+                (s.scheduled_for or s.updated_at for s in all_sessions if str(s.expert_id) == eid),
+                default=None,
+            )
+            mastery_courses.append({
+                "expert_id":        eid,
+                "teacher_id":       str(expert.teacher_profile_id),
+                "expert_name":      expert.display_name(),
+                "skill":            expert.headline or "",
+                "mastery_progress": m["progress"],
+                "mastery_target":   m["target"],
+                "mastered":         m["mastered"],
+                "last_session_at":  last,
+            })
+        mastery_in_progress = [c for c in mastery_courses if not c["mastered"]]
+        mastery_completed   = [c for c in mastery_courses if c["mastered"]]
+
+        # "Book another session" rebook card — the in-progress mastery course
+        # with the most recent activity (design: Priya, 1/3, "last session
+        # 3 days ago"). None if every course is mastered or brand new.
+        rebook_candidates = [c for c in mastery_in_progress if c["last_session_at"]]
+        rebook_candidates.sort(key=lambda c: c["last_session_at"], reverse=True)
+        rebook = rebook_candidates[0] if rebook_candidates else (
+            mastery_in_progress[0] if mastery_in_progress else None
+        )
+
+        # ── Top experts rail ──────────────────────────────────────────
+        # Design's "Top experts" card is the platform's top-RATED listed
+        # experts overall, not just this learner's own tutors (a different
+        # list from `experts_data` above). ExpertProfile.Meta.ordering is
+        # already ("-rating", "-sessions_count").
+        top_experts = [
+            {
+                "id":         str(ep.id),
+                "teacher_id": str(ep.teacher_profile_id),
+                "name":       ep.display_name(),
+                "skill":      ep.headline or "",
+                "rating":     float(ep.rating) if ep.rating is not None else None,
+            }
+            for ep in ExpertProfile.objects.filter(is_listed=True).exclude(rating=None)[:4]
+        ]
 
         # ── Session-based stats ──────────────────────────────────────
         # The learner Skill Dev dashboard is now 1-on-1 only (no self-paced
-        # courses), so the headline stats are session/tutor based.
+        # courses), so the headline stats are session/tutor based. Stat tile
+        # labels/values verified against the live design prototype's
+        # Dashboard screen: "Courses enrolled" = distinct mastery courses,
+        # "Lessons completed" = total completed sessions across all of them,
+        # "Hours learned", "Avg. rating given" = this learner's own reviews.
         completed_minutes = sum(s.duration_mins for s in past)
         session_hours     = round(completed_minutes / 60, 1)
+
+        my_review_ratings = list(
+            ExpertReview.objects.filter(learner_profile=learner).values_list("rating", flat=True)
+        )
+        avg_rating_given = (
+            round(sum(my_review_ratings) / len(my_review_ratings), 1) if my_review_ratings else None
+        )
 
         return Response({
             "stats": {
@@ -240,6 +308,11 @@ class StudentSkillDashboardView(APIView):
                 "sessions_done":  len(past),
                 "session_hours":  session_hours,
                 "upcoming_count": len(upcoming_data),
+                # Dashboard stat-tile values (verified against the live
+                # design prototype's exact tile labels).
+                "courses_enrolled_count":  len(mastery_courses),
+                "lessons_completed_count": len(past),
+                "avg_rating_given":        avg_rating_given,
                 # Legacy course fields — retained for backward compatibility
                 # with any consumer still reading them.
                 "enrolled_count": len(in_progress),
@@ -248,6 +321,10 @@ class StudentSkillDashboardView(APIView):
             },
             "skill_courses":      skill_courses,
             "completed_courses":  completed_courses,
+            "mastery_in_progress": mastery_in_progress,
+            "mastery_completed":   mastery_completed,
+            "rebook":             rebook,
+            "top_experts":        top_experts,
             "upcoming_sessions":  upcoming_data,
             "past_sessions":      past_data,
             "reviewable":         reviewable,
@@ -331,6 +408,11 @@ class StudentSkillExpertsView(APIView):
                 "languages":  ep.languages or [],
                 "advertised": ep.is_advertised(),
                 "intro_video_embed_url": ep.intro_video_embed_url(),
+                "bio":                ep.bio,
+                "subject_description": ep.subject_description,
+                "mastery_target":      ep.mastery_target,
+                "sessions":            ep.sessions_count,
+                "reviews_count":       ExpertReview.objects.filter(expert=ep, is_public=True).count(),
             })
         return Response(result)
 

@@ -13,24 +13,37 @@ from .views import (
     SubjectStudentsView,
     TeacherAllStudentsView,
     SubjectsByCourseTitleView,
+    EnrollCourseSummaryView,
+    PublicBoardListView,
+    BoardNotifyMeView,
+    PublicCourseCatalogView,
     PublicCourseDetailView,
+    PublicCourseBySlugView,
+    PublicFeaturedView,
+    PublicNavMenuView,
     AdminCourseListView,
     AdminBoardListCreateView,
     AdminBoardDetailView,
     AdminBoardCoursesView,
+    AdminCourseCategoryListCreateView,
+    AdminCourseCategoryDetailView,
     AdminCourseCreateView,
-    AdminCourseDeleteView,
+    AdminCourseDetailView,
     AdminCourseSubjectsView,
     AdminSubjectDeleteView,
+    AdminSubjectChaptersView,
+    AdminChapterDetailView,
 )
 from .views import MySubjectsView
 from .views_recordings import (
+    TeacherAllRecordingsView,
     SubjectRecordingsView,
     CreateRecordingView,
     DeleteRecordingView,
     CreateVideoSlotView,
     SaveRecordingView,
     RecordingDetailView,
+    RecordingNotesView,
     CheckVideoStatusView,
     SignedUploadUrlView,
 )
@@ -77,12 +90,17 @@ urlpatterns = [
     path("admin/boards/",                          AdminBoardListCreateView.as_view()),
     path("admin/boards/<uuid:board_id>/",          AdminBoardDetailView.as_view()),
     path("admin/boards/<uuid:board_id>/courses/",  AdminBoardCoursesView.as_view()),
+    # Admin Course Categories
+    path("admin/categories/",                      AdminCourseCategoryListCreateView.as_view()),
+    path("admin/categories/<int:category_id>/",    AdminCourseCategoryDetailView.as_view()),
     # Admin Course CRUD
     path("admin/courses/",                         AdminCourseCreateView.as_view()),
-    path("admin/courses/<uuid:course_id>/",        AdminCourseDeleteView.as_view()),
+    path("admin/courses/<uuid:course_id>/",        AdminCourseDetailView.as_view()),
     path("admin/courses/<uuid:course_id>/subjects/", AdminCourseSubjectsView.as_view()),
-    # Admin Subject delete
+    # Admin Subject edit/delete + chapters
     path("admin/subjects/<uuid:subject_id>/",      AdminSubjectDeleteView.as_view()),
+    path("admin/subjects/<uuid:subject_id>/chapters/", AdminSubjectChaptersView.as_view()),
+    path("admin/chapters/<uuid:chapter_id>/",      AdminChapterDetailView.as_view()),
     # Admin — teacher assignment (subject ↔ teacher)
     path("admin/teachers/",                                  AdminTeacherListView.as_view()),
     path("admin/teacher-directory/",                         AdminTeacherDirectoryView.as_view()),
@@ -104,6 +122,15 @@ urlpatterns = [
     # "catalog" is a static segment, so the <uuid:course_id> route below never
     # captures it.
     path("catalog/",                   CourseCatalogView.as_view()),
+    # PUBLIC (anonymous) catalog — the real marketing-site /courses browser.
+    # Static segments before the bare <uuid:course_id> routes further down.
+    path("public/boards/",             PublicBoardListView.as_view()),
+    path("public/boards/<uuid:board_id>/notify/", BoardNotifyMeView.as_view()),
+    path("public/catalog/",            PublicCourseCatalogView.as_view()),
+    path("public/featured/",           PublicFeaturedView.as_view()),
+    path("public/nav-menu/",           PublicNavMenuView.as_view()),
+    path("public/by-slug/<slug:slug>/", PublicCourseBySlugView.as_view()),
+    path("public/<uuid:course_id>/",   PublicCourseDetailView.as_view()),
     # PER-BATCH PROGRESS — teacher-ticked chapter coverage, per batch.
     # "batches" and "my-batch-progress" are static segments, so the bare
     # <uuid:course_id> routes further down never capture them.
@@ -113,7 +140,7 @@ urlpatterns = [
          BatchChapterCoverageView.as_view()),
     path("my-batch-progress/",
          MyBatchProgressView.as_view()),
-    path("<uuid:course_id>/public/",   PublicCourseDetailView.as_view()),
+    path("<uuid:course_id>/public/",   EnrollCourseSummaryView.as_view()),
     path("<uuid:course_id>/",          UpdateCourseView.as_view()),
     path("<uuid:course_id>/delete/",   DeleteCourseView.as_view()),
     path("<uuid:course_id>/subjects/", CourseSubjectsView.as_view()),
@@ -132,6 +159,8 @@ urlpatterns = [
     path("<uuid:course_id>/progress/",     CourseProgressView.as_view()),
     path("<uuid:course_id>/my-progress/",  MyCourseProgressView.as_view()),
     # RECORDINGS — subjects-scoped
+    # Flat: every recording across the subjects this teacher is assigned to.
+    path("teacher/recordings/all/", TeacherAllRecordingsView.as_view()),
     path("subjects/<uuid:subject_id>/recordings/",
          SubjectRecordingsView.as_view()),
     path("subjects/<uuid:subject_id>/recordings/create/",
@@ -150,6 +179,8 @@ urlpatterns = [
          SaveVideoProgressView.as_view()),
     path("recordings/<uuid:recording_id>/status/",
          CheckVideoStatusView.as_view()),
+    path("recordings/<uuid:recording_id>/notes/",
+         RecordingNotesView.as_view()),
     path("recordings/<uuid:recording_id>/",
          RecordingDetailView.as_view()),
 ]

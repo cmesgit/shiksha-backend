@@ -12,7 +12,8 @@ per-chapter ``note``)::
       "batch": {"id", "name", "code", "course_id"},
       "chapters_total", "chapters_done", "chapters_left", "percent",
       "subjects": [
-        {"id", "name", "order", "chapters_total", "chapters_done", "percent",
+        {"id", "name", "order", "teacher_name", "chapters_total", "chapters_done",
+         "percent",
          "chapters": [
             {"id", "title", "order", "is_covered", "covered_at", "note"}
          ]}
@@ -20,9 +21,34 @@ per-chapter ``note``)::
     }
 """
 
+from .admin_academy_views import _teacher_name
 from .models import SubjectTeacher, TeachingAssignment
 from .models_batch_progress import BatchChapterProgress
 from .services import is_teacher_of
+
+
+def _batch_subject_teacher_name(batch, subject):
+    """Primary teacher for this subject in this batch, falling back to the
+    legacy course-wide SubjectTeacher assignment during the migration window."""
+    assignments = list(
+        TeachingAssignment.objects
+        .filter(batch=batch, subject=subject, is_active=True)
+        .select_related("teacher")
+        .order_by("order")
+    )
+    ta = next(
+        (a for a in assignments if a.role == TeachingAssignment.ROLE_PRIMARY),
+        assignments[0] if assignments else None,
+    )
+    if ta:
+        return _teacher_name(ta.teacher)
+    st = (
+        SubjectTeacher.objects
+        .filter(subject=subject)
+        .select_related("teacher")
+        .first()
+    )
+    return _teacher_name(st.teacher) if st else ""
 
 
 # --------------------------------------------------------------------------- #
@@ -111,6 +137,7 @@ def build_batch_progress(batch):
             "id": str(subject.id),
             "name": subject.name,
             "order": subject.order,
+            "teacher_name": _batch_subject_teacher_name(batch, subject),
             "chapters_total": s_total,
             "chapters_done": s_done,
             "percent": round(s_done / s_total * 100) if s_total else 0,

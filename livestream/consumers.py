@@ -240,8 +240,8 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
 class CourseSessionConsumer(AsyncWebsocketConsumer):
     """
     Handles the session list page WebSocket connection.
-    Students connect here to get real-time session create/cancel/status updates
-    without refreshing LiveSessions.jsx.
+    Students and teachers both connect here to get real-time session
+    create/cancel/status updates without refreshing LiveSessions.jsx.
     """
 
     async def connect(self):
@@ -253,16 +253,9 @@ class CourseSessionConsumer(AsyncWebsocketConsumer):
             await self.close()
             return
 
-        # Verify the user is enrolled in this course
-        is_enrolled = await database_sync_to_async(
-            lambda: Enrollment.objects.filter(
-                user=self.user,
-                course_id=self.course_id,
-                status="ACTIVE"
-            ).exists()
-        )()
+        is_authorized = await database_sync_to_async(self._is_authorized)()
 
-        if not is_enrolled:
+        if not is_authorized:
             await self.close()
             return
 
@@ -271,6 +264,26 @@ class CourseSessionConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
+
+    def _is_authorized(self):
+        """Actively-enrolled student in this course, or a teacher assigned to
+        one of its subjects. Mirrors TeacherLiveSessionListView.get_queryset
+        (courses/views.py), which scopes this same page's REST endpoint via
+        SubjectTeacher directly rather than the dual-read teaches_subject()
+        helper — TeachingAssignment's Phase 5 cleanup hasn't landed yet, so
+        this stays on SubjectTeacher until that migrates too. Checked against
+        the account (self.user), not the active profile/context, so it
+        resolves correctly no matter which profile the teacher is currently
+        browsing as."""
+        if Enrollment.objects.filter(
+            user=self.user, course_id=self.course_id, status="ACTIVE"
+        ).exists():
+            return True
+
+        from courses.models import SubjectTeacher
+        return SubjectTeacher.objects.filter(
+            teacher=self.user, subject__course_id=self.course_id
+        ).exists()
 
     async def session_list_update(self, event):
         await self.send(text_data=json.dumps({

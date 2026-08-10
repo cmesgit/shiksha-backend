@@ -23,12 +23,62 @@ from .models import (
     Evaluation,
     SkillSession,
 )
+from .marketing_models import SkillMarketingBlock
 
 
 class SkillCategorySerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+
+    # Annotated by CategoryListView. Feeds the count beside each category in
+    # the browse filter rail — the page used to derive it by counting the
+    # directory response, which only ever saw the first page of experts.
+    expert_count = serializers.IntegerField(read_only=True)
+
     class Meta:
         model = SkillCategory
-        fields = ["id", "slug", "label", "icon", "color"]
+        fields = ["id", "slug", "label", "icon", "color", "image", "order",
+                  "expert_count"]
+
+    def get_image(self, obj):
+        if not obj.image:
+            return None
+        request = self.context.get("request")
+        return request.build_absolute_uri(obj.image.url) if request else obj.image.url
+
+
+class SkillCategoryAdminSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SkillCategory
+        fields = ["id", "slug", "label", "icon", "color", "image", "order", "is_active"]
+        read_only_fields = ["id"]
+
+
+class SkillMarketingBlockSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SkillMarketingBlock
+        fields = [
+            "id", "key", "heading", "subheading", "body",
+            "cta_label", "cta_url", "image", "is_active",
+        ]
+        read_only_fields = ["id", "key"]
+
+    def get_image(self, obj):
+        if not obj.image:
+            return None
+        request = self.context.get("request")
+        return request.build_absolute_uri(obj.image.url) if request else obj.image.url
+
+
+class SkillMarketingBlockAdminSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SkillMarketingBlock
+        fields = [
+            "id", "key", "heading", "subheading", "body",
+            "cta_label", "cta_url", "image", "is_active",
+        ]
+        read_only_fields = ["id", "key"]
 
 
 class ExpertCardSerializer(serializers.ModelSerializer):
@@ -60,21 +110,79 @@ class ExpertCardSerializer(serializers.ModelSerializer):
     # Intro video (advertising clip, not a session recording)
     intro_video_embed_url = serializers.SerializerMethodField()
 
+    reviews_count = serializers.SerializerMethodField()
+    my_mastery_progress = serializers.SerializerMethodField()
+
+    # Multi-skill: every bookable offering this expert publishes. A directory
+    # row with more than one renders a "from ₹x / Choose a skill" shape rather
+    # than a single price + "Book a session".
+    listings       = serializers.SerializerMethodField()
+    from_rate      = serializers.SerializerMethodField()
+    open_slots_week = serializers.SerializerMethodField()
+
     class Meta:
         model = ExpertProfile
         fields = [
             "id", "name", "title", "skills", "cat",
             "rating", "sessions", "rate", "img", "bio",
-            "badges", "availability",
+            "badges", "availability", "mastery_target",
             "teacher_profile_id",
             # location
             "class_mode", "class_location", "location", "offline",
             # extras
             "languages", "subject_description",
+            "experience_years", "education", "experience_timeline",
             # advertising
             "advertised", "featured", "reach",
             "intro_video_embed_url",
+            "reviews_count", "my_mastery_progress",
+            # multi-skill
+            "listings", "from_rate", "open_slots_week",
         ]
+
+    def get_listings(self, obj):
+        from .listing_serializers import SkillListingCardSerializer
+        # Suspended listings are an admin action, not the teacher's — they are
+        # hidden outright. Paused ones stay visible but unbookable, which is
+        # what the row's "paused by the teacher" line renders.
+        rows = [l for l in obj.listings.all() if not l.is_suspended]
+        return SkillListingCardSerializer(rows, many=True, context=self.context).data
+
+    def get_from_rate(self, obj):
+        """Lowest active listing price in rupees, falling back to hourly_rate."""
+        prices = [
+            l.price_paise for l in obj.listings.all()
+            if l.is_active and not l.is_suspended
+        ]
+        return (min(prices) if prices else obj.hourly_rate) // 100
+
+    def get_open_slots_week(self, obj):
+        grid = obj.availability_slots or {}
+        return len(set(grid.get("open", [])) - set(grid.get("booked", [])))
+
+    def get_reviews_count(self, obj):
+        # Annotated by directory_views so a 20-row page costs one query, not 20.
+        n = getattr(obj, "public_reviews", None)
+        if n is not None:
+            return n
+        from .review_models import ExpertReview
+        return ExpertReview.objects.filter(expert=obj, is_public=True).count()
+
+    def get_my_mastery_progress(self, obj):
+        """Completed-session count for the REQUESTING learner, or None when
+        there isn't one (public/anonymous read, or no active profile)."""
+        request = self.context.get("request")
+        if not request:
+            return None
+        from accounts.auth_flow import get_active_profile
+        from .models import mastery_progress
+        try:
+            learner = get_active_profile(request)
+        except Exception:
+            return None
+        if not learner:
+            return None
+        return mastery_progress(obj, learner)["progress"]
 
     def get_name(self, obj):
         return obj.display_name()
