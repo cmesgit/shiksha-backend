@@ -995,7 +995,7 @@ def subject_teachers(request, subject_id):
     data = [
         {
             "id": str(st.teacher.id),
-            "name": getattr(st.teacher.default_learner_profile(), "full_name", None) or st.teacher.username,
+            "name": get_user_name(st.teacher),
         }
         for st in qs
     ]
