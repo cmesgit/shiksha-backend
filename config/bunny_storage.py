@@ -21,6 +21,10 @@ from django.utils.deconstruct import deconstructible
 
 @deconstructible
 class BunnyStorage(Storage):
+    # (connect, read) — a hung connection to Bunny must not tie up an ASGI
+    # worker indefinitely on a single-box deploy.
+    TIMEOUT = (5, 30)
+
     def _headers(self):
         return {"AccessKey": settings.BUNNY_STORAGE_API_KEY}
 
@@ -33,29 +37,30 @@ class BunnyStorage(Storage):
             self._storage_url(name),
             data=content.read(),
             headers={**self._headers(), "Content-Type": "application/octet-stream"},
+            timeout=self.TIMEOUT,
         )
         r.raise_for_status()
         return name
 
     def _open(self, name, mode="rb"):
         from django.core.files.base import ContentFile
-        r = requests.get(self._storage_url(name), headers=self._headers())
+        r = requests.get(self._storage_url(name), headers=self._headers(), timeout=self.TIMEOUT)
         r.raise_for_status()
         return ContentFile(r.content, name=name)
 
     def exists(self, name):
-        r = requests.head(self._storage_url(name), headers=self._headers())
+        r = requests.head(self._storage_url(name), headers=self._headers(), timeout=self.TIMEOUT)
         return r.status_code == 200
 
     def delete(self, name):
-        requests.delete(self._storage_url(name), headers=self._headers())
+        requests.delete(self._storage_url(name), headers=self._headers(), timeout=self.TIMEOUT)
 
     def url(self, name):
         host = settings.BUNNY_CDN_HOST.rstrip("/")
         return f"https://{host}/{name}"
 
     def size(self, name):
-        r = requests.head(self._storage_url(name), headers=self._headers())
+        r = requests.head(self._storage_url(name), headers=self._headers(), timeout=self.TIMEOUT)
         return int(r.headers.get("Content-Length", 0))
 
     # get_available_name is intentionally NOT overridden — the base Storage

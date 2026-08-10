@@ -9,11 +9,13 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from . import admin_views, views
+from . import admin_views, ai_views, views
 
 app_name = "content"
 
 urlpatterns = [
+    path("ai/general-studies/", ai_views.GeneralStudiesAIView.as_view(), name="general-studies-ai"),
+
     path("blogs/", views.BlogPostListView.as_view(), name="blog-list"),
     path("blogs/<path:slug>/", views.BlogPostDetailView.as_view(), name="blog-detail"),
 

@@ -11,6 +11,7 @@ from .serializers_recordings import SessionRecordingSerializer, RecordingNoteSer
 from .models import Subject, Batch
 from .services import teaches_subject
 from accounts.permissions import IsTeacherContext, CTX_TEACHER
+from config.bunny_signing import bunny_tus_ticket
 
 
 class SubjectRecordingsView(APIView):
@@ -121,7 +122,7 @@ class CreateVideoSlotView(APIView):
             "AccessKey": settings.BUNNY_API_KEY,
             "Content-Type": "application/json"
         }
-        r = requests.post(url, json={"title": title}, headers=headers)
+        r = requests.post(url, json={"title": title}, headers=headers, timeout=(5, 30))
         if r.status_code not in [200, 201]:
             return Response({"error": r.text}, status=500)
         return Response({"video_id": r.json()["guid"]})
@@ -135,13 +136,7 @@ class SignedUploadUrlView(APIView):
         if not video_id:
             return Response({"error": "video_id required"}, status=400)
 
-        return Response({
-            "upload_url": (
-                f"https://video.bunnycdn.com/library/"
-                f"{settings.BUNNY_LIBRARY_ID}/videos/{video_id}"
-            ),
-            "access_key": settings.BUNNY_API_KEY,
-        })
+        return Response(bunny_tus_ticket(video_id))
 
 
 class SaveRecordingView(APIView):
@@ -222,7 +217,7 @@ class CheckVideoStatusView(APIView):
 
         try:
             r = requests.get(
-                url, headers={"AccessKey": settings.BUNNY_API_KEY})
+                url, headers={"AccessKey": settings.BUNNY_API_KEY}, timeout=(5, 30))
             if r.status_code == 200:
                 data = r.json()
                 new_status = data.get("status", 0)

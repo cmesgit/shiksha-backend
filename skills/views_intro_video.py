@@ -14,6 +14,7 @@ from rest_framework.permissions import IsAuthenticated
 from accounts.permissions import IsTeacher
 from .teacher_views import _get_expert
 from . import profile_ops
+from config.bunny_signing import bunny_tus_ticket
 
 
 class CreateIntroVideoSlotView(APIView):
@@ -26,7 +27,7 @@ class CreateIntroVideoSlotView(APIView):
             "AccessKey": settings.BUNNY_API_KEY,
             "Content-Type": "application/json"
         }
-        r = requests.post(url, json={"title": title}, headers=headers)
+        r = requests.post(url, json={"title": title}, headers=headers, timeout=(5, 30))
         if r.status_code not in [200, 201]:
             return Response({"error": r.text}, status=500)
         return Response({"video_id": r.json()["guid"]})
@@ -40,13 +41,7 @@ class IntroVideoSignedUploadUrlView(APIView):
         if not video_id:
             return Response({"error": "video_id required"}, status=400)
 
-        return Response({
-            "upload_url": (
-                f"https://video.bunnycdn.com/library/"
-                f"{settings.BUNNY_LIBRARY_ID}/videos/{video_id}"
-            ),
-            "access_key": settings.BUNNY_API_KEY,
-        })
+        return Response(bunny_tus_ticket(video_id))
 
 
 class SaveIntroVideoView(APIView):
@@ -78,7 +73,7 @@ class IntroVideoStatusView(APIView):
             f"{settings.BUNNY_LIBRARY_ID}/videos/{ep.intro_video_bunny_id}"
         )
         try:
-            r = requests.get(url, headers={"AccessKey": settings.BUNNY_API_KEY})
+            r = requests.get(url, headers={"AccessKey": settings.BUNNY_API_KEY}, timeout=(5, 30))
             if r.status_code == 200:
                 data = r.json()
                 new_status = data.get("status", 0)

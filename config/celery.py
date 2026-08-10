@@ -24,6 +24,11 @@ app = Celery("shiksha")
 app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 
+# autodiscover_tasks() only finds tasks.py inside INSTALLED_APPS — "config"
+# isn't an app, so its maintenance_tasks module needs an explicit import to
+# actually register the tasks referenced in the beat schedule below.
+from config import maintenance_tasks  # noqa: F401,E402
+
 # ── Celery Beat Schedule ──────────────────────────────
 # NOTE: update(), not assignment — config_from_object() above already
 # populated app.conf.beat_schedule from settings.CELERY_BEAT_SCHEDULE
@@ -67,5 +72,25 @@ app.conf.beat_schedule.update({
     "expire-scholarship-awards": {
         "task": "scholarship.tasks.expire_scholarship_awards",
         "schedule": crontab(hour=2, minute=45),  # daily, off-peak
+    },
+    "relay-chat-outbox": {
+        "task": "chat.tasks.relay_outbox_task",
+        # Beat has no sub-minute crontab syntax — a plain number is a
+        # fixed-interval (seconds) schedule instead. chat/tasks.py's own
+        # docstring has said "every ~10s" since this task was written; this
+        # entry was simply missing.
+        "schedule": 10.0,
+    },
+    "cleanup-expired-sessions": {
+        "task": "config.maintenance_tasks.cleanup_expired_sessions_task",
+        "schedule": crontab(minute="*/3"),  # matches the command's own recommended cadence
+    },
+    "cleanup-unverified-users": {
+        "task": "config.maintenance_tasks.cleanup_unverified_users_task",
+        "schedule": crontab(hour=4, minute=0),  # daily, off-peak
+    },
+    "cleanup-orphan-material-files": {
+        "task": "config.maintenance_tasks.cleanup_orphan_material_files_task",
+        "schedule": crontab(hour=3, minute=0),  # daily, off-peak
     },
 })

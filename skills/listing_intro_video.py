@@ -6,14 +6,15 @@ class, so the intro video moves from "one per expert" to "one per listing".
 Mirrors views_intro_video.py's expert-level flow exactly — same three steps,
 same Bunny calls, same status codes — but scoped to a listing the caller owns:
 
-    POST /skill/teacher/listings/<id>/intro-video/            → {video_id, upload_url, access_key}
+    POST /skill/teacher/listings/<id>/intro-video/            → {video_id, library_id, expire, signature}
     POST /skill/teacher/listings/<id>/intro-video/save/       ← {video_id}
     GET  /skill/teacher/listings/<id>/intro-video/status/     → {intro_video_status, ...}
 
 The single POST returns the upload ticket in one round trip (the expert flow
 splits create + sign across two calls; there is no reason for a second hop).
-The browser then PUTs the file straight to Bunny with the AccessKey header —
-see the frontend's useBunnyUpload hook.
+The browser then resumable-uploads the file straight to Bunny's TUS endpoint
+using that per-video signature (never the master AccessKey) — see
+config/bunny_signing.py and the frontend's useBunnyUpload hook.
 """
 import logging
 
@@ -24,6 +25,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .listing_views import expert_or_403
+from config.bunny_signing import bunny_tus_ticket
 
 log = logging.getLogger(__name__)
 
@@ -55,14 +57,7 @@ class ListingIntroVideoView(APIView):
             return Response({"error": r.text}, status=502)
 
         video_id = r.json()["guid"]
-        return Response({
-            "video_id": video_id,
-            "upload_url": (
-                f"https://video.bunnycdn.com/library/"
-                f"{settings.BUNNY_LIBRARY_ID}/videos/{video_id}"
-            ),
-            "access_key": settings.BUNNY_API_KEY,
-        })
+        return Response(bunny_tus_ticket(video_id))
 
 
 class ListingIntroVideoSaveView(APIView):
