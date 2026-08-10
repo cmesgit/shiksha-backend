@@ -411,6 +411,7 @@ class StudentSkillExpertsView(APIView):
                 "bio":                ep.bio,
                 "subject_description": ep.subject_description,
                 "mastery_target":      ep.mastery_target,
+                "sessions":            ep.sessions_count,
                 "reviews_count":       ExpertReview.objects.filter(expert=ep, is_public=True).count(),
             })
         return Response(result)
