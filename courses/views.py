@@ -1617,6 +1617,9 @@ class PublicCourseCatalogView(APIView):
         if kind:
             qs = qs.filter(kind=kind)
 
+        from global_settings.models import GlobalSettings
+        is_free = GlobalSettings.load().effective_mode == GlobalSettings.PAYMENT_FREE
+
         data = [
             {
                 "id": str(c.id),
@@ -1632,6 +1635,7 @@ class PublicCourseCatalogView(APIView):
                 "mrp": c.mrp,
                 "discount_label": c.discount_label,
                 "badge": c.badge,
+                "is_free": is_free,
                 "is_coming_soon": c.status == Course.STATUS_COMING_SOON,
                 "subscription_duration_days": c.subscription_duration_days,
                 "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
@@ -1677,6 +1681,8 @@ def _public_course_detail_queryset():
 def _serialize_public_course_detail(course, request):
     """Build the full public course-detail dict. Shared by the by-id and by-slug
     detail endpoints so their shapes never drift."""
+    from global_settings.models import GlobalSettings
+
     details = getattr(course, "details", None)
     return {
         "id": str(course.id),
@@ -1690,6 +1696,7 @@ def _serialize_public_course_detail(course, request):
         "mrp": course.mrp,
         "discount_label": course.discount_label,
         "badge": course.badge,
+        "is_free": GlobalSettings.load().effective_mode == GlobalSettings.PAYMENT_FREE,
         "is_coming_soon": course.status == Course.STATUS_COMING_SOON,
         "thumbnail": request.build_absolute_uri(course.thumbnail.url) if course.thumbnail else None,
         "board": (
