@@ -496,15 +496,32 @@ class HomeSection(models.TextChoices):
     WHY_SHIKSHA = "why_shiksha", "Why Shiksha"
     TEACHERS_STUDENTS = "teachers_students", "Teachers & Students"
     BROWSE_CATEGORIES = "browse_categories", "Browse Categories"
+    # Rendered on the homepage (ShowcaseCourse-backed, see above) but has no
+    # HomeContentBlock content of its own today — included here so it can
+    # still take part in HomeSectionOrder's reorder/show-hide list below.
+    FEATURED_COURSES = "featured_courses", "Featured Courses"
     WHY_CHOOSE = "why_choose", "Why Choose ShikshaCom"
     RESOURCES = "resources", "Resources & Support"
     COLLABORATE = "collaborate", "Collaborate"
+    # Same as FEATURED_COURSES — FAQItem-backed, no HomeContentBlock of its
+    # own, but still a real reorderable/hideable homepage section.
+    FAQ = "faq", "FAQ"
     CTA = "cta", "Closing CTA"
     # /courses page (not the homepage) — reuses this same singleton-per-
     # section content-block table so its hero heading/copy/CTAs/illustration
     # are admin-editable through the identical HomeContentBlock pattern,
-    # rather than inventing a second, courses-specific content model.
+    # rather than inventing a second, courses-specific content model. Never
+    # appears in HomeSectionOrder — that model is homepage-sequence only.
     COURSES_HERO = "courses_hero", "Courses Hero"
+
+
+HOMEPAGE_SECTIONS = [
+    HomeSection.HERO, HomeSection.WHY_SHIKSHA, HomeSection.TEACHERS_STUDENTS,
+    HomeSection.BROWSE_CATEGORIES, HomeSection.FEATURED_COURSES,
+    HomeSection.WHY_CHOOSE, HomeSection.RESOURCES, HomeSection.COLLABORATE,
+    HomeSection.FAQ, HomeSection.CTA,
+]  # excludes COURSES_HERO — matches ShikshaHome.jsx's current hardcoded
+   # render order exactly; HomeSectionOrder's seed migration uses this list.
 
 
 class HomeContentBlock(TimeStampedModel):
@@ -543,6 +560,27 @@ class HomeContentBlock(TimeStampedModel):
 
     def __str__(self):
         return f"[{self.get_section_display()}] content block"
+
+
+class HomeSectionOrder(TimeStampedModel):
+    """One row per homepage section, controlling render sequence + whether
+    it shows at all — independent of HomeContentBlock, which is about a
+    section's copy/CTA. A section can be reordered or hidden even before any
+    content block exists for it (e.g. FEATURED_COURSES/FAQ, which have no
+    HomeContentBlock row at all)."""
+
+    section = models.CharField(
+        max_length=24, choices=HomeSection.choices, unique=True, db_index=True,
+    )
+    order = models.PositiveSmallIntegerField(default=0, db_index=True)
+    is_visible = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["order"]
+        verbose_name = "Homepage section order"
+
+    def __str__(self):
+        return f"#{self.order} {self.get_section_display()}"
 
 
 class HomeListVariant(models.TextChoices):

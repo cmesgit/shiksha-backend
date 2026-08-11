@@ -21,7 +21,8 @@ from rest_framework import serializers
 
 from .models import (
     Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    HomeContentBlock, HomeFloater, HomeListItem, ShowcaseCourse,
+    HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
+    ShowcaseCourse,
 )
 
 
@@ -252,3 +253,10 @@ class HomeFloaterAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
             "created_at", "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]
+
+
+class HomeSectionOrderAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
+    class Meta:
+        model = HomeSectionOrder
+        fields = ["id", "section", "order", "is_visible", "created_at", "updated_at"]
+        read_only_fields = ["section", "created_at", "updated_at"]

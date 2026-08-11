@@ -22,13 +22,14 @@ from django.core.cache import cache
 
 from .models import (
     Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    HomeContentBlock, HomeFloater, HomeListItem, ShowcaseCourse,
+    HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
+    ShowcaseCourse,
 )
 from .serializers import (
     AnnouncementSerializer, BlogPostDetailSerializer, BlogPostListSerializer,
     CurrentAffairDetailSerializer, CurrentAffairListSerializer,
     FAQItemSerializer, HomeContentBlockSerializer, HomeFloaterSerializer,
-    HomeListItemSerializer, ShowcaseCourseSerializer,
+    HomeListItemSerializer, HomeSectionOrderSerializer, ShowcaseCourseSerializer,
 )
 
 
@@ -226,3 +227,15 @@ class HomeFloaterListView(CachedListAPIView):
         if section:
             qs = qs.filter(section=section)
         return qs
+
+
+class HomeSectionOrderListView(CachedListAPIView):
+    """GET /api/content/home-section-order/ — ordered, visible-only list of
+    homepage sections, so the public site can render sections in whatever
+    sequence the admin has configured instead of a hardcoded JSX order."""
+
+    serializer_class = HomeSectionOrderSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        return HomeSectionOrder.objects.filter(is_visible=True)

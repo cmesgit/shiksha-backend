@@ -10,9 +10,10 @@
 # content/views.py's ContentPagination) — editors scan more rows per page
 # than the public site's cards; still capped at 50 via ?page_size=.
 
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework import viewsets
+from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -23,11 +24,12 @@ from .admin_serializers import (
     ContentTagSerializer, CurrentAffairAdminSerializer,
     FAQItemAdminSerializer, HomeContentBlockAdminSerializer,
     HomeFloaterAdminSerializer, HomeListItemAdminSerializer,
-    ShowcaseCourseAdminSerializer,
+    HomeSectionOrderAdminSerializer, ShowcaseCourseAdminSerializer,
 )
 from .models import (
     Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    HomeContentBlock, HomeFloater, HomeListItem, PublishStatus, ShowcaseCourse,
+    HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
+    PublishStatus, ShowcaseCourse,
 )
 from .permissions import IsContentEditor
 
@@ -155,6 +157,49 @@ class HomeFloaterAdminViewSet(viewsets.ModelViewSet):
         if section:
             qs = qs.filter(section=section)
         return qs
+
+
+class HomeSectionOrderAdminViewSet(
+    mixins.ListModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet,
+):
+    """List + per-row is_visible toggle, plus one atomic bulk `reorder`
+    action. No create/destroy — the row set is fixed to HOMEPAGE_SECTIONS
+    and seeded by migration; `section` itself is read-only on the
+    serializer, so an update can only change `order`/`is_visible`."""
+
+    queryset = HomeSectionOrder.objects.all()
+    serializer_class = HomeSectionOrderAdminSerializer
+    permission_classes = [IsContentEditor]
+    pagination_class = None
+
+    @action(detail=False, methods=["post"])
+    def reorder(self, request):
+        """POST {"sections": ["hero", "featured_courses", ...]} — the full
+        list of section keys in the desired order. Must be exactly the
+        existing set (no missing/extra/duplicate keys) so a stale admin tab
+        can never silently drop a section from the homepage."""
+        sections = request.data.get("sections")
+        if not isinstance(sections, list) or not sections:
+            return Response(
+                {"detail": "sections must be a non-empty list of section keys."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        existing = set(HomeSectionOrder.objects.values_list("section", flat=True))
+        given = set(sections)
+        if len(sections) != len(given) or given != existing:
+            return Response(
+                {"detail": "sections must contain each existing section exactly once.",
+                 "missing": sorted(existing - given), "unexpected": sorted(given - existing)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        with transaction.atomic():
+            rows = {r.section: r for r in HomeSectionOrder.objects.select_for_update()}
+            for i, section in enumerate(sections):
+                rows[section].order = i
+            HomeSectionOrder.objects.bulk_update(rows.values(), ["order"])
+        return Response(HomeSectionOrderAdminSerializer(
+            HomeSectionOrder.objects.all(), many=True,
+        ).data)
 
 
 # ── Blog posts ────────────────────────────────────────────────────

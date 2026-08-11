@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 from .models import (
     Announcement, BlogPost, CurrentAffair, FAQItem, HomeContentBlock,
-    HomeFloater, HomeListItem, ShowcaseCourse,
+    HomeFloater, HomeListItem, HomeSectionOrder, ShowcaseCourse,
 )
 
 
@@ -144,3 +144,9 @@ class HomeFloaterSerializer(serializers.ModelSerializer):
     class Meta:
         model = HomeFloater
         fields = ["id", "section", "slot", "icon", "label", "sublabel"]
+
+
+class HomeSectionOrderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HomeSectionOrder
+        fields = ["section", "order", "is_visible"]
