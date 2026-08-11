@@ -144,6 +144,14 @@ MEDIA_SERVED_BY_NGINX = True
 BUNNY_STORAGE_ZONE = os.getenv("BUNNY_STORAGE_ZONE", "")
 BUNNY_STORAGE_API_KEY = os.getenv("BUNNY_STORAGE_API_KEY", "")
 BUNNY_STORAGE_HOSTNAME = os.getenv("BUNNY_STORAGE_HOSTNAME", "storage.bunnycdn.com")
+# The public-facing Pull Zone hostname in front of the Storage Zone above —
+# deliberately a DIFFERENT variable from BUNNY_CDN_HOST (used by the video/
+# Stream code in skills/views_intro_video.py, skills/listing_intro_video.py,
+# courses/views_recordings.py). Storage and Stream are separate Bunny
+# products, each needs its own Pull Zone; reusing BUNNY_CDN_HOST here would
+# silently break video CDN links the moment someone points it at a storage
+# pull zone instead.
+BUNNY_STORAGE_CDN_HOST = os.getenv("BUNNY_STORAGE_CDN_HOST", "")
 
 _using_bunny_storage = bool(BUNNY_STORAGE_ZONE and BUNNY_STORAGE_API_KEY)
 if not _using_bunny_storage:

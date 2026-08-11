@@ -56,7 +56,7 @@ class BunnyStorage(Storage):
         requests.delete(self._storage_url(name), headers=self._headers(), timeout=self.TIMEOUT)
 
     def url(self, name):
-        host = settings.BUNNY_CDN_HOST.rstrip("/")
+        host = settings.BUNNY_STORAGE_CDN_HOST.rstrip("/")
         return f"https://{host}/{name}"
 
     def size(self, name):
