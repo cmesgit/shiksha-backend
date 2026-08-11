@@ -810,6 +810,13 @@ def _handle_participant_join(event):
                 "type": "live_session",
                 "title": f"🔴 {session.title} is now LIVE!",
                 "session_id": str(session.id),
+                # The bell's click handler resolves the join link off
+                # `object_id` (matching the persisted Activity rows other
+                # SESSION notifications carry) — without it, this transient
+                # push has no id the frontend recognizes and falls back to
+                # the plain session list.
+                "id": str(session.id),
+                "object_id": str(session.id),
                 "start_time": session.start_time.isoformat(),
             })
 
