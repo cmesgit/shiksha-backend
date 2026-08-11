@@ -12,7 +12,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from accounts.models import LearnerProfile, Role, User, UserRole
 from enrollments.models import Enrollment
 
-from .models import Course, Subject, SubjectTeacher
+from .models import Chapter, Course, Subject, SubjectTeacher
 
 ALL_STUDENTS_URL = "/api/courses/teacher/all-students/"
 
@@ -267,3 +267,87 @@ class RecordingNoteTest(TestCase):
         client = self._client(self.outsider, context="learner")
         r = client.get(f"/api/courses/recordings/{self.recording.id}/notes/")
         self.assertEqual(r.status_code, 403)
+
+
+class SubjectAccessTests(TestCase):
+    """Regression cover for a paywall bypass: ``SubjectDetailView`` and
+    ``SubjectChaptersView`` used to only check ``IsAuthenticated``, so any
+    signed-up account (enrolled or not) could read another course's chapter
+    content and roster by guessing/enumerating ``subject_id``. Both now share
+    ``_require_subject_access`` with the always-correct ``SubjectDashboardView``.
+    """
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        self.student = User.objects.create_user(
+            username="sa_student@x.com", email="sa_student@x.com", password="x",
+        )
+        self.outsider = User.objects.create_user(
+            username="sa_outsider@x.com", email="sa_outsider@x.com", password="x",
+        )
+        self.teacher = User.objects.create_user(
+            username="sa_teacher@x.com", email="sa_teacher@x.com", password="x",
+        )
+        teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
+        UserRole.objects.create(
+            user=self.teacher, role=teacher_role, is_active=True, is_primary=True,
+        )
+
+        self.course = Course.objects.create(title="C10 Science")
+        self.subject = Subject.objects.create(course=self.course, name="Physics")
+        SubjectTeacher.objects.create(subject=self.subject, teacher=self.teacher)
+        Chapter.objects.create(
+            subject=self.subject, title="Ch1", order=1,
+            content_html="<p>paid content</p>",
+        )
+
+        self.student_profile = LearnerProfile.objects.create(
+            account=self.student, display_name="Student One",
+            full_name="Student One", is_default=True,
+        )
+        Enrollment.objects.create(
+            user=self.student, learner_profile=self.student_profile,
+            course=self.course, status=Enrollment.STATUS_ACTIVE,
+        )
+
+        # Signed up, but enrolled in nothing and not a teacher on this subject.
+        self.outsider_profile = LearnerProfile.objects.create(
+            account=self.outsider, display_name="Outsider",
+            full_name="Outsider", is_default=True,
+        )
+        self.APIClient = APIClient
+
+    def _client(self, user, profile=None):
+        client = self.APIClient()
+        token = {"context": "learner" if profile else "teacher"}
+        if profile is not None:
+            token["active_profile"] = str(profile.id)
+        client.force_authenticate(user=user, token=token)
+        return client
+
+    def test_unenrolled_signed_up_user_cannot_read_subject_detail(self):
+        client = self._client(self.outsider, profile=self.outsider_profile)
+        r = client.get(f"/api/courses/subject/{self.subject.id}/")
+        self.assertEqual(r.status_code, 403)
+
+    def test_unenrolled_signed_up_user_cannot_read_chapters(self):
+        client = self._client(self.outsider, profile=self.outsider_profile)
+        r = client.get(f"/api/courses/subjects/{self.subject.id}/chapters/")
+        self.assertEqual(r.status_code, 403)
+
+    def test_enrolled_student_can_read_subject_detail(self):
+        client = self._client(self.student, profile=self.student_profile)
+        r = client.get(f"/api/courses/subject/{self.subject.id}/")
+        self.assertEqual(r.status_code, 200)
+
+    def test_enrolled_student_can_read_chapters(self):
+        client = self._client(self.student, profile=self.student_profile)
+        r = client.get(f"/api/courses/subjects/{self.subject.id}/chapters/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()[0]["title"], "Ch1")
+
+    def test_assigned_teacher_can_read_chapters(self):
+        client = self._client(self.teacher)
+        r = client.get(f"/api/courses/subjects/{self.subject.id}/chapters/")
+        self.assertEqual(r.status_code, 200)

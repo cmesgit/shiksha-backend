@@ -274,6 +274,44 @@ class CourseSubjectsView(APIView):
         return Response(serializer.data)
 
 
+def _require_subject_access(request, subject):
+    """Enrollment-or-teaching-assignment gate shared by every per-subject
+    view. Enrollment wins over teaching assignment always, regardless of
+    role — a TEACHER-role account can also be personally enrolled as a
+    learner in a subject they don't teach. Returns a 403 Response if the
+    caller has neither, else None.
+    """
+    user = request.user
+    learner = get_active_profile(request)
+    enrolled = False
+    if learner is not None:
+        enroll_q = Q(learner_profile=learner)
+        if getattr(learner, "is_default", False):
+            enroll_q |= Q(learner_profile__isnull=True, user=user)
+        enrolled = Enrollment.objects.filter(
+            enroll_q,
+            course=subject.course,
+            status=Enrollment.STATUS_ACTIVE,
+        ).exists()
+
+    if enrolled:
+        return None
+
+    is_assigned_teacher = (
+        user.has_role("TEACHER")
+        and subject.subject_teachers.filter(teacher=user).exists()
+    )
+    if is_assigned_teacher:
+        return None
+
+    detail = (
+        "Not assigned to this subject."
+        if user.has_role("TEACHER")
+        else "Not enrolled."
+    )
+    return Response({"detail": detail}, status=status.HTTP_403_FORBIDDEN)
+
+
 # =========================
 # SUBJECT DETAIL
 # =========================
@@ -288,6 +326,10 @@ class SubjectDetailView(APIView):
             ).select_related("course__stream", "course__board"),
             id=subject_id
         )
+
+        denied = _require_subject_access(request, subject)
+        if denied is not None:
+            return denied
 
         serializer = SubjectSerializer(subject, context={"request": request})
         return Response(serializer.data)
@@ -310,38 +352,9 @@ class SubjectDashboardView(APIView):
             id=subject_id
         )
 
-        # Check enrollment FIRST, regardless of role. A "TEACHER"-role account
-        # can also be personally enrolled as a learner in a course they don't
-        # teach (a parent/tutor account, or staff auditing their own child's
-        # subject) — the old code branched on role alone, so any TEACHER-role
-        # account hit the teaching-assignment check even when they were
-        # actually here as an enrolled learner, and got 403'd despite having
-        # a perfectly valid ACTIVE enrollment. Enrollment now wins; teaching
-        # assignment is only consulted when there's no active enrollment.
-        learner = get_active_profile(request)
-        enrolled = False
-        if learner is not None:
-            enroll_q = Q(learner_profile=learner)
-            if getattr(learner, "is_default", False):
-                enroll_q |= Q(learner_profile__isnull=True, user=user)
-            enrolled = Enrollment.objects.filter(
-                enroll_q,
-                course=subject.course,
-                status=Enrollment.STATUS_ACTIVE,
-            ).exists()
-
-        if not enrolled:
-            is_assigned_teacher = (
-                user.has_role("TEACHER")
-                and subject.subject_teachers.filter(teacher=user).exists()
-            )
-            if not is_assigned_teacher:
-                detail = (
-                    "Not assigned to this subject."
-                    if user.has_role("TEACHER")
-                    else "Not enrolled."
-                )
-                return Response({"detail": detail}, status=status.HTTP_403_FORBIDDEN)
+        denied = _require_subject_access(request, subject)
+        if denied is not None:
+            return denied
 
         is_student = user.has_role("STUDENT")
 
@@ -501,6 +514,14 @@ class SubjectChaptersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, subject_id):
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"), id=subject_id
+        )
+
+        denied = _require_subject_access(request, subject)
+        if denied is not None:
+            return denied
+
         chapters = Chapter.objects.filter(
             subject_id=subject_id
         ).order_by("order")
