@@ -1150,41 +1150,6 @@ class TeacherPublicProfileView(APIView):
 
 
 # =====================================================
-# VALIDATE STUDENT ID (for group session form)
-# =====================================================
-
-class ValidateStudentIdView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, student_id):
-        not_found = {
-            "valid": False,
-            "name": None,
-            "user_id": None,
-            "profile_id": None,
-            "student_id": student_id,
-        }
-
-        learner = (
-            LearnerProfile.objects
-            .select_related("account")
-            .filter(student_id=student_id, is_active=True)
-            .first()
-        )
-        if not learner:
-            return Response(not_found)
-
-        name = f"{learner.first_name} {learner.last_name}".strip() or learner.display_name
-
-        return Response({
-            "valid": True,
-            "name": name,
-            "user_id": str(learner.account_id),
-            "profile_id": str(learner.id),
-            "student_id": student_id,
-        })
-
-# =====================================================
 # CHANGE PASSWORD
 # =====================================================
 
