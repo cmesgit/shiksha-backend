@@ -38,10 +38,11 @@ Three related, independent decisions live here:
      as a whole, postable into right now," independent of who's asking.
 
 IMPORT DIRECTION: this module calls into chat/services.py for the data
-lookups a couple of the DM rules need (shared-course / shared-room), but
-does so with a LOCAL import inside each function rather than a top-level
-one — services.py imports THIS module at its top (to call can_post() from
-post_message_checked()), so a top-level import here would be circular.
+lookups a couple of the DM rules need (public-faculty / shared-course /
+shared-room), but does so with a LOCAL import inside each function rather
+than a top-level one — services.py imports THIS module at its top (to call
+can_post() from post_message_checked()), so a top-level import here would
+be circular.
 Same lazy-import discipline chat/services.py already uses for its own
 cross-app lookups (learner_in_course(), etc.), applied to a cross-module
 cycle instead of a cross-app one.
@@ -128,7 +129,7 @@ DM_MATRIX = {
 }
 _DEFAULT_DM_RULE = DM_NEVER
 
-_NO_RELATIONSHIP_REASON = "You can message a teacher once you share an active course."
+_NO_RELATIONSHIP_REASON = "This teacher isn't available to message yet."
 _NOT_SAME_ROOM_REASON = "You can message another student once you're both in the same class chat."
 _NOT_AVAILABLE_REASON = "Starting a chat with this account isn't available yet."
 
@@ -157,6 +158,8 @@ def can_start_dm(a_kind, a_obj, b_kind, b_obj):
         from . import services  # local: see module docstring
         learner_obj = a_obj if a_kind == "LEARNER" else b_obj
         teacher_obj = a_obj if a_kind == "TEACHER" else b_obj
+        if services.teacher_is_public_faculty(teacher_obj):
+            return True, ""
         if services.learner_teacher_share_active_course(learner_obj, teacher_obj):
             return True, ""
         return False, _NO_RELATIONSHIP_REASON

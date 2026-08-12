@@ -186,3 +186,57 @@ class StudentQuizSubjectsProfileScopingTest(TestCase):
         names = [row["subject"] for row in r.data]
         self.assertIn("A Subject", names)
         self.assertNotIn("B Subject", names)
+
+
+class DualRoleStudentQuizAccessTest(TestCase):
+    """Regression cover: QuizDetailView used to branch on the account-level
+    `user.has_role("TEACHER")` instead of the request's actual context. A
+    dual-role account (STUDENT + an active TEACHER role — this platform
+    explicitly supports holding several active roles at once) hit the
+    teacher-ownership branch even while taking a quiz in a learner-context
+    token, 403'ing with "Not authorized for this quiz." QuizDetailView now
+    uses accounts.permissions._in_teacher_context(), matching every other
+    teacher-gated view in this app."""
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="STUDENT")
+
+        cls.other_teacher = User.objects.create_user(
+            username="other_teacher", email="other_teacher@test.com", password="x",
+        )
+        UserRole.objects.create(user=cls.other_teacher, role=Role.objects.get(name="TEACHER"), is_active=True, is_primary=True)
+
+        # A dual-role account: active STUDENT role AND an active (but
+        # unrelated) TEACHER role. Not the quiz's `created_by`.
+        cls.account = User.objects.create_user(
+            username="dual_role_q", email="dual_role_q@test.com", password="x",
+            is_verified=True,
+        )
+        UserRole.objects.create(user=cls.account, role=Role.objects.get(name="STUDENT"), is_active=True, is_primary=True)
+        UserRole.objects.create(user=cls.account, role=Role.objects.get(name="TEACHER"), is_active=True, is_primary=False)
+
+        cls.profile = LearnerProfile.objects.create(account=cls.account, display_name="Learner side", is_default=True)
+
+        cls.course = Course.objects.create(title="Bio Demo")
+        cls.subject = Subject.objects.create(course=cls.course, name="Biology")
+        now = timezone.now()
+        Subscription.objects.create(
+            user=cls.account, learner_profile=cls.profile, course=cls.course,
+            status=Subscription.STATUS_ACTIVE, starts_at=now, expires_at=now + timedelta(days=30),
+        )
+
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.other_teacher, title="Cell structure",
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, review_status=Quiz.REVIEW_APPROVED,
+        )
+
+    def test_quiz_detail_accessible_to_dual_role_student_in_learner_context(self):
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.profile.id)},
+        )
+        r = c.get(f"/api/quizzes/{self.quiz.id}/")
+        self.assertEqual(r.status_code, 200, r.content)

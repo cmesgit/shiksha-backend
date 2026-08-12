@@ -20,7 +20,7 @@ from rest_framework.throttling import ScopedRateThrottle
 
 logger = logging.getLogger(__name__)
 
-from accounts.permissions import IsEmailVerified, IsAdmin, require_teacher_context, IsTeacherContext
+from accounts.permissions import IsEmailVerified, IsAdmin, require_teacher_context, IsTeacherContext, _in_teacher_context
 from accounts.auth_flow import get_active_profile
 from enrollments.models import Enrollment
 from django.db import models
@@ -950,7 +950,7 @@ class QuizDetailView(APIView):
             is_published=True,
         )
 
-        if request.user.has_role("TEACHER"):
+        if _in_teacher_context(request):
             if quiz.created_by != request.user:
                 raise PermissionDenied("Not authorized for this quiz.")
         else:

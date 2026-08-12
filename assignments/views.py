@@ -16,7 +16,7 @@ from enrollments.models import Enrollment
 
 from courses.models import Chapter
 from accounts.models import Role
-from accounts.permissions import require_teacher_context, IsTeacherContext
+from accounts.permissions import require_teacher_context, IsTeacherContext, _in_teacher_context
 from accounts.auth_flow import get_active_profile
 
 from .models import Assignment, AssignmentFile, AssignmentSubmission
@@ -84,7 +84,7 @@ class AssignmentDetailView(generics.RetrieveAPIView):
             if instance.user_submission_list else None
         )
 
-        if user.has_role(Role.TEACHER):
+        if _in_teacher_context(request):
             _assert_teacher_owns_assignment(user, instance)
         else:
             from enrollments.services import has_active_subscription, lock_payload
@@ -178,7 +178,7 @@ class CourseAssignmentsView(generics.ListAPIView):
             to_attr="user_submission_list",
         )
 
-        if user.has_role(Role.TEACHER):
+        if _in_teacher_context(self.request):
             queryset = Assignment.objects.filter(
                 chapter__subject__course__id=course_id,
                 chapter__subject__subject_teachers__teacher=user,
