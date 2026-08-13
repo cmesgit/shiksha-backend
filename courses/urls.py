@@ -73,6 +73,8 @@ from .admin_academy_views import (
     AdminTeacherDetailView,
     AdminSubjectTeachersView,
     AdminSubjectTeacherDetailView,
+    AdminCourseStaffingView,
+    AdminCourseBulkAssignView,
     AdminCourseBatchesView,
     AdminBatchDetailView,
     AdminBatchTeachingAssignmentsView,
@@ -108,6 +110,9 @@ urlpatterns = [
     path("admin/teachers/<uuid:user_id>/",                   AdminTeacherDetailView.as_view()),
     path("admin/subjects/<uuid:subject_id>/teachers/",       AdminSubjectTeachersView.as_view()),
     path("admin/subject-teachers/<int:assignment_id>/",      AdminSubjectTeacherDetailView.as_view()),
+    # Admin — whole-course staffing grid + bulk assign (one teacher → many subjects)
+    path("admin/courses/<uuid:course_id>/staffing/",             AdminCourseStaffingView.as_view()),
+    path("admin/courses/<uuid:course_id>/staffing/bulk-assign/", AdminCourseBulkAssignView.as_view()),
     # Admin — batches
     path("admin/courses/<uuid:course_id>/batches/",          AdminCourseBatchesView.as_view()),
     path("admin/batches/<uuid:batch_id>/",                   AdminBatchDetailView.as_view()),

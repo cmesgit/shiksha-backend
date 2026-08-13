@@ -464,3 +464,169 @@ class AcademyTeacherPickerTrackTests(TestCase):
             SubjectTeacher.objects.filter(
                 subject=self.subject, teacher=self.faculty).exists()
         )
+
+
+class CourseStaffingGridTests(AcademyTeacherPickerTrackTests):
+    """The whole-course staffing grid + bulk assign, which replace rendering the
+    subjects table via one request per subject."""
+
+    def test_grid_returns_every_subject_in_one_call(self):
+        maths = Subject.objects.create(course=self.course, name="Maths")
+        SubjectTeacher.objects.create(subject=self.subject, teacher=self.faculty)
+
+        r = self._admin_client().get(
+            f"/api/courses/admin/courses/{self.course.id}/staffing/")
+        self.assertEqual(r.status_code, 200, r.content)
+        body = r.json()
+
+        names = {s["name"]: s for s in body["subjects"]}
+        self.assertEqual(set(names), {"Physics", "Maths"})
+        self.assertEqual(
+            [t["email"] for t in names["Physics"]["teachers"]],
+            ["faculty_only@example.com"],
+        )
+        self.assertEqual(names["Maths"]["teachers"], [])
+        # Drives the "N subjects still need a teacher" hint.
+        self.assertEqual(body["unstaffed_count"], 1)
+        self.assertEqual(maths.name, "Maths")  # created above, still present
+
+    def test_bulk_assign_staffs_many_subjects_at_once(self):
+        maths = Subject.objects.create(course=self.course, name="Maths")
+        chem = Subject.objects.create(course=self.course, name="Chemistry")
+
+        r = self._admin_client().post(
+            f"/api/courses/admin/courses/{self.course.id}/staffing/bulk-assign/",
+            {"teacher_id": str(self.faculty.id),
+             "subject_ids": [str(maths.id), str(chem.id)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()["assigned"], 2)
+        self.assertEqual(
+            SubjectTeacher.objects.filter(teacher=self.faculty).count(), 2)
+
+    def test_bulk_assign_is_idempotent_rather_than_failing_the_whole_call(self):
+        maths = Subject.objects.create(course=self.course, name="Maths")
+        SubjectTeacher.objects.create(subject=maths, teacher=self.faculty)
+        chem = Subject.objects.create(course=self.course, name="Chemistry")
+
+        r = self._admin_client().post(
+            f"/api/courses/admin/courses/{self.course.id}/staffing/bulk-assign/",
+            {"teacher_id": str(self.faculty.id),
+             "subject_ids": [str(maths.id), str(chem.id)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        body = r.json()
+        self.assertEqual(body["assigned"], 1)                      # chem only
+        self.assertEqual(body["skipped_already_assigned"], [str(maths.id)])
+
+    def test_bulk_assign_refuses_a_subject_from_another_course(self):
+        other = Course.objects.create(title="Class 9 Science")
+        foreign = Subject.objects.create(course=other, name="Biology")
+
+        r = self._admin_client().post(
+            f"/api/courses/admin/courses/{self.course.id}/staffing/bulk-assign/",
+            {"teacher_id": str(self.faculty.id),
+             "subject_ids": [str(foreign.id)]},
+            format="json",
+        )
+        self.assertEqual(r.json()["skipped_not_in_course"], [str(foreign.id)])
+        self.assertFalse(
+            SubjectTeacher.objects.filter(subject=foreign).exists())
+
+    def test_bulk_assign_refuses_a_skill_only_expert(self):
+        maths = Subject.objects.create(course=self.course, name="Maths")
+        r = self._admin_client().post(
+            f"/api/courses/admin/courses/{self.course.id}/staffing/bulk-assign/",
+            {"teacher_id": str(self.skill_only.id),
+             "subject_ids": [str(maths.id)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertFalse(
+            SubjectTeacher.objects.filter(teacher=self.skill_only).exists())
+
+
+class TeachingAssignmentRevocationTests(TestCase):
+    """Ending a TeachingAssignment must actually revoke the teacher.
+
+    services.teaches_subject() is true on an active TeachingAssignment OR *any*
+    SubjectTeacher row. The batch assign endpoint dual-writes that legacy mirror,
+    and DELETE used to leave it behind — so "remove this teacher" left them with
+    full subject access (quizzes, materials, recordings, livestream).
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from accounts.models import TeacherProfile
+
+        cls.teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
+        cls.admin = User.objects.create_user(
+            username="admin_rev", email="admin_rev@example.com",
+            password="pw", is_staff=True,
+        )
+        cls.teacher = User.objects.create_user(
+            username="rev_teacher", email="rev_teacher@example.com", password="pw",
+        )
+        tp = TeacherProfile.objects.create(user=cls.teacher)
+        tp.set_track_status(TeacherProfile.TRACK_ACADEMY, TeacherProfile.TRACK_APPROVED)
+        tp.sync_type_from_tracks()
+        tp.save()
+        UserRole.objects.create(user=cls.teacher, role=cls.teacher_role, is_active=True)
+
+        cls.course = Course.objects.create(title="Class 10 Science")
+        cls.subject = Subject.objects.create(course=cls.course, name="Physics")
+
+    def _admin_client(self):
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=self.admin, token={"context": "admin"})
+        return client
+
+    def _assign_to_batch(self, batch):
+        client = self._admin_client()
+        r = client.post(
+            f"/api/courses/admin/batches/{batch.id}/teaching-assignments/",
+            {"subject_id": str(self.subject.id),
+             "teacher_id": str(self.teacher.id), "role": "PRIMARY"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.json()["assignment_id"]
+
+    def test_ending_the_last_assignment_revokes_subject_access(self):
+        from .models import Batch
+        from .services import teaches_subject
+
+        batch = Batch.objects.create(course=self.course, name="2026 A", code="A")
+        assignment_id = self._assign_to_batch(batch)
+        self.assertTrue(teaches_subject(self.teacher, self.subject))
+
+        r = self._admin_client().delete(
+            f"/api/courses/admin/teaching-assignments/{assignment_id}/")
+        self.assertEqual(r.status_code, 204, r.content)
+
+        self.assertFalse(
+            teaches_subject(self.teacher, self.subject),
+            "ending the only assignment must revoke access, not leave the "
+            "legacy SubjectTeacher mirror granting it",
+        )
+
+    def test_ending_one_of_two_assignments_keeps_access(self):
+        from .models import Batch
+        from .services import teaches_subject
+
+        a = Batch.objects.create(course=self.course, name="2026 A", code="A")
+        b = Batch.objects.create(course=self.course, name="2026 B", code="B")
+        first = self._assign_to_batch(a)
+        self._assign_to_batch(b)
+
+        self._admin_client().delete(
+            f"/api/courses/admin/teaching-assignments/{first}/")
+
+        self.assertTrue(
+            teaches_subject(self.teacher, self.subject),
+            "the teacher still teaches this subject in the other batch",
+        )
