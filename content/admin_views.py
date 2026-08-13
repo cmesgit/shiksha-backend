@@ -13,7 +13,7 @@
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework import mixins, status, viewsets
+from rest_framework import generics, mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -21,14 +21,15 @@ from rest_framework.response import Response
 
 from .admin_serializers import (
     AnnouncementAdminSerializer, BlogPostAdminSerializer,
-    ContentTagSerializer, CurrentAffairAdminSerializer,
-    FAQItemAdminSerializer, HomeContentBlockAdminSerializer,
-    HomeFloaterAdminSerializer, HomeListItemAdminSerializer,
-    HomeSectionOrderAdminSerializer, ShowcaseCourseAdminSerializer,
+    ContentImageAdminSerializer, ContentTagSerializer,
+    CurrentAffairAdminSerializer, FAQItemAdminSerializer,
+    HomeContentBlockAdminSerializer, HomeFloaterAdminSerializer,
+    HomeListItemAdminSerializer, HomeSectionOrderAdminSerializer,
+    ShowcaseCourseAdminSerializer,
 )
 from .models import (
-    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
+    Announcement, BlogPost, ContentImage, ContentTag, CurrentAffair,
+    FAQItem, HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
     PublishStatus, ShowcaseCourse,
 )
 from .permissions import IsContentEditor
@@ -110,6 +111,21 @@ class ShowcaseCourseAdminViewSet(viewsets.ModelViewSet):
     # `image` is a file upload field, so multipart support must not be
     # left to an implicit default that could change.
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+
+# ── Editor-uploaded images (rich-text body content) ────────────────
+
+class EditorImageUploadView(generics.CreateAPIView):
+    """POST an image file, get back its URL — the upload target a rich-text
+    editor's image button/paste-handler calls, distinct from the per-model
+    `cover`/`image` fields above (a post body can embed many images)."""
+    queryset = ContentImage.objects.all()
+    serializer_class = ContentImageAdminSerializer
+    permission_classes = [IsContentEditor]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def perform_create(self, serializer):
+        serializer.save(uploaded_by=self.request.user)
 
 
 # ── Homepage content ──────────────────────────────────────────────

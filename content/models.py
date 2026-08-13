@@ -22,7 +22,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.text import slugify
 
-from .sanitize import clean_html
+from .sanitize import clean_html, clean_html_restricted
 
 # ─────────────────────────────────────────────────────────────────
 #  Shared bits
@@ -168,6 +168,12 @@ class BlogPost(PublishableModel):
         help_text="Chapter/article body as HTML. Sanitized on save unless "
                   "'trusted html' is ticked.",
     )
+    body_html_source = models.TextField(
+        blank=True, default="", editable=False,
+        help_text="Body as submitted, before sanitization. Kept so a "
+                  "future sanitizer rule change can't destroy authored "
+                  "content the way it silently did before this field existed.",
+    )
     trusted_html = models.BooleanField(
         default=False,
         help_text="Skip HTML sanitization — only for first-party fragments "
@@ -223,6 +229,7 @@ class BlogPost(PublishableModel):
     def save(self, *args, **kwargs):
         if not self.slug:
             self.slug = self._default_slug()
+        self.body_html_source = self.body_html
         if not self.trusted_html:
             self.body_html = clean_html(self.body_html)
         self.reading_minutes = max(
@@ -558,6 +565,10 @@ class HomeContentBlock(TimeStampedModel):
         ordering = ["section"]
         verbose_name = "Homepage content block"
 
+    def save(self, *args, **kwargs):
+        self.body = clean_html_restricted(self.body)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"[{self.get_section_display()}] content block"
 
@@ -631,6 +642,10 @@ class HomeListItem(TimeStampedModel):
         if not isinstance(self.pills, list):
             raise ValidationError({"pills": "Must be a JSON list."})
 
+    def save(self, *args, **kwargs):
+        self.body = clean_html_restricted(self.body)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"[{self.get_section_display()}] {self.title or self.stat_text or self.pk}"
 
@@ -678,3 +693,22 @@ class HomeFloater(TimeStampedModel):
 
     def __str__(self):
         return f"[{self.get_section_display()}] {self.slot}"
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Editor-uploaded images (rich-text body content, not a cover/logo)
+# ─────────────────────────────────────────────────────────────────
+
+class ContentImage(TimeStampedModel):
+    """An image dropped into a rich-text editor body (blog/homepage). Not
+    owned by any single BlogPost/HomeContentBlock — one post can embed
+    several, and deleting the post shouldn't cascade-delete an image that
+    might still be referenced elsewhere in its body_html_source history."""
+    file = models.ImageField(upload_to="content/editor/%Y/%m/")
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True,
+    )
+
+    def __str__(self):
+        return self.file.name

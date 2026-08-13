@@ -50,6 +50,20 @@ ALLOWED_ATTRIBUTES = {
 
 ALLOWED_URL_SCHEMES = {"http", "https", "mailto", "tel"}
 
+# Much smaller allowlist for homepage body/list-item fields — those feed a
+# fixed, designed React layout, so only inline formatting is allowed
+# (no headings/images/tables/blocks): an author can add emphasis or a link,
+# but literally cannot restructure the page around it.
+RESTRICTED_ALLOWED_TAGS = {"a", "b", "br", "em", "i", "li", "ol", "s", "strong", "u", "ul"}
+RESTRICTED_ALLOWED_ATTRIBUTES = {
+    "a": {"href", "target"},
+}
+
+# TipTap-authored content addresses elements by data-* (e.g. custom nodes,
+# alignment, syntax-highlighted code blocks) and accessibility relies on
+# aria-*; neither is executable, so both pass through on every tag.
+GENERIC_ATTRIBUTE_PREFIXES = {"data-", "aria-"}
+
 _SCRIPTISH = re.compile(
     r"<\s*(script|style|iframe|object|embed|form|input|button|link|meta)"
     r"[^>]*>.*?<\s*/\s*\1\s*>|<\s*(script|style|iframe|object|embed|form|"
@@ -71,8 +85,32 @@ def clean_html(html):
             attributes=ALLOWED_ATTRIBUTES,
             url_schemes=ALLOWED_URL_SCHEMES,
             link_rel="noopener noreferrer",
+            generic_attribute_prefixes=GENERIC_ATTRIBUTE_PREFIXES,
         )
     # Fallback: strip executable constructs; keep everything else intact.
+    out = _SCRIPTISH.sub("", html)
+    out = _EVENT_ATTR.sub("", out)
+    out = _JS_URL.sub(r'\1=\2#\2', out)
+    return out
+
+
+def clean_html_restricted(html):
+    """Sanitize to the homepage's inline-only allowlist (see
+    RESTRICTED_ALLOWED_TAGS) — for body/list-item fields that feed a fixed
+    layout rather than a free-form article body."""
+    if not html:
+        return html or ""
+    if _HAS_NH3:
+        return nh3.clean(
+            html,
+            tags=RESTRICTED_ALLOWED_TAGS,
+            attributes=RESTRICTED_ALLOWED_ATTRIBUTES,
+            url_schemes=ALLOWED_URL_SCHEMES,
+            link_rel="noopener noreferrer",
+        )
+    # Fallback: same executable-construct stripping as clean_html(), but
+    # this path can't enforce the smaller tag allowlist without nh3 — still
+    # far better than storing raw, unsanitized input.
     out = _SCRIPTISH.sub("", html)
     out = _EVENT_ATTR.sub("", out)
     out = _JS_URL.sub(r'\1=\2#\2', out)

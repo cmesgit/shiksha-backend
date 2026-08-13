@@ -20,8 +20,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import (
-    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
+    Announcement, BlogPost, ContentImage, ContentTag, CurrentAffair,
+    FAQItem, HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
     ShowcaseCourse,
 )
 
@@ -113,13 +113,14 @@ class BlogPostAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
         model = BlogPost
         fields = [
             "id", "title", "slug", "class_level", "subject", "chapter_number",
-            "excerpt", "cover", "body_html", "trusted_html", "tags",
-            "author", "author_name", "is_featured", "seo_title",
+            "excerpt", "cover", "body_html", "body_html_source", "trusted_html",
+            "tags", "author", "author_name", "is_featured", "seo_title",
             "seo_description", "reading_minutes", "view_count",
             "status", "publish_at", "created_at", "updated_at",
         ]
         read_only_fields = [
-            "reading_minutes", "view_count", "created_at", "updated_at",
+            "body_html_source", "reading_minutes", "view_count",
+            "created_at", "updated_at",
         ]
         extra_kwargs = {
             "slug": {"required": False},
@@ -131,6 +132,15 @@ class BlogPostAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
             return ""
         full = getattr(obj.author, "get_full_name", lambda: "")() or ""
         return full or getattr(obj.author, "username", "") or ""
+
+
+# ── Editor-uploaded images (rich-text body content) ────────────────
+
+class ContentImageAdminSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContentImage
+        fields = ["id", "file", "created_at"]
+        read_only_fields = ["id", "created_at"]
 
 
 # ── Current affairs ───────────────────────────────────────────────
