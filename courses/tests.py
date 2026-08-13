@@ -351,3 +351,116 @@ class SubjectAccessTests(TestCase):
         client = self._client(self.teacher)
         r = client.get(f"/api/courses/subjects/{self.subject.id}/chapters/")
         self.assertEqual(r.status_code, 200)
+
+
+class AcademyTeacherPickerTrackTests(TestCase):
+    """Regression cover: the admin subject-teacher picker (and the assign
+    write-paths behind it) gated on ``TeacherProfile.is_approved``, which is
+    ``bool(approved_tracks())``. The Skill track is AUTO-approved at signup with
+    no admin review (accounts/signup_serializer._initial_status_for), so every
+    self-registered guest expert had is_approved=True and was offered as — and
+    could be assigned as — a school subject teacher, despite academy_status
+    being ``locked``. Both now gate on an APPROVED Academy track.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from accounts.models import TeacherProfile
+
+        cls.teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
+
+        cls.admin = User.objects.create_user(
+            username="admin_picker", email="admin_picker@example.com",
+            password="pw", is_staff=True,
+        )
+
+        cls.course = Course.objects.create(title="Class 10 Science")
+        cls.subject = Subject.objects.create(course=cls.course, name="Physics")
+
+        A = TeacherProfile.TRACK_APPROVED
+        P = TeacherProfile.TRACK_PENDING
+        cls.faculty = cls._make("faculty_only", academy=A)
+        cls.both = cls._make("both_tracks", academy=A, skill=A)
+        cls.skill_only = cls._make("skill_only", skill=A)      # self-signup expert
+        cls.pending = cls._make("pending_faculty", academy=P)  # awaiting review
+
+    @classmethod
+    def _make(cls, name, academy=None, skill=None):
+        from accounts.models import TeacherProfile
+
+        user = User.objects.create_user(
+            username=name, email=f"{name}@example.com", password="pw",
+        )
+        tp = TeacherProfile.objects.create(user=user)
+        if academy:
+            tp.set_track_status(TeacherProfile.TRACK_ACADEMY, academy)
+        if skill:
+            tp.set_track_status(TeacherProfile.TRACK_SKILL, skill)
+        tp.sync_type_from_tracks()
+        tp.save()
+        UserRole.objects.create(
+            user=user, role=cls.teacher_role, is_active=bool(tp.approved_tracks()),
+        )
+        return user
+
+    def _admin_client(self):
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=self.admin, token={"context": "admin"})
+        return client
+
+    def test_picker_offers_academy_faculty_and_excludes_skill_only_experts(self):
+        r = self._admin_client().get("/api/courses/admin/teachers/")
+        self.assertEqual(r.status_code, 200, r.content)
+        emails = {row["email"] for row in r.json()["data"]}
+
+        # Reviewed Academy faculty — and a teacher holding BOTH tracks, who
+        # really is faculty — must still be offered.
+        self.assertIn("faculty_only@example.com", emails)
+        self.assertIn("both_tracks@example.com", emails)
+        # The auto-approved guest expert and the un-reviewed applicant must not.
+        self.assertNotIn("skill_only@example.com", emails)
+        self.assertNotIn("pending_faculty@example.com", emails)
+
+    def test_picker_reports_a_real_total_not_a_silent_truncation(self):
+        r = self._admin_client().get("/api/courses/admin/teachers/")
+        body = r.json()
+        self.assertEqual(body["count"], 2)
+        self.assertFalse(body["has_more"])
+
+    def test_picker_exposes_tracks_so_the_admin_can_tell_them_apart(self):
+        r = self._admin_client().get("/api/courses/admin/teachers/")
+        rows = {row["email"]: row for row in r.json()["data"]}
+        self.assertEqual(rows["faculty_only@example.com"]["tracks"], ["academy"])
+        self.assertEqual(rows["both_tracks@example.com"]["tracks"], ["academy", "skill"])
+
+    def test_search_is_applied_server_side(self):
+        r = self._admin_client().get("/api/courses/admin/teachers/?q=both_tracks")
+        body = r.json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["data"][0]["email"], "both_tracks@example.com")
+
+    def test_skill_only_expert_cannot_be_assigned_to_a_subject(self):
+        """The picker no longer offers them, but the write-path must refuse too —
+        filtering a dropdown is not authorization."""
+        r = self._admin_client().post(
+            f"/api/courses/admin/subjects/{self.subject.id}/teachers/",
+            {"teacher_id": str(self.skill_only.id)}, format="json",
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertFalse(
+            SubjectTeacher.objects.filter(
+                subject=self.subject, teacher=self.skill_only).exists()
+        )
+
+    def test_academy_faculty_can_still_be_assigned_to_a_subject(self):
+        r = self._admin_client().post(
+            f"/api/courses/admin/subjects/{self.subject.id}/teachers/",
+            {"teacher_id": str(self.faculty.id)}, format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertTrue(
+            SubjectTeacher.objects.filter(
+                subject=self.subject, teacher=self.faculty).exists()
+        )

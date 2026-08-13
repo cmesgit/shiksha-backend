@@ -33,6 +33,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.models import TeacherProfile
 from accounts.permissions import IsAdmin
 from .models import Batch, Course, Subject, SubjectTeacher, TeachingAssignment
 
@@ -69,6 +70,49 @@ def _teacher_name(user):
     return full or user.username or user.email
 
 
+def is_academy_faculty(tp):
+    """True iff this TeacherProfile holds an APPROVED Academy track — i.e. a
+    human admin reviewed them for school teaching.
+
+    Deliberately NOT `tp.is_approved`, and NOT `tp.teacher_type`:
+      • `is_approved` is `bool(approved_tracks())`, and the Skill track is
+        AUTO-approved at signup with no review (accounts/signup_serializer.py's
+        `_initial_status_for`). So every self-registered guest expert has
+        is_approved=True and would otherwise be assignable to a school subject.
+      • `teacher_type` counts a track as "on" while merely PENDING (see
+        TeacherProfile.sync_type_from_tracks), so it is not proof of approval.
+    A teacher holding BOTH tracks approved passes this — that's correct, they
+    really are Academy faculty who also sell skill sessions.
+    """
+    return bool(tp and tp.academy_status == TeacherProfile.TRACK_APPROVED)
+
+
+def academy_faculty_users():
+    """Base queryset for 'who may teach an Academy subject'. One definition so
+    the assign picker and the assign write-path can never drift apart."""
+    return (
+        User.objects.filter(
+            teacher_profile__academy_status=TeacherProfile.TRACK_APPROVED,
+            user_roles__role__name="TEACHER",
+            user_roles__is_active=True,
+        )
+        .select_related("teacher_profile")
+        .distinct()
+    )
+
+
+def _profile_tracks(profile):
+    """Approved tracks, computed with no extra queries. AdminTeacherDirectoryView
+    builds a richer version (it also counts an ExpertProfile row) — this is the
+    cheap one for the lean picker."""
+    tracks = []
+    if profile and getattr(profile, "academy_status", None) == TeacherProfile.TRACK_APPROVED:
+        tracks.append("academy")
+    if profile and getattr(profile, "skill_status", None) == TeacherProfile.TRACK_APPROVED:
+        tracks.append("skill")
+    return tracks
+
+
 def teacher_brief(user, st=None, request=None):
     """A teacher's assignable/assigned summary, including profile bits the admin
     wants to see at a glance (role, qualification, photo, rating)."""
@@ -88,6 +132,9 @@ def teacher_brief(user, st=None, request=None):
         "qualification": (getattr(profile, "qualification", "") or ""),
         "rating": float(profile.rating) if (profile and profile.rating is not None) else None,
         "photo": photo,
+        # So the admin can tell an Academy-only teacher from one who also sells
+        # skill sessions, instead of guessing from the name.
+        "tracks": _profile_tracks(profile),
     }
     if st is not None:
         data["assignment_id"] = st.id  # SubjectTeacher pk (integer)
@@ -166,20 +213,22 @@ def _apply_optional_batch_fields(batch, data):
 # Teacher picker
 # --------------------------------------------------------------------------- #
 class AdminTeacherListView(APIView):
-    """Approved teachers available to assign to a subject. Optional ?q= search."""
+    """Academy faculty available to assign to a subject. Optional ?q= search.
+
+    Returns {"data": [...], "count": <total matching>, "has_more": bool} rather
+    than a bare truncated list: the previous version hard-sliced to 100 with no
+    count, so a teacher ranked 101st was simply invisible and the UI had no way
+    to know it was only showing part of the answer.
+    """
     permission_classes = [IsAuthenticated, IsAdmin]
+
+    PAGE_SIZE = 50
 
     def get(self, request):
         q = request.query_params.get("q", "").strip()
-        qs = (
-            User.objects.filter(
-                teacher_profile__is_approved=True,
-                user_roles__role__name="TEACHER",
-                user_roles__is_active=True,
-            )
-            .select_related("teacher_profile")
-            .distinct()
-        )
+        # Academy-approved only — a self-registered guest expert must not be
+        # offered as a school subject teacher. See is_academy_faculty().
+        qs = academy_faculty_users()
         if q:
             qs = qs.filter(
                 Q(email__icontains=q)
@@ -187,7 +236,17 @@ class AdminTeacherListView(APIView):
                 | Q(first_name__icontains=q)
                 | Q(last_name__icontains=q)
             )
-        return Response([teacher_brief(u, request=request) for u in qs[:100]])
+        # Stable ordering — without it the slice below returns an arbitrary
+        # subset that can change between identical requests.
+        qs = qs.order_by("first_name", "last_name", "email")
+
+        total = qs.count()
+        rows = [teacher_brief(u, request=request) for u in qs[: self.PAGE_SIZE]]
+        return Response({
+            "data": rows,
+            "count": total,
+            "has_more": total > len(rows),
+        })
 
 
 # --------------------------------------------------------------------------- #
@@ -320,15 +379,32 @@ class AdminTeacherDirectoryView(APIView):
                 Q(email__icontains=q) | Q(username__icontains=q)
                 | Q(first_name__icontains=q) | Q(last_name__icontains=q)
             )
+        # Filter by track in the DATABASE, before the slice. This used to run in
+        # Python on the already-truncated 200 rows, so ?track=academy returned an
+        # arbitrary subset once there were more than 200 approved teachers.
+        # Mirrors _teacher_row's definition: skill = an ExpertProfile row exists
+        # OR the skill track is approved.
+        if track == "academy":
+            qs = qs.filter(teacher_profile__academy_status=TeacherProfile.TRACK_APPROVED)
+        elif track == "skill":
+            qs = qs.filter(
+                Q(teacher_profile__expert_profile__isnull=False)
+                | Q(teacher_profile__skill_status=TeacherProfile.TRACK_APPROVED)
+            )
+        qs = qs.order_by("first_name", "last_name", "email").distinct()
+
+        total = qs.count()
         users = list(qs[:200])
         ids = [u.id for u in users]
         hours_map = _weekly_hours_map(ids)
         asg_map = _assignments_map(ids)
         skill_map = _skill_map(ids)
         rows = [_teacher_row(u, request, hours_map, asg_map, skill_map) for u in users]
-        if track in ("academy", "skill"):
-            rows = [r for r in rows if track in r["tracks"]]
-        return Response({"data": rows})
+        return Response({
+            "data": rows,
+            "count": total,
+            "has_more": total > len(rows),
+        })
 
 
 class AdminTeacherDetailView(APIView):
@@ -411,9 +487,9 @@ class AdminSubjectTeachersView(APIView):
             )
 
         tp = getattr(teacher, "teacher_profile", None)
-        if not (tp and tp.is_approved):
+        if not is_academy_faculty(tp):
             return Response(
-                {"detail": "Only approved teachers can be assigned."},
+                {"detail": "Only approved Academy faculty can be assigned to a subject."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -602,9 +678,9 @@ class AdminBatchTeachingAssignmentsView(APIView):
             )
 
         tp = getattr(teacher, "teacher_profile", None)
-        if not (tp and tp.is_approved):
+        if not is_academy_faculty(tp):
             return Response(
-                {"detail": "Only approved teachers can be assigned."},
+                {"detail": "Only approved Academy faculty can be assigned to a subject."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
