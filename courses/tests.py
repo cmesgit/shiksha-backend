@@ -12,7 +12,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from accounts.models import LearnerProfile, Role, User, UserRole
 from enrollments.models import Enrollment
 
-from .models import Chapter, Course, Subject, SubjectTeacher
+from .models import Chapter, Course, Subject, TeachingAssignment
 
 ALL_STUDENTS_URL = "/api/courses/teacher/all-students/"
 
@@ -35,8 +35,8 @@ class TeacherRosterTests(TestCase):
         )
         # The teacher teaches one subject in each course, so both courses are
         # in scope for the all-students view.
-        SubjectTeacher.objects.create(subject=cls.subject, teacher=cls.teacher)
-        SubjectTeacher.objects.create(subject=cls.other_subject, teacher=cls.teacher)
+        TeachingAssignment.objects.create(subject=cls.subject, teacher=cls.teacher, batch=None, is_active=True)
+        TeachingAssignment.objects.create(subject=cls.other_subject, teacher=cls.teacher, batch=None, is_active=True)
 
         # ── One account, three enrolled children: 1 user, 3 students. ──
         cls.parent = User.objects.create_user(
@@ -207,7 +207,7 @@ class RecordingNoteTest(TestCase):
 
         self.course = Course.objects.create(title="C10", class_level=10)
         self.subject = Subject.objects.create(course=self.course, name="Physics")
-        SubjectTeacher.objects.create(subject=self.subject, teacher=self.teacher)
+        TeachingAssignment.objects.create(subject=self.subject, teacher=self.teacher, batch=None, is_active=True)
         Enrollment.objects.create(
             user=self.student, course=self.course, status=Enrollment.STATUS_ACTIVE
         )
@@ -296,7 +296,7 @@ class SubjectAccessTests(TestCase):
 
         self.course = Course.objects.create(title="C10 Science")
         self.subject = Subject.objects.create(course=self.course, name="Physics")
-        SubjectTeacher.objects.create(subject=self.subject, teacher=self.teacher)
+        TeachingAssignment.objects.create(subject=self.subject, teacher=self.teacher, batch=None, is_active=True)
         Chapter.objects.create(
             subject=self.subject, title="Ch1", order=1,
             content_html="<p>paid content</p>",
@@ -450,8 +450,8 @@ class AcademyTeacherPickerTrackTests(TestCase):
         )
         self.assertEqual(r.status_code, 400, r.content)
         self.assertFalse(
-            SubjectTeacher.objects.filter(
-                subject=self.subject, teacher=self.skill_only).exists()
+            TeachingAssignment.objects.filter(
+                subject=self.subject, teacher=self.skill_only, batch__isnull=True, is_active=True).exists()
         )
 
     def test_academy_faculty_can_still_be_assigned_to_a_subject(self):
@@ -461,8 +461,8 @@ class AcademyTeacherPickerTrackTests(TestCase):
         )
         self.assertEqual(r.status_code, 201, r.content)
         self.assertTrue(
-            SubjectTeacher.objects.filter(
-                subject=self.subject, teacher=self.faculty).exists()
+            TeachingAssignment.objects.filter(
+                subject=self.subject, teacher=self.faculty, batch__isnull=True, is_active=True).exists()
         )
 
 
@@ -472,7 +472,7 @@ class CourseStaffingGridTests(AcademyTeacherPickerTrackTests):
 
     def test_grid_returns_every_subject_in_one_call(self):
         maths = Subject.objects.create(course=self.course, name="Maths")
-        SubjectTeacher.objects.create(subject=self.subject, teacher=self.faculty)
+        TeachingAssignment.objects.create(subject=self.subject, teacher=self.faculty, batch=None, is_active=True)
 
         r = self._admin_client().get(
             f"/api/courses/admin/courses/{self.course.id}/staffing/")
@@ -503,11 +503,11 @@ class CourseStaffingGridTests(AcademyTeacherPickerTrackTests):
         self.assertEqual(r.status_code, 201, r.content)
         self.assertEqual(r.json()["assigned"], 2)
         self.assertEqual(
-            SubjectTeacher.objects.filter(teacher=self.faculty).count(), 2)
+            TeachingAssignment.objects.filter(teacher=self.faculty, batch__isnull=True, is_active=True).count(), 2)
 
     def test_bulk_assign_is_idempotent_rather_than_failing_the_whole_call(self):
         maths = Subject.objects.create(course=self.course, name="Maths")
-        SubjectTeacher.objects.create(subject=maths, teacher=self.faculty)
+        TeachingAssignment.objects.create(subject=maths, teacher=self.faculty, batch=None, is_active=True)
         chem = Subject.objects.create(course=self.course, name="Chemistry")
 
         r = self._admin_client().post(
@@ -533,7 +533,7 @@ class CourseStaffingGridTests(AcademyTeacherPickerTrackTests):
         )
         self.assertEqual(r.json()["skipped_not_in_course"], [str(foreign.id)])
         self.assertFalse(
-            SubjectTeacher.objects.filter(subject=foreign).exists())
+            TeachingAssignment.objects.filter(subject=foreign, batch__isnull=True, is_active=True).exists())
 
     def test_bulk_assign_refuses_a_skill_only_expert(self):
         maths = Subject.objects.create(course=self.course, name="Maths")
@@ -545,16 +545,20 @@ class CourseStaffingGridTests(AcademyTeacherPickerTrackTests):
         )
         self.assertEqual(r.status_code, 400, r.content)
         self.assertFalse(
-            SubjectTeacher.objects.filter(teacher=self.skill_only).exists())
+            TeachingAssignment.objects.filter(teacher=self.skill_only, batch__isnull=True, is_active=True).exists())
 
 
 class TeachingAssignmentRevocationTests(TestCase):
     """Ending a TeachingAssignment must actually revoke the teacher.
 
-    services.teaches_subject() is true on an active TeachingAssignment OR *any*
-    SubjectTeacher row. The batch assign endpoint dual-writes that legacy mirror,
-    and DELETE used to leave it behind — so "remove this teacher" left them with
-    full subject access (quizzes, materials, recordings, livestream).
+    Regression cover from when TeachingAssignment DELETE used to leave a
+    mirrored legacy SubjectTeacher row in place (services.teaches_subject()
+    granted access on either model having a row) — "remove this teacher" left
+    them with full subject access (quizzes, materials, recordings,
+    livestream). SubjectTeacher has since been retired entirely, so
+    TeachingAssignment is now the only thing that can grant access; kept as a
+    regression test since the same class of bug (a second, forgotten grant
+    path) is easy to reintroduce.
     """
 
     @classmethod
@@ -610,8 +614,7 @@ class TeachingAssignmentRevocationTests(TestCase):
 
         self.assertFalse(
             teaches_subject(self.teacher, self.subject),
-            "ending the only assignment must revoke access, not leave the "
-            "legacy SubjectTeacher mirror granting it",
+            "ending the only assignment must actually revoke access",
         )
 
     def test_ending_one_of_two_assignments_keeps_access(self):

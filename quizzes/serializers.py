@@ -8,7 +8,6 @@ from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError, PermissionDenied
 
-from courses.models import SubjectTeacher
 from courses.services import teaches_subject
 from enrollments.models import Enrollment
 

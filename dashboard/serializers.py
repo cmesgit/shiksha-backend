@@ -156,7 +156,9 @@ class DashboardAssignmentSerializer(serializers.ModelSerializer):
                 t = teachers[0]
                 if t and t.teacher_id:
                     return t.teacher.email
-            teacher = subject.subject_teachers.first()
+            teacher = subject.teaching_assignments.filter(
+                batch__isnull=True, is_active=True,
+            ).first()
             if teacher and teacher.teacher_id:
                 return teacher.teacher.email
         except Exception:

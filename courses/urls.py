@@ -109,7 +109,7 @@ urlpatterns = [
     path("admin/teacher-directory/",                         AdminTeacherDirectoryView.as_view()),
     path("admin/teachers/<uuid:user_id>/",                   AdminTeacherDetailView.as_view()),
     path("admin/subjects/<uuid:subject_id>/teachers/",       AdminSubjectTeachersView.as_view()),
-    path("admin/subject-teachers/<int:assignment_id>/",      AdminSubjectTeacherDetailView.as_view()),
+    path("admin/subject-teachers/<uuid:assignment_id>/",     AdminSubjectTeacherDetailView.as_view()),
     # Admin — whole-course staffing grid + bulk assign (one teacher → many subjects)
     path("admin/courses/<uuid:course_id>/staffing/",             AdminCourseStaffingView.as_view()),
     path("admin/courses/<uuid:course_id>/staffing/bulk-assign/", AdminCourseBulkAssignView.as_view()),

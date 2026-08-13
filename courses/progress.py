@@ -7,19 +7,20 @@ across every chapter in every subject of the course.
 """
 
 from .admin_academy_views import _teacher_name
-from .models import SubjectTeacher
+from .models import TeachingAssignment
 
 
 def _course_subject_teacher_name(subject):
-    """No batch context here (course-wide fallback), so this can only use the
-    legacy course-wide SubjectTeacher assignment."""
-    st = (
-        SubjectTeacher.objects
-        .filter(subject=subject)
+    """No batch context here (this is the course-level progress view), so
+    only the course-wide (batch=NULL) teaching assignment applies."""
+    ta = (
+        TeachingAssignment.objects
+        .filter(subject=subject, batch__isnull=True, is_active=True)
         .select_related("teacher")
+        .order_by("order")
         .first()
     )
-    return _teacher_name(st.teacher) if st else ""
+    return _teacher_name(ta.teacher) if ta else ""
 
 
 def build_course_progress(course):

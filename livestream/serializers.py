@@ -65,13 +65,9 @@ class LiveSessionCreateSerializer(serializers.ModelSerializer):
                 {"batch_id": ["Batch and subject belong to different courses."]}
             )
 
-        # Authz: assigned to this (batch, subject) via the new roster, or the
-        # legacy course-wide SubjectTeacher (dual-read safety net for Phase 3).
-        assigned = (
-            is_teacher_of(user, batch, subject)
-            or subject.subject_teachers.filter(teacher=user).exists()
-        )
-        if not assigned:
+        # Authz: assigned to this (batch, subject) — either scoped to the
+        # batch, or course-wide (is_teacher_of() covers both).
+        if not is_teacher_of(user, batch, subject):
             raise serializers.ValidationError(
                 {"non_field_errors": ["You are not assigned to this subject."]}
             )

@@ -183,7 +183,9 @@ class TeacherLiveSessionListView(generics.ListAPIView):
         cutoff = now - timedelta(days=90)
 
         if subject_id:
-            if not user.subject_assignments.filter(subject_id=subject_id).exists():
+            if not user.teaching_assignments.filter(
+                subject_id=subject_id, is_active=True,
+            ).exists():
                 raise PermissionDenied("Not assigned to this subject.")
 
             return (
@@ -194,8 +196,9 @@ class TeacherLiveSessionListView(generics.ListAPIView):
                 .order_by("start_time")
             )
 
-        assigned_subject_ids = user.subject_assignments.values_list(
-            "subject_id", flat=True)
+        assigned_subject_ids = user.teaching_assignments.filter(
+            is_active=True,
+        ).values_list("subject_id", flat=True)
 
         cutoff = now - timedelta(days=90)
         return (

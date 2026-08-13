@@ -30,7 +30,7 @@ from django.db.models import (
 )
 from django.db.models.functions import Coalesce
 
-from courses.models import Subject, SubjectTeacher
+from courses.models import Subject, TeachingAssignment
 from courses.services import teaches_subject
 
 from .models import Quiz, QuizAttempt, Question, Choice, StudentAnswer
@@ -1233,13 +1233,17 @@ class StudentQuizSubjectsView(APIView):
                 course__subscriptions__expires_at__gt=_tz.now(),
             )
             .select_related("course")
-            .prefetch_related("subject_teachers__teacher")
+            .prefetch_related("teaching_assignments__teacher")
             .distinct()
         )
 
         data = []
         for subject in subjects:
-            teacher_rel = subject.subject_teachers.first()
+            teacher_rel = next(
+                (ta for ta in subject.teaching_assignments.all()
+                 if ta.batch_id is None and ta.is_active),
+                None,
+            )
             teacher_name = (
                 teacher_rel.teacher.email if teacher_rel else ""
             )
@@ -1311,10 +1315,7 @@ class TeacherQuizAttemptsView(APIView):
             id=pk
         )
 
-        if not SubjectTeacher.objects.filter(
-            subject=quiz.subject,
-            teacher=user
-        ).exists():
+        if not teaches_subject(user, quiz.subject):
             raise PermissionDenied("Not assigned to this subject.")
 
         from django.db.models import Max, FloatField, ExpressionWrapper, F
@@ -1377,10 +1378,7 @@ class TeacherStudentAttemptsView(generics.ListAPIView):
             id=quiz_id
         )
 
-        if not SubjectTeacher.objects.filter(
-            subject=quiz.subject,
-            teacher=user
-        ).exists():
+        if not teaches_subject(user, quiz.subject):
             raise PermissionDenied("Not assigned to this subject.")
 
         return (
@@ -1409,10 +1407,7 @@ class TeacherQuizAttemptDetailView(APIView):
             id=pk
         )
 
-        if not SubjectTeacher.objects.filter(
-            subject=attempt.quiz.subject,
-            teacher=request.user
-        ).exists():
+        if not teaches_subject(request.user, attempt.quiz.subject):
             raise PermissionDenied("Not authorized.")
 
         result_questions = []
@@ -1474,9 +1469,7 @@ class TeacherQuizAnalyticsView(APIView):
             Quiz.objects.select_related("subject", "subject__course"), pk=pk
         )
 
-        if not SubjectTeacher.objects.filter(
-            subject=quiz.subject, teacher=request.user
-        ).exists():
+        if not teaches_subject(request.user, quiz.subject):
             raise PermissionDenied("Not assigned to this subject.")
 
         submitted_attempts = list(
@@ -1572,9 +1565,7 @@ class TeacherQuizRemindView(APIView):
             Quiz.objects.select_related("subject", "subject__course"), pk=pk
         )
 
-        if not SubjectTeacher.objects.filter(
-            subject=quiz.subject, teacher=request.user
-        ).exists():
+        if not teaches_subject(request.user, quiz.subject):
             raise PermissionDenied("Not assigned to this subject.")
 
         enrolled_profile_ids = set(
@@ -1747,9 +1738,9 @@ class TeacherQuestionBankView(generics.ListAPIView):
         difficulty = self.request.query_params.get("difficulty", "").strip()
         search = self.request.query_params.get("search", "").strip()
 
-        assigned_subject_ids = SubjectTeacher.objects.filter(
-            teacher=user
-        ).values_list("subject_id", flat=True)
+        assigned_subject_ids = TeachingAssignment.objects.filter(
+            teacher=user, is_active=True
+        ).values_list("subject_id", flat=True).distinct()
 
         qs = (
             Question.objects
@@ -1794,9 +1785,9 @@ class TeacherBankFiltersView(APIView):
         user = request.user
         require_teacher_context(request)
 
-        assigned_subject_ids = SubjectTeacher.objects.filter(
-            teacher=user
-        ).values_list("subject_id", flat=True)
+        assigned_subject_ids = TeachingAssignment.objects.filter(
+            teacher=user, is_active=True
+        ).values_list("subject_id", flat=True).distinct()
 
         topics = (
             Question.objects

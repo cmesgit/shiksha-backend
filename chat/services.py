@@ -450,9 +450,9 @@ def learner_in_course(lp, course_id):
 
 def teacher_in_course(tp, course_id):
     try:
-        from courses.models import SubjectTeacher
-        return SubjectTeacher.objects.filter(
-            subject__course_id=course_id, teacher=tp.user
+        from courses.models import TeachingAssignment
+        return TeachingAssignment.objects.filter(
+            subject__course_id=course_id, teacher=tp.user, is_active=True,
         ).exists()
     except Exception:
         return False
@@ -537,9 +537,9 @@ def learner_teacher_share_active_course(lp, tp):
     clever query.
     """
     try:
-        from courses.models import SubjectTeacher
+        from courses.models import TeachingAssignment
         course_ids = (
-            SubjectTeacher.objects.filter(teacher=tp.user)
+            TeachingAssignment.objects.filter(teacher=tp.user, is_active=True)
             .values_list("subject__course_id", flat=True)
             .distinct()
         )
@@ -1387,9 +1387,9 @@ def build_profile(kind, obj_id):
             bio = getattr(tp, "bio", "") or ""
         courses = []
         try:
-            from courses.models import SubjectTeacher
+            from courses.models import TeachingAssignment
             courses = list(
-                SubjectTeacher.objects.filter(teacher=tp.user)
+                TeachingAssignment.objects.filter(teacher=tp.user, is_active=True)
                 .select_related("subject", "subject__course")
                 .values_list("subject__course__title", flat=True)
                 .distinct()

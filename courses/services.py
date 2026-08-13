@@ -12,7 +12,9 @@ from .models import TeachingAssignment
 
 
 def is_teacher_of(user, batch, subject):
-    """True if `user` actively teaches `subject` in `batch`.
+    """True if `user` actively teaches `subject` in `batch` — either via a
+    row scoped to that exact batch, or a course-wide (batch=NULL) row, which
+    applies to every batch of the course.
 
     The student↔teacher relationship in the academy is always derived
     through the batch (student → Enrollment.batch → TeachingAssignment →
@@ -21,28 +23,19 @@ def is_teacher_of(user, batch, subject):
     if user is None or batch is None or subject is None:
         return False
     return TeachingAssignment.objects.filter(
-        batch=batch, subject=subject, teacher=user, is_active=True,
+        models.Q(batch=batch) | models.Q(batch__isnull=True),
+        subject=subject, teacher=user, is_active=True,
     ).exists()
 
 
 def teaches_subject(user, subject):
-    """True if `user` actively teaches `subject` in *any* batch.
-
-    Subject-level authorization gate (the level the old SubjectTeacher checks
-    used). Prefers the new TeachingAssignment roster but falls back to the
-    legacy SubjectTeacher during the migration window, so a teacher whose
-    assignment wasn't backfilled (e.g. only taught in an inactive batch)
-    keeps access. Drop the fallback in Phase 5 with SubjectTeacher.
-    """
+    """True if `user` actively teaches `subject` — in any specific batch, or
+    course-wide (batch=NULL). Subject-level authorization gate."""
     if user is None or not getattr(user, "is_authenticated", False) or subject is None:
         return False
-    if TeachingAssignment.objects.filter(
+    return TeachingAssignment.objects.filter(
         subject=subject, teacher=user, is_active=True,
-    ).exists():
-        return True
-    # Legacy fallback (removed in Phase 5).
-    from .models import SubjectTeacher
-    return SubjectTeacher.objects.filter(subject=subject, teacher=user).exists()
+    ).exists()
 
 
 def scope_to_enrollment(qs, enrollment):

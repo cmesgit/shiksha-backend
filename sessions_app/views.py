@@ -246,16 +246,17 @@ def request_session(request):
     ser.is_valid(raise_exception=True)
     d = ser.validated_data
 
-    from courses.models import Subject, SubjectTeacher
+    from courses.models import Subject, TeachingAssignment
 
     try:
         subject_obj = Subject.objects.get(id=d["subject_id"])
     except Subject.DoesNotExist:
         return Response({"error": "Invalid subject"}, status=400)
 
-    if not SubjectTeacher.objects.filter(
+    if not TeachingAssignment.objects.filter(
         subject=subject_obj,
-        teacher_id=d["teacher_id"]
+        teacher_id=d["teacher_id"],
+        is_active=True,
     ).exists():
         return Response(
             {"error": "Teacher does not teach this subject"},
@@ -968,14 +969,14 @@ def private_session_notes(request, session_id):
 @permission_classes([IsAuthenticated])
 def subject_teachers(request, subject_id):
     """Get teachers for a subject. Optional: filters out busy teachers."""
-    from courses.models import SubjectTeacher
+    from courses.models import TeachingAssignment
 
     date = request.query_params.get("date")
     time = request.query_params.get("time")
     duration = int(request.query_params.get("duration", 60))
 
-    qs = SubjectTeacher.objects.filter(
-        subject_id=subject_id
+    qs = TeachingAssignment.objects.filter(
+        subject_id=subject_id, is_active=True,
     ).select_related("teacher")
 
     if date and time:

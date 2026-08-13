@@ -42,19 +42,23 @@ class SubjectSerializer(serializers.ModelSerializer):
         return None
 
     def get_teachers(self, obj):
-        subject_teachers = (
-            obj.subject_teachers
+        # Course-wide (batch=NULL) assignments only — there's no batch context
+        # at this (subject) level, same as the legacy course-wide SubjectTeacher
+        # this replaced.
+        assignments = (
+            obj.teaching_assignments
+            .filter(batch__isnull=True, is_active=True)
             .select_related("teacher__teacher_profile")
             .order_by("order")
         )
         data = []
-        for st in subject_teachers:
-            teacher = st.teacher
+        for ta in assignments:
+            teacher = ta.teacher
             profile = getattr(teacher, "teacher_profile", None)
             data.append({
                 "id": teacher.id,
                 "name": (lambda p: p.full_name if p and p.full_name else teacher.username)(teacher.default_learner_profile()),
-                "display_role": st.display_role,
+                "display_role": ta.role,
                 "qualification": profile.qualification if profile else "",
                 "bio": profile.bio if profile else "",
                 "rating": profile.rating if profile else None,

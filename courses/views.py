@@ -1,7 +1,8 @@
 from .serializers import ChapterSerializer
 from .models import Chapter
 from django.db.models import Count, Prefetch, Q
-from .models import SubjectTeacher
+from .models import TeachingAssignment
+from .services import teaches_subject
 from accounts.models import LearnerProfile, Role
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -79,7 +80,8 @@ class MyCoursesView(APIView):
 
     def get(self, request):
         courses = Course.objects.filter(
-            subjects__subject_teachers__teacher=request.user
+            subjects__teaching_assignments__teacher=request.user,
+            subjects__teaching_assignments__is_active=True,
         ).select_related("board").distinct()
 
         serializer = CourseSerializer(courses, many=True)
@@ -96,7 +98,8 @@ class UpdateCourseView(APIView):
     def patch(self, request, course_id):
         course = get_object_or_404(
             Course.objects.filter(
-                subjects__subject_teachers__teacher=request.user
+                subjects__teaching_assignments__teacher=request.user,
+                subjects__teaching_assignments__is_active=True,
             ).distinct(),
             id=course_id,
         )
@@ -122,7 +125,8 @@ class DeleteCourseView(APIView):
     def delete(self, request, course_id):
         course = get_object_or_404(
             Course.objects.filter(
-                subjects__subject_teachers__teacher=request.user
+                subjects__teaching_assignments__teacher=request.user,
+                subjects__teaching_assignments__is_active=True,
             ).distinct(),
             id=course_id,
         )
@@ -247,8 +251,8 @@ class CourseSubjectsView(APIView):
         else:
             # Teacher identity without an active learner profile: allow
             # only if assigned to teach this course's subjects.
-            is_enrolled = SubjectTeacher.objects.filter(
-                subject__course_id=course_id, teacher=request.user
+            is_enrolled = TeachingAssignment.objects.filter(
+                subject__course_id=course_id, teacher=request.user, is_active=True,
             ).exists()
 
         if not is_enrolled:
@@ -260,8 +264,9 @@ class CourseSubjectsView(APIView):
             .select_related("course__stream", "course__board")
             .prefetch_related(
                 Prefetch(
-                    "subject_teachers",
-                    queryset=SubjectTeacher.objects
+                    "teaching_assignments",
+                    queryset=TeachingAssignment.objects
+                    .filter(batch__isnull=True, is_active=True)
                     .select_related("teacher", "teacher__teacher_profile")
                     .order_by("order"),
                 )
@@ -299,7 +304,7 @@ def _require_subject_access(request, subject):
 
     is_assigned_teacher = (
         user.has_role("TEACHER")
-        and subject.subject_teachers.filter(teacher=user).exists()
+        and teaches_subject(user, subject)
     )
     if is_assigned_teacher:
         return None
@@ -322,7 +327,7 @@ class SubjectDetailView(APIView):
     def get(self, request, subject_id):
         subject = get_object_or_404(
             Subject.objects.prefetch_related(
-                "subject_teachers__teacher__teacher_profile"
+                "teaching_assignments__teacher__teacher_profile"
             ).select_related("course__stream", "course__board"),
             id=subject_id
         )
@@ -347,7 +352,7 @@ class SubjectDashboardView(APIView):
 
         subject = get_object_or_404(
             Subject.objects.prefetch_related(
-                "subject_teachers__teacher"
+                "teaching_assignments__teacher"
             ).select_related("course__stream", "course__board"),
             id=subject_id
         )
@@ -477,7 +482,7 @@ class TeacherMyClassesView(APIView):
 
         subjects = (
             Subject.objects
-            .filter(subject_teachers__teacher=user)
+            .filter(teaching_assignments__teacher=user, teaching_assignments__is_active=True)
             .select_related("course__stream", "course__board")
             .annotate(
                 students_count=Count(
@@ -667,9 +672,7 @@ class SubjectStudentsView(APIView):
 
         subject = get_object_or_404(Subject, id=subject_id)
 
-        if not SubjectTeacher.objects.filter(
-            subject=subject, teacher=user
-        ).exists():
+        if not teaches_subject(user, subject):
             return Response(
                 {"detail": "You are not assigned to this subject."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -762,7 +765,7 @@ class TeacherAllStudentsView(APIView):
 
         subjects = (
             Subject.objects
-            .filter(subject_teachers__teacher=user)
+            .filter(teaching_assignments__teacher=user, teaching_assignments__is_active=True)
             .select_related("course__stream")
             .distinct()
         )
@@ -1443,8 +1446,8 @@ class CourseCatalogView(APIView):
         teacher_by_course = {}
         if course_ids:
             links = (
-                SubjectTeacher.objects
-                .filter(subject__course_id__in=course_ids)
+                TeachingAssignment.objects
+                .filter(subject__course_id__in=course_ids, batch__isnull=True, is_active=True)
                 .select_related("teacher", "subject")
                 .order_by("subject__course_id", "order")
             )

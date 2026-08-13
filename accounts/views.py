@@ -651,10 +651,10 @@ class TeacherProfileView(APIView):
         profile = user.default_learner_profile() or _profile_target(request)
         tp = getattr(user, "teacher_profile", None)
 
-        # Active courses & subjects via SubjectTeacher
-        from courses.models import SubjectTeacher
-        assignments = SubjectTeacher.objects.filter(
-            teacher=user
+        # Active courses & subjects via TeachingAssignment
+        from courses.models import TeachingAssignment
+        assignments = TeachingAssignment.objects.filter(
+            teacher=user, is_active=True,
         ).select_related("subject__course")
 
         active_courses = {}

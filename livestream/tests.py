@@ -170,7 +170,7 @@ class JoinLiveSessionContextTests(TestCase):
 
     def setUp(self):
         from accounts.models import LearnerProfile, Role, UserRole
-        from courses.models import SubjectTeacher
+        from courses.models import TeachingAssignment
         from enrollments.models import Enrollment, Subscription
 
         self.teacher = User.objects.create_user(
@@ -183,7 +183,7 @@ class JoinLiveSessionContextTests(TestCase):
         board = Board.objects.create(name="CBSE", board_type=Board.TYPE_CENTRAL)
         self.course = Course.objects.create(board=board, title="C10", class_level=10)
         self.subject = Subject.objects.create(course=self.course, name="Physics")
-        SubjectTeacher.objects.create(subject=self.subject, teacher=self.teacher)
+        TeachingAssignment.objects.create(subject=self.subject, teacher=self.teacher, batch=None, is_active=True)
 
         now = timezone.now()
         self.session = LiveSession.objects.create(
@@ -302,7 +302,7 @@ class StudentCannotEndSessionTests(TestCase):
 
     def setUp(self):
         from accounts.models import LearnerProfile, Role, UserRole
-        from courses.models import SubjectTeacher
+        from courses.models import TeachingAssignment
         from enrollments.models import Enrollment
 
         self.teacher = User.objects.create_user(
@@ -315,7 +315,7 @@ class StudentCannotEndSessionTests(TestCase):
         board = Board.objects.create(name="CBSE", board_type=Board.TYPE_CENTRAL)
         self.course = Course.objects.create(board=board, title="C10", class_level=10)
         self.subject = Subject.objects.create(course=self.course, name="Physics")
-        SubjectTeacher.objects.create(subject=self.subject, teacher=self.teacher)
+        TeachingAssignment.objects.create(subject=self.subject, teacher=self.teacher, batch=None, is_active=True)
 
         self.student = User.objects.create_user(
             username="es_student@x.com", email="es_student@x.com", password="x"
@@ -419,7 +419,7 @@ class RescheduleLiveSessionTests(TestCase):
 
     def setUp(self):
         from accounts.models import Role, UserRole
-        from courses.models import Batch, SubjectTeacher
+        from courses.models import Batch, TeachingAssignment
 
         self.teacher = User.objects.create_user(
             username="rt@x.com", email="rt@x.com", password="x"
@@ -431,7 +431,7 @@ class RescheduleLiveSessionTests(TestCase):
         board = Board.objects.create(name="CBSE", board_type=Board.TYPE_CENTRAL)
         self.course = Course.objects.create(board=board, title="C10", class_level=10)
         self.subject = Subject.objects.create(course=self.course, name="Physics")
-        SubjectTeacher.objects.create(subject=self.subject, teacher=self.teacher)
+        TeachingAssignment.objects.create(subject=self.subject, teacher=self.teacher, batch=None, is_active=True)
         self.batch = Batch.objects.create(course=self.course, name="Batch A", code="A1")
 
         self.now = timezone.now()
@@ -531,7 +531,7 @@ class CourseSessionConsumerAuthTests(TransactionTestCase):
     previously rejected outright (enrollment-only check)."""
 
     def setUp(self):
-        from courses.models import SubjectTeacher
+        from courses.models import TeachingAssignment
         from enrollments.models import Enrollment
 
         self.teacher = User.objects.create_user(
@@ -546,7 +546,7 @@ class CourseSessionConsumerAuthTests(TransactionTestCase):
         board = Board.objects.create(name="CBSE", board_type=Board.TYPE_CENTRAL)
         self.course = Course.objects.create(board=board, title="C10", class_level=10)
         self.subject = Subject.objects.create(course=self.course, name="Physics")
-        SubjectTeacher.objects.create(subject=self.subject, teacher=self.teacher)
+        TeachingAssignment.objects.create(subject=self.subject, teacher=self.teacher, batch=None, is_active=True)
         Enrollment.objects.create(
             user=self.student, course=self.course, status=Enrollment.STATUS_ACTIVE
         )

@@ -5,7 +5,8 @@ from django.db.models import Prefetch, Count, Case, When, Value, CharField, Q
 from django.db import IntegrityError
 from django.http import HttpResponse
 
-from courses.models import Subject, SubjectTeacher
+from courses.models import Subject, TeachingAssignment
+from courses.services import teaches_subject
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -40,7 +41,7 @@ from io import BytesIO
 
 def _assert_teacher_owns_assignment(user, assignment):
     """Raises PermissionDenied if the teacher is not assigned to the subject."""
-    if not assignment.chapter.subject.subject_teachers.filter(teacher=user).exists():
+    if not teaches_subject(user, assignment.chapter.subject):
         raise PermissionDenied("Not assigned to this subject.")
 
 
@@ -417,7 +418,7 @@ class TeacherSubjectAssignmentsView(generics.ListAPIView):
 
         subject = get_object_or_404(Subject, id=subject_id)
 
-        if not subject.subject_teachers.filter(teacher=user).exists():
+        if not teaches_subject(user, subject):
             raise PermissionDenied("Not assigned to this subject.")
 
         return (
@@ -443,7 +444,7 @@ class TeacherAllAssignmentsView(generics.ListAPIView):
     an N+1 that grew with the teacher's timetable.
 
     Scope is the same as the per-subject view's permission check, expressed as
-    a filter instead: subjects where a SubjectTeacher row links this user.
+    a filter instead: subjects with an active TeachingAssignment for this user.
     """
 
     serializer_class = TeacherAssignmentListSerializer
@@ -452,7 +453,10 @@ class TeacherAllAssignmentsView(generics.ListAPIView):
     def get_queryset(self):
         return (
             Assignment.objects
-            .filter(chapter__subject__subject_teachers__teacher=self.request.user)
+            .filter(
+                chapter__subject__teaching_assignments__teacher=self.request.user,
+                chapter__subject__teaching_assignments__is_active=True,
+            )
             # chapter__subject + batch: the serializer reports subject_id/
             # subject_name and batch_id/batch_name off these.
             .select_related("chapter__subject", "batch")
@@ -519,10 +523,10 @@ class SubjectAssignmentsView(APIView):
         )
 
         teacher_prefetch = Prefetch(
-            "chapter__subject__subject_teachers",
-            queryset=SubjectTeacher.objects.select_related(
-                "teacher"
-            ).order_by("order"),
+            "chapter__subject__teaching_assignments",
+            queryset=TeachingAssignment.objects.filter(
+                batch__isnull=True, is_active=True,
+            ).select_related("teacher").order_by("order"),
             to_attr="prefetched_teachers",
         )
 

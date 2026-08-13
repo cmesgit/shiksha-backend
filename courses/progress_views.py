@@ -5,7 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Course, Chapter, SubjectTeacher, TeachingAssignment
+from .models import Course, Chapter, TeachingAssignment
 from .progress import build_course_progress
 from .services import teaches_subject
 
@@ -22,13 +22,8 @@ def _can_edit_subject(user, subject):
 def _can_edit_any_subject_in_course(user, course):
     if user.is_staff:
         return True
-    if TeachingAssignment.objects.filter(
+    return TeachingAssignment.objects.filter(
         subject__course=course, teacher=user, is_active=True
-    ).exists():
-        return True
-    # Legacy fallback (removed in Phase 5).
-    return SubjectTeacher.objects.filter(
-        subject__course=course, teacher=user
     ).exists()
 
 

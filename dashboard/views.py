@@ -53,7 +53,7 @@ from accounts.auth_flow import (
 from accounts.models import Role
 from activity.models import Activity
 from assignments.models import Assignment, AssignmentSubmission
-from courses.models import Subject, Chapter, SubjectTeacher
+from courses.models import Subject, Chapter, TeachingAssignment
 from courses.progress_stats import average_quiz_score_pct
 from enrollments.models import Enrollment
 from livestream.models import LiveSession
@@ -327,8 +327,10 @@ class DashboardView(APIView):
         excluded = [LiveSession.STATUS_COMPLETED, LiveSession.STATUS_CANCELLED]
 
         teacher_prefetch = Prefetch(
-            "chapter__subject__subject_teachers",
-            queryset=SubjectTeacher.objects.select_related("teacher"),
+            "chapter__subject__teaching_assignments",
+            queryset=TeachingAssignment.objects.filter(
+                batch__isnull=True, is_active=True,
+            ).select_related("teacher"),
             to_attr="prefetched_teachers",
         )
 

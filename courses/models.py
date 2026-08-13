@@ -297,50 +297,6 @@ class CourseDetail(models.Model):
         return f"Details of {self.course.title}"
 
 
-class SubjectTeacher(models.Model):
-    ROLE_PRIMARY = "PRIMARY"
-    ROLE_ASSISTANT = "ASSISTANT"
-
-    ROLE_CHOICES = [
-        (ROLE_PRIMARY, "Primary Teacher"),
-        (ROLE_ASSISTANT, "Assistant"),
-    ]
-
-    subject = models.ForeignKey(
-        "Subject",
-        on_delete=models.CASCADE,
-        related_name="subject_teachers"
-    )
-
-    teacher = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="subject_assignments"
-    )
-
-    display_role = models.CharField(
-        max_length=20,
-        choices=ROLE_CHOICES,
-        default=ROLE_PRIMARY
-    )
-
-    order = models.PositiveIntegerField(default=1)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["order"]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["subject", "teacher"],
-                name="unique_teacher_per_subject"
-            )
-        ]
-
-    def __str__(self):
-        return f"{self.subject.name} → {self.teacher.email}"
-
-
 class Board(models.Model):
     TYPE_STATE = "STATE"
     TYPE_CENTRAL = "CENTRAL"
@@ -489,10 +445,14 @@ class Batch(models.Model):
         return self.course.price if self.price_override is None else self.price_override
 
 
-# Delivery-plane teaching roster: who teaches which subject *in which batch*.
-# Replaces SubjectTeacher (course-wide, batch-blind) as the source of truth;
-# SubjectTeacher stays during the migration window as a read-only fallback
-# and is dropped in the final cleanup phase.
+# Delivery-plane teaching roster: who teaches which subject, optionally
+# scoped to a batch. batch=NULL means "course-wide" — the same convention
+# every other content model here uses (LiveSession, Quiz, Assignment,
+# StudyMaterial, SessionRecording all treat NULL batch as course-wide).
+# This is the sole source of truth; SubjectTeacher (which was course-wide
+# only and had no batch concept) has been retired and its rows migrated in
+# as batch=NULL TeachingAssignments (courses/migrations — see the
+# "migrate_subject_teacher_to_teaching_assignment" migration).
 class TeachingAssignment(models.Model):
     ROLE_PRIMARY = "PRIMARY"
     ROLE_ASSISTANT = "ASSISTANT"
@@ -509,6 +469,8 @@ class TeachingAssignment(models.Model):
         Batch,
         on_delete=models.CASCADE,
         related_name="teaching_assignments",
+        null=True,
+        blank=True,
     )
     subject = models.ForeignKey(
         Subject,
@@ -542,16 +504,33 @@ class TeachingAssignment(models.Model):
         ordering = ["order"]
         constraints = [
             # A teacher appears once per (batch, subject) among ACTIVE rows.
+            # NOTE: this only bites when batch IS NOT NULL — Postgres treats
+            # each NULL as distinct even under a matching partial index, so
+            # it is silently a no-op for course-wide (batch=NULL) rows. The
+            # two constraints below cover that case explicitly.
             models.UniqueConstraint(
                 fields=["batch", "subject", "teacher"],
                 condition=models.Q(is_active=True),
                 name="uniq_active_teacher_per_batch_subject",
             ),
-            # Exactly one active PRIMARY per (batch, subject).
+            # Exactly one active PRIMARY per (batch, subject) — batch-scoped.
             models.UniqueConstraint(
                 fields=["batch", "subject"],
                 condition=models.Q(is_active=True, role="PRIMARY"),
                 name="uniq_active_primary_per_batch_subject",
+            ),
+            # Course-wide case (batch IS NULL): a teacher appears once per
+            # subject among active course-wide rows.
+            models.UniqueConstraint(
+                fields=["subject", "teacher"],
+                condition=models.Q(is_active=True, batch__isnull=True),
+                name="uniq_active_teacher_per_subject_courselevel",
+            ),
+            # Course-wide case: exactly one active PRIMARY per subject.
+            models.UniqueConstraint(
+                fields=["subject"],
+                condition=models.Q(is_active=True, role="PRIMARY", batch__isnull=True),
+                name="uniq_active_primary_per_subject_courselevel",
             ),
         ]
         indexes = [
@@ -560,8 +539,10 @@ class TeachingAssignment(models.Model):
         ]
 
     def clean(self):
-        # Guard the triangle: the subject must belong to the batch's course.
-        if self.subject.course_id != self.batch.course_id:
+        # Guard the triangle: a batch-scoped row's subject must belong to
+        # that batch's course. Course-wide (batch=NULL) rows have nothing to
+        # check against.
+        if self.batch_id and self.subject.course_id != self.batch.course_id:
             from django.core.exceptions import ValidationError
             raise ValidationError("Subject and batch belong to different courses.")
 

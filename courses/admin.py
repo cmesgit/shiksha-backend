@@ -2,7 +2,7 @@ from .models import Stream
 from django.contrib import admin
 from django.db.models import Count, Q
 from django.utils import timezone
-from .models import Course, Subject, Chapter, SubjectTeacher, Batch
+from .models import Course, Subject, Chapter, TeachingAssignment, Batch
 from .models_recordings import SessionRecording
 from .models import Board, BoardNotifyRequest, CourseNotifyRequest
 
@@ -19,12 +19,12 @@ class CourseAdmin(admin.ModelAdmin):
     autocomplete_fields = ["board", "stream"]
 
 # =========================
-# SUBJECT TEACHER INLINE
+# TEACHING ASSIGNMENT INLINE
 # =========================
 
 
-class SubjectTeacherInline(admin.TabularInline):
-    model = SubjectTeacher
+class TeachingAssignmentInline(admin.TabularInline):
+    model = TeachingAssignment
     extra = 1
 
 
@@ -58,7 +58,7 @@ class SubjectAdmin(admin.ModelAdmin):
     search_fields = ("name", "course__title")
 
     inlines = [
-        SubjectTeacherInline,
+        TeachingAssignmentInline,
         SessionRecordingInline,
     ]
 
@@ -67,8 +67,8 @@ class SubjectAdmin(admin.ModelAdmin):
         return qs.select_related("course__board")
 
     def get_teachers(self, obj):
-        subject_teachers = obj.subject_teachers.select_related("teacher")
-        return ", ".join([st.teacher.email for st in subject_teachers])
+        assignments = obj.teaching_assignments.filter(is_active=True).select_related("teacher")
+        return ", ".join([ta.teacher.email for ta in assignments])
 
     get_teachers.short_description = "Teachers"
 

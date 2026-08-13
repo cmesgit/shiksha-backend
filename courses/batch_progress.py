@@ -21,18 +21,21 @@ per-chapter ``note``)::
     }
 """
 
+from django.db import models
+
 from .admin_academy_views import _teacher_name
-from .models import SubjectTeacher, TeachingAssignment
+from .models import TeachingAssignment
 from .models_batch_progress import BatchChapterProgress
 from .services import is_teacher_of
 
 
 def _batch_subject_teacher_name(batch, subject):
-    """Primary teacher for this subject in this batch, falling back to the
-    legacy course-wide SubjectTeacher assignment during the migration window."""
+    """Primary teacher for this subject in this batch — either a row scoped
+    to this exact batch, or a course-wide (batch=NULL) row."""
     assignments = list(
         TeachingAssignment.objects
-        .filter(batch=batch, subject=subject, is_active=True)
+        .filter(models.Q(batch=batch) | models.Q(batch__isnull=True),
+                subject=subject, is_active=True)
         .select_related("teacher")
         .order_by("order")
     )
@@ -40,54 +43,33 @@ def _batch_subject_teacher_name(batch, subject):
         (a for a in assignments if a.role == TeachingAssignment.ROLE_PRIMARY),
         assignments[0] if assignments else None,
     )
-    if ta:
-        return _teacher_name(ta.teacher)
-    st = (
-        SubjectTeacher.objects
-        .filter(subject=subject)
-        .select_related("teacher")
-        .first()
-    )
-    return _teacher_name(st.teacher) if st else ""
+    return _teacher_name(ta.teacher) if ta else ""
 
 
 # --------------------------------------------------------------------------- #
 # Permissions
 # --------------------------------------------------------------------------- #
 def can_view_batch_progress(user, batch):
-    """Admin/staff, or a teacher with an active assignment in this batch.
-
-    Prefers the new per-batch TeachingAssignment roster; falls back to the
-    legacy course-wide SubjectTeacher during the migration window (dropped in
-    Phase 5 with SubjectTeacher)."""
+    """Admin/staff, or a teacher with an active assignment in this batch —
+    either scoped to the batch, or course-wide for any subject of it."""
     if not (user and user.is_authenticated):
         return False
     if user.is_staff:
         return True
-    if TeachingAssignment.objects.filter(
-        batch=batch, teacher=user, is_active=True
-    ).exists():
-        return True
-    return SubjectTeacher.objects.filter(
-        subject__course_id=batch.course_id, teacher=user
+    return TeachingAssignment.objects.filter(
+        models.Q(batch=batch) | models.Q(batch__isnull=True, subject__course_id=batch.course_id),
+        teacher=user, is_active=True,
     ).exists()
 
 
 def can_edit_chapter_for_batch(user, chapter, batch):
-    """Admin/staff, or the teacher of this chapter's subject *in this batch*.
-
-    Now that a teacher↔batch link exists (TeachingAssignment), this gates on
-    the specific (batch, subject). Falls back to the legacy course-wide
-    SubjectTeacher during the migration window (dropped in Phase 5)."""
+    """Admin/staff, or the teacher of this chapter's subject in this batch
+    (a course-wide assignment counts for every batch)."""
     if not (user and user.is_authenticated):
         return False
     if user.is_staff:
         return True
-    if is_teacher_of(user, batch, chapter.subject):
-        return True
-    return SubjectTeacher.objects.filter(
-        subject_id=chapter.subject_id, teacher=user
-    ).exists()
+    return is_teacher_of(user, batch, chapter.subject)
 
 
 # --------------------------------------------------------------------------- #
