@@ -277,7 +277,7 @@ class SessionRequestSerializer(serializers.Serializer):
     group_strength = serializers.IntegerField(default=1)
     notes = serializers.CharField(required=False, allow_blank=True, default="")
     student_ids = serializers.ListField(
-        child=serializers.CharField(), required=False, default=[]
+        child=serializers.UUIDField(), required=False, default=[]
     )
 
     def validate(self, data):
