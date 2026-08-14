@@ -165,7 +165,9 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
 
     def get_teacher_name(self, obj):
         subject = obj.chapter.subject
-        teacher = subject.subject_teachers.first()
+        teacher = subject.teaching_assignments.filter(
+            batch__isnull=True, is_active=True,
+        ).select_related("teacher").first()
         if teacher and teacher.teacher.default_learner_profile():
             return teacher.teacher.default_learner_profile().full_name
         return None
@@ -227,17 +229,12 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
                 {"batch_id": "Batch and chapter belong to different courses."}
             )
 
-        # Authz: assigned to this (batch, subject) via the new roster, or the
-        # legacy course-wide SubjectTeacher (dual-read safety net for Phase 3).
-        if chapter and batch:
-            assigned = (
-                is_teacher_of(user, batch, chapter.subject)
-                or chapter.subject.subject_teachers.filter(teacher=user).exists()
+        # Authz: assigned to this (batch, subject) — either scoped to the
+        # batch, or course-wide (is_teacher_of() covers both).
+        if chapter and batch and not is_teacher_of(user, batch, chapter.subject):
+            raise serializers.ValidationError(
+                {"non_field_errors": ["You are not assigned to this subject."]}
             )
-            if not assigned:
-                raise serializers.ValidationError(
-                    {"non_field_errors": ["You are not assigned to this subject."]}
-                )
         return attrs
 
     def validate_attachment(self, value):

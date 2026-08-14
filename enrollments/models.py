@@ -47,6 +47,18 @@ class EnrollmentRequest(models.Model):
         related_name="enrollment_requests",
     )
 
+    # The student's own batch preference, submitted at request time —
+    # optional (a course may have no batches, or the student may not have
+    # picked one). The admin reviewing the request can honor this or
+    # override it explicitly; see AdminActionSerializer in serializers.py.
+    batch = models.ForeignKey(
+        "courses.Batch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="enrollment_requests",
+    )
+
     amount_paid = models.PositiveIntegerField(help_text="Amount claimed by student, in paise")
 
     payment_method = models.CharField(max_length=10, choices=METHOD_CHOICES, default=METHOD_UPI)

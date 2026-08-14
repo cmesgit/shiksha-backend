@@ -8,7 +8,7 @@ from django.db import transaction
 
 from accounts.email_utils import send_gmail
 from accounts.auth_flow import get_active_profile
-from courses.models import Course
+from courses.models import Course, Batch
 
 from .models import Enrollment, EnrollmentRequest, Subscription
 
@@ -125,11 +125,16 @@ class CourseBriefSerializer(serializers.ModelSerializer):
 # -------- Student-facing --------
 
 class EnrollmentRequestCreateSerializer(serializers.ModelSerializer):
+    batch = serializers.PrimaryKeyRelatedField(
+        queryset=Batch.objects.all(), required=False, allow_null=True,
+    )
+
     class Meta:
         model = EnrollmentRequest
         fields = (
             "id",
             "course",
+            "batch",
             "amount_paid",
             "payment_method",
             "utr_number",
@@ -154,6 +159,22 @@ class EnrollmentRequestCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "This learner already has a pending request for this course."
             )
+
+        # A batch preference, if given, must actually belong to the course
+        # being requested and still have room — this is only ever a
+        # PREFERENCE recorded for the admin to see/honor at approval time
+        # (AdminActionSerializer re-validates + row-locks for real), so no
+        # locking here.
+        batch = attrs.get("batch")
+        if batch is not None:
+            if batch.course_id != course.id:
+                raise serializers.ValidationError(
+                    {"batch": "Batch does not belong to this course."})
+            if not batch.is_active:
+                raise serializers.ValidationError({"batch": "Batch is not active."})
+            if batch.is_full:
+                raise serializers.ValidationError(
+                    {"batch": f"'{batch.name}' is full ({batch.seats_taken}/{batch.capacity})."})
 
         attrs["_learner"] = learner
         return attrs
@@ -211,6 +232,11 @@ class AdminEnrollmentRequestListSerializer(serializers.ModelSerializer):
     course_title = serializers.CharField(source="course.title", read_only=True)
     course_price = serializers.IntegerField(source="course.price", read_only=True)
     course_id = serializers.UUIDField(source="course.id", read_only=True)
+    # The student's own batch preference, submitted with the request — shown
+    # so the admin can see (and simply not override) what the student asked
+    # for; AdminActionSerializer defaults to this when approve omits `batch`.
+    requested_batch_id = serializers.UUIDField(source="batch.id", read_only=True, default=None)
+    requested_batch_name = serializers.CharField(source="batch.name", read_only=True, default=None)
 
     class Meta:
         model = EnrollmentRequest
@@ -222,6 +248,8 @@ class AdminEnrollmentRequestListSerializer(serializers.ModelSerializer):
             "course_title",
             "course_price",
             "course_id",
+            "requested_batch_id",
+            "requested_batch_name",
             "amount_paid",
             "payment_method",
             "utr_number",
@@ -267,6 +295,13 @@ class AdminActionSerializer(serializers.Serializer):
 
         request_obj = self.context.get("request_obj")
         batch_id = attrs.get("batch")
+
+        # Admin left `batch` unset: fall back to the student's own preference
+        # (EnrollmentRequest.batch, recorded at submission time — see
+        # EnrollmentRequestCreateSerializer). Still fully re-validated below,
+        # since it may have gone inactive or filled up since submission.
+        if not batch_id and attrs["action"] == "approve" and request_obj and request_obj.batch_id:
+            batch_id = request_obj.batch_id
 
         if attrs["action"] == "approve" and batch_id:
             try:
@@ -370,6 +405,12 @@ class BatchStudentSerializer(serializers.ModelSerializer):
         source="learner_profile.id", read_only=True, default=None,
     )
     course_id = serializers.UUIDField(source="course.id", read_only=True, default=None)
+    # Only populated when the queryset annotates it (the admin enrollment
+    # list's _subscription_expiry_subquery) — a plain field would 500 on the
+    # other two callers (batch roster, single-row action response) that
+    # don't. Lets the admin UI show a computed "Expired" state without a new
+    # stored Enrollment status.
+    subscription_expires_at = serializers.SerializerMethodField()
 
     class Meta:
         model = Enrollment
@@ -385,7 +426,11 @@ class BatchStudentSerializer(serializers.ModelSerializer):
             "batch_code",
             "status",
             "enrolled_at",
+            "subscription_expires_at",
         )
+
+    def get_subscription_expires_at(self, obj):
+        return getattr(obj, "subscription_expires_at", None)
 
     def get_user_name(self, obj):
         lp = obj.learner_profile

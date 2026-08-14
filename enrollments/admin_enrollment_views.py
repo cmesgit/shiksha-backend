@@ -3,7 +3,8 @@ admin_enrollment_views.py — admin management of academic course enrollments.
 
 Powers the admin app's "Enrollment Management" page:
   GET  /api/enrollments/admin/enrollments/?status=<ACTIVE|REVOKED>&q=<text>
-       → { "results": [ {id,user_name,user_email,course_title,batch_code,status,enrolled_at}, ... ] }
+       → { "results": [ {id,user_name,user_email,course_title,batch_code,status,enrolled_at,
+                          subscription_expires_at}, ... ] }
   POST /api/enrollments/admin/enrollments/<uuid>/action/
        { "action": "revoke" | "reactivate" }
        { "action": "move_batch", "batch": "<uuid|null>" }
@@ -18,12 +19,26 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import NotFound, ValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import OuterRef, Q, Subquery
 
 from accounts.permissions import IsAdmin
 from courses.models import Batch
-from .models import Enrollment
+from .models import Enrollment, Subscription
 from .serializers import BatchStudentSerializer
+
+
+def _subscription_expiry_subquery():
+    """Latest subscription's expires_at for the enrollment's (course, student),
+    dual-keyed like the rest of this codebase (courses/progress_stats.py's
+    _dual_key_q): match on learner_profile when the enrollment has one,
+    otherwise fall back to a legacy NULL-profile subscription for the same
+    account. Feeds the admin list's computed "Expired" display state without
+    a new stored Enrollment status."""
+    matching = Subscription.objects.filter(course_id=OuterRef("course_id")).filter(
+        Q(learner_profile_id=OuterRef("learner_profile_id"), learner_profile_id__isnull=False)
+        | Q(learner_profile_id__isnull=True, user_id=OuterRef("user_id"))
+    ).order_by("-expires_at")
+    return Subquery(matching.values("expires_at")[:1])
 
 
 class AdminEnrollmentListView(APIView):
@@ -33,6 +48,7 @@ class AdminEnrollmentListView(APIView):
     def get(self, request):
         qs = (Enrollment.objects
               .select_related("user", "learner_profile", "course")
+              .annotate(subscription_expires_at=_subscription_expiry_subquery())
               .order_by("-enrolled_at"))
 
         status_filter = (request.query_params.get("status") or "").strip().upper()

@@ -17,7 +17,7 @@ from rest_framework.views import APIView
 
 from quizzes.models import QuizAttempt
 
-from .models import Batch, Chapter, Course, Subject, SubjectTeacher
+from .models import Batch, Chapter, Course, Subject, TeachingAssignment
 from .models_batch_progress import BatchChapterProgress
 from .services import teaches_subject
 
@@ -51,7 +51,7 @@ class TeacherMyBatchesView(APIView):
         user = request.user
 
         course_ids = list(
-            SubjectTeacher.objects.filter(teacher=user)
+            TeachingAssignment.objects.filter(teacher=user, is_active=True)
             .values_list("subject__course_id", flat=True)
             .distinct()
         )

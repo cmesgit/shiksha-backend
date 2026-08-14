@@ -16,12 +16,15 @@
 # try `instance.tags.set([<tag-name strings>])` and blow up trying to treat
 # tag names as ContentTag primary keys.
 
+import os
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import (
-    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    HomeContentBlock, HomeFloater, HomeListItem, ShowcaseCourse,
+    Announcement, BlogPost, ContentImage, ContentTag, CurrentAffair,
+    FAQItem, HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
+    ShowcaseCourse,
 )
 
 
@@ -112,13 +115,20 @@ class BlogPostAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
         model = BlogPost
         fields = [
             "id", "title", "slug", "class_level", "subject", "chapter_number",
-            "excerpt", "cover", "body_html", "trusted_html", "tags",
-            "author", "author_name", "is_featured", "seo_title",
+            "excerpt", "cover", "body_html", "body_html_source", "trusted_html",
+            "tags", "author", "author_name", "is_featured", "seo_title",
             "seo_description", "reading_minutes", "view_count",
             "status", "publish_at", "created_at", "updated_at",
+            "locale", "translation_group",
         ]
         read_only_fields = [
-            "reading_minutes", "view_count", "created_at", "updated_at",
+            "body_html_source", "reading_minutes", "view_count",
+            "created_at", "updated_at",
+            # translation_group is server-assigned (default on create, or
+            # copied explicitly by BlogPostAdminViewSet.duplicate_translation
+            # — never accepted from a client payload, so a request can't
+            # graft itself onto an arbitrary existing translation group).
+            "translation_group",
         ]
         extra_kwargs = {
             "slug": {"required": False},
@@ -130,6 +140,25 @@ class BlogPostAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
             return ""
         full = getattr(obj.author, "get_full_name", lambda: "")() or ""
         return full or getattr(obj.author, "username", "") or ""
+
+
+# ── Editor-uploaded images (rich-text body content) ────────────────
+
+class ContentImageAdminSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContentImage
+        fields = [
+            "id", "file", "alt_text", "title", "width", "height",
+            "focal_x", "focal_y", "uploaded_by", "created_at",
+        ]
+        read_only_fields = ["id", "width", "height", "uploaded_by", "created_at"]
+
+    def create(self, validated_data):
+        if not validated_data.get("title"):
+            validated_data["title"] = os.path.splitext(
+                os.path.basename(validated_data["file"].name)
+            )[0]
+        return super().create(validated_data)
 
 
 # ── Current affairs ───────────────────────────────────────────────
@@ -252,3 +281,10 @@ class HomeFloaterAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
             "created_at", "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]
+
+
+class HomeSectionOrderAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
+    class Meta:
+        model = HomeSectionOrder
+        fields = ["id", "section", "order", "is_visible", "created_at", "updated_at"]
+        read_only_fields = ["section", "created_at", "updated_at"]

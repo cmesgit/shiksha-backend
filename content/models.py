@@ -13,6 +13,7 @@
 #   • Everything indexed the way the public API queries it.
 
 import re
+import uuid
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -22,7 +23,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.text import slugify
 
-from .sanitize import clean_html
+from .sanitize import clean_html, clean_html_restricted
 
 # ─────────────────────────────────────────────────────────────────
 #  Shared bits
@@ -131,16 +132,35 @@ class Subject(models.TextChoices):
     GENERAL = "general", "General"
 
 
+class Locale(models.TextChoices):
+    EN = "en", "English"
+    HI = "hi", "Hindi"
+
+
 class BlogPost(PublishableModel):
+    # A Hindi translation is a full second BlogPost row, not a shared field
+    # on this one — publishing/scheduling/view-counts are genuinely
+    # independent per locale in practice (a translator finishes days after
+    # the English post ships, or an editor reworks the English text without
+    # touching the live Hindi version). `translation_group` links "the same
+    # post in different languages" without forcing a shared-identity/child-
+    # translation-table rewrite of the entire publish/CRUD/cache pipeline
+    # below — a Hindi post is just another BlogPost row with locale="hi".
+    translation_group = models.UUIDField(default=uuid.uuid4, editable=False, db_index=True)
+    locale = models.CharField(max_length=8, choices=Locale.choices, default=Locale.EN, db_index=True)
+
     title = models.CharField(max_length=300)
     slug = models.CharField(
         max_length=220,
-        unique=True,
         blank=True,
         validators=[path_slug_validator],
         help_text=(
             "Path-style, e.g. class-9/economics/chapter-1. "
-            "Left blank → built from class / subject / chapter."
+            "Left blank → built from class / subject / chapter. "
+            "Unique per locale, not globally — a Hindi translation "
+            "conventionally reuses the same slug as its English sibling, "
+            "disambiguated by the public URL's /hi/ prefix rather than by "
+            "the slug string itself."
         ),
     )
     class_level = models.CharField(
@@ -168,6 +188,12 @@ class BlogPost(PublishableModel):
         help_text="Chapter/article body as HTML. Sanitized on save unless "
                   "'trusted html' is ticked.",
     )
+    body_html_source = models.TextField(
+        blank=True, default="", editable=False,
+        help_text="Body as submitted, before sanitization. Kept so a "
+                  "future sanitizer rule change can't destroy authored "
+                  "content the way it silently did before this field existed.",
+    )
     trusted_html = models.BooleanField(
         default=False,
         help_text="Skip HTML sanitization — only for first-party fragments "
@@ -192,12 +218,18 @@ class BlogPost(PublishableModel):
         indexes = [
             models.Index(fields=["status", "publish_at"], name="content_blog_live_idx"),
             models.Index(fields=["class_level", "subject"], name="content_blog_taxo_idx"),
+            models.Index(fields=["translation_group"], name="content_blog_transgroup_idx"),
+            models.Index(fields=["locale", "status", "publish_at"], name="content_blog_locale_live_idx"),
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=["class_level", "subject", "chapter_number"],
+                fields=["class_level", "subject", "chapter_number", "locale"],
                 condition=Q(chapter_number__isnull=False),
-                name="content_blog_unique_chapter",
+                name="content_blog_unique_chapter_locale",
+            ),
+            models.UniqueConstraint(
+                fields=["slug", "locale"],
+                name="content_blog_unique_slug_locale",
             ),
         ]
 
@@ -219,10 +251,21 @@ class BlogPost(PublishableModel):
         if self.slug:
             self.slug = self.slug.strip().strip("/").lower()
             path_slug_validator(self.slug)
+            # The public /blogs/hi/<slug> route reserves "hi" (and any future
+            # locale code) as the first path segment — a slug that starts
+            # with it would collide with that prefix. Near-zero chance of
+            # ever firing given how slugs are generated, but cheap to guard
+            # once rather than discover in production.
+            first_segment = self.slug.split("/", 1)[0]
+            if first_segment in Locale.values:
+                raise ValidationError(
+                    {"slug": f"Slug can't start with the reserved locale segment \"{first_segment}\"."}
+                )
 
     def save(self, *args, **kwargs):
         if not self.slug:
             self.slug = self._default_slug()
+        self.body_html_source = self.body_html
         if not self.trusted_html:
             self.body_html = clean_html(self.body_html)
         self.reading_minutes = max(
@@ -233,7 +276,13 @@ class BlogPost(PublishableModel):
         super().save(*args, **kwargs)
 
     def get_absolute_url(self):
-        return f"/blogs/{self.slug}"
+        # Mirrors content/serializers.py's `_blog_path()` — English stays
+        # unprefixed, every other locale gets a /blogs/<locale>/ segment.
+        # Used by the sitemap (content/sitemaps.py), which would otherwise
+        # point a Hindi row at the English route.
+        if self.locale == Locale.EN:
+            return f"/blogs/{self.slug}"
+        return f"/blogs/{self.locale}/{self.slug}"
 
     def __str__(self):
         return self.title
@@ -431,7 +480,15 @@ class ShowcaseCourse(TimeStampedModel):
     )
     icon = models.CharField(
         max_length=12, default="book",
-        choices=[("book", "Book"), ("flask", "Flask"), ("calc", "Calculator")],
+        # Keys must match shiksha-frontend's FeaturedCourses.jsx CAT_ICON_PATHS,
+        # which already has SVGs for all of these — this choices list previously
+        # only exposed 3 of the 7+ icons the public frontend could already render.
+        choices=[
+            ("book", "Book"), ("flask", "Flask"), ("calc", "Calculator"),
+            ("compass", "Compass"), ("pulse", "Pulse"), ("target", "Target"),
+            ("bank", "Bank"), ("shield", "Shield"), ("medal", "Medal"),
+            ("institution", "Institution"),
+        ],
     )
     link_path = models.CharField(max_length=200, blank=True, default="/courses")
     link_state = models.JSONField(
@@ -488,15 +545,32 @@ class HomeSection(models.TextChoices):
     WHY_SHIKSHA = "why_shiksha", "Why Shiksha"
     TEACHERS_STUDENTS = "teachers_students", "Teachers & Students"
     BROWSE_CATEGORIES = "browse_categories", "Browse Categories"
+    # Rendered on the homepage (ShowcaseCourse-backed, see above) but has no
+    # HomeContentBlock content of its own today — included here so it can
+    # still take part in HomeSectionOrder's reorder/show-hide list below.
+    FEATURED_COURSES = "featured_courses", "Featured Courses"
     WHY_CHOOSE = "why_choose", "Why Choose ShikshaCom"
     RESOURCES = "resources", "Resources & Support"
     COLLABORATE = "collaborate", "Collaborate"
+    # Same as FEATURED_COURSES — FAQItem-backed, no HomeContentBlock of its
+    # own, but still a real reorderable/hideable homepage section.
+    FAQ = "faq", "FAQ"
     CTA = "cta", "Closing CTA"
     # /courses page (not the homepage) — reuses this same singleton-per-
     # section content-block table so its hero heading/copy/CTAs/illustration
     # are admin-editable through the identical HomeContentBlock pattern,
-    # rather than inventing a second, courses-specific content model.
+    # rather than inventing a second, courses-specific content model. Never
+    # appears in HomeSectionOrder — that model is homepage-sequence only.
     COURSES_HERO = "courses_hero", "Courses Hero"
+
+
+HOMEPAGE_SECTIONS = [
+    HomeSection.HERO, HomeSection.WHY_SHIKSHA, HomeSection.TEACHERS_STUDENTS,
+    HomeSection.BROWSE_CATEGORIES, HomeSection.FEATURED_COURSES,
+    HomeSection.WHY_CHOOSE, HomeSection.RESOURCES, HomeSection.COLLABORATE,
+    HomeSection.FAQ, HomeSection.CTA,
+]  # excludes COURSES_HERO — matches ShikshaHome.jsx's current hardcoded
+   # render order exactly; HomeSectionOrder's seed migration uses this list.
 
 
 class HomeContentBlock(TimeStampedModel):
@@ -533,8 +607,33 @@ class HomeContentBlock(TimeStampedModel):
         ordering = ["section"]
         verbose_name = "Homepage content block"
 
+    def save(self, *args, **kwargs):
+        self.body = clean_html_restricted(self.body)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"[{self.get_section_display()}] content block"
+
+
+class HomeSectionOrder(TimeStampedModel):
+    """One row per homepage section, controlling render sequence + whether
+    it shows at all — independent of HomeContentBlock, which is about a
+    section's copy/CTA. A section can be reordered or hidden even before any
+    content block exists for it (e.g. FEATURED_COURSES/FAQ, which have no
+    HomeContentBlock row at all)."""
+
+    section = models.CharField(
+        max_length=24, choices=HomeSection.choices, unique=True, db_index=True,
+    )
+    order = models.PositiveSmallIntegerField(default=0, db_index=True)
+    is_visible = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["order"]
+        verbose_name = "Homepage section order"
+
+    def __str__(self):
+        return f"#{self.order} {self.get_section_display()}"
 
 
 class HomeListVariant(models.TextChoices):
@@ -585,6 +684,10 @@ class HomeListItem(TimeStampedModel):
         if not isinstance(self.pills, list):
             raise ValidationError({"pills": "Must be a JSON list."})
 
+    def save(self, *args, **kwargs):
+        self.body = clean_html_restricted(self.body)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"[{self.get_section_display()}] {self.title or self.stat_text or self.pk}"
 
@@ -632,3 +735,37 @@ class HomeFloater(TimeStampedModel):
 
     def __str__(self):
         return f"[{self.get_section_display()}] {self.slot}"
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Editor-uploaded images (rich-text body content, not a cover/logo)
+# ─────────────────────────────────────────────────────────────────
+
+class ContentImage(TimeStampedModel):
+    """An image dropped into a rich-text editor body (blog/homepage). Not
+    owned by any single BlogPost/HomeContentBlock — one post can embed
+    several, and deleting the post shouldn't cascade-delete an image that
+    might still be referenced elsewhere in its body_html_source history."""
+    file = models.ImageField(upload_to="content/editor/%Y/%m/")
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True,
+    )
+    alt_text = models.CharField(max_length=255, blank=True, default="")
+    title = models.CharField(max_length=255, blank=True, default="")
+    width = models.PositiveIntegerField(null=True, blank=True)
+    height = models.PositiveIntegerField(null=True, blank=True)
+    # Crop/thumbnail focal point as a fraction of image width/height
+    # (0.0-1.0 each). No consumer reads these yet — forward-looking field
+    # for a future smart-crop/thumbnail renderer; safe to leave null today.
+    focal_x = models.FloatField(null=True, blank=True)
+    focal_y = models.FloatField(null=True, blank=True)
+
+    def __str__(self):
+        return self.file.name
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.file and (self.width is None or self.height is None):
+            self.width, self.height = self.file.width, self.file.height
+            super().save(update_fields=["width", "height"])

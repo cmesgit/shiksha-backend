@@ -18,7 +18,7 @@ from datetime import timedelta
 from django.utils import timezone
 
 from accounts.models import User, LearnerProfile, TeacherProfile
-from courses.models import Course, Subject, SubjectTeacher
+from courses.models import Course, Subject, TeachingAssignment
 from enrollments.models import Subscription
 
 
@@ -54,9 +54,12 @@ def make_subject(course=None, name="Physics"):
 
 def assign_teacher_to_subject(subject, teacher_profile):
     """Makes `teacher_profile` teach `subject` — teacher_in_course()'s
-    exact query is SubjectTeacher.objects.filter(subject__course_id=...,
-    teacher=tp.user), so this is the minimal real fixture for that."""
-    return SubjectTeacher.objects.create(subject=subject, teacher=teacher_profile.user)
+    exact query is TeachingAssignment.objects.filter(subject__course_id=...,
+    teacher=tp.user, is_active=True), so this is the minimal real fixture
+    for that."""
+    return TeachingAssignment.objects.create(
+        subject=subject, teacher=teacher_profile.user, batch=None, is_active=True,
+    )
 
 
 def make_active_subscription(learner_profile, course):

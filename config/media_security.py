@@ -34,7 +34,7 @@ def _staff_or(user, ok):
 
 def _check_study_material(request, name):
     from materials.models import MaterialFile
-    from materials.views import _authorize_subject_materials
+    from materials.views import _authorize_subject_materials, TEACHER_UNRESTRICTED
 
     mf = (
         MaterialFile.objects
@@ -43,8 +43,16 @@ def _check_study_material(request, name):
     )
     if not mf or not mf.material_id:
         return False
-    allowed, _ = _authorize_subject_materials(request, mf.material.chapter.subject)
-    return allowed
+    allowed, batch_id = _authorize_subject_materials(request, mf.material.chapter.subject)
+    if not allowed:
+        return False
+    if batch_id is TEACHER_UNRESTRICTED:
+        return True
+    # Same batch isolation the API views enforce (ChapterMaterials/
+    # SubjectMaterials): course-wide material (batch IS NULL) is visible to
+    # everyone, batch-scoped material only to a student in that batch — the
+    # secure-download URL must not be a side door around that.
+    return mf.material.batch_id is None or mf.material.batch_id == batch_id
 
 
 def _check_teacher_application_doc(request, name):
@@ -242,6 +250,16 @@ def _check_skill_payment_doc(request, name):
     ).exists()
 
 
+def _check_explore_document(request, name):
+    """explore/documents/ — documents.Document.file, the Explore Library.
+    Mirrors DocumentDetailView/RecordDownloadView exactly: AllowAny, gated
+    only by is_removed (moderator soft-hide) — there's no per-document
+    owner/visibility restriction, every non-removed document is public."""
+    from documents.models import Document
+
+    return Document.objects.filter(file=name, is_removed=False).exists()
+
+
 # A single sentinel, not a check function — matching this prefix means
 # "genuinely public, no auth needed" and short-circuits before any DB work.
 PUBLIC = object()
@@ -293,6 +311,7 @@ _RULES = (
     ("counselors/reports/", _check_counseling_report),
     ("skills/ad_subscriptions/receipts/", _check_skill_payment_doc),
     ("skills/payments/receipts/", _check_skill_payment_doc),
+    ("explore/documents/", _check_explore_document),
 )
 
 # Sorted longest-prefix-first once at import time, so correctness never
@@ -314,10 +333,9 @@ def is_public(name):
 
 def is_authorized(request, name):
     """True iff `request.user` may read this media path. Deny-by-default —
-    an unmapped prefix (forum/ attachments, documents/ explore-library
-    files, and a few unidentified legacy paths as of 2026-08-08 — see
-    MEDIA_SECURITY_TODO.md) resolves to staff-only until someone adds a
-    real rule for it above."""
+    an unmapped prefix (forum/ attachments and a few unidentified legacy
+    paths as of 2026-08-13 — see MEDIA_SECURITY_TODO.md) resolves to
+    staff-only until someone adds a real rule for it above."""
     rule = _lookup(name)
     if rule is PUBLIC:
         return True  # secure_media_view only exists for defense-in-depth

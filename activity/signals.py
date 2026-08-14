@@ -168,9 +168,11 @@ def assignment_submitted(sender, instance, created, **kwargs):
     subject = assignment.chapter.subject
     student_name = _display_name(instance.student)
 
-    for st in subject.subject_teachers.select_related("teacher").all():
+    for ta in subject.teaching_assignments.filter(
+        batch__isnull=True, is_active=True,
+    ).select_related("teacher"):
         _notify_teacher(
-            teacher=st.teacher,
+            teacher=ta.teacher,
             obj=assignment,
             activity_type=Activity.TYPE_SUBMISSION,
             title=f"{student_name} submitted: {assignment.title}",

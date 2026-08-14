@@ -311,7 +311,7 @@ def create_group_session(request):
     ser.is_valid(raise_exception=True)
     d = ser.validated_data
 
-    from courses.models import Subject, SubjectTeacher
+    from courses.models import Subject, TeachingAssignment
     from enrollments.models import Enrollment
 
     # ── Validate subject + enrollment ────────────────────────────────
@@ -336,8 +336,8 @@ def create_group_session(request):
     invited_teacher = None
     invited_teacher_id = d.get("invited_teacher_id")
     if invited_teacher_id:
-        if not SubjectTeacher.objects.filter(
-            subject=subject, teacher_id=invited_teacher_id
+        if not TeachingAssignment.objects.filter(
+            subject=subject, teacher_id=invited_teacher_id, is_active=True,
         ).exists():
             return Response(
                 {"error": "That teacher does not teach this subject."},

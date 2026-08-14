@@ -5,8 +5,8 @@
 #   • ensure_course_room() is now a thin wrapper over the new, generalized
 #     ensure_room(context_type, context_id, title). Same signature/behaviour
 #     for its one existing caller (chat/views.py's CourseRoomView).
-#   • Two new lookups backing chat/policy.py's DM matrix:
-#     learner_teacher_share_active_course() and learners_share_room().
+#   • New lookups backing chat/policy.py's DM matrix: teacher_is_public_faculty(),
+#     learner_teacher_share_active_course(), and learners_share_room().
 #   • post_message_checked() gains policy.can_post() as a structural check
 #     BEFORE moderation (frozen conversation / read-only broadcast). The
 #     existing moderation + block checks are untouched, same order as before
@@ -450,9 +450,9 @@ def learner_in_course(lp, course_id):
 
 def teacher_in_course(tp, course_id):
     try:
-        from courses.models import SubjectTeacher
-        return SubjectTeacher.objects.filter(
-            subject__course_id=course_id, teacher=tp.user
+        from courses.models import TeachingAssignment
+        return TeachingAssignment.objects.filter(
+            subject__course_id=course_id, teacher=tp.user, is_active=True,
         ).exists()
     except Exception:
         return False
@@ -493,19 +493,69 @@ def course_room_track(course_id):
 # policy.py owns the yes/no decision built from them.
 # ---------------------------------------------------------------------------
 
+def teacher_is_public_faculty(tp):
+    """True iff `tp` is a publicly reachable teacher a learner may start a DM
+    with — one of the ways to satisfy the "if_relationship" rule (see
+    learner_teacher_share_active_course() for the other).
+
+    "Publicly reachable" = approved on EITHER track (academy_status or
+    skill_status == TRACK_APPROVED), or a listed guest expert
+    (ExpertProfile.is_listed). This is deliberately the SAME set the rest of
+    the app already offers a "Message" button for: accounts.TeacherListView
+    (the Academy Teachers page + private-session form) lists every
+    `is_approved=True` teacher, and TeacherProfile.sync_type_from_tracks()
+    defines is_approved as "approved on any track" — so gating on academy
+    approval ALONE 403'd exactly the skill-track-approved guest experts that
+    page offers to message (and, since a teacher DMing a learner also runs
+    through this check with themselves as `tp`, left those experts unable to
+    message anyone from their own Skill Dev inbox). Mirrors _teacher_roles()'s
+    own guest detection (skill_status == TRACK_APPROVED), so the DM gate and
+    the role labels can't drift.
+
+    Approval alone is deliberately sufficient, with no shared-course/
+    enrollment check: the directory already lists every approved/listed
+    teacher regardless of subject assignment (that's the whole point of
+    "Explore Experts"), so requiring a shared course on top would 403 exactly
+    the "Message" button the directory just offered. It also means this scales
+    as the expert pool grows, without needing a subject-teacher assignment for
+    every learner/teacher pair up front.
+    """
+    try:
+        ep = getattr(tp, "expert_profile", None)
+        if ep and ep.is_listed:
+            return True
+    except Exception:
+        pass
+    try:
+        if tp.academy_status == TeacherProfile.TRACK_APPROVED:
+            return True
+    except Exception:
+        pass
+    try:
+        if tp.skill_status == TeacherProfile.TRACK_APPROVED:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def learner_teacher_share_active_course(lp, tp):
     """True iff there's at least one course where `lp` holds live access
     (learner_in_course()) AND `tp` teaches a subject (teacher_in_course())
-    — the "if_relationship" rule for a learner starting a DM with a
-    teacher. Reuses learner_in_course()/teacher_in_course() rather than
-    re-deriving the subscription/enrollment rule a second time; the number
-    of courses one teacher teaches is small enough that checking each is
-    cheaper than building a second, more clever query.
+    — the other way to satisfy the "if_relationship" rule (see
+    teacher_is_public_faculty() for the directory-membership way). Kept as
+    an independent OR so a teacher assigned to a learner's course can still
+    be messaged even in the (data-inconsistent but possible) case they
+    aren't yet approved/listed. Reuses learner_in_course()/
+    teacher_in_course() rather than re-deriving the subscription/enrollment
+    rule a second time; the number of courses one teacher teaches is small
+    enough that checking each is cheaper than building a second, more
+    clever query.
     """
     try:
-        from courses.models import SubjectTeacher
+        from courses.models import TeachingAssignment
         course_ids = (
-            SubjectTeacher.objects.filter(teacher=tp.user)
+            TeachingAssignment.objects.filter(teacher=tp.user, is_active=True)
             .values_list("subject__course_id", flat=True)
             .distinct()
         )
@@ -1353,9 +1403,9 @@ def build_profile(kind, obj_id):
             bio = getattr(tp, "bio", "") or ""
         courses = []
         try:
-            from courses.models import SubjectTeacher
+            from courses.models import TeachingAssignment
             courses = list(
-                SubjectTeacher.objects.filter(teacher=tp.user)
+                TeachingAssignment.objects.filter(teacher=tp.user, is_active=True)
                 .select_related("subject", "subject__course")
                 .values_list("subject__course__title", flat=True)
                 .distinct()

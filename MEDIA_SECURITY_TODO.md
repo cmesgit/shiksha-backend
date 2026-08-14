@@ -42,6 +42,23 @@ submissions, chat attachments (by conversation participancy), scholarship
 guardian-verification documents, counseling session reports, skill
 ad-subscription/payment receipts.
 
+## Update 2026-08-13: `documents/` (Explore Library) gated
+
+Found while investigating a live "download fails with 401" bug report on
+an Explore Library document. Correcting a stale claim in the original
+version of this doc: `documents.Document` has **no** `visibility` field —
+that field exists on the unrelated `Collection` model. `Document` reads
+are already `AllowAny` end to end (`DocumentDetailView`,
+`RecordDownloadView`, etc. in `documents/views.py`), gated only by
+`is_removed` (moderator soft-hide) — there's no per-object owner/visibility
+restriction to reuse, it's simpler than that: every non-removed document is
+public. Added `_check_explore_document` to `config/media_security.py`,
+mirroring that exactly (`Document.objects.filter(file=name,
+is_removed=False).exists()`), and wired `"explore/documents/"` into
+`_RULES`. `exploreApi`'s `USE_MOCK` status should still be checked before
+assuming this is the only explore-library gap — this fixes the file-serving
+layer, not the API layer.
+
 ## Deliberately NOT gated yet — deny-by-default, not silently open
 
 These fall through to `is_authorized`'s fallback (`staff-only`), so
@@ -55,12 +72,6 @@ copy-paste of an existing rule:
   some may be open to every authenticated user. Check `forum/views.py`'s
   existing post-read permission logic and mirror it exactly; don't
   approximate.
-- **`documents/` (Explore library)**. `documents/models.py`'s `Document`
-  already has a real `visibility` field (`VIS_PUBLIC` default) — this one
-  actually has an existing per-object rule to reuse, unlike forum/. Per
-  earlier project memory, `exploreApi` was still `USE_MOCK` on the
-  frontend as of the last check — confirm whether real document reads are
-  even live before investing time here.
 - **`avatar/`, `profiles/photos/`** — 4 and 3 files respectively exist on
   the dev droplet's disk, but **no model in the current codebase
   references either `upload_to` string**. Likely orphaned from a renamed

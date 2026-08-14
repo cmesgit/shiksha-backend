@@ -10,9 +10,8 @@ the get_or_create default already created).
 
 Creates ONE fully-populated ACADEMIC course ("Class 11 Science") with two
 subjects (Physics, Chemistry), one batch, one teacher assigned to both
-subjects (SubjectTeacher + TeachingAssignment, since different parts of the
-app still read one or the other — see accounts/settings_views.py-adjacent
-courses.TeacherMyClassesView vs the batch-scoped delivery apps), two
+subjects — both course-wide (batch=NULL) and for the one seeded batch, so
+both TeachingAssignment shapes have a real row to click through — two
 students enrolled (one multi-profile parent account + one single-profile
 account), plus:
   - 1 assignment per subject (with a real file, one has a real submission)
@@ -43,7 +42,7 @@ from django.utils import timezone
 from accounts.models import LearnerProfile, Role, TeacherProfile, UserRole
 from assignments.models import Assignment, AssignmentFile, AssignmentSubmission
 from courses.models import (
-    Batch, Chapter, Course, Subject, SubjectTeacher, TeachingAssignment,
+    Batch, Chapter, Course, Subject, TeachingAssignment,
 )
 from courses.models_recordings import SessionRecording
 from enrollments.models import Enrollment, Subscription
@@ -168,10 +167,15 @@ class Command(BaseCommand):
             tp.is_approved = True
             tp.save()
 
-        # Both roster mechanisms: SubjectTeacher (TeacherMyClassesView reads
-        # this today) and TeachingAssignment (batch-scoped delivery apps).
+        # A course-wide (batch=NULL) assignment, plus a batch-scoped one —
+        # exercises both TeachingAssignment shapes admins actually create
+        # (the subject-level "Teachers" modal writes batch=NULL; the
+        # per-batch staffing roster writes a specific batch).
         for subject in subjects.values():
-            SubjectTeacher.objects.get_or_create(subject=subject, teacher=faculty)
+            TeachingAssignment.objects.get_or_create(
+                batch=None, subject=subject, teacher=faculty,
+                defaults={"role": TeachingAssignment.ROLE_PRIMARY, "is_active": True},
+            )
             TeachingAssignment.objects.get_or_create(
                 batch=batch, subject=subject, teacher=faculty,
                 defaults={"role": TeachingAssignment.ROLE_PRIMARY, "is_active": True},

@@ -7,6 +7,7 @@ from asgiref.sync import async_to_sync
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
@@ -245,16 +246,17 @@ def request_session(request):
     ser.is_valid(raise_exception=True)
     d = ser.validated_data
 
-    from courses.models import Subject, SubjectTeacher
+    from courses.models import Subject, TeachingAssignment
 
     try:
         subject_obj = Subject.objects.get(id=d["subject_id"])
     except Subject.DoesNotExist:
         return Response({"error": "Invalid subject"}, status=400)
 
-    if not SubjectTeacher.objects.filter(
+    if not TeachingAssignment.objects.filter(
         subject=subject_obj,
-        teacher_id=d["teacher_id"]
+        teacher_id=d["teacher_id"],
+        is_active=True,
     ).exists():
         return Response(
             {"error": "Teacher does not teach this subject"},
@@ -266,41 +268,42 @@ def request_session(request):
     except User.DoesNotExist:
         return Response({"error": "Teacher not found"}, status=404)
 
-    session = PrivateSession.objects.create(
-        teacher=teacher,
-        requested_by=request.user,
-        learner_profile=learner,
-        subject=subject_obj.name,
-        scheduled_date=d["scheduled_date"],
-        scheduled_time=d["scheduled_time"],
-        duration_minutes=d["duration_minutes"],
-        session_type=d["session_type"],
-        group_strength=d["group_strength"],
-        notes=d.get("notes", ""),
-        status="pending",
-    )
+    with transaction.atomic():
+        session = PrivateSession.objects.create(
+            teacher=teacher,
+            requested_by=request.user,
+            learner_profile=learner,
+            subject=subject_obj.name,
+            scheduled_date=d["scheduled_date"],
+            scheduled_time=d["scheduled_time"],
+            duration_minutes=d["duration_minutes"],
+            session_type=d["session_type"],
+            group_strength=d["group_strength"],
+            notes=d.get("notes", ""),
+            status="pending",
+        )
 
-    # Always add the requesting student as participant
-    SessionParticipant.objects.create(
-        session=session,
-        user=request.user,
-        role="student",
-        status="accepted"
-    )
+        # Always add the requesting student as participant
+        SessionParticipant.objects.create(
+            session=session,
+            user=request.user,
+            role="student",
+            status="accepted"
+        )
 
-    # Add any additional group students
-    for student_id in d.get("student_ids", []):
-        try:
-            student = User.objects.get(pk=student_id)
-            SessionParticipant.objects.get_or_create(
-                session=session,
-                user=student,
-                defaults={"role": "student",
-                          "status": "pending"},
-                
-            )
-        except User.DoesNotExist:
-            pass
+        # Add any additional group students
+        for student_id in d.get("student_ids", []):
+            try:
+                student = User.objects.get(pk=student_id)
+                SessionParticipant.objects.get_or_create(
+                    session=session,
+                    user=student,
+                    defaults={"role": "student",
+                              "status": "pending"},
+
+                )
+            except User.DoesNotExist:
+                pass
 
     return Response(
         PrivateSessionSerializer(session).data,
@@ -966,14 +969,14 @@ def private_session_notes(request, session_id):
 @permission_classes([IsAuthenticated])
 def subject_teachers(request, subject_id):
     """Get teachers for a subject. Optional: filters out busy teachers."""
-    from courses.models import SubjectTeacher
+    from courses.models import TeachingAssignment
 
     date = request.query_params.get("date")
     time = request.query_params.get("time")
     duration = int(request.query_params.get("duration", 60))
 
-    qs = SubjectTeacher.objects.filter(
-        subject_id=subject_id
+    qs = TeachingAssignment.objects.filter(
+        subject_id=subject_id, is_active=True,
     ).select_related("teacher")
 
     if date and time:

@@ -38,7 +38,7 @@ Per-slice _guard() hardening from the previous version is preserved.
 import logging
 from datetime import timedelta
 
-from django.db.models import Q, Prefetch
+from django.db.models import Q, Prefetch, Count
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -53,7 +53,7 @@ from accounts.auth_flow import (
 from accounts.models import Role
 from activity.models import Activity
 from assignments.models import Assignment, AssignmentSubmission
-from courses.models import Subject, Chapter, SubjectTeacher
+from courses.models import Subject, Chapter, TeachingAssignment
 from courses.progress_stats import average_quiz_score_pct
 from enrollments.models import Enrollment
 from livestream.models import LiveSession
@@ -158,7 +158,13 @@ def _learner_quiz_avg_pct(profile, subject_ids):
             learner_profile=profile,
             quiz__subject_id__in=subject_ids,
             status=QuizAttempt.STATUS_SUBMITTED,
-        ).select_related("quiz")
+        )
+        # A SUBMITTED attempt only counts as completed if it has answers —
+        # matches the ghost-attempt guard in quizzes/views.py's
+        # StudentDashboardView and courses.progress_stats.build_progress_stats.
+        .annotate(_answer_count=Count("answers"))
+        .filter(_answer_count__gt=0)
+        .select_related("quiz")
     )
     return average_quiz_score_pct(attempts)
 
@@ -196,7 +202,8 @@ def _teacher_live_sessions(user, today_start, excluded, week_only):
 def _teacher_assignments(user, teacher_prefetch):
     return list(
         Assignment.objects.filter(
-            chapter__subject__subject_teachers__teacher=user
+            chapter__subject__teaching_assignments__teacher=user,
+            chapter__subject__teaching_assignments__is_active=True,
         )
         .select_related("chapter__subject")
         .prefetch_related(teacher_prefetch)
@@ -235,7 +242,8 @@ def _teacher_grading_queue(user, limit=15):
     """
     return list(
         AssignmentSubmission.objects.filter(
-            assignment__chapter__subject__subject_teachers__teacher=user
+            assignment__chapter__subject__teaching_assignments__teacher=user,
+            assignment__chapter__subject__teaching_assignments__is_active=True,
         )
         .select_related("student", "assignment__chapter__subject")
         .distinct()
@@ -253,7 +261,8 @@ def _teacher_grading_count(user):
     'ungraded'; there is currently no way to distinguish the two."""
     return (
         AssignmentSubmission.objects.filter(
-            assignment__chapter__subject__subject_teachers__teacher=user
+            assignment__chapter__subject__teaching_assignments__teacher=user,
+            assignment__chapter__subject__teaching_assignments__is_active=True,
         )
         .distinct()
         .count()
@@ -327,8 +336,10 @@ class DashboardView(APIView):
         excluded = [LiveSession.STATUS_COMPLETED, LiveSession.STATUS_CANCELLED]
 
         teacher_prefetch = Prefetch(
-            "chapter__subject__subject_teachers",
-            queryset=SubjectTeacher.objects.select_related("teacher"),
+            "chapter__subject__teaching_assignments",
+            queryset=TeachingAssignment.objects.filter(
+                batch__isnull=True, is_active=True,
+            ).select_related("teacher"),
             to_attr="prefetched_teachers",
         )
 

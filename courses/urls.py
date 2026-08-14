@@ -21,6 +21,7 @@ from .views import (
     PublicCourseBySlugView,
     PublicFeaturedView,
     PublicNavMenuView,
+    CourseNotifyMeView,
     AdminCourseListView,
     AdminBoardListCreateView,
     AdminBoardDetailView,
@@ -72,6 +73,8 @@ from .admin_academy_views import (
     AdminTeacherDetailView,
     AdminSubjectTeachersView,
     AdminSubjectTeacherDetailView,
+    AdminCourseStaffingView,
+    AdminCourseBulkAssignView,
     AdminCourseBatchesView,
     AdminBatchDetailView,
     AdminBatchTeachingAssignmentsView,
@@ -106,7 +109,10 @@ urlpatterns = [
     path("admin/teacher-directory/",                         AdminTeacherDirectoryView.as_view()),
     path("admin/teachers/<uuid:user_id>/",                   AdminTeacherDetailView.as_view()),
     path("admin/subjects/<uuid:subject_id>/teachers/",       AdminSubjectTeachersView.as_view()),
-    path("admin/subject-teachers/<int:assignment_id>/",      AdminSubjectTeacherDetailView.as_view()),
+    path("admin/subject-teachers/<uuid:assignment_id>/",     AdminSubjectTeacherDetailView.as_view()),
+    # Admin — whole-course staffing grid + bulk assign (one teacher → many subjects)
+    path("admin/courses/<uuid:course_id>/staffing/",             AdminCourseStaffingView.as_view()),
+    path("admin/courses/<uuid:course_id>/staffing/bulk-assign/", AdminCourseBulkAssignView.as_view()),
     # Admin — batches
     path("admin/courses/<uuid:course_id>/batches/",          AdminCourseBatchesView.as_view()),
     path("admin/batches/<uuid:batch_id>/",                   AdminBatchDetailView.as_view()),
@@ -131,6 +137,7 @@ urlpatterns = [
     path("public/nav-menu/",           PublicNavMenuView.as_view()),
     path("public/by-slug/<slug:slug>/", PublicCourseBySlugView.as_view()),
     path("public/<uuid:course_id>/",   PublicCourseDetailView.as_view()),
+    path("public/<uuid:course_id>/notify/", CourseNotifyMeView.as_view()),
     # PER-BATCH PROGRESS — teacher-ticked chapter coverage, per batch.
     # "batches" and "my-batch-progress" are static segments, so the bare
     # <uuid:course_id> routes further down never capture them.

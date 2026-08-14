@@ -64,7 +64,6 @@ from .views import (
     DistrictsListView,
     TeacherListView,
     TeacherPublicProfileView,
-    ValidateStudentIdView,
     ChangePasswordView,
     PasswordResetRequestView,
     PasswordResetVerifyView,
@@ -126,7 +125,6 @@ urlpatterns = [
 
     path("teachers/",                          TeacherListView.as_view()),
     path("teachers/<uuid:user_id>/",           TeacherPublicProfileView.as_view()),
-    path("student/<str:student_id>/validate/", ValidateStudentIdView.as_view()),
 
     path("admin/stats/",             AdminStatsView.as_view()),
     path("admin/users/",             AdminUserListView.as_view()),

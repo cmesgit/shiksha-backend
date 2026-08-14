@@ -20,7 +20,7 @@ from rest_framework.throttling import ScopedRateThrottle
 
 logger = logging.getLogger(__name__)
 
-from accounts.permissions import IsEmailVerified, IsAdmin, require_teacher_context, IsTeacherContext
+from accounts.permissions import IsEmailVerified, IsAdmin, require_teacher_context, IsTeacherContext, _in_teacher_context
 from accounts.auth_flow import get_active_profile
 from enrollments.models import Enrollment
 from django.db import models
@@ -30,7 +30,7 @@ from django.db.models import (
 )
 from django.db.models.functions import Coalesce
 
-from courses.models import Subject, SubjectTeacher
+from courses.models import Subject, TeachingAssignment
 from courses.services import teaches_subject
 
 from .models import Quiz, QuizAttempt, Question, Choice, StudentAnswer
@@ -466,7 +466,10 @@ class TeacherAllQuizListView(generics.ListAPIView):
 
         return (
             Quiz.objects
-            .filter(subject__subject_teachers__teacher=self.request.user)
+            .filter(
+                subject__teaching_assignments__teacher=self.request.user,
+                subject__teaching_assignments__is_active=True,
+            )
             .select_related("subject", "subject__course")
             .annotate(
                 enrolled_count=Coalesce(
@@ -579,10 +582,17 @@ class StudentDashboardView(APIView):
                 ),
                 Prefetch(
                     "attempts",
+                    # Only attempts with at least one answer count as a real
+                    # completion. A 0-answer SUBMITTED row (auto-closed on
+                    # timer expiry, or an empty grace-window auto-submit)
+                    # must NOT flip the quiz to "completed" — that is exactly
+                    # what locked students out of quizzes they never answered.
                     queryset=QuizAttempt.objects.filter(
                         learner_profile=learner,
                         status=QuizAttempt.STATUS_SUBMITTED,
-                    ).order_by("-attempt_number"),
+                    ).annotate(_answer_count=Count("answers"))
+                    .filter(_answer_count__gt=0)
+                    .order_by("-attempt_number"),
                     to_attr="user_submitted_attempts",
                 ),
             )
@@ -592,11 +602,17 @@ class StudentDashboardView(APIView):
         if subject_id:
             quizzes = quizzes.filter(subject_id=subject_id)
 
+        # Mirrors the prefetch above: a quiz only counts as "completed" once
+        # the profile has a SUBMITTED attempt that actually holds answers, so
+        # a 0-answer ghost row can never mark it done / send the student to
+        # review.
         submitted_ids = set(
             QuizAttempt.objects.filter(
                 learner_profile=learner,
                 status=QuizAttempt.STATUS_SUBMITTED,
-            ).values_list("quiz_id", flat=True).distinct()
+            ).annotate(_answer_count=Count("answers"))
+            .filter(_answer_count__gt=0)
+            .values_list("quiz_id", flat=True).distinct()
         )
 
         if status_filter == "completed":
@@ -779,15 +795,30 @@ class StartQuizView(APIView):
                     status=status.HTTP_200_OK,
                 )
             # Missed the deadline without ever calling submit (tab closed,
-            # browser crashed, or the auto-submit request itself failed) —
-            # close it out as a 0-answer submission rather than resuming it
-            # forever, which would otherwise permanently block a fresh
-            # attempt. No StudentAnswer rows exist yet for this attempt
-            # (they're only written by SubmitQuizView.save()), so there is
-            # nothing to score.
-            existing_pending.status = QuizAttempt.STATUS_SUBMITTED
-            existing_pending.submitted_at = timezone.now()
-            existing_pending.save(update_fields=["status", "submitted_at"])
+            # browser crashed, or the auto-submit request itself failed).
+            # DISCARD the abandoned attempt rather than resuming it forever
+            # (which would permanently block a fresh attempt) OR flipping it
+            # to SUBMITTED (what this used to do). A 0-answer "submitted" row
+            # is poison: get_status / submitted_ids treat every SUBMITTED
+            # attempt as a real completion, so the dashboard reports the quiz
+            # as *completed* and QuizHub routes the student to the review
+            # screen — locking them out of a quiz they never actually
+            # answered. Deleting is safe: a PENDING attempt past its deadline
+            # has no answers to preserve (StudentAnswer rows are written by
+            # SubmitQuizView.save(), which flips the attempt to SUBMITTED, or
+            # by practice-mode CheckAnswerView — and practice quizzes are
+            # untimed, so this expiry path never runs for them). It also
+            # restores fair attempt numbering: the student's first real
+            # attempt is #1 again and gets its answer-key reveal, instead of
+            # having #1 silently burned by a ghost. Guarded on the answer
+            # count anyway, so a resumed attempt that somehow holds answers is
+            # closed out (SUBMITTED), never destroyed.
+            if existing_pending.answers.exists():
+                existing_pending.status = QuizAttempt.STATUS_SUBMITTED
+                existing_pending.submitted_at = timezone.now()
+                existing_pending.save(update_fields=["status", "submitted_at"])
+            else:
+                existing_pending.delete()
 
         # Create a new attempt (first attempt or re-attempt after submitting).
         # Attempt numbering is per profile — each child counts from 1.
@@ -950,7 +981,7 @@ class QuizDetailView(APIView):
             is_published=True,
         )
 
-        if request.user.has_role("TEACHER"):
+        if _in_teacher_context(request):
             if quiz.created_by != request.user:
                 raise PermissionDenied("Not authorized for this quiz.")
         else:
@@ -1233,13 +1264,17 @@ class StudentQuizSubjectsView(APIView):
                 course__subscriptions__expires_at__gt=_tz.now(),
             )
             .select_related("course")
-            .prefetch_related("subject_teachers__teacher")
+            .prefetch_related("teaching_assignments__teacher")
             .distinct()
         )
 
         data = []
         for subject in subjects:
-            teacher_rel = subject.subject_teachers.first()
+            teacher_rel = next(
+                (ta for ta in subject.teaching_assignments.all()
+                 if ta.batch_id is None and ta.is_active),
+                None,
+            )
             teacher_name = (
                 teacher_rel.teacher.email if teacher_rel else ""
             )
@@ -1311,10 +1346,7 @@ class TeacherQuizAttemptsView(APIView):
             id=pk
         )
 
-        if not SubjectTeacher.objects.filter(
-            subject=quiz.subject,
-            teacher=user
-        ).exists():
+        if not teaches_subject(user, quiz.subject):
             raise PermissionDenied("Not assigned to this subject.")
 
         from django.db.models import Max, FloatField, ExpressionWrapper, F
@@ -1377,10 +1409,7 @@ class TeacherStudentAttemptsView(generics.ListAPIView):
             id=quiz_id
         )
 
-        if not SubjectTeacher.objects.filter(
-            subject=quiz.subject,
-            teacher=user
-        ).exists():
+        if not teaches_subject(user, quiz.subject):
             raise PermissionDenied("Not assigned to this subject.")
 
         return (
@@ -1409,10 +1438,7 @@ class TeacherQuizAttemptDetailView(APIView):
             id=pk
         )
 
-        if not SubjectTeacher.objects.filter(
-            subject=attempt.quiz.subject,
-            teacher=request.user
-        ).exists():
+        if not teaches_subject(request.user, attempt.quiz.subject):
             raise PermissionDenied("Not authorized.")
 
         result_questions = []
@@ -1474,9 +1500,7 @@ class TeacherQuizAnalyticsView(APIView):
             Quiz.objects.select_related("subject", "subject__course"), pk=pk
         )
 
-        if not SubjectTeacher.objects.filter(
-            subject=quiz.subject, teacher=request.user
-        ).exists():
+        if not teaches_subject(request.user, quiz.subject):
             raise PermissionDenied("Not assigned to this subject.")
 
         submitted_attempts = list(
@@ -1572,9 +1596,7 @@ class TeacherQuizRemindView(APIView):
             Quiz.objects.select_related("subject", "subject__course"), pk=pk
         )
 
-        if not SubjectTeacher.objects.filter(
-            subject=quiz.subject, teacher=request.user
-        ).exists():
+        if not teaches_subject(request.user, quiz.subject):
             raise PermissionDenied("Not assigned to this subject.")
 
         enrolled_profile_ids = set(
@@ -1747,9 +1769,9 @@ class TeacherQuestionBankView(generics.ListAPIView):
         difficulty = self.request.query_params.get("difficulty", "").strip()
         search = self.request.query_params.get("search", "").strip()
 
-        assigned_subject_ids = SubjectTeacher.objects.filter(
-            teacher=user
-        ).values_list("subject_id", flat=True)
+        assigned_subject_ids = TeachingAssignment.objects.filter(
+            teacher=user, is_active=True
+        ).values_list("subject_id", flat=True).distinct()
 
         qs = (
             Question.objects
@@ -1794,9 +1816,9 @@ class TeacherBankFiltersView(APIView):
         user = request.user
         require_teacher_context(request)
 
-        assigned_subject_ids = SubjectTeacher.objects.filter(
-            teacher=user
-        ).values_list("subject_id", flat=True)
+        assigned_subject_ids = TeachingAssignment.objects.filter(
+            teacher=user, is_active=True
+        ).values_list("subject_id", flat=True).distinct()
 
         topics = (
             Question.objects

@@ -1,20 +1,21 @@
 from .serializers import ChapterSerializer
 from .models import Chapter
 from django.db.models import Count, Prefetch, Q
-from .models import SubjectTeacher
-from accounts.models import LearnerProfile, Role
+from .models import TeachingAssignment
+from .services import teaches_subject
+from accounts.models import LearnerProfile
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework import status
 from enrollments.models import Enrollment, EnrollmentRequest, Subscription
-from accounts.permissions import IsTeacherContext, IsAdmin
+from accounts.permissions import IsTeacherContext, IsAdmin, require_teacher_context
 from accounts.auth_flow import get_active_profile
 from quizzes.models import Quiz, QuizAttempt
 from assignments.models import Assignment
 from courses.progress_stats import average_quiz_score_pct
-from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream, BoardNotifyRequest
+from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream, BoardNotifyRequest, CourseNotifyRequest
 from content.models import ShowcaseCourse
 from .serializers import (
     CourseSerializer, SubjectSerializer, BoardSerializer, CourseDetailSerializer,
@@ -53,6 +54,17 @@ class EnrollCourseSummaryView(APIView):
             "price": course.price,
             "board": course.board.name if course.board else None,
             "stream": course.stream.name if course.stream else None,
+            # Active batches (Morning/Afternoon/Evening/Night etc) — EnrollModal
+            # and Enroll.jsx show a picker when this is non-empty, and pass the
+            # chosen id through to free-enroll / the manual-UPI request.
+            "batches": [
+                {
+                    "id": str(b.id), "name": b.name, "code": b.code,
+                    "is_full": b.is_full, "capacity": b.capacity,
+                    "seats_taken": b.seats_taken,
+                }
+                for b in course.batches.filter(is_active=True)
+            ],
         }
         return Response(data)
 
@@ -79,7 +91,8 @@ class MyCoursesView(APIView):
 
     def get(self, request):
         courses = Course.objects.filter(
-            subjects__subject_teachers__teacher=request.user
+            subjects__teaching_assignments__teacher=request.user,
+            subjects__teaching_assignments__is_active=True,
         ).select_related("board").distinct()
 
         serializer = CourseSerializer(courses, many=True)
@@ -96,7 +109,8 @@ class UpdateCourseView(APIView):
     def patch(self, request, course_id):
         course = get_object_or_404(
             Course.objects.filter(
-                subjects__subject_teachers__teacher=request.user
+                subjects__teaching_assignments__teacher=request.user,
+                subjects__teaching_assignments__is_active=True,
             ).distinct(),
             id=course_id,
         )
@@ -122,7 +136,8 @@ class DeleteCourseView(APIView):
     def delete(self, request, course_id):
         course = get_object_or_404(
             Course.objects.filter(
-                subjects__subject_teachers__teacher=request.user
+                subjects__teaching_assignments__teacher=request.user,
+                subjects__teaching_assignments__is_active=True,
             ).distinct(),
             id=course_id,
         )
@@ -167,11 +182,29 @@ class MyEnrolledCoursesView(APIView):
         enrollments = (
             Enrollment.objects
             .filter(self._profile_enrollment_q(learner), status="ACTIVE")
-            .select_related("course__board")
+            .select_related("course__board", "batch")
         )
 
         courses = [enrollment.course for enrollment in enrollments]
         course_ids = [c.id for c in courses]
+        enrollment_by_course = {e.course_id: e for e in enrollments}
+
+        # Courses with an active batch but no batch on this enrollment yet —
+        # the frontend prompts these students to self-select one (see
+        # enrollments/payment_views.py's SelectEnrollmentBatchView).
+        unbatched_course_ids = [
+            e.course_id for e in enrollments if e.batch_id is None
+        ]
+        batches_by_course = {}
+        if unbatched_course_ids:
+            for b in Batch.objects.filter(
+                course_id__in=unbatched_course_ids, is_active=True,
+            ):
+                batches_by_course.setdefault(b.course_id, []).append({
+                    "id": str(b.id), "name": b.name, "code": b.code,
+                    "is_full": b.is_full, "capacity": b.capacity,
+                    "seats_taken": b.seats_taken,
+                })
 
         now = timezone.now()
         latest_sub_by_course = {}
@@ -224,6 +257,16 @@ class MyEnrolledCoursesView(APIView):
                 }
                 course_data["payment_history"] = payment_history
 
+            enrollment = enrollment_by_course.get(course.id)
+            if enrollment and enrollment.batch_id:
+                course_data["batch"] = {
+                    "id": str(enrollment.batch_id), "name": enrollment.batch.name,
+                }
+                course_data["available_batches"] = []
+            else:
+                course_data["batch"] = None
+                course_data["available_batches"] = batches_by_course.get(course.id, [])
+
         return Response(serialized)
 
 
@@ -247,8 +290,8 @@ class CourseSubjectsView(APIView):
         else:
             # Teacher identity without an active learner profile: allow
             # only if assigned to teach this course's subjects.
-            is_enrolled = SubjectTeacher.objects.filter(
-                subject__course_id=course_id, teacher=request.user
+            is_enrolled = TeachingAssignment.objects.filter(
+                subject__course_id=course_id, teacher=request.user, is_active=True,
             ).exists()
 
         if not is_enrolled:
@@ -260,8 +303,9 @@ class CourseSubjectsView(APIView):
             .select_related("course__stream", "course__board")
             .prefetch_related(
                 Prefetch(
-                    "subject_teachers",
-                    queryset=SubjectTeacher.objects
+                    "teaching_assignments",
+                    queryset=TeachingAssignment.objects
+                    .filter(batch__isnull=True, is_active=True)
                     .select_related("teacher", "teacher__teacher_profile")
                     .order_by("order"),
                 )
@@ -274,6 +318,44 @@ class CourseSubjectsView(APIView):
         return Response(serializer.data)
 
 
+def _require_subject_access(request, subject):
+    """Enrollment-or-teaching-assignment gate shared by every per-subject
+    view. Enrollment wins over teaching assignment always, regardless of
+    role — a TEACHER-role account can also be personally enrolled as a
+    learner in a subject they don't teach. Returns a 403 Response if the
+    caller has neither, else None.
+    """
+    user = request.user
+    learner = get_active_profile(request)
+    enrolled = False
+    if learner is not None:
+        enroll_q = Q(learner_profile=learner)
+        if getattr(learner, "is_default", False):
+            enroll_q |= Q(learner_profile__isnull=True, user=user)
+        enrolled = Enrollment.objects.filter(
+            enroll_q,
+            course=subject.course,
+            status=Enrollment.STATUS_ACTIVE,
+        ).exists()
+
+    if enrolled:
+        return None
+
+    is_assigned_teacher = (
+        user.has_role("TEACHER")
+        and teaches_subject(user, subject)
+    )
+    if is_assigned_teacher:
+        return None
+
+    detail = (
+        "Not assigned to this subject."
+        if user.has_role("TEACHER")
+        else "Not enrolled."
+    )
+    return Response({"detail": detail}, status=status.HTTP_403_FORBIDDEN)
+
+
 # =========================
 # SUBJECT DETAIL
 # =========================
@@ -284,10 +366,14 @@ class SubjectDetailView(APIView):
     def get(self, request, subject_id):
         subject = get_object_or_404(
             Subject.objects.prefetch_related(
-                "subject_teachers__teacher__teacher_profile"
+                "teaching_assignments__teacher__teacher_profile"
             ).select_related("course__stream", "course__board"),
             id=subject_id
         )
+
+        denied = _require_subject_access(request, subject)
+        if denied is not None:
+            return denied
 
         serializer = SubjectSerializer(subject, context={"request": request})
         return Response(serializer.data)
@@ -305,43 +391,14 @@ class SubjectDashboardView(APIView):
 
         subject = get_object_or_404(
             Subject.objects.prefetch_related(
-                "subject_teachers__teacher"
+                "teaching_assignments__teacher"
             ).select_related("course__stream", "course__board"),
             id=subject_id
         )
 
-        # Check enrollment FIRST, regardless of role. A "TEACHER"-role account
-        # can also be personally enrolled as a learner in a course they don't
-        # teach (a parent/tutor account, or staff auditing their own child's
-        # subject) — the old code branched on role alone, so any TEACHER-role
-        # account hit the teaching-assignment check even when they were
-        # actually here as an enrolled learner, and got 403'd despite having
-        # a perfectly valid ACTIVE enrollment. Enrollment now wins; teaching
-        # assignment is only consulted when there's no active enrollment.
-        learner = get_active_profile(request)
-        enrolled = False
-        if learner is not None:
-            enroll_q = Q(learner_profile=learner)
-            if getattr(learner, "is_default", False):
-                enroll_q |= Q(learner_profile__isnull=True, user=user)
-            enrolled = Enrollment.objects.filter(
-                enroll_q,
-                course=subject.course,
-                status=Enrollment.STATUS_ACTIVE,
-            ).exists()
-
-        if not enrolled:
-            is_assigned_teacher = (
-                user.has_role("TEACHER")
-                and subject.subject_teachers.filter(teacher=user).exists()
-            )
-            if not is_assigned_teacher:
-                detail = (
-                    "Not assigned to this subject."
-                    if user.has_role("TEACHER")
-                    else "Not enrolled."
-                )
-                return Response({"detail": detail}, status=status.HTTP_403_FORBIDDEN)
+        denied = _require_subject_access(request, subject)
+        if denied is not None:
+            return denied
 
         is_student = user.has_role("STUDENT")
 
@@ -456,15 +513,15 @@ class TeacherMyClassesView(APIView):
     def get(self, request):
         user = request.user
 
-        if not user.has_role(Role.TEACHER):
-            return Response(
-                {"detail": "Only teachers allowed."},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # has_role alone would pass for a dual-role account's LEARNER-context
+        # token too (e.g. a child profile on a shared account whose parent is
+        # a teacher) — this is a teacher-only roster view, so it must also
+        # require the active teacher-context claim, not just the role.
+        require_teacher_context(request)
 
         subjects = (
             Subject.objects
-            .filter(subject_teachers__teacher=user)
+            .filter(teaching_assignments__teacher=user, teaching_assignments__is_active=True)
             .select_related("course__stream", "course__board")
             .annotate(
                 students_count=Count(
@@ -501,6 +558,14 @@ class SubjectChaptersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, subject_id):
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"), id=subject_id
+        )
+
+        denied = _require_subject_access(request, subject)
+        if denied is not None:
+            return denied
+
         chapters = Chapter.objects.filter(
             subject_id=subject_id
         ).order_by("order")
@@ -638,17 +703,13 @@ class SubjectStudentsView(APIView):
     def get(self, request, subject_id):
         user = request.user
 
-        if not user.has_role(Role.TEACHER):
-            return Response(
-                {"detail": "Only teachers allowed."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # See TeacherMyClassesView — role alone isn't enough, this must also
+        # be gated on active teacher context.
+        require_teacher_context(request)
 
         subject = get_object_or_404(Subject, id=subject_id)
 
-        if not SubjectTeacher.objects.filter(
-            subject=subject, teacher=user
-        ).exists():
+        if not teaches_subject(user, subject):
             return Response(
                 {"detail": "You are not assigned to this subject."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -733,15 +794,13 @@ class TeacherAllStudentsView(APIView):
     def get(self, request):
         user = request.user
 
-        if not user.has_role(Role.TEACHER):
-            return Response(
-                {"detail": "Only teachers allowed."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # See TeacherMyClassesView — role alone isn't enough, this must also
+        # be gated on active teacher context.
+        require_teacher_context(request)
 
         subjects = (
             Subject.objects
-            .filter(subject_teachers__teacher=user)
+            .filter(teaching_assignments__teacher=user, teaching_assignments__is_active=True)
             .select_related("course__stream")
             .distinct()
         )
@@ -1115,6 +1174,69 @@ def _apply_course_details_and_categories(course, request):
 class AdminCourseCreateView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
+    def get(self, request):
+        """Flat list of ALL courses across ALL boards (unpaginated, matches
+        this admin API's existing convention — see AdminBoardCoursesView).
+        Powers the "All Courses" tab in Admin-dashboard's Courses page,
+        which sits alongside the Boards drill-down rather than replacing
+        it (an admin previously had to open a board first to find any
+        course). Same row shape as AdminBoardCoursesView, plus board_id/
+        board_name since a flat list needs to show which board each course
+        belongs to. Optional filters: ?search= (icontains on title),
+        ?board=<id>, ?status=<status>."""
+        courses = (
+            Course.objects
+            .annotate(
+                enrollment_count=Count(
+                    "enrollments",
+                    filter=Q(enrollments__status=Enrollment.STATUS_ACTIVE),
+                ),
+                subject_count=Count("subjects", distinct=True),
+            )
+            .select_related("stream", "details", "board")
+            .prefetch_related("categories")
+            .order_by("title")
+        )
+
+        search = request.query_params.get("search")
+        if search:
+            courses = courses.filter(title__icontains=search)
+        board = request.query_params.get("board")
+        if board:
+            courses = courses.filter(board_id=board)
+        course_status = request.query_params.get("status")
+        if course_status:
+            courses = courses.filter(status=course_status)
+
+        return Response([
+            {
+                "id": str(c.id),
+                "title": c.title,
+                "description": c.description,
+                "price": c.price,
+                "status": c.status,
+                "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
+                "subscription_duration_days": c.subscription_duration_days,
+                "stream_name": c.stream.name if c.stream else None,
+                "enrollment_count": c.enrollment_count,
+                "subject_count": c.subject_count,
+                "created_at": c.created_at,
+                "details": (
+                    {"syllabus": c.details.syllabus, "highlights": c.details.highlights}
+                    if hasattr(c, "details") else None
+                ),
+                "is_featured": c.is_featured,
+                "categories": [
+                    {"id": cat.id, "slug": cat.slug, "name": cat.name, "group": cat.group}
+                    for cat in c.categories.all()
+                ],
+                "seo_title": c.seo_title,
+                "board_id": str(c.board_id) if c.board_id else None,
+                "board_name": c.board.name if c.board else None,
+            }
+            for c in courses
+        ])
+
     def post(self, request):
         serializer = CourseSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
@@ -1422,8 +1544,8 @@ class CourseCatalogView(APIView):
         teacher_by_course = {}
         if course_ids:
             links = (
-                SubjectTeacher.objects
-                .filter(subject__course_id__in=course_ids)
+                TeachingAssignment.objects
+                .filter(subject__course_id__in=course_ids, batch__isnull=True, is_active=True)
                 .select_related("teacher", "subject")
                 .order_by("subject__course_id", "order")
             )
@@ -1444,6 +1566,7 @@ class CourseCatalogView(APIView):
                 "id": str(c.id),
                 "title": c.title,
                 "description": c.description,
+                "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
                 "price": c.price,  # paise (₹1 = 100 paise); 0 = free
                 "mrp": c.mrp,
                 "discount_label": c.discount_label,
@@ -1539,6 +1662,24 @@ class BoardNotifyMeView(APIView):
         if not email or "@" not in email:
             return Response({"detail": "A valid email is required."}, status=status.HTTP_400_BAD_REQUEST)
         BoardNotifyRequest.objects.get_or_create(board=board, email=email)
+        return Response({"ok": True}, status=status.HTTP_201_CREATED)
+
+
+class CourseNotifyMeView(APIView):
+    """POST /courses/public/<course_id>/notify/ — anonymous "notify me when
+    {course} launches" lead capture from a coming-soon course card/quick-view.
+    Mirrors BoardNotifyMeView exactly (same throttle scope, same
+    get_or_create dedup by (course, email))."""
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "board_notify"
+
+    def post(self, request, course_id):
+        course = get_object_or_404(Course, id=course_id)
+        email = (request.data.get("email") or "").strip().lower()
+        if not email or "@" not in email:
+            return Response({"detail": "A valid email is required."}, status=status.HTTP_400_BAD_REQUEST)
+        CourseNotifyRequest.objects.get_or_create(course=course, email=email)
         return Response({"ok": True}, status=status.HTTP_201_CREATED)
 
 
@@ -1732,6 +1873,8 @@ def _serialize_public_course_detail(course, request):
                 "code": b.code,
                 "effective_price": b.effective_price,
                 "is_full": b.is_full,
+                "capacity": b.capacity,
+                "seats_taken": b.seats_taken,
             }
             for b in course.batches.all()
         ],

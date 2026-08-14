@@ -9,11 +9,13 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from . import admin_views, views
+from . import admin_views, ai_views, views
 
 app_name = "content"
 
 urlpatterns = [
+    path("ai/general-studies/", ai_views.GeneralStudiesAIView.as_view(), name="general-studies-ai"),
+
     path("blogs/", views.BlogPostListView.as_view(), name="blog-list"),
     path("blogs/<path:slug>/", views.BlogPostDetailView.as_view(), name="blog-detail"),
 
@@ -27,6 +29,7 @@ urlpatterns = [
     path("home-content/", views.HomeContentListView.as_view(), name="home-content-list"),
     path("home-list-items/", views.HomeListItemListView.as_view(), name="home-list-item-list"),
     path("home-floaters/", views.HomeFloaterListView.as_view(), name="home-floater-list"),
+    path("home-section-order/", views.HomeSectionOrderListView.as_view(), name="home-section-order-list"),
 ]
 
 # ── Staff-only CMS admin API (content/admin_views.py) ──────────────
@@ -40,4 +43,6 @@ admin_router.register("admin/tags", admin_views.TagAdminViewSet, basename="admin
 admin_router.register("admin/home-content", admin_views.HomeContentBlockAdminViewSet, basename="admin-home-content")
 admin_router.register("admin/home-list-items", admin_views.HomeListItemAdminViewSet, basename="admin-home-list-item")
 admin_router.register("admin/home-floaters", admin_views.HomeFloaterAdminViewSet, basename="admin-home-floater")
+admin_router.register("admin/home-section-order", admin_views.HomeSectionOrderAdminViewSet, basename="admin-home-section-order")
+admin_router.register("admin/editor-images", admin_views.ContentImageAdminViewSet, basename="admin-editor-image")
 urlpatterns += admin_router.urls

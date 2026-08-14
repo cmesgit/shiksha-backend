@@ -1,31 +1,42 @@
-"""Admin academy endpoints: subject-teacher assignment and batch management.
+"""Admin academy endpoints: teacher assignment and batch management.
 
 These back the admin panel's Course Management screen so teacher assignment and
 batches no longer require Django admin. They mirror the style of the existing
 Admin*View classes in courses/views.py (APIView + [IsAuthenticated, IsAdmin]).
 
+Teacher assignment is backed entirely by TeachingAssignment (batch=NULL means
+course-wide — the same convention every other content model here uses). The
+legacy course-wide-only SubjectTeacher model has been retired; its rows were
+migrated in as batch=NULL TeachingAssignments.
+
 Routes (added in courses/urls.py):
 
     GET    courses/admin/teachers/?q=            approved teachers (assign picker)
 
-    GET    courses/admin/subjects/<subject_id>/teachers/     list assignments
-    POST   courses/admin/subjects/<subject_id>/teachers/     assign a teacher
+    GET    courses/admin/subjects/<subject_id>/teachers/     list course-wide assignments
+    POST   courses/admin/subjects/<subject_id>/teachers/     assign a teacher, course-wide
            body: { "teacher_id": "<uuid>", "display_role": "PRIMARY"|"ASSISTANT" }
-    PATCH  courses/admin/subject-teachers/<int:assignment_id>/   change role
-    DELETE courses/admin/subject-teachers/<int:assignment_id>/   unassign
+    PATCH  courses/admin/subject-teachers/<uuid:assignment_id>/   change role
+    DELETE courses/admin/subject-teachers/<uuid:assignment_id>/   unassign (soft end)
 
     GET    courses/admin/courses/<course_id>/batches/       list batches
     POST   courses/admin/courses/<course_id>/batches/       create batch
     PATCH  courses/admin/batches/<batch_id>/                update batch
     DELETE courses/admin/batches/<batch_id>/                delete batch
+
+    GET/POST courses/admin/batches/<batch_id>/teaching-assignments/   per-batch roster
+    PATCH/DELETE courses/admin/teaching-assignments/<uuid:assignment_id>/
+
+    GET  courses/admin/courses/<course_id>/staffing/                whole-course grid
+    POST courses/admin/courses/<course_id>/staffing/bulk-assign/    one teacher -> many subjects
 """
 
 from datetime import date
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import IntegrityError
-from django.db.models import Count, Q
+from django.db import IntegrityError, transaction
+from django.db.models import Count, Max, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -33,24 +44,21 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.models import TeacherProfile
 from accounts.permissions import IsAdmin
-from .models import Batch, Course, Subject, SubjectTeacher, TeachingAssignment
+from .models import Batch, Course, Subject, TeachingAssignment
 
 User = get_user_model()
 
-VALID_ROLES = (SubjectTeacher.ROLE_PRIMARY, SubjectTeacher.ROLE_ASSISTANT)
+# The course-wide (batch=NULL) assign endpoints only ever offer these two —
+# SUBSTITUTE is a batch-roster concept (a temporary stand-in for a specific
+# batch's classes), not something that makes sense course-wide.
+VALID_ROLES = (TeachingAssignment.ROLE_PRIMARY, TeachingAssignment.ROLE_ASSISTANT)
 VALID_TA_ROLES = (
     TeachingAssignment.ROLE_PRIMARY,
     TeachingAssignment.ROLE_ASSISTANT,
     TeachingAssignment.ROLE_SUBSTITUTE,
 )
-# SubjectTeacher only has PRIMARY/ASSISTANT; map the richer TeachingAssignment
-# roles down when dual-writing the legacy row.
-_TA_TO_ST_ROLE = {
-    TeachingAssignment.ROLE_PRIMARY: SubjectTeacher.ROLE_PRIMARY,
-    TeachingAssignment.ROLE_ASSISTANT: SubjectTeacher.ROLE_ASSISTANT,
-    TeachingAssignment.ROLE_SUBSTITUTE: SubjectTeacher.ROLE_ASSISTANT,
-}
 
 
 # --------------------------------------------------------------------------- #
@@ -67,6 +75,49 @@ def _teacher_name(user):
         return lp.full_name
     full = (user.get_full_name() or "").strip()
     return full or user.username or user.email
+
+
+def is_academy_faculty(tp):
+    """True iff this TeacherProfile holds an APPROVED Academy track — i.e. a
+    human admin reviewed them for school teaching.
+
+    Deliberately NOT `tp.is_approved`, and NOT `tp.teacher_type`:
+      • `is_approved` is `bool(approved_tracks())`, and the Skill track is
+        AUTO-approved at signup with no review (accounts/signup_serializer.py's
+        `_initial_status_for`). So every self-registered guest expert has
+        is_approved=True and would otherwise be assignable to a school subject.
+      • `teacher_type` counts a track as "on" while merely PENDING (see
+        TeacherProfile.sync_type_from_tracks), so it is not proof of approval.
+    A teacher holding BOTH tracks approved passes this — that's correct, they
+    really are Academy faculty who also sell skill sessions.
+    """
+    return bool(tp and tp.academy_status == TeacherProfile.TRACK_APPROVED)
+
+
+def academy_faculty_users():
+    """Base queryset for 'who may teach an Academy subject'. One definition so
+    the assign picker and the assign write-path can never drift apart."""
+    return (
+        User.objects.filter(
+            teacher_profile__academy_status=TeacherProfile.TRACK_APPROVED,
+            user_roles__role__name="TEACHER",
+            user_roles__is_active=True,
+        )
+        .select_related("teacher_profile")
+        .distinct()
+    )
+
+
+def _profile_tracks(profile):
+    """Approved tracks, computed with no extra queries. AdminTeacherDirectoryView
+    builds a richer version (it also counts an ExpertProfile row) — this is the
+    cheap one for the lean picker."""
+    tracks = []
+    if profile and getattr(profile, "academy_status", None) == TeacherProfile.TRACK_APPROVED:
+        tracks.append("academy")
+    if profile and getattr(profile, "skill_status", None) == TeacherProfile.TRACK_APPROVED:
+        tracks.append("skill")
+    return tracks
 
 
 def teacher_brief(user, st=None, request=None):
@@ -88,23 +139,28 @@ def teacher_brief(user, st=None, request=None):
         "qualification": (getattr(profile, "qualification", "") or ""),
         "rating": float(profile.rating) if (profile and profile.rating is not None) else None,
         "photo": photo,
+        # So the admin can tell an Academy-only teacher from one who also sells
+        # skill sessions, instead of guessing from the name.
+        "tracks": _profile_tracks(profile),
     }
     if st is not None:
-        data["assignment_id"] = st.id  # SubjectTeacher pk (integer)
-        data["display_role"] = st.display_role
+        data["assignment_id"] = str(st.id)  # TeachingAssignment pk (UUID)
+        data["display_role"] = st.role
         data["order"] = st.order
     return data
 
 
 def subject_teachers_payload(subject, request=None):
-    """Ordered list of a subject's assigned teachers. Callers should prefetch
-    ``subject_teachers`` to avoid a query per subject."""
-    sts = (
-        subject.subject_teachers
+    """Ordered list of a subject's course-wide (batch=NULL) assigned teachers.
+    Callers should prefetch ``teaching_assignments`` to avoid a query per
+    subject."""
+    tas = (
+        subject.teaching_assignments
+        .filter(batch__isnull=True, is_active=True)
         .select_related("teacher", "teacher__teacher_profile")
         .order_by("order")
     )
-    return [teacher_brief(st.teacher, st, request) for st in sts]
+    return [teacher_brief(ta.teacher, ta, request) for ta in tas]
 
 
 def _batch_payload(b):
@@ -166,20 +222,22 @@ def _apply_optional_batch_fields(batch, data):
 # Teacher picker
 # --------------------------------------------------------------------------- #
 class AdminTeacherListView(APIView):
-    """Approved teachers available to assign to a subject. Optional ?q= search."""
+    """Academy faculty available to assign to a subject. Optional ?q= search.
+
+    Returns {"data": [...], "count": <total matching>, "has_more": bool} rather
+    than a bare truncated list: the previous version hard-sliced to 100 with no
+    count, so a teacher ranked 101st was simply invisible and the UI had no way
+    to know it was only showing part of the answer.
+    """
     permission_classes = [IsAuthenticated, IsAdmin]
+
+    PAGE_SIZE = 50
 
     def get(self, request):
         q = request.query_params.get("q", "").strip()
-        qs = (
-            User.objects.filter(
-                teacher_profile__is_approved=True,
-                user_roles__role__name="TEACHER",
-                user_roles__is_active=True,
-            )
-            .select_related("teacher_profile")
-            .distinct()
-        )
+        # Academy-approved only — a self-registered guest expert must not be
+        # offered as a school subject teacher. See is_academy_faculty().
+        qs = academy_faculty_users()
         if q:
             qs = qs.filter(
                 Q(email__icontains=q)
@@ -187,7 +245,17 @@ class AdminTeacherListView(APIView):
                 | Q(first_name__icontains=q)
                 | Q(last_name__icontains=q)
             )
-        return Response([teacher_brief(u, request=request) for u in qs[:100]])
+        # Stable ordering — without it the slice below returns an arbitrary
+        # subset that can change between identical requests.
+        qs = qs.order_by("first_name", "last_name", "email")
+
+        total = qs.count()
+        rows = [teacher_brief(u, request=request) for u in qs[: self.PAGE_SIZE]]
+        return Response({
+            "data": rows,
+            "count": total,
+            "has_more": total > len(rows),
+        })
 
 
 # --------------------------------------------------------------------------- #
@@ -320,15 +388,32 @@ class AdminTeacherDirectoryView(APIView):
                 Q(email__icontains=q) | Q(username__icontains=q)
                 | Q(first_name__icontains=q) | Q(last_name__icontains=q)
             )
+        # Filter by track in the DATABASE, before the slice. This used to run in
+        # Python on the already-truncated 200 rows, so ?track=academy returned an
+        # arbitrary subset once there were more than 200 approved teachers.
+        # Mirrors _teacher_row's definition: skill = an ExpertProfile row exists
+        # OR the skill track is approved.
+        if track == "academy":
+            qs = qs.filter(teacher_profile__academy_status=TeacherProfile.TRACK_APPROVED)
+        elif track == "skill":
+            qs = qs.filter(
+                Q(teacher_profile__expert_profile__isnull=False)
+                | Q(teacher_profile__skill_status=TeacherProfile.TRACK_APPROVED)
+            )
+        qs = qs.order_by("first_name", "last_name", "email").distinct()
+
+        total = qs.count()
         users = list(qs[:200])
         ids = [u.id for u in users]
         hours_map = _weekly_hours_map(ids)
         asg_map = _assignments_map(ids)
         skill_map = _skill_map(ids)
         rows = [_teacher_row(u, request, hours_map, asg_map, skill_map) for u in users]
-        if track in ("academy", "skill"):
-            rows = [r for r in rows if track in r["tracks"]]
-        return Response({"data": rows})
+        return Response({
+            "data": rows,
+            "count": total,
+            "has_more": total > len(rows),
+        })
 
 
 class AdminTeacherDetailView(APIView):
@@ -382,6 +467,8 @@ class AdminTeacherDetailView(APIView):
 # Subject <-> teacher assignment
 # --------------------------------------------------------------------------- #
 class AdminSubjectTeachersView(APIView):
+    """Course-wide (batch=NULL) assignment — the "Teachers" button on a
+    subject row, independent of any specific batch."""
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def get(self, request, subject_id):
@@ -398,9 +485,9 @@ class AdminSubjectTeachersView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        role = (request.data.get("display_role") or SubjectTeacher.ROLE_PRIMARY).upper()
+        role = (request.data.get("display_role") or TeachingAssignment.ROLE_PRIMARY).upper()
         if role not in VALID_ROLES:
-            role = SubjectTeacher.ROLE_PRIMARY
+            role = TeachingAssignment.ROLE_PRIMARY
 
         try:
             teacher = User.objects.select_related("teacher_profile").get(pk=teacher_id)
@@ -411,14 +498,14 @@ class AdminSubjectTeachersView(APIView):
             )
 
         tp = getattr(teacher, "teacher_profile", None)
-        if not (tp and tp.is_approved):
+        if not is_academy_faculty(tp):
             return Response(
-                {"detail": "Only approved teachers can be assigned."},
+                {"detail": "Only approved Academy faculty can be assigned to a subject."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         next_order = (
-            SubjectTeacher.objects.filter(subject=subject)
+            TeachingAssignment.objects.filter(subject=subject, batch__isnull=True)
             .order_by("-order")
             .values_list("order", flat=True)
             .first()
@@ -426,8 +513,9 @@ class AdminSubjectTeachersView(APIView):
         order = (next_order or 0) + 1
 
         try:
-            st = SubjectTeacher.objects.create(
-                subject=subject, teacher=teacher, display_role=role, order=order
+            ta = TeachingAssignment.objects.create(
+                subject=subject, batch=None, teacher=teacher, role=role,
+                order=order, is_active=True, assigned_by=request.user,
             )
         except IntegrityError:
             return Response(
@@ -435,27 +523,174 @@ class AdminSubjectTeachersView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response(teacher_brief(teacher, st, request), status=status.HTTP_201_CREATED)
+        return Response(teacher_brief(teacher, ta, request), status=status.HTTP_201_CREATED)
 
 
 class AdminSubjectTeacherDetailView(APIView):
+    """PATCH the role, or DELETE (soft end) a course-wide assignment. Shares
+    the underlying model with the batch roster below (courses/urls.py's
+    AdminTeachingAssignmentDetailView) — kept as a separate URL because the
+    "Teachers" modal on a subject row only ever deals with batch=NULL rows."""
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def patch(self, request, assignment_id):
-        st = get_object_or_404(
-            SubjectTeacher.objects.select_related("teacher", "teacher__teacher_profile"),
-            pk=assignment_id,
+        ta = get_object_or_404(
+            TeachingAssignment.objects.select_related("teacher", "teacher__teacher_profile"),
+            pk=assignment_id, batch__isnull=True,
         )
         role = (request.data.get("display_role") or "").upper()
-        if role in VALID_ROLES:
-            st.display_role = role
-            st.save(update_fields=["display_role"])
-        return Response(teacher_brief(st.teacher, st, request))
+        if role in VALID_ROLES and role != ta.role:
+            ta.role = role
+            try:
+                ta.save(update_fields=["role"])
+            except IntegrityError:
+                return Response(
+                    {"detail": "This subject already has an active primary teacher."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        return Response(teacher_brief(ta.teacher, ta, request))
 
     def delete(self, request, assignment_id):
-        st = get_object_or_404(SubjectTeacher, pk=assignment_id)
-        st.delete()
+        ta = get_object_or_404(TeachingAssignment, pk=assignment_id, batch__isnull=True)
+        ta.is_active = False
+        ta.ended_at = timezone.now()
+        ta.save(update_fields=["is_active", "ended_at"])
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------------- #
+# Course-wide staffing — the whole subjects x teachers grid in one call
+# --------------------------------------------------------------------------- #
+class AdminCourseStaffingView(APIView):
+    """GET /courses/admin/courses/<uuid:course_id>/staffing/
+
+    Every subject in the course with its assigned teachers, in ONE request.
+    The admin Courses screen previously fetched a subject's teachers per row
+    (one request per subject); at 116 subjects in production that is 116
+    round-trips to render one table, re-fired on every assignment change.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request, course_id):
+        course = get_object_or_404(Course, id=course_id)
+        subjects = (
+            course.subjects
+            .prefetch_related(
+                "teaching_assignments__teacher__teacher_profile",
+            )
+            .order_by("order", "name")
+        )
+        rows = [
+            {
+                "id": str(s.id),
+                "name": s.name,
+                "order": s.order,
+                "teachers": subject_teachers_payload(s, request),
+            }
+            for s in subjects
+        ]
+        return Response({
+            "course": {"id": str(course.id), "title": course.title},
+            "subjects": rows,
+            "unstaffed_count": sum(1 for r in rows if not r["teachers"]),
+        })
+
+
+class AdminCourseBulkAssignView(APIView):
+    """POST /courses/admin/courses/<uuid:course_id>/staffing/bulk-assign/
+
+    Assign ONE teacher to MANY subjects of a course at once —
+    {teacher_id, subject_ids: [...], display_role}.
+
+    Idempotent: a subject the teacher already holds is reported in `skipped`
+    rather than failing the whole call, so re-running after a partial failure
+    is safe. All-or-nothing within the request.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request, course_id):
+        course = get_object_or_404(Course, id=course_id)
+
+        teacher_id = request.data.get("teacher_id") or request.data.get("user_id")
+        subject_ids = request.data.get("subject_ids") or []
+        if not teacher_id:
+            return Response({"detail": "teacher_id is required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(subject_ids, list) or not subject_ids:
+            return Response({"detail": "subject_ids must be a non-empty list."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        role = (request.data.get("display_role") or TeachingAssignment.ROLE_PRIMARY).upper()
+        if role not in VALID_ROLES:
+            role = TeachingAssignment.ROLE_PRIMARY
+
+        try:
+            teacher = User.objects.select_related("teacher_profile").get(pk=teacher_id)
+        except (User.DoesNotExist, DjangoValidationError, ValueError):
+            return Response({"detail": "Teacher not found."},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        # Same gate as the single-subject assign — an auto-approved Skill-track
+        # guest expert must not become an Academy subject teacher in bulk either.
+        if not is_academy_faculty(getattr(teacher, "teacher_profile", None)):
+            return Response(
+                {"detail": "Only approved Academy faculty can be assigned to a subject."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Only subjects that really belong to this course — a stale/forged id
+        # must not silently staff someone onto another course's subject.
+        valid = {
+            str(s.id): s
+            for s in Subject.objects.filter(course=course, id__in=subject_ids)
+        }
+        unknown = [str(i) for i in subject_ids if str(i) not in valid]
+
+        already = set(
+            TeachingAssignment.objects
+            .filter(subject_id__in=valid.keys(), teacher=teacher,
+                    batch__isnull=True, is_active=True)
+            .values_list("subject_id", flat=True)
+        )
+
+        # One query for the current max order per subject, instead of one per
+        # subject inside the loop.
+        max_orders = {
+            str(r["subject_id"]): r["mx"]
+            for r in TeachingAssignment.objects
+            .filter(subject_id__in=valid.keys(), batch__isnull=True)
+            .values("subject_id")
+            .annotate(mx=Max("order"))
+        }
+
+        created = []
+        with transaction.atomic():
+            for sid, subject in valid.items():
+                if subject.id in already:
+                    continue
+                created.append(TeachingAssignment(
+                    subject=subject,
+                    batch=None,
+                    teacher=teacher,
+                    role=role,
+                    order=(max_orders.get(sid) or 0) + 1,
+                    is_active=True,
+                    assigned_by=request.user,
+                ))
+            if created:
+                TeachingAssignment.objects.bulk_create(created)
+
+        return Response(
+            {
+                "assigned": len(created),
+                "skipped_already_assigned": [
+                    str(i) for i in already
+                ],
+                "skipped_not_in_course": unknown,
+                "teacher": teacher_brief(teacher, request=request),
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -554,9 +789,6 @@ class AdminBatchTeachingAssignmentsView(APIView):
     POST -> assign a teacher to a subject in this batch.
             body: { "subject_id": <uuid>, "teacher_id": <uuid>,
                     "role": "PRIMARY"|"ASSISTANT"|"SUBSTITUTE" }
-
-    Dual-writes a legacy SubjectTeacher row so the course-wide reads/authz that
-    have not yet migrated keep seeing the assignment (removed in Phase 5).
     """
     permission_classes = [IsAuthenticated, IsAdmin]
 
@@ -602,9 +834,9 @@ class AdminBatchTeachingAssignmentsView(APIView):
             )
 
         tp = getattr(teacher, "teacher_profile", None)
-        if not (tp and tp.is_approved):
+        if not is_academy_faculty(tp):
             return Response(
-                {"detail": "Only approved teachers can be assigned."},
+                {"detail": "Only approved Academy faculty can be assigned to a subject."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -633,13 +865,6 @@ class AdminBatchTeachingAssignmentsView(APIView):
                 msg = "This teacher is already assigned to this subject in this batch."
             return Response({"detail": msg}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Dual-write the legacy course-wide row (safety net for un-migrated
-        # reads; SubjectTeacher only has PRIMARY/ASSISTANT).
-        SubjectTeacher.objects.get_or_create(
-            subject=subject, teacher=teacher,
-            defaults={"display_role": _TA_TO_ST_ROLE[role], "order": order},
-        )
-
         return Response(
             _teaching_assignment_payload(ta, request),
             status=status.HTTP_201_CREATED,
@@ -650,9 +875,12 @@ class AdminTeachingAssignmentDetailView(APIView):
     """PATCH the role, or DELETE (end) a teaching assignment.
 
     DELETE is a soft end (is_active=False, ended_at=now) so the roster history
-    "who taught this batch's maths in July" is preserved. The legacy
-    SubjectTeacher row is intentionally left in place during the migration
-    window; it is dropped wholesale in Phase 5.
+    "who taught this batch's maths in July" is preserved. This is now the
+    complete revocation act — TeachingAssignment is the only model granting
+    subject access (services.teaches_subject() reads only this table), so
+    there is no second row anywhere that could keep a removed teacher's
+    access alive. (Prior to SubjectTeacher's retirement, that mirrored legacy
+    row had to be cleared here too — see git history if you need the story.)
     """
     permission_classes = [IsAuthenticated, IsAdmin]
 

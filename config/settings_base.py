@@ -144,11 +144,32 @@ MEDIA_SERVED_BY_NGINX = True
 BUNNY_STORAGE_ZONE = os.getenv("BUNNY_STORAGE_ZONE", "")
 BUNNY_STORAGE_API_KEY = os.getenv("BUNNY_STORAGE_API_KEY", "")
 BUNNY_STORAGE_HOSTNAME = os.getenv("BUNNY_STORAGE_HOSTNAME", "storage.bunnycdn.com")
+# The public-facing Pull Zone hostname in front of the Storage Zone above —
+# deliberately a DIFFERENT variable from BUNNY_CDN_HOST (used by the video/
+# Stream code in skills/views_intro_video.py, skills/listing_intro_video.py,
+# courses/views_recordings.py). Storage and Stream are separate Bunny
+# products, each needs its own Pull Zone; reusing BUNNY_CDN_HOST here would
+# silently break video CDN links the moment someone points it at a storage
+# pull zone instead.
+BUNNY_STORAGE_CDN_HOST = os.getenv("BUNNY_STORAGE_CDN_HOST", "")
+
+_using_bunny_storage = bool(BUNNY_STORAGE_ZONE and BUNNY_STORAGE_API_KEY)
+if not _using_bunny_storage:
+    import warnings
+    warnings.warn(
+        "BUNNY_STORAGE_ZONE/BUNNY_STORAGE_API_KEY are not set — CMS media "
+        "(images, uploads) will be written to local disk instead of "
+        "BunnyCDN. Fine for local dev/test; if this fires on a real "
+        "deployment, uploads there are not CDN-served and won't survive a "
+        "redeploy that doesn't preserve the media/ directory.",
+        RuntimeWarning,
+        stacklevel=1,
+    )
 
 STORAGES = {
     "default": (
         {"BACKEND": "config.bunny_storage.BunnyStorage"}
-        if BUNNY_STORAGE_ZONE and BUNNY_STORAGE_API_KEY
+        if _using_bunny_storage
         else {"BACKEND": "config.secure_local_storage.SecureLocalStorage"}
     ),
     "staticfiles": {
@@ -195,6 +216,10 @@ REST_FRAMEWORK = {
         "quiz_ai_generate": "10/hour",
         # Scholarship question-bank AI drafting — same reasoning as above.
         "scholarship_ai_generate": "10/hour",
+        # General Studies page's AI assist — public, no auth gate, so this
+        # is the only thing standing between an anonymous visitor and
+        # unlimited OpenAI spend on our key.
+        "general_studies_ai": "5/hour",
         # Anonymous "notify me when {board} launches" lead capture — the
         # only unauthenticated write endpoint in the app, so throttled hard.
         "board_notify": "5/hour",

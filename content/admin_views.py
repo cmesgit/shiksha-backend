@@ -10,9 +10,10 @@
 # content/views.py's ContentPagination) — editors scan more rows per page
 # than the public site's cards; still capped at 50 via ?page_size=.
 
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework import viewsets
+from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -20,14 +21,16 @@ from rest_framework.response import Response
 
 from .admin_serializers import (
     AnnouncementAdminSerializer, BlogPostAdminSerializer,
-    ContentTagSerializer, CurrentAffairAdminSerializer,
-    FAQItemAdminSerializer, HomeContentBlockAdminSerializer,
-    HomeFloaterAdminSerializer, HomeListItemAdminSerializer,
+    ContentImageAdminSerializer, ContentTagSerializer,
+    CurrentAffairAdminSerializer, FAQItemAdminSerializer,
+    HomeContentBlockAdminSerializer, HomeFloaterAdminSerializer,
+    HomeListItemAdminSerializer, HomeSectionOrderAdminSerializer,
     ShowcaseCourseAdminSerializer,
 )
 from .models import (
-    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
-    HomeContentBlock, HomeFloater, HomeListItem, PublishStatus, ShowcaseCourse,
+    Announcement, BlogPost, ContentImage, ContentTag, CurrentAffair,
+    FAQItem, HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
+    Locale, PublishStatus, ShowcaseCourse,
 )
 from .permissions import IsContentEditor
 
@@ -110,6 +113,32 @@ class ShowcaseCourseAdminViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
 
+# ── Editor-uploaded images (rich-text body content) ────────────────
+
+class ContentImageAdminViewSet(viewsets.ModelViewSet):
+    """Media library for rich-text editor images — full CRUD, distinct from
+    the per-model `cover`/`image` fields elsewhere (a post body can embed
+    many images). Upload a file, get back its URL + metadata; list/search
+    to reuse an already-uploaded image instead of re-uploading."""
+    queryset = ContentImage.objects.all().order_by("-created_at")
+    serializer_class = ContentImageAdminSerializer
+    permission_classes = [IsContentEditor]
+    pagination_class = AdminPagination
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        q = self.request.query_params.get("q")
+        if q:
+            qs = qs.filter(
+                Q(title__icontains=q) | Q(alt_text__icontains=q) | Q(file__icontains=q)
+            )
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(uploaded_by=self.request.user)
+
+
 # ── Homepage content ──────────────────────────────────────────────
 
 class HomeContentBlockAdminViewSet(viewsets.ModelViewSet):
@@ -157,6 +186,49 @@ class HomeFloaterAdminViewSet(viewsets.ModelViewSet):
         return qs
 
 
+class HomeSectionOrderAdminViewSet(
+    mixins.ListModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet,
+):
+    """List + per-row is_visible toggle, plus one atomic bulk `reorder`
+    action. No create/destroy — the row set is fixed to HOMEPAGE_SECTIONS
+    and seeded by migration; `section` itself is read-only on the
+    serializer, so an update can only change `order`/`is_visible`."""
+
+    queryset = HomeSectionOrder.objects.all()
+    serializer_class = HomeSectionOrderAdminSerializer
+    permission_classes = [IsContentEditor]
+    pagination_class = None
+
+    @action(detail=False, methods=["post"])
+    def reorder(self, request):
+        """POST {"sections": ["hero", "featured_courses", ...]} — the full
+        list of section keys in the desired order. Must be exactly the
+        existing set (no missing/extra/duplicate keys) so a stale admin tab
+        can never silently drop a section from the homepage."""
+        sections = request.data.get("sections")
+        if not isinstance(sections, list) or not sections:
+            return Response(
+                {"detail": "sections must be a non-empty list of section keys."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        existing = set(HomeSectionOrder.objects.values_list("section", flat=True))
+        given = set(sections)
+        if len(sections) != len(given) or given != existing:
+            return Response(
+                {"detail": "sections must contain each existing section exactly once.",
+                 "missing": sorted(existing - given), "unexpected": sorted(given - existing)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        with transaction.atomic():
+            rows = {r.section: r for r in HomeSectionOrder.objects.select_for_update()}
+            for i, section in enumerate(sections):
+                rows[section].order = i
+            HomeSectionOrder.objects.bulk_update(rows.values(), ["order"])
+        return Response(HomeSectionOrderAdminSerializer(
+            HomeSectionOrder.objects.all(), many=True,
+        ).data)
+
+
 # ── Blog posts ────────────────────────────────────────────────────
 
 class BlogPostAdminViewSet(viewsets.ModelViewSet):
@@ -177,6 +249,10 @@ class BlogPostAdminViewSet(viewsets.ModelViewSet):
             qs = qs.filter(status=p["status"])
         if p.get("featured"):
             qs = qs.filter(is_featured=True)
+        if p.get("locale"):
+            qs = qs.filter(locale=p["locale"])
+        if p.get("translation_group"):
+            qs = qs.filter(translation_group=p["translation_group"])
         if p.get("q"):
             q = p["q"].strip()
             qs = qs.filter(
@@ -214,6 +290,54 @@ class BlogPostAdminViewSet(viewsets.ModelViewSet):
         post.save()
         return Response(self.get_serializer(post).data)
 
+    # `translation_group`/`locale` on the new row are assigned HERE,
+    # server-side, from the source row already looked up via get_object() —
+    # never trusted from the request body — so a client can't graft a new
+    # post onto an arbitrary existing translation group by guessing a UUID.
+    @action(detail=True, methods=["post"], url_path="duplicate-translation")
+    def duplicate_translation(self, request, pk=None):
+        source = self.get_object()
+        locale = request.data.get("locale")
+        if locale not in Locale.values:
+            return Response({"detail": "Invalid locale."}, status=status.HTTP_400_BAD_REQUEST)
+        if locale == source.locale:
+            return Response(
+                {"detail": "Pick a different locale than the source post."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if BlogPost.objects.filter(
+            translation_group=source.translation_group, locale=locale
+        ).exists():
+            return Response(
+                {"detail": f"A {locale} translation already exists for this post."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        # Slug copied verbatim (not blank) — same-slug-across-locale is the
+        # convention, disambiguated by the public URL's /hi/ prefix, not by
+        # the slug string. Title/excerpt/body are left as the English text
+        # too, as a translation starting point rather than a blank editor —
+        # a translator overwrites it, same spirit as the plain "Duplicate"
+        # action in BlogPosts.jsx leaving content in place to edit from.
+        new_post = BlogPost.objects.create(
+            translation_group=source.translation_group,
+            locale=locale,
+            title=source.title,
+            slug=source.slug,
+            class_level=source.class_level,
+            subject=source.subject,
+            chapter_number=source.chapter_number,
+            excerpt=source.excerpt,
+            cover=source.cover,
+            body_html=source.body_html,
+            trusted_html=source.trusted_html,
+            author=request.user,
+            is_featured=False,
+            seo_title=source.seo_title,
+            seo_description=source.seo_description,
+            status=PublishStatus.DRAFT,
+        )
+        new_post.tags.set(source.tags.all())
+        return Response(self.get_serializer(new_post).data, status=status.HTTP_201_CREATED)
 
 # ── Current affairs ───────────────────────────────────────────────
 

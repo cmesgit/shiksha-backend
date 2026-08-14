@@ -12,7 +12,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from accounts.models import LearnerProfile, Role, User, UserRole
 from enrollments.models import Enrollment
 
-from .models import Course, Subject, SubjectTeacher
+from .models import Chapter, Course, Subject, TeachingAssignment
 
 ALL_STUDENTS_URL = "/api/courses/teacher/all-students/"
 
@@ -35,8 +35,8 @@ class TeacherRosterTests(TestCase):
         )
         # The teacher teaches one subject in each course, so both courses are
         # in scope for the all-students view.
-        SubjectTeacher.objects.create(subject=cls.subject, teacher=cls.teacher)
-        SubjectTeacher.objects.create(subject=cls.other_subject, teacher=cls.teacher)
+        TeachingAssignment.objects.create(subject=cls.subject, teacher=cls.teacher, batch=None, is_active=True)
+        TeachingAssignment.objects.create(subject=cls.other_subject, teacher=cls.teacher, batch=None, is_active=True)
 
         # ── One account, three enrolled children: 1 user, 3 students. ──
         cls.parent = User.objects.create_user(
@@ -87,9 +87,15 @@ class TeacherRosterTests(TestCase):
 
     def setUp(self):
         # DRF is configured with CookieJWTAuthentication only (no session auth),
-        # so force_login() would leave the request anonymous.
-        access = RefreshToken.for_user(self.teacher).access_token
-        self.client.cookies["access"] = str(access)
+        # so force_login() would leave the request anonymous. The teacher
+        # roster views require an active TEACHER-CONTEXT token, not just the
+        # role (see require_teacher_context/_in_teacher_context) — a bare
+        # RefreshToken.for_user() carries no context claim at all, so it must
+        # be set explicitly here to match what a real teacher session token
+        # looks like (accounts.auth_flow.build_tokens sets this the same way).
+        refresh = RefreshToken.for_user(self.teacher)
+        refresh["context"] = "teacher"
+        self.client.cookies["access"] = str(refresh.access_token)
 
     # ───────────────────────────── all students ─────────────────────────────
     def test_siblings_are_separate_rows_keyed_on_the_learner_profile(self):
@@ -207,7 +213,7 @@ class RecordingNoteTest(TestCase):
 
         self.course = Course.objects.create(title="C10", class_level=10)
         self.subject = Subject.objects.create(course=self.course, name="Physics")
-        SubjectTeacher.objects.create(subject=self.subject, teacher=self.teacher)
+        TeachingAssignment.objects.create(subject=self.subject, teacher=self.teacher, batch=None, is_active=True)
         Enrollment.objects.create(
             user=self.student, course=self.course, status=Enrollment.STATUS_ACTIVE
         )
@@ -267,3 +273,369 @@ class RecordingNoteTest(TestCase):
         client = self._client(self.outsider, context="learner")
         r = client.get(f"/api/courses/recordings/{self.recording.id}/notes/")
         self.assertEqual(r.status_code, 403)
+
+
+class SubjectAccessTests(TestCase):
+    """Regression cover for a paywall bypass: ``SubjectDetailView`` and
+    ``SubjectChaptersView`` used to only check ``IsAuthenticated``, so any
+    signed-up account (enrolled or not) could read another course's chapter
+    content and roster by guessing/enumerating ``subject_id``. Both now share
+    ``_require_subject_access`` with the always-correct ``SubjectDashboardView``.
+    """
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        self.student = User.objects.create_user(
+            username="sa_student@x.com", email="sa_student@x.com", password="x",
+        )
+        self.outsider = User.objects.create_user(
+            username="sa_outsider@x.com", email="sa_outsider@x.com", password="x",
+        )
+        self.teacher = User.objects.create_user(
+            username="sa_teacher@x.com", email="sa_teacher@x.com", password="x",
+        )
+        teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
+        UserRole.objects.create(
+            user=self.teacher, role=teacher_role, is_active=True, is_primary=True,
+        )
+
+        self.course = Course.objects.create(title="C10 Science")
+        self.subject = Subject.objects.create(course=self.course, name="Physics")
+        TeachingAssignment.objects.create(subject=self.subject, teacher=self.teacher, batch=None, is_active=True)
+        Chapter.objects.create(
+            subject=self.subject, title="Ch1", order=1,
+            content_html="<p>paid content</p>",
+        )
+
+        self.student_profile = LearnerProfile.objects.create(
+            account=self.student, display_name="Student One",
+            full_name="Student One", is_default=True,
+        )
+        Enrollment.objects.create(
+            user=self.student, learner_profile=self.student_profile,
+            course=self.course, status=Enrollment.STATUS_ACTIVE,
+        )
+
+        # Signed up, but enrolled in nothing and not a teacher on this subject.
+        self.outsider_profile = LearnerProfile.objects.create(
+            account=self.outsider, display_name="Outsider",
+            full_name="Outsider", is_default=True,
+        )
+        self.APIClient = APIClient
+
+    def _client(self, user, profile=None):
+        client = self.APIClient()
+        token = {"context": "learner" if profile else "teacher"}
+        if profile is not None:
+            token["active_profile"] = str(profile.id)
+        client.force_authenticate(user=user, token=token)
+        return client
+
+    def test_unenrolled_signed_up_user_cannot_read_subject_detail(self):
+        client = self._client(self.outsider, profile=self.outsider_profile)
+        r = client.get(f"/api/courses/subject/{self.subject.id}/")
+        self.assertEqual(r.status_code, 403)
+
+    def test_unenrolled_signed_up_user_cannot_read_chapters(self):
+        client = self._client(self.outsider, profile=self.outsider_profile)
+        r = client.get(f"/api/courses/subjects/{self.subject.id}/chapters/")
+        self.assertEqual(r.status_code, 403)
+
+    def test_enrolled_student_can_read_subject_detail(self):
+        client = self._client(self.student, profile=self.student_profile)
+        r = client.get(f"/api/courses/subject/{self.subject.id}/")
+        self.assertEqual(r.status_code, 200)
+
+    def test_enrolled_student_can_read_chapters(self):
+        client = self._client(self.student, profile=self.student_profile)
+        r = client.get(f"/api/courses/subjects/{self.subject.id}/chapters/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()[0]["title"], "Ch1")
+
+    def test_assigned_teacher_can_read_chapters(self):
+        client = self._client(self.teacher)
+        r = client.get(f"/api/courses/subjects/{self.subject.id}/chapters/")
+        self.assertEqual(r.status_code, 200)
+
+
+class AcademyTeacherPickerTrackTests(TestCase):
+    """Regression cover: the admin subject-teacher picker (and the assign
+    write-paths behind it) gated on ``TeacherProfile.is_approved``, which is
+    ``bool(approved_tracks())``. The Skill track is AUTO-approved at signup with
+    no admin review (accounts/signup_serializer._initial_status_for), so every
+    self-registered guest expert had is_approved=True and was offered as — and
+    could be assigned as — a school subject teacher, despite academy_status
+    being ``locked``. Both now gate on an APPROVED Academy track.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from accounts.models import TeacherProfile
+
+        cls.teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
+
+        cls.admin = User.objects.create_user(
+            username="admin_picker", email="admin_picker@example.com",
+            password="pw", is_staff=True,
+        )
+
+        cls.course = Course.objects.create(title="Class 10 Science")
+        cls.subject = Subject.objects.create(course=cls.course, name="Physics")
+
+        A = TeacherProfile.TRACK_APPROVED
+        P = TeacherProfile.TRACK_PENDING
+        cls.faculty = cls._make("faculty_only", academy=A)
+        cls.both = cls._make("both_tracks", academy=A, skill=A)
+        cls.skill_only = cls._make("skill_only", skill=A)      # self-signup expert
+        cls.pending = cls._make("pending_faculty", academy=P)  # awaiting review
+
+    @classmethod
+    def _make(cls, name, academy=None, skill=None):
+        from accounts.models import TeacherProfile
+
+        user = User.objects.create_user(
+            username=name, email=f"{name}@example.com", password="pw",
+        )
+        tp = TeacherProfile.objects.create(user=user)
+        if academy:
+            tp.set_track_status(TeacherProfile.TRACK_ACADEMY, academy)
+        if skill:
+            tp.set_track_status(TeacherProfile.TRACK_SKILL, skill)
+        tp.sync_type_from_tracks()
+        tp.save()
+        UserRole.objects.create(
+            user=user, role=cls.teacher_role, is_active=bool(tp.approved_tracks()),
+        )
+        return user
+
+    def _admin_client(self):
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=self.admin, token={"context": "admin"})
+        return client
+
+    def test_picker_offers_academy_faculty_and_excludes_skill_only_experts(self):
+        r = self._admin_client().get("/api/courses/admin/teachers/")
+        self.assertEqual(r.status_code, 200, r.content)
+        emails = {row["email"] for row in r.json()["data"]}
+
+        # Reviewed Academy faculty — and a teacher holding BOTH tracks, who
+        # really is faculty — must still be offered.
+        self.assertIn("faculty_only@example.com", emails)
+        self.assertIn("both_tracks@example.com", emails)
+        # The auto-approved guest expert and the un-reviewed applicant must not.
+        self.assertNotIn("skill_only@example.com", emails)
+        self.assertNotIn("pending_faculty@example.com", emails)
+
+    def test_picker_reports_a_real_total_not_a_silent_truncation(self):
+        r = self._admin_client().get("/api/courses/admin/teachers/")
+        body = r.json()
+        self.assertEqual(body["count"], 2)
+        self.assertFalse(body["has_more"])
+
+    def test_picker_exposes_tracks_so_the_admin_can_tell_them_apart(self):
+        r = self._admin_client().get("/api/courses/admin/teachers/")
+        rows = {row["email"]: row for row in r.json()["data"]}
+        self.assertEqual(rows["faculty_only@example.com"]["tracks"], ["academy"])
+        self.assertEqual(rows["both_tracks@example.com"]["tracks"], ["academy", "skill"])
+
+    def test_search_is_applied_server_side(self):
+        r = self._admin_client().get("/api/courses/admin/teachers/?q=both_tracks")
+        body = r.json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["data"][0]["email"], "both_tracks@example.com")
+
+    def test_skill_only_expert_cannot_be_assigned_to_a_subject(self):
+        """The picker no longer offers them, but the write-path must refuse too —
+        filtering a dropdown is not authorization."""
+        r = self._admin_client().post(
+            f"/api/courses/admin/subjects/{self.subject.id}/teachers/",
+            {"teacher_id": str(self.skill_only.id)}, format="json",
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertFalse(
+            TeachingAssignment.objects.filter(
+                subject=self.subject, teacher=self.skill_only, batch__isnull=True, is_active=True).exists()
+        )
+
+    def test_academy_faculty_can_still_be_assigned_to_a_subject(self):
+        r = self._admin_client().post(
+            f"/api/courses/admin/subjects/{self.subject.id}/teachers/",
+            {"teacher_id": str(self.faculty.id)}, format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertTrue(
+            TeachingAssignment.objects.filter(
+                subject=self.subject, teacher=self.faculty, batch__isnull=True, is_active=True).exists()
+        )
+
+
+class CourseStaffingGridTests(AcademyTeacherPickerTrackTests):
+    """The whole-course staffing grid + bulk assign, which replace rendering the
+    subjects table via one request per subject."""
+
+    def test_grid_returns_every_subject_in_one_call(self):
+        maths = Subject.objects.create(course=self.course, name="Maths")
+        TeachingAssignment.objects.create(subject=self.subject, teacher=self.faculty, batch=None, is_active=True)
+
+        r = self._admin_client().get(
+            f"/api/courses/admin/courses/{self.course.id}/staffing/")
+        self.assertEqual(r.status_code, 200, r.content)
+        body = r.json()
+
+        names = {s["name"]: s for s in body["subjects"]}
+        self.assertEqual(set(names), {"Physics", "Maths"})
+        self.assertEqual(
+            [t["email"] for t in names["Physics"]["teachers"]],
+            ["faculty_only@example.com"],
+        )
+        self.assertEqual(names["Maths"]["teachers"], [])
+        # Drives the "N subjects still need a teacher" hint.
+        self.assertEqual(body["unstaffed_count"], 1)
+        self.assertEqual(maths.name, "Maths")  # created above, still present
+
+    def test_bulk_assign_staffs_many_subjects_at_once(self):
+        maths = Subject.objects.create(course=self.course, name="Maths")
+        chem = Subject.objects.create(course=self.course, name="Chemistry")
+
+        r = self._admin_client().post(
+            f"/api/courses/admin/courses/{self.course.id}/staffing/bulk-assign/",
+            {"teacher_id": str(self.faculty.id),
+             "subject_ids": [str(maths.id), str(chem.id)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()["assigned"], 2)
+        self.assertEqual(
+            TeachingAssignment.objects.filter(teacher=self.faculty, batch__isnull=True, is_active=True).count(), 2)
+
+    def test_bulk_assign_is_idempotent_rather_than_failing_the_whole_call(self):
+        maths = Subject.objects.create(course=self.course, name="Maths")
+        TeachingAssignment.objects.create(subject=maths, teacher=self.faculty, batch=None, is_active=True)
+        chem = Subject.objects.create(course=self.course, name="Chemistry")
+
+        r = self._admin_client().post(
+            f"/api/courses/admin/courses/{self.course.id}/staffing/bulk-assign/",
+            {"teacher_id": str(self.faculty.id),
+             "subject_ids": [str(maths.id), str(chem.id)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        body = r.json()
+        self.assertEqual(body["assigned"], 1)                      # chem only
+        self.assertEqual(body["skipped_already_assigned"], [str(maths.id)])
+
+    def test_bulk_assign_refuses_a_subject_from_another_course(self):
+        other = Course.objects.create(title="Class 9 Science")
+        foreign = Subject.objects.create(course=other, name="Biology")
+
+        r = self._admin_client().post(
+            f"/api/courses/admin/courses/{self.course.id}/staffing/bulk-assign/",
+            {"teacher_id": str(self.faculty.id),
+             "subject_ids": [str(foreign.id)]},
+            format="json",
+        )
+        self.assertEqual(r.json()["skipped_not_in_course"], [str(foreign.id)])
+        self.assertFalse(
+            TeachingAssignment.objects.filter(subject=foreign, batch__isnull=True, is_active=True).exists())
+
+    def test_bulk_assign_refuses_a_skill_only_expert(self):
+        maths = Subject.objects.create(course=self.course, name="Maths")
+        r = self._admin_client().post(
+            f"/api/courses/admin/courses/{self.course.id}/staffing/bulk-assign/",
+            {"teacher_id": str(self.skill_only.id),
+             "subject_ids": [str(maths.id)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertFalse(
+            TeachingAssignment.objects.filter(teacher=self.skill_only, batch__isnull=True, is_active=True).exists())
+
+
+class TeachingAssignmentRevocationTests(TestCase):
+    """Ending a TeachingAssignment must actually revoke the teacher.
+
+    Regression cover from when TeachingAssignment DELETE used to leave a
+    mirrored legacy SubjectTeacher row in place (services.teaches_subject()
+    granted access on either model having a row) — "remove this teacher" left
+    them with full subject access (quizzes, materials, recordings,
+    livestream). SubjectTeacher has since been retired entirely, so
+    TeachingAssignment is now the only thing that can grant access; kept as a
+    regression test since the same class of bug (a second, forgotten grant
+    path) is easy to reintroduce.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from accounts.models import TeacherProfile
+
+        cls.teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
+        cls.admin = User.objects.create_user(
+            username="admin_rev", email="admin_rev@example.com",
+            password="pw", is_staff=True,
+        )
+        cls.teacher = User.objects.create_user(
+            username="rev_teacher", email="rev_teacher@example.com", password="pw",
+        )
+        tp = TeacherProfile.objects.create(user=cls.teacher)
+        tp.set_track_status(TeacherProfile.TRACK_ACADEMY, TeacherProfile.TRACK_APPROVED)
+        tp.sync_type_from_tracks()
+        tp.save()
+        UserRole.objects.create(user=cls.teacher, role=cls.teacher_role, is_active=True)
+
+        cls.course = Course.objects.create(title="Class 10 Science")
+        cls.subject = Subject.objects.create(course=cls.course, name="Physics")
+
+    def _admin_client(self):
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user=self.admin, token={"context": "admin"})
+        return client
+
+    def _assign_to_batch(self, batch):
+        client = self._admin_client()
+        r = client.post(
+            f"/api/courses/admin/batches/{batch.id}/teaching-assignments/",
+            {"subject_id": str(self.subject.id),
+             "teacher_id": str(self.teacher.id), "role": "PRIMARY"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.json()["assignment_id"]
+
+    def test_ending_the_last_assignment_revokes_subject_access(self):
+        from .models import Batch
+        from .services import teaches_subject
+
+        batch = Batch.objects.create(course=self.course, name="2026 A", code="A")
+        assignment_id = self._assign_to_batch(batch)
+        self.assertTrue(teaches_subject(self.teacher, self.subject))
+
+        r = self._admin_client().delete(
+            f"/api/courses/admin/teaching-assignments/{assignment_id}/")
+        self.assertEqual(r.status_code, 204, r.content)
+
+        self.assertFalse(
+            teaches_subject(self.teacher, self.subject),
+            "ending the only assignment must actually revoke access",
+        )
+
+    def test_ending_one_of_two_assignments_keeps_access(self):
+        from .models import Batch
+        from .services import teaches_subject
+
+        a = Batch.objects.create(course=self.course, name="2026 A", code="A")
+        b = Batch.objects.create(course=self.course, name="2026 B", code="B")
+        first = self._assign_to_batch(a)
+        self._assign_to_batch(b)
+
+        self._admin_client().delete(
+            f"/api/courses/admin/teaching-assignments/{first}/")
+
+        self.assertTrue(
+            teaches_subject(self.teacher, self.subject),
+            "the teacher still teaches this subject in the other batch",
+        )

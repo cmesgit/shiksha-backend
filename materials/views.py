@@ -22,20 +22,30 @@ from accounts.auth_flow import get_active_profile
 from enrollments.services import active_batch_id, has_active_subscription
 
 
+# Sentinel returned (as the "batch_id") for a teacher: unlike a student's
+# batch_id, which may genuinely be None (no batch assigned — restrict to
+# course-wide material only), a teacher must see every batch's material.
+# Overloading plain `None` for both meanings previously caused an unscoped
+# student to be treated as "unrestricted" wherever a caller checked
+# `if batch_id:` — see materials/views.py's ChapterMaterials/SubjectMaterials
+# history.
+TEACHER_UNRESTRICTED = object()
+
+
 def _authorize_subject_materials(request, subject):
     """Gate material reads on the same rule the Student* views already
     enforce: a teacher assigned to the subject, or a learner profile with an
     active subscription to the subject's course.
 
-    Returns (allowed, batch_id). batch_id is None for a teacher (sees every
-    batch's material) or an unscoped student subscription; when set, callers
-    must filter to Q(batch__isnull=True) | Q(batch_id=batch_id) to preserve
-    the batch isolation StudentSubjectMaterials/StudentCourseMaterials
-    already enforce — ChapterMaterials/SubjectMaterials/StudyMaterialDetail
-    previously skipped both the subscription check AND this filter.
+    Returns (allowed, batch_id). batch_id is TEACHER_UNRESTRICTED for a
+    teacher (sees every batch's material); for a student it is their
+    enrollment's batch id, or None if they have no batch assigned yet (in
+    which case callers must filter to Q(batch__isnull=True) | Q(batch_id=
+    batch_id) — which correctly degrades to "course-wide material only",
+    not "every batch's material").
     """
     if teaches_subject(request.user, subject):
-        return True, None
+        return True, TEACHER_UNRESTRICTED
     profile = get_active_profile(request)
     if has_active_subscription(
         user=request.user, course=subject.course, learner_profile=profile,
@@ -61,10 +71,11 @@ class ChapterMaterials(APIView):
         allowed, batch_id = _authorize_subject_materials(request, chapter.subject)
         if not allowed:
             raise PermissionDenied("No active subscription for this course.")
+        materials = StudyMaterial.objects.filter(chapter=chapter)
+        if batch_id is not TEACHER_UNRESTRICTED:
+            materials = materials.filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
         materials = (
-            StudyMaterial.objects
-            .filter(chapter=chapter)
-            .filter(Q(batch__isnull=True) | Q(batch_id=batch_id) if batch_id else Q())
+            materials
             # chapter__subject: the serializer reports subject_id/subject_name.
             .select_related("chapter__subject", "batch")
             .prefetch_related("files")
@@ -215,10 +226,11 @@ class SubjectMaterials(APIView):
         allowed, batch_id = _authorize_subject_materials(request, subject)
         if not allowed:
             raise PermissionDenied("No active subscription for this course.")
+        materials = StudyMaterial.objects.filter(chapter__subject=subject)
+        if batch_id is not TEACHER_UNRESTRICTED:
+            materials = materials.filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
         materials = (
-            StudyMaterial.objects
-            .filter(chapter__subject=subject)
-            .filter(Q(batch__isnull=True) | Q(batch_id=batch_id) if batch_id else Q())
+            materials
             # chapter__subject: the serializer reports subject_id/subject_name.
             .select_related("chapter__subject", "batch")
             .prefetch_related("files")
@@ -282,7 +294,10 @@ class TeacherAllMaterials(APIView):
     def get(self, request):
         materials = (
             StudyMaterial.objects
-            .filter(chapter__subject__subject_teachers__teacher=request.user)
+            .filter(
+                chapter__subject__teaching_assignments__teacher=request.user,
+                chapter__subject__teaching_assignments__is_active=True,
+            )
             # chapter__subject: the serializer reports subject_id/subject_name.
             .select_related("chapter__subject", "batch")
             .prefetch_related("files")
@@ -357,7 +372,7 @@ class StudyMaterialDetail(APIView):
         )
         if not allowed:
             raise PermissionDenied("No active subscription for this course.")
-        if batch_id is not None and material.batch_id not in (None, batch_id):
+        if batch_id is not TEACHER_UNRESTRICTED and material.batch_id not in (None, batch_id):
             raise PermissionDenied("This material is not available to your batch.")
         serializer = StudyMaterialSerializer(
             material,

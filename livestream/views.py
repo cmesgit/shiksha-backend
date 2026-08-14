@@ -183,7 +183,9 @@ class TeacherLiveSessionListView(generics.ListAPIView):
         cutoff = now - timedelta(days=90)
 
         if subject_id:
-            if not user.subject_assignments.filter(subject_id=subject_id).exists():
+            if not user.teaching_assignments.filter(
+                subject_id=subject_id, is_active=True,
+            ).exists():
                 raise PermissionDenied("Not assigned to this subject.")
 
             return (
@@ -194,8 +196,9 @@ class TeacherLiveSessionListView(generics.ListAPIView):
                 .order_by("start_time")
             )
 
-        assigned_subject_ids = user.subject_assignments.values_list(
-            "subject_id", flat=True)
+        assigned_subject_ids = user.teaching_assignments.filter(
+            is_active=True,
+        ).values_list("subject_id", flat=True)
 
         cutoff = now - timedelta(days=90)
         return (
@@ -810,6 +813,13 @@ def _handle_participant_join(event):
                 "type": "live_session",
                 "title": f"🔴 {session.title} is now LIVE!",
                 "session_id": str(session.id),
+                # The bell's click handler resolves the join link off
+                # `object_id` (matching the persisted Activity rows other
+                # SESSION notifications carry) — without it, this transient
+                # push has no id the frontend recognizes and falls back to
+                # the plain session list.
+                "id": str(session.id),
+                "object_id": str(session.id),
                 "start_time": session.start_time.isoformat(),
             })
 
