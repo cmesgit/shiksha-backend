@@ -405,6 +405,12 @@ class BatchStudentSerializer(serializers.ModelSerializer):
         source="learner_profile.id", read_only=True, default=None,
     )
     course_id = serializers.UUIDField(source="course.id", read_only=True, default=None)
+    # Only populated when the queryset annotates it (the admin enrollment
+    # list's _subscription_expiry_subquery) — a plain field would 500 on the
+    # other two callers (batch roster, single-row action response) that
+    # don't. Lets the admin UI show a computed "Expired" state without a new
+    # stored Enrollment status.
+    subscription_expires_at = serializers.SerializerMethodField()
 
     class Meta:
         model = Enrollment
@@ -420,7 +426,11 @@ class BatchStudentSerializer(serializers.ModelSerializer):
             "batch_code",
             "status",
             "enrolled_at",
+            "subscription_expires_at",
         )
+
+    def get_subscription_expires_at(self, obj):
+        return getattr(obj, "subscription_expires_at", None)
 
     def get_user_name(self, obj):
         lp = obj.learner_profile

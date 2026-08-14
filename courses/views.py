@@ -1174,6 +1174,69 @@ def _apply_course_details_and_categories(course, request):
 class AdminCourseCreateView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
 
+    def get(self, request):
+        """Flat list of ALL courses across ALL boards (unpaginated, matches
+        this admin API's existing convention — see AdminBoardCoursesView).
+        Powers the "All Courses" tab in Admin-dashboard's Courses page,
+        which sits alongside the Boards drill-down rather than replacing
+        it (an admin previously had to open a board first to find any
+        course). Same row shape as AdminBoardCoursesView, plus board_id/
+        board_name since a flat list needs to show which board each course
+        belongs to. Optional filters: ?search= (icontains on title),
+        ?board=<id>, ?status=<status>."""
+        courses = (
+            Course.objects
+            .annotate(
+                enrollment_count=Count(
+                    "enrollments",
+                    filter=Q(enrollments__status=Enrollment.STATUS_ACTIVE),
+                ),
+                subject_count=Count("subjects", distinct=True),
+            )
+            .select_related("stream", "details", "board")
+            .prefetch_related("categories")
+            .order_by("title")
+        )
+
+        search = request.query_params.get("search")
+        if search:
+            courses = courses.filter(title__icontains=search)
+        board = request.query_params.get("board")
+        if board:
+            courses = courses.filter(board_id=board)
+        course_status = request.query_params.get("status")
+        if course_status:
+            courses = courses.filter(status=course_status)
+
+        return Response([
+            {
+                "id": str(c.id),
+                "title": c.title,
+                "description": c.description,
+                "price": c.price,
+                "status": c.status,
+                "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
+                "subscription_duration_days": c.subscription_duration_days,
+                "stream_name": c.stream.name if c.stream else None,
+                "enrollment_count": c.enrollment_count,
+                "subject_count": c.subject_count,
+                "created_at": c.created_at,
+                "details": (
+                    {"syllabus": c.details.syllabus, "highlights": c.details.highlights}
+                    if hasattr(c, "details") else None
+                ),
+                "is_featured": c.is_featured,
+                "categories": [
+                    {"id": cat.id, "slug": cat.slug, "name": cat.name, "group": cat.group}
+                    for cat in c.categories.all()
+                ],
+                "seo_title": c.seo_title,
+                "board_id": str(c.board_id) if c.board_id else None,
+                "board_name": c.board.name if c.board else None,
+            }
+            for c in courses
+        ])
+
     def post(self, request):
         serializer = CourseSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
