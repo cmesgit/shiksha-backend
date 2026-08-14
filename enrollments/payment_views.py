@@ -5,9 +5,11 @@ layer. Kept in a separate module so nothing in the existing views.py changes.
 Routes (wired in enrollments/urls.py):
     GET  /api/enrollments/payment-config/   → active payment mode (any logged-in user)
     POST /api/enrollments/free-enroll/      → instant enrollment when mode is "free"
+    POST /api/enrollments/select-batch/     → student picks their own batch
 """
 from datetime import timedelta
 
+from django.db import transaction
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -16,10 +18,35 @@ from rest_framework import status
 
 from accounts.permissions import IsEmailVerified
 from accounts.auth_flow import get_active_profile
-from courses.models import Course
+from courses.models import Course, Batch
 
 from .models import Enrollment, Subscription
 from .payments import get_payment_provider
+
+
+def _validate_batch_choice(course, batch_id):
+    """Validate a student-chosen batch_id against `course`, mirroring the
+    checks admin's own batch-assignment paths enforce (_move_batch in
+    admin_enrollment_views.py, AdminActionSerializer in serializers.py):
+    must belong to this course, be active, and have room. Returns
+    (batch, None) on success or (None, error_response) on failure — the
+    error_response is a ready-to-return DRF Response.
+    """
+    batch = Batch.objects.select_for_update().filter(
+        id=batch_id, course_id=course.id).first()
+    if not batch:
+        return None, Response(
+            {"batch": "Batch not found for this course."},
+            status=status.HTTP_400_BAD_REQUEST)
+    if not batch.is_active:
+        return None, Response(
+            {"batch": "That batch is inactive."},
+            status=status.HTTP_400_BAD_REQUEST)
+    if batch.is_full:
+        return None, Response(
+            {"batch": f"'{batch.name}' is full ({batch.seats_taken}/{batch.capacity})."},
+            status=status.HTTP_400_BAD_REQUEST)
+    return batch, None
 
 
 def _create_or_extend_subscription(*, user, learner, course):
@@ -125,11 +152,37 @@ class FreeEnrollView(APIView):
             return Response({"detail": "Select a learner profile before enrolling."},
                             status=status.HTTP_400_BAD_REQUEST)
 
-        # Grant access (idempotent on the unique (learner_profile, course) pair).
-        enroll_defaults = {"user": request.user, "status": Enrollment.STATUS_ACTIVE}
-        enrollment, _ = Enrollment.objects.get_or_create(
-            learner_profile=learner, course=course, defaults=enroll_defaults
-        )
+        # Optional: student's own batch choice (Morning/Afternoon/Evening/Night
+        # etc — see courses.models.Batch). Validated + locked inside the same
+        # transaction as the enrollment write so two students can't both win
+        # the last seat in a capped batch.
+        batch_id = request.data.get("batch")
+        with transaction.atomic():
+            batch = None
+            if batch_id:
+                batch, err = _validate_batch_choice(course, batch_id)
+                if err is not None:
+                    return err
+
+            # Grant access (idempotent on the unique (learner_profile, course) pair).
+            enroll_defaults = {"user": request.user, "status": Enrollment.STATUS_ACTIVE}
+            if batch is not None:
+                enroll_defaults["batch"] = batch
+                enroll_defaults["batch_code"] = batch.code
+            enrollment, created = Enrollment.objects.get_or_create(
+                learner_profile=learner, course=course, defaults=enroll_defaults
+            )
+            # Re-calling this endpoint (e.g. the student skipped batch choice
+            # the first time and comes back to pick one) sets the batch on an
+            # already-existing enrollment — but only while it's still unset.
+            # Once a batch is assigned, changing it is an admin action
+            # (BatchRosterModal's "Move to"), matching the boundary
+            # _move_batch already draws for admin-initiated moves.
+            if not created and batch is not None and enrollment.batch_id is None:
+                enrollment.batch = batch
+                enrollment.batch_code = batch.code
+                enrollment.save(update_fields=["batch", "batch_code"])
+
         sub = _create_or_extend_subscription(user=request.user, learner=learner, course=course)
         _redeem_scholarship_award_if_any(learner=learner, course=course, enrollment=enrollment, subscription=sub)
 
@@ -137,6 +190,10 @@ class FreeEnrollView(APIView):
             {
                 "detail": "You're enrolled.",
                 "course_id": str(course.id),
+                "batch": (
+                    {"id": str(enrollment.batch_id), "name": enrollment.batch.name}
+                    if enrollment.batch_id else None
+                ),
                 "subscription": {
                     "id": str(sub.id),
                     "status": sub.status,
@@ -145,3 +202,58 @@ class FreeEnrollView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class SelectEnrollmentBatchView(APIView):
+    """Let an already-enrolled student choose their own batch, for the case
+    the free-enroll/payment flow didn't collect one (enrolled before the
+    course had batches, or skipped the picker). Only ever moves batch=None
+    to a real batch — never reassigns an already-set one, matching the
+    boundary admin's own _move_batch draws for reassignment (an admin
+    action from BatchRosterModal, not a student self-service one)."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        course_id = request.data.get("course")
+        batch_id = request.data.get("batch")
+        if not course_id or not batch_id:
+            return Response({"detail": "course and batch are required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response({"detail": "Select a learner profile."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            course = Course.objects.get(pk=course_id)
+        except Course.DoesNotExist:
+            return Response({"detail": "Course not found."},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            enrollment = Enrollment.objects.select_for_update().filter(
+                learner_profile=learner, course=course,
+                status=Enrollment.STATUS_ACTIVE,
+            ).first()
+            if enrollment is None:
+                return Response(
+                    {"detail": "You are not enrolled in this course."},
+                    status=status.HTTP_404_NOT_FOUND)
+            if enrollment.batch_id is not None:
+                return Response(
+                    {"detail": "You already have a batch. Contact support to change it."},
+                    status=status.HTTP_400_BAD_REQUEST)
+
+            batch, err = _validate_batch_choice(course, batch_id)
+            if err is not None:
+                return err
+
+            enrollment.batch = batch
+            enrollment.batch_code = batch.code
+            enrollment.save(update_fields=["batch", "batch_code"])
+
+        return Response({
+            "detail": "Batch selected.",
+            "batch": {"id": str(batch.id), "name": batch.name},
+        })
