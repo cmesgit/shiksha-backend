@@ -44,7 +44,5 @@ admin_router.register("admin/home-content", admin_views.HomeContentBlockAdminVie
 admin_router.register("admin/home-list-items", admin_views.HomeListItemAdminViewSet, basename="admin-home-list-item")
 admin_router.register("admin/home-floaters", admin_views.HomeFloaterAdminViewSet, basename="admin-home-floater")
 admin_router.register("admin/home-section-order", admin_views.HomeSectionOrderAdminViewSet, basename="admin-home-section-order")
+admin_router.register("admin/editor-images", admin_views.ContentImageAdminViewSet, basename="admin-editor-image")
 urlpatterns += admin_router.urls
-urlpatterns += [
-    path("admin/editor-images/", admin_views.EditorImageUploadView.as_view(), name="admin-editor-image-upload"),
-]

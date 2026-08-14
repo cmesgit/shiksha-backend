@@ -16,6 +16,8 @@
 # try `instance.tags.set([<tag-name strings>])` and blow up trying to treat
 # tag names as ContentTag primary keys.
 
+import os
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
@@ -117,10 +119,16 @@ class BlogPostAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
             "tags", "author", "author_name", "is_featured", "seo_title",
             "seo_description", "reading_minutes", "view_count",
             "status", "publish_at", "created_at", "updated_at",
+            "locale", "translation_group",
         ]
         read_only_fields = [
             "body_html_source", "reading_minutes", "view_count",
             "created_at", "updated_at",
+            # translation_group is server-assigned (default on create, or
+            # copied explicitly by BlogPostAdminViewSet.duplicate_translation
+            # — never accepted from a client payload, so a request can't
+            # graft itself onto an arbitrary existing translation group).
+            "translation_group",
         ]
         extra_kwargs = {
             "slug": {"required": False},
@@ -139,8 +147,18 @@ class BlogPostAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
 class ContentImageAdminSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContentImage
-        fields = ["id", "file", "created_at"]
-        read_only_fields = ["id", "created_at"]
+        fields = [
+            "id", "file", "alt_text", "title", "width", "height",
+            "focal_x", "focal_y", "uploaded_by", "created_at",
+        ]
+        read_only_fields = ["id", "width", "height", "uploaded_by", "created_at"]
+
+    def create(self, validated_data):
+        if not validated_data.get("title"):
+            validated_data["title"] = os.path.splitext(
+                os.path.basename(validated_data["file"].name)
+            )[0]
+        return super().create(validated_data)
 
 
 # ── Current affairs ───────────────────────────────────────────────

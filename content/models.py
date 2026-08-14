@@ -13,6 +13,7 @@
 #   • Everything indexed the way the public API queries it.
 
 import re
+import uuid
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -131,16 +132,35 @@ class Subject(models.TextChoices):
     GENERAL = "general", "General"
 
 
+class Locale(models.TextChoices):
+    EN = "en", "English"
+    HI = "hi", "Hindi"
+
+
 class BlogPost(PublishableModel):
+    # A Hindi translation is a full second BlogPost row, not a shared field
+    # on this one — publishing/scheduling/view-counts are genuinely
+    # independent per locale in practice (a translator finishes days after
+    # the English post ships, or an editor reworks the English text without
+    # touching the live Hindi version). `translation_group` links "the same
+    # post in different languages" without forcing a shared-identity/child-
+    # translation-table rewrite of the entire publish/CRUD/cache pipeline
+    # below — a Hindi post is just another BlogPost row with locale="hi".
+    translation_group = models.UUIDField(default=uuid.uuid4, editable=False, db_index=True)
+    locale = models.CharField(max_length=8, choices=Locale.choices, default=Locale.EN, db_index=True)
+
     title = models.CharField(max_length=300)
     slug = models.CharField(
         max_length=220,
-        unique=True,
         blank=True,
         validators=[path_slug_validator],
         help_text=(
             "Path-style, e.g. class-9/economics/chapter-1. "
-            "Left blank → built from class / subject / chapter."
+            "Left blank → built from class / subject / chapter. "
+            "Unique per locale, not globally — a Hindi translation "
+            "conventionally reuses the same slug as its English sibling, "
+            "disambiguated by the public URL's /hi/ prefix rather than by "
+            "the slug string itself."
         ),
     )
     class_level = models.CharField(
@@ -198,12 +218,18 @@ class BlogPost(PublishableModel):
         indexes = [
             models.Index(fields=["status", "publish_at"], name="content_blog_live_idx"),
             models.Index(fields=["class_level", "subject"], name="content_blog_taxo_idx"),
+            models.Index(fields=["translation_group"], name="content_blog_transgroup_idx"),
+            models.Index(fields=["locale", "status", "publish_at"], name="content_blog_locale_live_idx"),
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=["class_level", "subject", "chapter_number"],
+                fields=["class_level", "subject", "chapter_number", "locale"],
                 condition=Q(chapter_number__isnull=False),
-                name="content_blog_unique_chapter",
+                name="content_blog_unique_chapter_locale",
+            ),
+            models.UniqueConstraint(
+                fields=["slug", "locale"],
+                name="content_blog_unique_slug_locale",
             ),
         ]
 
@@ -225,6 +251,16 @@ class BlogPost(PublishableModel):
         if self.slug:
             self.slug = self.slug.strip().strip("/").lower()
             path_slug_validator(self.slug)
+            # The public /blogs/hi/<slug> route reserves "hi" (and any future
+            # locale code) as the first path segment — a slug that starts
+            # with it would collide with that prefix. Near-zero chance of
+            # ever firing given how slugs are generated, but cheap to guard
+            # once rather than discover in production.
+            first_segment = self.slug.split("/", 1)[0]
+            if first_segment in Locale.values:
+                raise ValidationError(
+                    {"slug": f"Slug can't start with the reserved locale segment \"{first_segment}\"."}
+                )
 
     def save(self, *args, **kwargs):
         if not self.slug:
@@ -240,7 +276,13 @@ class BlogPost(PublishableModel):
         super().save(*args, **kwargs)
 
     def get_absolute_url(self):
-        return f"/blogs/{self.slug}"
+        # Mirrors content/serializers.py's `_blog_path()` — English stays
+        # unprefixed, every other locale gets a /blogs/<locale>/ segment.
+        # Used by the sitemap (content/sitemaps.py), which would otherwise
+        # point a Hindi row at the English route.
+        if self.locale == Locale.EN:
+            return f"/blogs/{self.slug}"
+        return f"/blogs/{self.locale}/{self.slug}"
 
     def __str__(self):
         return self.title
@@ -709,6 +751,21 @@ class ContentImage(TimeStampedModel):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True,
     )
+    alt_text = models.CharField(max_length=255, blank=True, default="")
+    title = models.CharField(max_length=255, blank=True, default="")
+    width = models.PositiveIntegerField(null=True, blank=True)
+    height = models.PositiveIntegerField(null=True, blank=True)
+    # Crop/thumbnail focal point as a fraction of image width/height
+    # (0.0-1.0 each). No consumer reads these yet — forward-looking field
+    # for a future smart-crop/thumbnail renderer; safe to leave null today.
+    focal_x = models.FloatField(null=True, blank=True)
+    focal_y = models.FloatField(null=True, blank=True)
 
     def __str__(self):
         return self.file.name
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.file and (self.width is None or self.height is None):
+            self.width, self.height = self.file.width, self.file.height
+            super().save(update_fields=["width", "height"])

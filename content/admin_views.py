@@ -13,7 +13,7 @@
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework import generics, mixins, status, viewsets
+from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -30,7 +30,7 @@ from .admin_serializers import (
 from .models import (
     Announcement, BlogPost, ContentImage, ContentTag, CurrentAffair,
     FAQItem, HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
-    PublishStatus, ShowcaseCourse,
+    Locale, PublishStatus, ShowcaseCourse,
 )
 from .permissions import IsContentEditor
 
@@ -115,14 +115,25 @@ class ShowcaseCourseAdminViewSet(viewsets.ModelViewSet):
 
 # ── Editor-uploaded images (rich-text body content) ────────────────
 
-class EditorImageUploadView(generics.CreateAPIView):
-    """POST an image file, get back its URL — the upload target a rich-text
-    editor's image button/paste-handler calls, distinct from the per-model
-    `cover`/`image` fields above (a post body can embed many images)."""
-    queryset = ContentImage.objects.all()
+class ContentImageAdminViewSet(viewsets.ModelViewSet):
+    """Media library for rich-text editor images — full CRUD, distinct from
+    the per-model `cover`/`image` fields elsewhere (a post body can embed
+    many images). Upload a file, get back its URL + metadata; list/search
+    to reuse an already-uploaded image instead of re-uploading."""
+    queryset = ContentImage.objects.all().order_by("-created_at")
     serializer_class = ContentImageAdminSerializer
     permission_classes = [IsContentEditor]
-    parser_classes = [MultiPartParser, FormParser]
+    pagination_class = AdminPagination
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        q = self.request.query_params.get("q")
+        if q:
+            qs = qs.filter(
+                Q(title__icontains=q) | Q(alt_text__icontains=q) | Q(file__icontains=q)
+            )
+        return qs
 
     def perform_create(self, serializer):
         serializer.save(uploaded_by=self.request.user)
@@ -238,6 +249,10 @@ class BlogPostAdminViewSet(viewsets.ModelViewSet):
             qs = qs.filter(status=p["status"])
         if p.get("featured"):
             qs = qs.filter(is_featured=True)
+        if p.get("locale"):
+            qs = qs.filter(locale=p["locale"])
+        if p.get("translation_group"):
+            qs = qs.filter(translation_group=p["translation_group"])
         if p.get("q"):
             q = p["q"].strip()
             qs = qs.filter(
@@ -275,6 +290,54 @@ class BlogPostAdminViewSet(viewsets.ModelViewSet):
         post.save()
         return Response(self.get_serializer(post).data)
 
+    # `translation_group`/`locale` on the new row are assigned HERE,
+    # server-side, from the source row already looked up via get_object() —
+    # never trusted from the request body — so a client can't graft a new
+    # post onto an arbitrary existing translation group by guessing a UUID.
+    @action(detail=True, methods=["post"], url_path="duplicate-translation")
+    def duplicate_translation(self, request, pk=None):
+        source = self.get_object()
+        locale = request.data.get("locale")
+        if locale not in Locale.values:
+            return Response({"detail": "Invalid locale."}, status=status.HTTP_400_BAD_REQUEST)
+        if locale == source.locale:
+            return Response(
+                {"detail": "Pick a different locale than the source post."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if BlogPost.objects.filter(
+            translation_group=source.translation_group, locale=locale
+        ).exists():
+            return Response(
+                {"detail": f"A {locale} translation already exists for this post."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        # Slug copied verbatim (not blank) — same-slug-across-locale is the
+        # convention, disambiguated by the public URL's /hi/ prefix, not by
+        # the slug string. Title/excerpt/body are left as the English text
+        # too, as a translation starting point rather than a blank editor —
+        # a translator overwrites it, same spirit as the plain "Duplicate"
+        # action in BlogPosts.jsx leaving content in place to edit from.
+        new_post = BlogPost.objects.create(
+            translation_group=source.translation_group,
+            locale=locale,
+            title=source.title,
+            slug=source.slug,
+            class_level=source.class_level,
+            subject=source.subject,
+            chapter_number=source.chapter_number,
+            excerpt=source.excerpt,
+            cover=source.cover,
+            body_html=source.body_html,
+            trusted_html=source.trusted_html,
+            author=request.user,
+            is_featured=False,
+            seo_title=source.seo_title,
+            seo_description=source.seo_description,
+            status=PublishStatus.DRAFT,
+        )
+        new_post.tags.set(source.tags.all())
+        return Response(self.get_serializer(new_post).data, status=status.HTTP_201_CREATED)
 
 # ── Current affairs ───────────────────────────────────────────────
 

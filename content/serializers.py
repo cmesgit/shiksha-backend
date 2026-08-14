@@ -19,6 +19,12 @@ def _absolute(request, url):
     return request.build_absolute_uri(url) if request else url
 
 
+def _blog_path(locale, slug):
+    # English stays unprefixed (every existing /blogs/<slug> link keeps
+    # working); only non-English locales get a /blogs/<locale>/ segment.
+    return f"/blogs/{slug}" if locale == "en" else f"/blogs/{locale}/{slug}"
+
+
 # ── Blog ──────────────────────────────────────────────────────────
 
 class BlogPostListSerializer(serializers.ModelSerializer):
@@ -31,7 +37,7 @@ class BlogPostListSerializer(serializers.ModelSerializer):
         fields = [
             "id", "slug", "title", "excerpt", "class_level", "subject",
             "category", "chapter_number", "thumbnail", "tags",
-            "reading_minutes", "is_featured", "publish_at",
+            "reading_minutes", "is_featured", "publish_at", "locale",
         ]
 
     def get_thumbnail(self, obj):
@@ -43,11 +49,17 @@ class BlogPostListSerializer(serializers.ModelSerializer):
 
 class BlogPostDetailSerializer(BlogPostListSerializer):
     author_name = serializers.SerializerMethodField()
+    translations = serializers.SerializerMethodField()
+    # Set by BlogPostDetailView as a plain instance attribute (not a model
+    # field) when it serves the English fallback for a locale with no
+    # translation yet — absent/False for a normal same-locale hit.
+    is_fallback_locale = serializers.SerializerMethodField()
 
     class Meta(BlogPostListSerializer.Meta):
         fields = BlogPostListSerializer.Meta.fields + [
             "body_html", "seo_title", "seo_description",
             "author_name", "view_count", "updated_at",
+            "translations", "is_fallback_locale",
         ]
 
     def get_author_name(self, obj):
@@ -55,6 +67,28 @@ class BlogPostDetailSerializer(BlogPostListSerializer):
             return ""
         full = getattr(obj.author, "get_full_name", lambda: "")() or ""
         return full or getattr(obj.author, "username", "") or ""
+
+    def get_translations(self, obj):
+        # Sibling locale -> slug/path map, so the frontend locale switcher
+        # never has to guess a sibling URL by string-manipulating the slug
+        # (a Hindi translation can legitimately diverge from its English
+        # sibling's slug — the convention is to reuse it, not a guarantee).
+        siblings = BlogPost.objects.filter(
+            translation_group=obj.translation_group
+        ).exclude(pk=obj.pk).values("locale", "slug")
+        result = [{
+            "locale": obj.locale,
+            "slug": obj.slug,
+            "path": _blog_path(obj.locale, obj.slug),
+        }]
+        result += [
+            {"locale": s["locale"], "slug": s["slug"], "path": _blog_path(s["locale"], s["slug"])}
+            for s in siblings
+        ]
+        return result
+
+    def get_is_fallback_locale(self, obj):
+        return bool(getattr(obj, "is_fallback_locale", False))
 
 
 # ── Current affairs ───────────────────────────────────────────────
