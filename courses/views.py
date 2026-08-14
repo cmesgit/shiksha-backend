@@ -3,14 +3,14 @@ from .models import Chapter
 from django.db.models import Count, Prefetch, Q
 from .models import TeachingAssignment
 from .services import teaches_subject
-from accounts.models import LearnerProfile, Role
+from accounts.models import LearnerProfile
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework import status
 from enrollments.models import Enrollment, EnrollmentRequest, Subscription
-from accounts.permissions import IsTeacherContext, IsAdmin
+from accounts.permissions import IsTeacherContext, IsAdmin, require_teacher_context
 from accounts.auth_flow import get_active_profile
 from quizzes.models import Quiz, QuizAttempt
 from assignments.models import Assignment
@@ -54,6 +54,17 @@ class EnrollCourseSummaryView(APIView):
             "price": course.price,
             "board": course.board.name if course.board else None,
             "stream": course.stream.name if course.stream else None,
+            # Active batches (Morning/Afternoon/Evening/Night etc) — EnrollModal
+            # and Enroll.jsx show a picker when this is non-empty, and pass the
+            # chosen id through to free-enroll / the manual-UPI request.
+            "batches": [
+                {
+                    "id": str(b.id), "name": b.name, "code": b.code,
+                    "is_full": b.is_full, "capacity": b.capacity,
+                    "seats_taken": b.seats_taken,
+                }
+                for b in course.batches.filter(is_active=True)
+            ],
         }
         return Response(data)
 
@@ -171,11 +182,29 @@ class MyEnrolledCoursesView(APIView):
         enrollments = (
             Enrollment.objects
             .filter(self._profile_enrollment_q(learner), status="ACTIVE")
-            .select_related("course__board")
+            .select_related("course__board", "batch")
         )
 
         courses = [enrollment.course for enrollment in enrollments]
         course_ids = [c.id for c in courses]
+        enrollment_by_course = {e.course_id: e for e in enrollments}
+
+        # Courses with an active batch but no batch on this enrollment yet —
+        # the frontend prompts these students to self-select one (see
+        # enrollments/payment_views.py's SelectEnrollmentBatchView).
+        unbatched_course_ids = [
+            e.course_id for e in enrollments if e.batch_id is None
+        ]
+        batches_by_course = {}
+        if unbatched_course_ids:
+            for b in Batch.objects.filter(
+                course_id__in=unbatched_course_ids, is_active=True,
+            ):
+                batches_by_course.setdefault(b.course_id, []).append({
+                    "id": str(b.id), "name": b.name, "code": b.code,
+                    "is_full": b.is_full, "capacity": b.capacity,
+                    "seats_taken": b.seats_taken,
+                })
 
         now = timezone.now()
         latest_sub_by_course = {}
@@ -227,6 +256,16 @@ class MyEnrolledCoursesView(APIView):
                     "is_trial": False,
                 }
                 course_data["payment_history"] = payment_history
+
+            enrollment = enrollment_by_course.get(course.id)
+            if enrollment and enrollment.batch_id:
+                course_data["batch"] = {
+                    "id": str(enrollment.batch_id), "name": enrollment.batch.name,
+                }
+                course_data["available_batches"] = []
+            else:
+                course_data["batch"] = None
+                course_data["available_batches"] = batches_by_course.get(course.id, [])
 
         return Response(serialized)
 
@@ -474,11 +513,11 @@ class TeacherMyClassesView(APIView):
     def get(self, request):
         user = request.user
 
-        if not user.has_role(Role.TEACHER):
-            return Response(
-                {"detail": "Only teachers allowed."},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # has_role alone would pass for a dual-role account's LEARNER-context
+        # token too (e.g. a child profile on a shared account whose parent is
+        # a teacher) — this is a teacher-only roster view, so it must also
+        # require the active teacher-context claim, not just the role.
+        require_teacher_context(request)
 
         subjects = (
             Subject.objects
@@ -664,11 +703,9 @@ class SubjectStudentsView(APIView):
     def get(self, request, subject_id):
         user = request.user
 
-        if not user.has_role(Role.TEACHER):
-            return Response(
-                {"detail": "Only teachers allowed."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # See TeacherMyClassesView — role alone isn't enough, this must also
+        # be gated on active teacher context.
+        require_teacher_context(request)
 
         subject = get_object_or_404(Subject, id=subject_id)
 
@@ -757,11 +794,9 @@ class TeacherAllStudentsView(APIView):
     def get(self, request):
         user = request.user
 
-        if not user.has_role(Role.TEACHER):
-            return Response(
-                {"detail": "Only teachers allowed."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # See TeacherMyClassesView — role alone isn't enough, this must also
+        # be gated on active teacher context.
+        require_teacher_context(request)
 
         subjects = (
             Subject.objects
@@ -1775,6 +1810,8 @@ def _serialize_public_course_detail(course, request):
                 "code": b.code,
                 "effective_price": b.effective_price,
                 "is_full": b.is_full,
+                "capacity": b.capacity,
+                "seats_taken": b.seats_taken,
             }
             for b in course.batches.all()
         ],

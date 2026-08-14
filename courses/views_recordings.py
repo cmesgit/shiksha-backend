@@ -58,7 +58,10 @@ class TeacherAllRecordingsView(APIView):
     def get(self, request):
         recordings = (
             SessionRecording.objects
-            .filter(subject__subject_teachers__teacher=request.user)
+            .filter(
+                subject__teaching_assignments__teacher=request.user,
+                subject__teaching_assignments__is_active=True,
+            )
             .select_related("subject")
             # distinct(): a teacher listed twice on one subject would otherwise
             # duplicate every recording on it.

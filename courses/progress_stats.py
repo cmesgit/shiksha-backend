@@ -8,7 +8,7 @@ pattern already used to resolve the student's enrollment in
 ``courses.batch_progress_views.MyBatchProgressView``.
 """
 
-from django.db.models import Q, Sum
+from django.db.models import Q, Sum, Count
 
 from quizzes.models import QuizAttempt
 from assignments.models import AssignmentSubmission
@@ -54,9 +54,18 @@ def build_progress_stats(course, student_user, subjects_qs, learner=None):
     subject_ids = list(subjects_qs.values_list("id", flat=True))
 
     # ---- Quizzes: submitted attempts on quizzes belonging to this course's subjects.
+    # A SUBMITTED attempt only counts as completed if it has answers — see
+    # quizzes/views.py's StartQuizView/StudentDashboardView for the ghost-
+    # attempt bug (a pre-existing zero-answer SUBMITTED row from the old
+    # expiry behavior) this same guard remediates.
     attempt_q = Q(quiz__subject_id__in=subject_ids, status=QuizAttempt.STATUS_SUBMITTED)
     attempt_q &= _dual_key_q("student", student_user, learner)
-    attempts = list(QuizAttempt.objects.filter(attempt_q).select_related("quiz"))
+    attempts = list(
+        QuizAttempt.objects.filter(attempt_q)
+        .annotate(_answer_count=Count("answers"))
+        .filter(_answer_count__gt=0)
+        .select_related("quiz")
+    )
 
     quizzes_completed = len(attempts)
     quiz_avg_pct = average_quiz_score_pct(attempts)

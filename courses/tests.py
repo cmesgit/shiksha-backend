@@ -87,9 +87,15 @@ class TeacherRosterTests(TestCase):
 
     def setUp(self):
         # DRF is configured with CookieJWTAuthentication only (no session auth),
-        # so force_login() would leave the request anonymous.
-        access = RefreshToken.for_user(self.teacher).access_token
-        self.client.cookies["access"] = str(access)
+        # so force_login() would leave the request anonymous. The teacher
+        # roster views require an active TEACHER-CONTEXT token, not just the
+        # role (see require_teacher_context/_in_teacher_context) — a bare
+        # RefreshToken.for_user() carries no context claim at all, so it must
+        # be set explicitly here to match what a real teacher session token
+        # looks like (accounts.auth_flow.build_tokens sets this the same way).
+        refresh = RefreshToken.for_user(self.teacher)
+        refresh["context"] = "teacher"
+        self.client.cookies["access"] = str(refresh.access_token)
 
     # ───────────────────────────── all students ─────────────────────────────
     def test_siblings_are_separate_rows_keyed_on_the_learner_profile(self):

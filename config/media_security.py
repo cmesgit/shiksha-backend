@@ -34,7 +34,7 @@ def _staff_or(user, ok):
 
 def _check_study_material(request, name):
     from materials.models import MaterialFile
-    from materials.views import _authorize_subject_materials
+    from materials.views import _authorize_subject_materials, TEACHER_UNRESTRICTED
 
     mf = (
         MaterialFile.objects
@@ -43,8 +43,16 @@ def _check_study_material(request, name):
     )
     if not mf or not mf.material_id:
         return False
-    allowed, _ = _authorize_subject_materials(request, mf.material.chapter.subject)
-    return allowed
+    allowed, batch_id = _authorize_subject_materials(request, mf.material.chapter.subject)
+    if not allowed:
+        return False
+    if batch_id is TEACHER_UNRESTRICTED:
+        return True
+    # Same batch isolation the API views enforce (ChapterMaterials/
+    # SubjectMaterials): course-wide material (batch IS NULL) is visible to
+    # everyone, batch-scoped material only to a student in that batch — the
+    # secure-download URL must not be a side door around that.
+    return mf.material.batch_id is None or mf.material.batch_id == batch_id
 
 
 def _check_teacher_application_doc(request, name):

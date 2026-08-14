@@ -61,6 +61,7 @@ class BunnyStorage(Storage):
 
     def size(self, name):
         r = requests.head(self._storage_url(name), headers=self._headers(), timeout=self.TIMEOUT)
+        r.raise_for_status()
         return int(r.headers.get("Content-Length", 0))
 
     # get_available_name is intentionally NOT overridden — the base Storage

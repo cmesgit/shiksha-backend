@@ -20,7 +20,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
-from accounts.models import Role
+from accounts.permissions import _in_teacher_context
 
 
 class TeacherAvailability(models.Model):
@@ -51,7 +51,11 @@ class TeacherAvailabilityView(APIView):
     permission_classes = [IsAuthenticated]
 
     def _gate(self, request):
-        if not request.user.has_role(Role.TEACHER):
+        # has_role alone would pass for a dual-role account's LEARNER-context
+        # token too (e.g. a child profile on a shared account whose parent is
+        # a teacher) — this manages the teacher's own availability, so it
+        # must also require the active teacher-context claim, not just the role.
+        if not _in_teacher_context(request):
             return Response(
                 {"detail": "Only teachers can manage availability."},
                 status=status.HTTP_403_FORBIDDEN,

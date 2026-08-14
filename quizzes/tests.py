@@ -22,7 +22,7 @@ from rest_framework.test import APIClient
 from accounts.models import User, Role, UserRole, LearnerProfile
 from courses.models import Course, Subject
 from enrollments.models import Subscription
-from quizzes.models import Quiz, Question, Choice, QuizAttempt
+from quizzes.models import Quiz, Question, Choice, QuizAttempt, StudentAnswer
 
 
 class QuizRetakeAndTimerTest(TestCase):
@@ -126,7 +126,7 @@ class QuizRetakeAndTimerTest(TestCase):
         )
         self.assertEqual(submit.status_code, 400, submit.content)
 
-    def test_resuming_after_the_deadline_closes_out_the_stale_attempt_instead_of_reusing_it(self):
+    def test_resuming_after_the_deadline_discards_the_stale_zero_answer_attempt(self):
         c = self.client_as_student()
         start = c.post(f"/api/quizzes/{self.quiz.id}/start/")
         attempt_id = start.data["attempt_id"]
@@ -139,8 +139,58 @@ class QuizRetakeAndTimerTest(TestCase):
         self.assertEqual(resumed.status_code, 200, resumed.content)
         self.assertNotEqual(resumed.data["attempt_id"], attempt_id)
 
-        stale.refresh_from_db()
-        self.assertEqual(stale.status, QuizAttempt.STATUS_SUBMITTED)
+        # The abandoned 0-answer attempt is DELETED, not left as a
+        # SUBMITTED ghost that would falsely mark the quiz completed.
+        self.assertFalse(QuizAttempt.objects.filter(id=attempt_id).exists())
+
+    def test_expired_attempt_with_answers_is_closed_out_not_deleted(self):
+        # Defensive: if a resumed attempt somehow holds answers when it
+        # expires, we preserve it (SUBMITTED) rather than destroying data.
+        c = self.client_as_student()
+        start = c.post(f"/api/quizzes/{self.quiz.id}/start/")
+        attempt = QuizAttempt.objects.get(id=start.data["attempt_id"])
+        StudentAnswer.objects.create(
+            attempt=attempt, question=self.question,
+            selected_choice=self.right, is_correct=True,
+        )
+        attempt.started_at = timezone.now() - timedelta(minutes=30)
+        attempt.save(update_fields=["started_at"])
+
+        resumed = c.post(f"/api/quizzes/{self.quiz.id}/start/")
+        self.assertEqual(resumed.status_code, 200, resumed.content)
+
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.status, QuizAttempt.STATUS_SUBMITTED)
+
+    def test_zero_answer_submitted_attempt_does_not_mark_quiz_completed(self):
+        # Remediation cover for ghost rows already in the DB: a SUBMITTED
+        # attempt with no answers must NOT report the quiz as completed on
+        # the student dashboard (which is what locked students out).
+        QuizAttempt.objects.create(
+            quiz=self.quiz, student=self.student, learner_profile=self.profile,
+            attempt_number=1, status=QuizAttempt.STATUS_SUBMITTED,
+            submitted_at=timezone.now(),
+        )
+        c = self.client_as_student()
+        r = c.get("/api/student/quizzes/")
+        self.assertEqual(r.status_code, 200, r.content)
+        row = next(q for q in r.data if str(q["id"]) == str(self.quiz.id))
+        self.assertNotEqual(row["status"], "SUBMITTED")
+        self.assertEqual(row["attempts_count"], 0)
+
+    def test_answered_submitted_attempt_still_marks_quiz_completed(self):
+        # Guard the invariant in the other direction: a real attempt with
+        # answers must still count as completed (no free-retake loophole /
+        # no regression for legitimate completions).
+        c = self.client_as_student()
+        submit = self._start_and_submit(c, self.right)
+        self.assertEqual(submit.status_code, 200, submit.content)
+
+        r = c.get("/api/student/quizzes/")
+        self.assertEqual(r.status_code, 200, r.content)
+        row = next(q for q in r.data if str(q["id"]) == str(self.quiz.id))
+        self.assertEqual(row["status"], "SUBMITTED")
+        self.assertEqual(row["attempts_count"], 1)
 
 
 class StudentQuizSubjectsProfileScopingTest(TestCase):

@@ -494,20 +494,31 @@ def course_room_track(course_id):
 # ---------------------------------------------------------------------------
 
 def teacher_is_public_faculty(tp):
-    """True iff `tp` is one of the two kinds of teacher directory_entries()
-    surfaces in the "start a chat" people directory: a listed guest expert
-    (ExpertProfile.is_listed) or approved Academy faculty (academy_status ==
-    TRACK_APPROVED) — one of two ways to satisfy the "if_relationship" rule
-    for a learner starting a DM with a teacher (see
+    """True iff `tp` is a publicly reachable teacher a learner may start a DM
+    with — one of the ways to satisfy the "if_relationship" rule (see
     learner_teacher_share_active_course() for the other).
 
-    Directory membership alone is deliberately sufficient, with no
-    shared-course/enrollment check: the directory already lists every
-    approved/listed teacher regardless of subject assignment (that's the
-    whole point of "Explore Experts"), so requiring a shared course on top
-    would 403 exactly the "Message" button the directory just offered. It
-    also means this scales as the expert pool grows, without needing a
-    subject-teacher assignment for every learner/teacher pair up front.
+    "Publicly reachable" = approved on EITHER track (academy_status or
+    skill_status == TRACK_APPROVED), or a listed guest expert
+    (ExpertProfile.is_listed). This is deliberately the SAME set the rest of
+    the app already offers a "Message" button for: accounts.TeacherListView
+    (the Academy Teachers page + private-session form) lists every
+    `is_approved=True` teacher, and TeacherProfile.sync_type_from_tracks()
+    defines is_approved as "approved on any track" — so gating on academy
+    approval ALONE 403'd exactly the skill-track-approved guest experts that
+    page offers to message (and, since a teacher DMing a learner also runs
+    through this check with themselves as `tp`, left those experts unable to
+    message anyone from their own Skill Dev inbox). Mirrors _teacher_roles()'s
+    own guest detection (skill_status == TRACK_APPROVED), so the DM gate and
+    the role labels can't drift.
+
+    Approval alone is deliberately sufficient, with no shared-course/
+    enrollment check: the directory already lists every approved/listed
+    teacher regardless of subject assignment (that's the whole point of
+    "Explore Experts"), so requiring a shared course on top would 403 exactly
+    the "Message" button the directory just offered. It also means this scales
+    as the expert pool grows, without needing a subject-teacher assignment for
+    every learner/teacher pair up front.
     """
     try:
         ep = getattr(tp, "expert_profile", None)
@@ -517,6 +528,11 @@ def teacher_is_public_faculty(tp):
         pass
     try:
         if tp.academy_status == TeacherProfile.TRACK_APPROVED:
+            return True
+    except Exception:
+        pass
+    try:
+        if tp.skill_status == TeacherProfile.TRACK_APPROVED:
             return True
     except Exception:
         pass

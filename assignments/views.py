@@ -16,7 +16,6 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from enrollments.models import Enrollment
 
 from courses.models import Chapter
-from accounts.models import Role
 from accounts.permissions import require_teacher_context, IsTeacherContext, _in_teacher_context
 from accounts.auth_flow import get_active_profile
 
@@ -120,12 +119,6 @@ class SubmitAssignmentView(APIView):
             id=assignment_id,
         )
 
-        if not request.user.has_role(Role.STUDENT):
-            return Response(
-                {"detail": "Only students can submit assignments."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         from enrollments.services import has_active_subscription, lock_payload
         from accounts.auth_flow import get_active_profile
 
@@ -182,7 +175,8 @@ class CourseAssignmentsView(generics.ListAPIView):
         if _in_teacher_context(self.request):
             queryset = Assignment.objects.filter(
                 chapter__subject__course__id=course_id,
-                chapter__subject__subject_teachers__teacher=user,
+                chapter__subject__teaching_assignments__teacher=user,
+                chapter__subject__teaching_assignments__is_active=True,
             )
         else:
             from courses.models import Course
@@ -206,8 +200,14 @@ class CourseAssignmentsView(generics.ListAPIView):
                 status=Enrollment.STATUS_ACTIVE,
             ).first()
             batch_id = enrollment.batch_id if enrollment else None
-            queryset = queryset.filter(
-                Q(batch__isnull=True) | Q(batch_id=batch_id))
+            # No batch on the enrollment (e.g. self-enrolled, not yet placed
+            # by an admin) means we can't tell which cohort's assignments
+            # apply — show every assignment in the course rather than only
+            # the course-wide (batch IS NULL) ones, which would otherwise
+            # hide every batch-scoped assignment from most students.
+            if batch_id is not None:
+                queryset = queryset.filter(
+                    Q(batch__isnull=True) | Q(batch_id=batch_id))
 
         return (
             queryset
@@ -514,6 +514,19 @@ class SubjectAssignmentsView(APIView):
         user = request.user
         learner = get_active_profile(request)
 
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"), id=subject_id)
+
+        from enrollments.services import has_active_subscription
+
+        if learner is None:
+            return Response(
+                {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
+                status=403,
+            )
+        if not has_active_subscription(user=user, course=subject.course, learner_profile=learner):
+            raise PermissionDenied("Your subscription for this course has expired.")
+
         submission_prefetch = Prefetch(
             "submissions",
             queryset=AssignmentSubmission.objects.filter(learner_profile=learner)
@@ -536,6 +549,20 @@ class SubjectAssignmentsView(APIView):
             .select_related("chapter__subject")
             .prefetch_related(submission_prefetch, teacher_prefetch, "files")
         )
+
+        # Same batch isolation CourseAssignmentsView enforces: course-wide
+        # assignments (batch IS NULL) plus this student's own batch. No batch
+        # on the enrollment (not yet placed by an admin) shows every
+        # assignment in the subject, matching CourseAssignmentsView's
+        # degrade-to-everything behavior for an unplaced student.
+        enrollment = Enrollment.objects.filter(
+            learner_profile=learner, course_id=subject.course_id,
+            status=Enrollment.STATUS_ACTIVE,
+        ).first()
+        batch_id = enrollment.batch_id if enrollment else None
+        if batch_id is not None:
+            assignments = assignments.filter(
+                Q(batch__isnull=True) | Q(batch_id=batch_id))
 
         data = []
         for assignment in assignments:
