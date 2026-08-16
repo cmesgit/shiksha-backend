@@ -87,9 +87,17 @@ def _remind(kind, object_id, offset, recipients):
         return 0
     sent = 0
     for (user, verb, title, body, sms_vars, learner_profile, link) in recipients:
+        # M2 (Phase 3 §18) profile isolation: without this, every reminder
+        # was account-wide — a multi-child account's reminder about Child A
+        # leaked onto Child B's dashboard. Every call site already threads
+        # learner_profile through correctly; a bare account-level recipient
+        # (a teacher/counselor leg, learner_profile=None) keeps the old
+        # account-wide "" scope, unchanged.
+        audience_identity = f"L:{learner_profile.id}" if learner_profile is not None else ""
         n = notify(recipient=user, verb=verb, title=title, body=body,
                    link_url=link, payload={"kind": kind, "id": str(object_id)},
-                   sms_vars=sms_vars, learner_profile=learner_profile)
+                   sms_vars=sms_vars, learner_profile=learner_profile,
+                   audience_identity=audience_identity)
         sent += 1 if n is not None else 0
     return sent
 

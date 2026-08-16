@@ -26,6 +26,8 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 import logging
 
+from .revocation import is_revoked
+
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
@@ -36,11 +38,20 @@ def get_user_from_token(token_key):
     token. `identity` is the M1 claim (Phase 3 §7) — absent on any token
     minted before this deploy, which is expected and fine: every consumer
     of scope["identity"] treats a missing claim as "fall back to the
-    context + active_profile_id resolution," never as an error."""
+    context + active_profile_id resolution," never as an error.
+
+    Mirrors CookieJWTAuthentication's two extra checks (accounts/
+    authentication.py) that this WS path was missing: a revoked session's
+    access token stays valid here for up to its full ~1h lifetime instead
+    of dying immediately like the REST equivalent, and a deactivated
+    account (is_active=False) could otherwise keep a live chat/livestream
+    socket forever."""
     try:
         token = AccessToken(token_key)
+        if is_revoked(token.get("sid")):
+            return AnonymousUser(), None, None, None
         user_id = token["user_id"]
-        user = User.objects.get(id=user_id)
+        user = User.objects.get(id=user_id, is_active=True)
         return user, token.get("context"), token.get("active_profile"), token.get("identity")
     except (InvalidToken, TokenError, User.DoesNotExist) as e:
         logger.warning(f"JWT auth failed: {e}")

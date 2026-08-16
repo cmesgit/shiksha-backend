@@ -57,6 +57,11 @@ def notify_session_starting_soon():
             subject_name=subject_name,
             content_type=content_type,
             object_id=session.id,
+            # This is a TEACHER-only reminder (the host's own upcoming
+            # class) — Activity.audience defaults to AUDIENCE_LEARNER, so
+            # without this it was tagged the wrong way and never surfaced
+            # on the teacher's own dashboard.
+            audience=Activity.AUDIENCE_TEACHER,
         )
 
         push_ws_notification(teacher.id, {

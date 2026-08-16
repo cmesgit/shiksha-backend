@@ -761,81 +761,94 @@ class StartQuizView(APIView):
                 status=402,
             )
 
-        # ── Reuse an existing PENDING attempt instead of creating a new one ──
-        # Scoped to the ACTIVE LEARNER PROFILE: without this, a sibling on
-        # the same account would resume (and submit into) another child's
-        # in-flight attempt.
-        existing_pending = QuizAttempt.objects.filter(
-            quiz=quiz,
-            learner_profile=learner,
-            status=QuizAttempt.STATUS_PENDING,
-        ).order_by("-attempt_number").first()
+        # Lock the learner profile for the whole check-then-create critical
+        # section below. Without this, a double-click or duplicate tab fires
+        # two concurrent requests that both see "no existing PENDING attempt",
+        # both compute the same next attempt_number, and the second INSERT
+        # dies on uniq_attempt_per_profile_number — an unhandled
+        # IntegrityError → 500, instead of gracefully resuming the attempt
+        # the first request already created. Same pattern as the already-
+        # fixed capacity-limited-booking races (skills/views.py's
+        # ExpertProfile lock, enrollments/payment_views.py's Batch lock).
+        from accounts.models import LearnerProfile
+        with transaction.atomic():
+            LearnerProfile.objects.select_for_update().get(pk=learner.pk)
 
-        if existing_pending:
-            expired = False
-            if quiz.time_limit_minutes:
-                from .serializers import SUBMIT_GRACE_SECONDS
-                deadline = existing_pending.started_at + timedelta(
-                    minutes=quiz.time_limit_minutes, seconds=SUBMIT_GRACE_SECONDS,
-                )
-                expired = timezone.now() > deadline
-            if not expired:
-                # Student refreshed the page or navigated back — resume the same attempt
-                return Response(
-                    {
-                        "detail": "Resuming existing attempt.",
-                        "attempt_id": existing_pending.id,
-                        "started_at": existing_pending.started_at,
-                        "expires_at": (
-                            existing_pending.started_at
-                            + timedelta(minutes=quiz.time_limit_minutes)
-                            if quiz.time_limit_minutes else None
-                        ),
-                    },
-                    status=status.HTTP_200_OK,
-                )
-            # Missed the deadline without ever calling submit (tab closed,
-            # browser crashed, or the auto-submit request itself failed).
-            # DISCARD the abandoned attempt rather than resuming it forever
-            # (which would permanently block a fresh attempt) OR flipping it
-            # to SUBMITTED (what this used to do). A 0-answer "submitted" row
-            # is poison: get_status / submitted_ids treat every SUBMITTED
-            # attempt as a real completion, so the dashboard reports the quiz
-            # as *completed* and QuizHub routes the student to the review
-            # screen — locking them out of a quiz they never actually
-            # answered. Deleting is safe: a PENDING attempt past its deadline
-            # has no answers to preserve (StudentAnswer rows are written by
-            # SubmitQuizView.save(), which flips the attempt to SUBMITTED, or
-            # by practice-mode CheckAnswerView — and practice quizzes are
-            # untimed, so this expiry path never runs for them). It also
-            # restores fair attempt numbering: the student's first real
-            # attempt is #1 again and gets its answer-key reveal, instead of
-            # having #1 silently burned by a ghost. Guarded on the answer
-            # count anyway, so a resumed attempt that somehow holds answers is
-            # closed out (SUBMITTED), never destroyed.
-            if existing_pending.answers.exists():
-                existing_pending.status = QuizAttempt.STATUS_SUBMITTED
-                existing_pending.submitted_at = timezone.now()
-                existing_pending.save(update_fields=["status", "submitted_at"])
-            else:
-                existing_pending.delete()
+            # ── Reuse an existing PENDING attempt instead of creating a new
+            # one ── Scoped to the ACTIVE LEARNER PROFILE: without this, a
+            # sibling on the same account would resume (and submit into)
+            # another child's in-flight attempt.
+            existing_pending = QuizAttempt.objects.filter(
+                quiz=quiz,
+                learner_profile=learner,
+                status=QuizAttempt.STATUS_PENDING,
+            ).order_by("-attempt_number").first()
 
-        # Create a new attempt (first attempt or re-attempt after submitting).
-        # Attempt numbering is per profile — each child counts from 1.
-        last_attempt = QuizAttempt.objects.filter(
-            quiz=quiz,
-            learner_profile=learner
-        ).order_by("-attempt_number").first()
+            if existing_pending:
+                expired = False
+                if quiz.time_limit_minutes:
+                    from .serializers import SUBMIT_GRACE_SECONDS
+                    deadline = existing_pending.started_at + timedelta(
+                        minutes=quiz.time_limit_minutes, seconds=SUBMIT_GRACE_SECONDS,
+                    )
+                    expired = timezone.now() > deadline
+                if not expired:
+                    # Student refreshed the page or navigated back — resume the same attempt
+                    return Response(
+                        {
+                            "detail": "Resuming existing attempt.",
+                            "attempt_id": existing_pending.id,
+                            "started_at": existing_pending.started_at,
+                            "expires_at": (
+                                existing_pending.started_at
+                                + timedelta(minutes=quiz.time_limit_minutes)
+                                if quiz.time_limit_minutes else None
+                            ),
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+                # Missed the deadline without ever calling submit (tab closed,
+                # browser crashed, or the auto-submit request itself failed).
+                # DISCARD the abandoned attempt rather than resuming it forever
+                # (which would permanently block a fresh attempt) OR flipping it
+                # to SUBMITTED (what this used to do). A 0-answer "submitted" row
+                # is poison: get_status / submitted_ids treat every SUBMITTED
+                # attempt as a real completion, so the dashboard reports the quiz
+                # as *completed* and QuizHub routes the student to the review
+                # screen — locking them out of a quiz they never actually
+                # answered. Deleting is safe: a PENDING attempt past its deadline
+                # has no answers to preserve (StudentAnswer rows are written by
+                # SubmitQuizView.save(), which flips the attempt to SUBMITTED, or
+                # by practice-mode CheckAnswerView — and practice quizzes are
+                # untimed, so this expiry path never runs for them). It also
+                # restores fair attempt numbering: the student's first real
+                # attempt is #1 again and gets its answer-key reveal, instead of
+                # having #1 silently burned by a ghost. Guarded on the answer
+                # count anyway, so a resumed attempt that somehow holds answers is
+                # closed out (SUBMITTED), never destroyed.
+                if existing_pending.answers.exists():
+                    existing_pending.status = QuizAttempt.STATUS_SUBMITTED
+                    existing_pending.submitted_at = timezone.now()
+                    existing_pending.save(update_fields=["status", "submitted_at"])
+                else:
+                    existing_pending.delete()
 
-        new_attempt_number = (
-            last_attempt.attempt_number + 1) if last_attempt else 1
+            # Create a new attempt (first attempt or re-attempt after submitting).
+            # Attempt numbering is per profile — each child counts from 1.
+            last_attempt = QuizAttempt.objects.filter(
+                quiz=quiz,
+                learner_profile=learner
+            ).order_by("-attempt_number").first()
 
-        new_attempt = QuizAttempt.objects.create(
-            quiz=quiz,
-            student=request.user,
-            learner_profile=learner,
-            attempt_number=new_attempt_number
-        )
+            new_attempt_number = (
+                last_attempt.attempt_number + 1) if last_attempt else 1
+
+            new_attempt = QuizAttempt.objects.create(
+                quiz=quiz,
+                student=request.user,
+                learner_profile=learner,
+                attempt_number=new_attempt_number
+            )
 
         return Response(
             {
@@ -1635,6 +1648,11 @@ class TeacherQuizRemindView(APIView):
                 actor=request.user,
                 link_url=f"/subjects/quiz/{quiz.subject_id}",
                 learner_profile=lp,
+                # Without this, a multi-child account's reminder about one
+                # sibling's pending quiz leaked onto every other sibling's
+                # dashboard too (same M2/Phase 3 §18 profile-isolation gap
+                # as notifications/tasks.py's _remind()).
+                audience_identity=f"L:{lp.id}",
             )
             sent += 1
 

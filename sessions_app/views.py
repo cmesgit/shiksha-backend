@@ -108,6 +108,13 @@ def _push_session_bell(session, cancelled_by=None):
             session.scheduled_date,
             session.scheduled_time,
         )
+        # datetime.combine() returns a naive datetime; saving it straight
+        # into an aware due_date field silently interprets it as UTC,
+        # shifting the notification time by 5.5h (IST offset) — a full
+        # calendar day near IST midnight. Same guard as the group-session
+        # sibling (group_session_views.py's _notify_user).
+        if timezone.is_naive(scheduled_dt):
+            scheduled_dt = timezone.make_aware(scheduled_dt)
 
         for rule in rules:
             recipient, title = rule(session)
