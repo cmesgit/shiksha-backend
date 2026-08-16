@@ -21,6 +21,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework import status
 from django.db import transaction
 from django.db.models import OuterRef, Q, Subquery
+from django.utils import timezone
 
 from accounts.permissions import IsAdmin
 from accounts.models import LearnerProfile
@@ -86,11 +87,34 @@ class AdminEnrollmentActionView(APIView):
 
         action = (request.data.get("action") or "").lower()
         if action == "revoke":
-            e.status = Enrollment.STATUS_REVOKED
-            e.save(update_fields=["status"])
+            with transaction.atomic():
+                e.status = Enrollment.STATUS_REVOKED
+                e.save(update_fields=["status"])
+                # Content access (materials/assignments/quizzes/livestream/
+                # chat) is gated by has_active_subscription(), not
+                # Enrollment.status — without this, revoking here was a
+                # silent no-op for content: the student kept full paid
+                # access until the subscription's natural expires_at, no
+                # matter why an admin revoked them (e.g. a manual UPI
+                # refund).
+                Subscription.objects.filter(
+                    learner_profile=e.learner_profile, course=e.course,
+                    status=Subscription.STATUS_ACTIVE,
+                ).update(status=Subscription.STATUS_CANCELLED)
         elif action == "reactivate":
-            e.status = Enrollment.STATUS_ACTIVE
-            e.save(update_fields=["status"])
+            with transaction.atomic():
+                e.status = Enrollment.STATUS_ACTIVE
+                e.save(update_fields=["status"])
+                # Symmetric undo: only restores a subscription this same
+                # action cancelled (or one that lapsed CANCELLED for any
+                # other reason) and that hasn't separately run out its own
+                # clock — an already time-expired grant isn't something
+                # "reactivate" should revive.
+                Subscription.objects.filter(
+                    learner_profile=e.learner_profile, course=e.course,
+                    status=Subscription.STATUS_CANCELLED,
+                    expires_at__gt=timezone.now(),
+                ).update(status=Subscription.STATUS_ACTIVE)
         elif action == "move_batch":
             self._move_batch(e, request.data.get("batch"))
         else:
