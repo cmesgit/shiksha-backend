@@ -52,7 +52,7 @@ from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils import timezone
 
-from .models import User, LearnerProfile, Role, UserRole, TeacherProfile
+from .models import User, LearnerProfile, Role, UserRole, TeacherProfile, CURRENT_TERMS_VERSION
 
 
 def _generate_unique_username(email):
@@ -87,6 +87,13 @@ class SignupSerializer(serializers.Serializer):
     # THE ONE password — used for new accounts and as ownership proof for
     # add-to-existing flows.
     password = serializers.CharField(write_only=True)
+
+    # Required for brand-new accounts only (see validate()) — an existing
+    # account adding a student/teacher identity already accepted terms when
+    # it was first created. The client sends a bare checkbox tick; the
+    # version string + timestamp are stamped server-side in create(), never
+    # trusted from the client.
+    terms_accepted = serializers.BooleanField(write_only=True, required=False, default=False)
 
     # NOTE: teacher_password field REMOVED — single password model.
 
@@ -214,6 +221,11 @@ class SignupSerializer(serializers.Serializer):
             except Exception as e:
                 raise ValidationError({"password": list(e.messages)})
 
+            if not data.get("terms_accepted"):
+                raise ValidationError(
+                    {"terms_accepted": "You must accept the Terms of Use to create an account."}
+                )
+
             if role == Role.TEACHER:
                 if not data.get("teacher_type"):
                     raise ValidationError({"teacher_type": "Choose Guest expert or Faculty."})
@@ -266,7 +278,9 @@ class SignupSerializer(serializers.Serializer):
                 password = password,
             )
             user.is_verified = False
-            user.save(update_fields=["is_verified"])
+            user.accepted_terms_version = CURRENT_TERMS_VERSION
+            user.terms_accepted_at = timezone.now()
+            user.save(update_fields=["is_verified", "accepted_terms_version", "terms_accepted_at"])
         else:
             user = existing_user
 

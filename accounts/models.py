@@ -14,6 +14,14 @@ from django.db.models import Q
 # USER
 # =====================================================
 
+# Bump this whenever TermsCondition.jsx's content materially changes, so
+# accepted_terms_version on existing accounts stays a true record of what
+# they agreed to — a version bump does NOT retroactively re-flag existing
+# users as needing to re-accept (no re-consent flow exists yet; that's a
+# separate, deliberate scope cut).
+CURRENT_TERMS_VERSION = "2026-08-16"
+
+
 class User(AbstractUser):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
@@ -21,6 +29,15 @@ class User(AbstractUser):
 
     is_verified = models.BooleanField(default=False)
     verified_at = models.DateTimeField(null=True, blank=True)
+
+    # Terms-of-Use acceptance, recorded at signup. `accepted_terms_version` is
+    # a plain string version tag (see CURRENT_TERMS_VERSION above), not a FK —
+    # TermsCondition.jsx is static content with no versioned CMS backing
+    # today, unlike the AgreementLetter/AgreementLetterVersion system faculty
+    # agreements use. blank/null means an account created before this field
+    # existed, or an account created through a path that doesn't collect it.
+    accepted_terms_version = models.CharField(max_length=20, blank=True)
+    terms_accepted_at = models.DateTimeField(null=True, blank=True)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username"]
