@@ -22,6 +22,7 @@ from courses.models import Course, Batch
 
 from .models import Enrollment, Subscription
 from .payments import get_payment_provider
+from .services import get_active_subscription
 
 
 def _validate_batch_choice(course, batch_id):
@@ -186,7 +187,18 @@ class FreeEnrollView(APIView):
                 enrollment.batch_code = batch.code
                 enrollment.save(update_fields=["batch", "batch_code"])
 
-        sub = _create_or_extend_subscription(user=request.user, learner=learner, course=course)
+        # Idempotent: a student can call this endpoint repeatedly (retry,
+        # double-click, or a scripted loop) — without this check, every call
+        # unconditionally extended expires_at by another `days`, letting a
+        # student stack unlimited free access. Only grant/extend once there
+        # is no currently-active subscription; a repeat call while one is
+        # still active returns it unchanged. (The admin-initiated grant in
+        # AdminCreateEnrollmentView is deliberately NOT gated this way — an
+        # admin re-submitting the same action each time is an intentional,
+        # authorized re-grant, not a self-serve loop.)
+        sub = get_active_subscription(user=request.user, course=course, learner_profile=learner)
+        if sub is None:
+            sub = _create_or_extend_subscription(user=request.user, learner=learner, course=course)
         _redeem_scholarship_award_if_any(learner=learner, course=course, enrollment=enrollment, subscription=sub)
 
         return Response(

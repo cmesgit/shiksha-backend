@@ -41,6 +41,7 @@
 # Every event notifies through the site-wide notifications app
 # (verbs "counseling.*"); bookings and published reports also email.
 
+from django.db import transaction
 from django.db.models import Avg, Count, IntegerField, OuterRef, Q, Subquery
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
@@ -380,25 +381,34 @@ class CreateAppointmentView(APIView):
         when = data["scheduled_at"]
         duration = counselor.session_duration_minutes or 45
 
-        if not services.inside_availability(counselor, when, duration):
-            return Response(
-                {"detail": "That time is outside the counselor's availability."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if services.booking_conflict(counselor, when, duration):
-            return Response(
-                {"detail": "That slot was just booked — pick another time."},
-                status=status.HTTP_409_CONFLICT,
-            )
+        # Lock the counselor row for the whole check-then-book critical
+        # section — without this, two concurrent requests for the same
+        # slot both pass booking_conflict() (neither has committed yet)
+        # and both create a CONFIRMED appointment. Same pattern as the
+        # already-fixed skill-booking races (skills/views.py's
+        # ExpertProfile lock).
+        with transaction.atomic():
+            counselor = CounselorProfile.objects.select_for_update().get(pk=counselor.pk)
 
-        appt = Appointment.objects.create(
-            learner_profile=lp,
-            booked_by=request.user,
-            counselor=counselor,
-            scheduled_at=when,
-            duration_minutes=duration,
-            student_note=data.get("student_note", ""),
-        )
+            if not services.inside_availability(counselor, when, duration):
+                return Response(
+                    {"detail": "That time is outside the counselor's availability."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if services.booking_conflict(counselor, when, duration):
+                return Response(
+                    {"detail": "That slot was just booked — pick another time."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            appt = Appointment.objects.create(
+                learner_profile=lp,
+                booked_by=request.user,
+                counselor=counselor,
+                scheduled_at=when,
+                duration_minutes=duration,
+                student_note=data.get("student_note", ""),
+            )
 
         # Start the assessment right away (draft) so the dashboard can show
         # "complete your assessment before the session" per the spec.
