@@ -1219,7 +1219,7 @@ class QuizResultView(APIView):
             "quiz_id": quiz.id,
             "title": quiz.title,
             "subject_name": quiz.subject.name,
-            "teacher_name": quiz.created_by.email,
+            "teacher_name": quiz.created_by.email if quiz.created_by else "",
             "quiz_type": quiz.quiz_type,
             "total_marks": quiz.total_marks,
             "score": attempt.score,

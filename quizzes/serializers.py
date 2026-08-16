@@ -118,7 +118,7 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
     teacher_name = serializers.CharField(
-        source="created_by.email", read_only=True)
+        source="created_by.email", read_only=True, default=None)
     questions_count = serializers.IntegerField(read_only=True)
     status = serializers.SerializerMethodField()
     score = serializers.SerializerMethodField()
@@ -306,7 +306,7 @@ class QuizDetailSerializer(serializers.ModelSerializer):
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
     teacher_name = serializers.CharField(
-        source="created_by.email", read_only=True)
+        source="created_by.email", read_only=True, default=None)
     questions = serializers.SerializerMethodField()
 
     class Meta:
@@ -332,7 +332,7 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
     teacher_name = serializers.CharField(
-        source="created_by.email", read_only=True)
+        source="created_by.email", read_only=True, default=None)
     questions = serializers.SerializerMethodField()
     is_editable = serializers.BooleanField(read_only=True)
 
@@ -496,8 +496,8 @@ class BankQuestionSerializer(serializers.ModelSerializer):
     subject_id = serializers.UUIDField(source="quiz.subject.id", read_only=True)
     subject_name = serializers.CharField(source="quiz.subject.name", read_only=True)
     author_name = serializers.CharField(
-        source="quiz.created_by.email", read_only=True)
-    author_id = serializers.UUIDField(source="quiz.created_by.id", read_only=True)
+        source="quiz.created_by.email", read_only=True, default=None)
+    author_id = serializers.UUIDField(source="quiz.created_by.id", read_only=True, default=None)
 
     class Meta:
         model = Question
@@ -517,7 +517,7 @@ class AdminQuizListSerializer(serializers.ModelSerializer):
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
     teacher_name = serializers.CharField(
-        source="created_by.email", read_only=True)
+        source="created_by.email", read_only=True, default=None)
     questions_count = serializers.IntegerField(read_only=True)
     attempts_count = serializers.IntegerField(read_only=True)
 
@@ -536,7 +536,7 @@ class AdminQuizDetailSerializer(serializers.ModelSerializer):
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
     teacher_name = serializers.CharField(
-        source="created_by.email", read_only=True)
+        source="created_by.email", read_only=True, default=None)
     reviewed_by_name = serializers.CharField(
         source="reviewed_by.email", read_only=True, default=None)
     questions = serializers.SerializerMethodField()
