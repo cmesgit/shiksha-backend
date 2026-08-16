@@ -62,7 +62,11 @@ def _get_conv_and_me(request, conversation_id):
     """Shared by every "act on a conversation I'm already in" endpoint
     (pin/archive/mute/report/members/search/attachments/react/delete).
     Raises the same errors _require_identity()/MessageListView already use,
-    so error handling stays uniform across all of them."""
+    so error handling stays uniform across all of them.
+
+    Also re-derives course access on every call (not just at join time) —
+    a Participant row only proves someone once joined; it's never revoked
+    when the backing Enrollment/TeachingAssignment ends."""
     kind, obj = _require_identity(request)
     conv = Conversation.objects.filter(id=conversation_id).first()
     if not conv:
@@ -70,6 +74,8 @@ def _get_conv_and_me(request, conversation_id):
     me = services.participant_for(conv, kind, obj)
     if not me:
         raise PermissionDenied("You are not a participant in this conversation.")
+    if not services.is_course_membership_still_valid(conv, me):
+        raise PermissionDenied("You no longer have access to this class chat.")
     return conv, me
 
 

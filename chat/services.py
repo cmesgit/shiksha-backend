@@ -466,6 +466,27 @@ def can_join_course_room(kind, obj, course_id):
     return False
 
 
+def is_course_membership_still_valid(conversation, participant):
+    """A Participant row is only ever created once, at join time, and never
+    revoked when the underlying Enrollment/TeachingAssignment ends — so its
+    mere existence isn't proof of current access. Re-derives access from the
+    live DB relationship for course-context ROOM/BROADCAST conversations
+    (the only kind with a revocable backing relationship to re-check here).
+    Everything else (DIRECT, SESSION, SUPPORT, counseling, etc.) has no
+    such relationship yet, so this returns True for those unconditionally.
+    """
+    if conversation.context_type != "course" or not conversation.context_id:
+        return True
+    obj = (
+        participant.learner_profile
+        if participant.kind == Participant.KIND_LEARNER
+        else participant.teacher_profile
+    )
+    if obj is None:
+        return False
+    return can_join_course_room(participant.kind, obj, conversation.context_id)
+
+
 def course_room_track(course_id):
     """Best-effort track for a course room, used by the inbox filter tabs.
     Returns "academy", "skilldev", or None (never raises)."""

@@ -183,14 +183,16 @@ _SUSPENDED_REASON = (
     "Your ability to send messages has been temporarily restricted by a "
     "platform moderator."
 )
+_MEMBERSHIP_LAPSED_REASON = (
+    "You no longer have access to this class chat."
+)
 
 
 def can_post(conversation, participant):
     """Structural gate wired into services.post_message_checked() BEFORE
     moderation/blocking.
 
-    NOT a membership check — the Participant already exists by the time
-    anyone tries to post. Two rules:
+    Rules:
       1. is_frozen        → nobody may post (unchanged from M3).
       2. kind == BROADCAST → read-only for everyone EXCEPT a TEACHER
          participant (Stage D / CC-015: Announcements). M3 shipped this as
@@ -198,6 +200,11 @@ def can_post(conversation, participant):
          to know who's asking — this is that rule. A LEARNER or STAFF
          participant of a BROADCAST room (a course's enrolled students; a
          support agent has no reason to be in one) still cannot post.
+      3. Course membership re-check — a Participant row proves someone once
+         joined a course room, not that their Enrollment/TeachingAssignment
+         is still active (that's checked only at join time otherwise, so
+         access would otherwise survive indefinitely past e.g. a refund or
+         a teacher reassignment). Local import: see module docstring.
 
     Returns (allowed: bool, reason: str).
     """
@@ -206,7 +213,14 @@ def can_post(conversation, participant):
 
     if conversation.kind == Conversation.KIND_BROADCAST:
         if participant is not None and participant.kind == Participant.KIND_TEACHER:
-            return True, ""
-        return False, _BROADCAST_REASON
+            pass
+        else:
+            return False, _BROADCAST_REASON
+
+    from . import services
+    if participant is not None and not services.is_course_membership_still_valid(
+        conversation, participant
+    ):
+        return False, _MEMBERSHIP_LAPSED_REASON
 
     return True, ""

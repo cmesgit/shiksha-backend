@@ -105,6 +105,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.close(code=4403)
             return
 
+        if not await database_sync_to_async(self._membership_still_valid)():
+            await self.close(code=4403)
+            return
+
         self.group_name = f"chat_{self.conversation_id}"
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
@@ -136,6 +140,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             payload = json.loads(text_data)
         except (ValueError, TypeError):
             return
+
+        # Re-check on every frame (not just at connect) — a course-context
+        # socket can sit open for a long time, and access may have been
+        # revoked (unenrollment, teaching-assignment ended) since it was
+        # accepted. The 25s "ping" heartbeat means a stale socket is closed
+        # within one heartbeat cycle even if the client sends nothing else.
+        if not await database_sync_to_async(self._membership_still_valid)():
+            await self.close(code=4403)
+            return
+
         mtype = payload.get("type")
 
         if mtype == "message":
@@ -243,6 +257,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # calling fresh from async code.
             self.my_display_name = participant.display_name()
         return participant
+
+    def _membership_still_valid(self):
+        """Re-derive course access rather than trusting self.me's mere
+        existence — a stale Participant row (course access revoked after
+        this identity joined) would otherwise keep a long-lived socket
+        connected, and able to read/post, indefinitely."""
+        conv = self._resolve_conversation()
+        if not conv:
+            return False
+        return services.is_course_membership_still_valid(conv, self.me)
 
     def _history(self):
         conv = self._resolve_conversation()
