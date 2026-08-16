@@ -376,7 +376,7 @@ class Command(BaseCommand):
                             is_correct=choice.is_correct,
                         )
                         correct_count += int(choice.is_correct)
-                    attempt.score = round(100 * correct_count / len(questions), 1)
+                    attempt.score = correct_count  # raw points, matching QuizSubmitSerializer's convention
                     attempt.save(update_fields=["score"])
                 # Chemistry quiz is left unattempted — the student picks it up live.
 

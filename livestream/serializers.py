@@ -195,7 +195,7 @@ class LiveSessionUpdateSerializer(serializers.ModelSerializer):
 
 
 class LiveSessionListSerializer(serializers.ModelSerializer):
-    teacher = serializers.CharField(source="created_by.email", read_only=True)
+    teacher = serializers.SerializerMethodField()
     can_join = serializers.SerializerMethodField()
     computed_status = serializers.SerializerMethodField()
     subject_id = serializers.UUIDField(source="subject.id", read_only=True)
@@ -226,6 +226,27 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
             "batch_name",
             "batch_student_count",
         ]
+
+    def get_teacher(self, obj):
+        # Show the host's real name (e.g. "Kavita Iyer"), not the raw login
+        # email. Prefer the teacher account's SELF learner-profile name, then
+        # the User's full name, then username/email as a last resort.
+        u = getattr(obj, "created_by", None)
+        if not u:
+            return ""
+        try:
+            lp = u.default_learner_profile()
+            if lp:
+                name = f"{(lp.first_name or '').strip()} {(lp.last_name or '').strip()}".strip()
+                if name:
+                    return name
+                if getattr(lp, "full_name", ""):
+                    return lp.full_name
+                if getattr(lp, "display_name", ""):
+                    return lp.display_name
+        except Exception:
+            pass
+        return u.get_full_name() or u.username or u.email
 
     def get_batch_student_count(self, obj):
         if not obj.batch_id:
@@ -269,22 +290,25 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
         return "WAITING_FOR_TEACHER"
 
     def get_can_join(self, obj):
-        now = timezone.now()
+        # Source of truth is the LIVE derived state, never the raw stored
+        # `status` column (which the Celery sweep may not have updated yet).
+        # A session past its end_time computes as COMPLETED even if the row
+        # still says SCHEDULED/LIVE — so we must not offer Join for it, or the
+        # card lies and the join endpoint rejects with a 400 ("Session has
+        # ended") into an infinite spinner.
+        status = obj.computed_status()
 
-        if obj.status == LiveSession.STATUS_CANCELLED:
+        if status in (LiveSession.STATUS_CANCELLED, LiveSession.STATUS_COMPLETED):
             return False
 
-        # Allow joining paused sessions — student sees paused screen inside
-
-        if obj.teacher_left_at:
-            if now > obj.teacher_left_at + timedelta(minutes=60):
-                return False
+        # Allow joining paused/reconnecting/waiting sessions — the student
+        # sees the appropriate holding screen inside the room.
 
         request = self.context.get("request")
-
         if request and request.user.has_role("TEACHER"):
             return True
 
+        now = timezone.now()
         return now >= obj.start_time - timedelta(minutes=15)
 
 

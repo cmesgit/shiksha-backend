@@ -200,6 +200,34 @@ class TeacherCompleteSessionView(APIView):
         return Response({"detail": "Session marked complete."})
 
 
+class TeacherMarkPaidView(APIView):
+    """
+    POST /skill/teacher/sessions/<id>/mark-paid/
+
+    Booking is direct P2P (see CreateOrderView's docstring) — the platform
+    never collects or observes the transfer. This lets the expert, who IS
+    the party that actually receives the money, record that they got it, so
+    both sides have a persistent, shared record instead of only the one-time
+    booking-confirmation toast. Purely informational: never a gate on
+    joining/completing/reviewing a session. Idempotent — marking an
+    already-paid session paid again is a no-op, not an error.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, session_id):
+        sess = _teacher_session(request.user, session_id)
+        if sess.payment_status != SkillSession.PAYMENT_PAID:
+            sess.payment_status = SkillSession.PAYMENT_PAID
+            sess.paid_at = timezone.now()
+            sess.save(update_fields=["payment_status", "paid_at", "updated_at"])
+            push_skill_bell(sess, "paid")
+        return Response({
+            "detail": "Session marked paid.",
+            "payment_status": sess.payment_status,
+            "paid_at": sess.paid_at,
+        })
+
+
 class TeacherSessionNoteView(APIView):
     """PUT /skill/teacher/sessions/<id>/note/  body: { note: str }
 
@@ -291,6 +319,7 @@ def _session_card(s, teacher_view=False):
         "teacher_note":  s.teacher_note if teacher_view else None,  # private, never to the student
         "meeting_url":   s.meeting_url,
         "payment_status":s.payment_status,
+        "paid_at":       s.paid_at,
         "amount":        s.amount,
         "created_at":    s.created_at,
         ("learner" if teacher_view else "expert"): {"id": who_id, "name": who_name},

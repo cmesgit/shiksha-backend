@@ -402,7 +402,12 @@ class QuizResultSerializer(serializers.Serializer):
 
     # ── analytics (results + analytics screen) ──────────────────────────
     class_avg_percent = serializers.FloatField(default=0)
+    # % of all submitted attempts that scored strictly HIGHER than this one
+    # (0 == top score). Kept for back-compat / analytics.
     percentile = serializers.FloatField(default=0)
+    # % of all submitted attempts this one scored strictly HIGHER than — the
+    # student-friendly, unambiguous framing rendered on the result screen.
+    scored_higher_than = serializers.FloatField(default=0)
     topic_breakdown = TopicBreakdownSerializer(many=True, default=list)
     difficulty_breakdown = DifficultyBreakdownSerializer(many=True, default=list)
     score_trend = ScoreTrendPointSerializer(many=True, default=list)

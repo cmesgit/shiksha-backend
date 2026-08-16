@@ -28,6 +28,10 @@ class SkillMarketingBlock(models.Model):
     body = models.TextField(blank=True)
     cta_label = models.CharField(max_length=60, blank=True)
     cta_url = models.CharField(max_length=300, blank=True)
+    # browse_hero only: the "N experts <stat_label>" line next to the live
+    # expert count in the directory-at-a-glance panel (e.g. "listed across
+    # Mizoram") — was a hardcoded string with no CMS override at all.
+    stat_label = models.CharField(max_length=100, blank=True)
     image = models.ImageField(upload_to="skills/marketing/", null=True, blank=True)
     is_active = models.BooleanField(default=True)
 

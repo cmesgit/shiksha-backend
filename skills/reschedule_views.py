@@ -5,13 +5,14 @@
 # decline_reschedule for PrivateSession — adapted to SkillSession's shape,
 # which books a slot_key against the expert's weekly grid rather than
 # separate date/time fields.
+from django.db import transaction
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.exceptions import NotFound, ValidationError
 
 from accounts.auth_flow import get_active_profile
-from .models import SkillSession
+from .models import SkillSession, ExpertProfile
 from .teacher_views import _get_expert, slot_is_open, mark_slot_booked, free_slot
 from .views import _slot_to_datetime
 from .notifications import push_skill_bell
@@ -73,10 +74,27 @@ class StudentConfirmRescheduleView(APIView):
             raise ValidationError("This session isn't awaiting reconfirmation.")
 
         old_slot_key = sess.slot_key
-        if old_slot_key and old_slot_key != sess.proposed_slot_key:
-            free_slot(sess.expert, old_slot_key)
-        if sess.proposed_slot_key:
-            mark_slot_booked(sess.expert, sess.proposed_slot_key)
+        proposed = sess.proposed_slot_key
+        # free_slot/mark_slot_booked are read-modify-write on the expert's
+        # availability_slots JSONField. Lock the expert row so two concurrent
+        # confirmations (a double-click, or two learners racing onto the same
+        # proposed slot) can't clobber each other's booked-list write or both
+        # book the same slot. Re-check the proposed slot is still open under
+        # the lock before claiming it.
+        with transaction.atomic():
+            if proposed:
+                expert = ExpertProfile.objects.select_for_update().get(id=sess.expert_id)
+                if not slot_is_open(expert, proposed) and proposed != old_slot_key:
+                    raise ValidationError(
+                        {"slot": "The proposed time is no longer available. "
+                                 "Ask the teacher to propose another."}
+                    )
+                if old_slot_key and old_slot_key != proposed:
+                    free_slot(expert, old_slot_key)
+                mark_slot_booked(expert, proposed)
+            elif old_slot_key:
+                expert = ExpertProfile.objects.select_for_update().get(id=sess.expert_id)
+                free_slot(expert, old_slot_key)
 
         sess.slot_key = sess.proposed_slot_key
         sess.scheduled_for = sess.proposed_scheduled_for

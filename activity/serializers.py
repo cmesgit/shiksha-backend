@@ -38,6 +38,16 @@ class ActivitySerializer(serializers.ModelSerializer):
     audience = serializers.CharField(read_only=True)
     learner_profile_id = serializers.SerializerMethodField()
 
+    # The bell (NotificationBell.jsx) needs this to pick the right icon and
+    # deep-link route for a skill-session event. Previously it only arrived
+    # on the ephemeral WS push payload (skills/notifications.py), so any
+    # notification the bell loaded via this REST feed instead (e.g. on page
+    # load, or "See all") fell through to the generic SESSION handling —
+    # wrong icon (🎥 instead of 📅) and wrong route (/live-sessions instead
+    # of /skill-dev/sessions/:id). Computed the same way regardless of
+    # delivery path, so both agree.
+    is_skill_session = serializers.SerializerMethodField()
+
     class Meta:
         model = Activity
         fields = [
@@ -56,6 +66,7 @@ class ActivitySerializer(serializers.ModelSerializer):
             "subject_name",
             "subject",
             "object_id",
+            "is_skill_session",
         ]
 
     _TYPE_MAP = {
@@ -76,3 +87,9 @@ class ActivitySerializer(serializers.ModelSerializer):
 
     def get_learner_profile_id(self, obj):
         return str(obj.learner_profile_id) if obj.learner_profile_id else None
+
+    def get_is_skill_session(self, obj):
+        try:
+            return obj.content_type.model == "skillsession"
+        except Exception:
+            return False

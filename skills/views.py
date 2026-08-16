@@ -26,11 +26,12 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from accounts.models import LearnerProfile, Role, UserRole
 from accounts.permissions import IsAdmin
-from accounts.auth_flow import get_active_profile
+from accounts.auth_flow import get_active_profile, profile_mismatch_response
 
 # Slot bookkeeping lives next to the teacher-facing availability views so the
 # booking flow and the expert's own grid share one source of truth.
 from .teacher_views import slot_is_open, mark_slot_booked
+from .notifications import push_skill_bell
 
 from .models import (
     SkillCategory,
@@ -278,6 +279,8 @@ class ScheduleInterviewView(APIView):
         slot = None
         scheduled_for = None
         if slot_id:
+            # Early un-locked pre-check for a clean error; the authoritative
+            # capacity check happens under a row lock inside the transaction.
             slot = InterviewSlot.objects.filter(id=slot_id, is_active=True).first()
             if not slot or not slot.is_open:
                 raise ValidationError({"slot": "That slot is no longer available."})
@@ -288,6 +291,14 @@ class ScheduleInterviewView(APIView):
                 raise ValidationError("A slot or scheduled_for is required.")
 
         with transaction.atomic():
+            if slot:
+                # Lock the slot row so a capacity check + booked_count increment
+                # is atomic. Without this, two applicants both read
+                # booked_count < capacity and both increment, over-booking a
+                # capped slot past its capacity.
+                slot = InterviewSlot.objects.select_for_update().get(id=slot.id)
+                if not slot.is_open:
+                    raise ValidationError({"slot": "That slot is no longer available."})
             interview, _ = Interview.objects.update_or_create(
                 application=application,
                 defaults={"slot": slot, "scheduled_for": scheduled_for},
@@ -415,6 +426,9 @@ class SessionRequestView(APIView):
         learner = get_active_profile(request)
         if learner is None:
             raise PermissionDenied("Select a learner profile before requesting a session.")
+        mismatch = profile_mismatch_response(request, request.data.get("active_profile_id"))
+        if mismatch is not None:
+            return mismatch
 
         serializer = SkillSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -422,6 +436,7 @@ class SessionRequestView(APIView):
             learner_profile=learner,
             status=SkillSession.STATUS_REQUESTED,
         )
+        push_skill_bell(session, "requested")
         return Response(
             {"ok": True, "sessionId": str(session.id)},
             status=status.HTTP_201_CREATED,
@@ -447,6 +462,9 @@ class CreateOrderView(APIView):
         learner = get_active_profile(request)
         if learner is None:
             raise PermissionDenied("Select a learner profile first.")
+        mismatch = profile_mismatch_response(request, request.data.get("active_profile_id"))
+        if mismatch is not None:
+            return mismatch
 
         expert_id = request.data.get("teacherId") or request.data.get("expert")
         if not expert_id:
@@ -463,7 +481,12 @@ class CreateOrderView(APIView):
 
         # Reserve the chosen slot. The grid the learner picked from is the
         # expert's `availability_slots` (served by ExpertAvailabilityView), so we
-        # validate against the same source of truth before locking it.
+        # validate against the same source of truth before locking it. NOTE: this
+        # is an early, un-locked pre-check purely for a fast/clean error before we
+        # do any work; the AUTHORITATIVE check+book happens under a row lock inside
+        # the transaction below (two learners can both pass this pre-check
+        # simultaneously — the locked re-check is what actually prevents a
+        # double-booking / JSONField read-modify-write clobber).
         if slot_key and not slot_is_open(expert, slot_key):
             raise ValidationError(
                 {"slot": "That time slot is no longer available. Please pick another."}
@@ -504,6 +527,19 @@ class CreateOrderView(APIView):
         amount = listing.price_paise if listing else (expert.hourly_rate or 0)
 
         with transaction.atomic():
+            # Lock the expert row for the whole check-then-book critical section.
+            # `availability_slots` is a JSONField whose "booked" list we read,
+            # mutate and write back — without this lock two concurrent learners
+            # both read {"open":[...],"booked":[]}, both pass slot_is_open, both
+            # append and save, and one write clobbers the other (or both bookings
+            # succeed for the same slot). Re-checking slot_is_open on the LOCKED
+            # instance closes that window.
+            if slot_key:
+                expert = ExpertProfile.objects.select_for_update().get(id=expert.id)
+                if not slot_is_open(expert, slot_key):
+                    raise ValidationError(
+                        {"slot": "That time slot is no longer available. Please pick another."}
+                    )
             session = SkillSession.objects.create(
                 learner_profile=learner,
                 expert=expert,
@@ -526,6 +562,8 @@ class CreateOrderView(APIView):
             # again on decline/complete so the weekly grid stays reusable.)
             if slot_key:
                 mark_slot_booked(expert, slot_key)
+
+        push_skill_bell(session, "requested")
 
         booking_ref = f"SHK-{session.id.hex[:8].upper()}"
 

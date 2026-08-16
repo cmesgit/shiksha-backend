@@ -209,20 +209,34 @@ class AdminStudentListView(APIView):
         enrolled = None if enrolled_raw == "all" else _bool_param(enrolled_raw)
         if enrolled_raw == "":
             enrolled = True
-        if enrolled is not None:
-            with_enrollment = profile_enrollment_q()
-            qs = qs.filter(with_enrollment).distinct() if enrolled else qs.exclude(
-                with_enrollment
-            ).distinct()
 
         # ── course / batch placement filters ──
         # These are what an academy admin actually works from: "everyone in
         # A13", and (via ?no_batch=true) "who still needs placing before the
         # session starts". All three go through profile_enrollment_q() so a
         # legacy (pre-per-profile) enrollment is never silently excluded.
+        #
+        # When a course IS selected, "Enrolment" is interpreted relative to
+        # THAT course, not to enrollment in general — combining the two
+        # independently (as this used to) meant "not enrolled anywhere" AND
+        # "enrolled in course X" simultaneously, which can never both be true
+        # and always returned zero rows. That silently broke the one workflow
+        # a course+"not enrolled" selection exists for: finding candidates an
+        # admin can enroll into that specific course.
         course_id = (request.query_params.get("course") or "").strip()
         if course_id:
-            qs = qs.filter(profile_enrollment_q(course_id=course_id)).distinct()
+            with_course = profile_enrollment_q(course_id=course_id)
+            if enrolled is True:
+                qs = qs.filter(with_course).distinct()
+            elif enrolled is False:
+                qs = qs.exclude(with_course).distinct()
+            # enrolled is None ("all profiles"): show every profile regardless
+            # of whether they're enrolled in this course yet.
+        elif enrolled is not None:
+            with_enrollment = profile_enrollment_q()
+            qs = qs.filter(with_enrollment).distinct() if enrolled else qs.exclude(
+                with_enrollment
+            ).distinct()
 
         batch_id = (request.query_params.get("batch") or "").strip()
         if batch_id:

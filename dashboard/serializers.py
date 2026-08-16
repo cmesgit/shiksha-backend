@@ -68,8 +68,20 @@ class DashboardSessionSerializer(serializers.ModelSerializer):
             return None
 
     def get_teacher(self, obj):
+        # Show the host's real name (e.g. "Kavita Iyer") on the dashboard's
+        # "Next class" hero + "Upcoming Live Sessions" cards, not the raw
+        # login email — same bug/fix as livestream.serializers
+        # .LiveSessionListSerializer.get_teacher, reusing the same name
+        # resolution the chat directory already gets right (prefer the
+        # teacher's SELF learner-profile name, then username/email).
         try:
-            return obj.created_by.email if obj.created_by_id else ""
+            if not obj.created_by_id:
+                return ""
+            tp = getattr(obj.created_by, "teacher_profile", None)
+            if tp:
+                from chat.services import teacher_display_name
+                return teacher_display_name(tp)
+            return obj.created_by.get_full_name() or obj.created_by.email
         except Exception:
             return ""
 

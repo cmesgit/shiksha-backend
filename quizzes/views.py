@@ -1169,11 +1169,14 @@ class QuizResultView(APIView):
         )
         class_avg_percent = 0.0
         percentile = 0.0
+        scored_higher_than = 0.0
         if quiz.total_marks and all_scores:
             pct_scores = [s * 100.0 / quiz.total_marks for s in all_scores]
             class_avg_percent = round(sum(pct_scores) / len(pct_scores), 1)
             better_count = sum(1 for s in all_scores if s > attempt.score)
             percentile = round(better_count * 100.0 / len(all_scores), 1)
+            worse_count = sum(1 for s in all_scores if s < attempt.score)
+            scored_higher_than = round(worse_count * 100.0 / len(all_scores), 1)
 
         # ── score trend: this LEARNER PROFILE's last 8 submitted attempts in
         # the same subject (across quizzes), plus the class average for each ──
@@ -1226,6 +1229,7 @@ class QuizResultView(APIView):
             "questions": result_questions,
             "class_avg_percent": class_avg_percent,
             "percentile": percentile,
+            "scored_higher_than": scored_higher_than,
             "topic_breakdown": topic_breakdown,
             "difficulty_breakdown": difficulty_breakdown,
             "score_trend": score_trend,

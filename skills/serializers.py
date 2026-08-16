@@ -60,7 +60,7 @@ class SkillMarketingBlockSerializer(serializers.ModelSerializer):
         model = SkillMarketingBlock
         fields = [
             "id", "key", "heading", "subheading", "body",
-            "cta_label", "cta_url", "image", "is_active",
+            "cta_label", "cta_url", "stat_label", "image", "is_active",
         ]
         read_only_fields = ["id", "key"]
 
@@ -76,7 +76,7 @@ class SkillMarketingBlockAdminSerializer(serializers.ModelSerializer):
         model = SkillMarketingBlock
         fields = [
             "id", "key", "heading", "subheading", "body",
-            "cta_label", "cta_url", "image", "is_active",
+            "cta_label", "cta_url", "stat_label", "image", "is_active",
         ]
         read_only_fields = ["id", "key"]
 
@@ -85,7 +85,12 @@ class ExpertCardSerializer(serializers.ModelSerializer):
     """Matches a TEACHERS[] entry from data.js, plus location + advertising."""
     name               = serializers.SerializerMethodField()
     title              = serializers.CharField(source="headline")
-    skills             = serializers.ListField(source="skill_tags", child=serializers.CharField())
+    # skills / availability: derived from the expert's real listings, not the
+    # (often-empty) top-level ExpertProfile columns. See get_skills /
+    # get_availability below — the card used to ship skills:[] and
+    # availability:"" while listings[] carried real skill_tags + open slots.
+    skills             = serializers.SerializerMethodField()
+    availability       = serializers.SerializerMethodField()
     cat                = serializers.SerializerMethodField()
     rate               = serializers.IntegerField(source="rate_rupees")
     sessions           = serializers.IntegerField(source="sessions_count")
@@ -147,6 +152,34 @@ class ExpertCardSerializer(serializers.ModelSerializer):
         # what the row's "paused by the teacher" line renders.
         rows = [l for l in obj.listings.all() if not l.is_suspended]
         return SkillListingCardSerializer(rows, many=True, context=self.context).data
+
+    def get_skills(self, obj):
+        """Union of the expert's own skill_tags and every non-suspended
+        listing's skill_tags, de-duplicated, order preserved. The top-level
+        ExpertProfile.skill_tags is frequently empty on multi-listing experts,
+        so the card would otherwise render no tags at all."""
+        seen, out = set(), []
+        for tag in (obj.skill_tags or []):
+            if tag and tag not in seen:
+                seen.add(tag); out.append(tag)
+        for l in obj.listings.all():
+            if l.is_suspended:
+                continue
+            for tag in (l.skill_tags or []):
+                if tag and tag not in seen:
+                    seen.add(tag); out.append(tag)
+        return out
+
+    def get_availability(self, obj):
+        """Real availability summary. Prefers the expert's own free-text note
+        if they set one; otherwise derives a "N slots open this week" string
+        from the availability grid, so the card never ships an empty string."""
+        if (obj.availability or "").strip():
+            return obj.availability
+        n = self.get_open_slots_week(obj)
+        if n <= 0:
+            return "No open slots this week"
+        return f"{n} slot{'' if n == 1 else 's'} open this week"
 
     def get_from_rate(self, obj):
         """Lowest active listing price in rupees, falling back to hourly_rate."""
