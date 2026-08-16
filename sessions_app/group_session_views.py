@@ -25,9 +25,11 @@ from rest_framework.response import Response
 from .models import (
     GroupSession, GroupSessionInvite, GroupSessionChatMessage, GroupSessionNote,
     GroupSessionGuestSession, GroupSessionJoinRequest, GroupSessionAttendance,
+    GroupSessionParticipant, GroupSessionReview, RemoteControlGrant, SessionFile,
 )
 from enrollments.models import Enrollment
 from global_settings.models import GlobalSettings
+from . import live_rules
 from .permissions import IsStudent
 from .serializers import get_user_name
 from accounts.permissions import IsAdmin
@@ -38,6 +40,7 @@ from .group_session_serializers import (
     GroupSessionDetailSerializer,
     GroupSessionInviteMoreSerializer,
     GroupSessionListSerializer,
+    GroupSessionReviewSerializer,
     GroupSessionUpdateSerializer,
 )
 
@@ -244,6 +247,14 @@ def _end_group_session_internal(session, reason="ended"):
         session.ended_at = timezone.now()
         session.save(update_fields=["status", "ended_at", "updated_at"])
         deleted, _ = GroupSessionChatMessage.objects.filter(session=session).delete()
+        # Close out any still-open GroupSessionParticipant rows (best-effort
+        # "who's in the room" tracking — see that model's docstring). This is
+        # the one place we can reliably say "the room is over, everyone is
+        # out", even though a mid-session tab-close isn't individually
+        # detected today.
+        GroupSessionParticipant.objects.filter(
+            session=session, left_at__isnull=True
+        ).update(left_at=session.ended_at)
     logger.info(
         "GroupSession %s ended (reason: %s) — purged %d chat msgs",
         session.id, reason, deleted,
@@ -1096,15 +1107,21 @@ def join_group_session(request, session_id):
     # ``active_connections`` is incremented in consumers.py on WS connect and
     # decremented on disconnect, so it reflects the current live headcount.
     # The host is exempt — the room creator can always rejoin their own room
-    # even if it's "full".
+    # even if it's "full". Locked (matching the nearby host-flip block below)
+    # so a burst of concurrent /join/ calls can't all read the same
+    # pre-increment count and all get admitted past the cap.
     if is_instant and not is_host:
-        if (session.active_connections or 0) >= INSTANT_MAX_PARTICIPANTS:
-            return Response(
-                {"error": f"This instant meeting is full "
-                          f"({INSTANT_MAX_PARTICIPANTS} participants max). "
-                          f"Please try again once someone leaves."},
-                status=http_status.HTTP_403_FORBIDDEN,
+        with transaction.atomic():
+            locked_session = (
+                GroupSession.objects.select_for_update().get(pk=session.pk)
             )
+            if (locked_session.active_connections or 0) >= INSTANT_MAX_PARTICIPANTS:
+                return Response(
+                    {"error": f"This instant meeting is full "
+                              f"({INSTANT_MAX_PARTICIPANTS} participants max). "
+                              f"Please try again once someone leaves."},
+                    status=http_status.HTTP_403_FORBIDDEN,
+                )
 
     # "Knock to join" — a non-host caller must be admitted before they get a
     # token. Re-knocking after a prior denial resets that same row back to
@@ -1184,9 +1201,15 @@ def join_group_session(request, session_id):
             _schedule_hard_duration_cutoff(session)
             _broadcast(session)
 
-    # Already live: check we're still within the duration
+    # Already live: check we're still within the duration.
+    # ``cap_ends_at`` (set by extend_group_session) only ever pushes this
+    # deadline LATER than the room's own configured duration_minutes — it's
+    # never used to shrink it, so a session that never calls /extend/ behaves
+    # exactly as before.
     if session.room_started_at:
         hard_end = session.room_started_at + timedelta(minutes=session.duration_minutes)
+        if session.cap_ends_at and session.cap_ends_at > hard_end:
+            hard_end = session.cap_ends_at
         if now >= hard_end:
             _end_group_session_internal(session, reason="duration_hit_on_join")
             _broadcast(session)
@@ -1197,6 +1220,22 @@ def join_group_session(request, session_id):
     if not session.room_name:
         return Response(
             {"error": "Room is not ready yet. Try again in a moment."}, status=400
+        )
+
+    # Admin-configurable room cap (GlobalSettings.live_max_participants),
+    # separate from the pre-existing INSTANT_MAX_PARTICIPANTS check above
+    # (which only applies to instant meetings and is hard-coded at 50). Host
+    # is exempt, matching that same existing exemption. NOTE: this admin
+    # default (40) is LOWER than an already-possible scheduled group session
+    # (host + up to 50 invitees = 51). Flagged for a product decision before
+    # this ships — either raise the default, or treat it as informational
+    # only until admins are told to configure it per their real capacity.
+    live_limits = live_rules.limits(session)
+    live_limits["participants_now"] = session.active_connections or 0
+    if not is_host and live_limits["participants_now"] >= live_limits["max_participants"]:
+        return Response(
+            {"detail": "This room is full.", "code": "room_full"},
+            status=http_status.HTTP_409_CONFLICT,
         )
 
     try:
@@ -1212,6 +1251,12 @@ def join_group_session(request, session_id):
     if invite and not invite.joined_at:
         invite.joined_at = timezone.now()
         invite.save(update_fields=["joined_at"])
+
+    # Best-effort "who's in the room" row — see GroupSessionParticipant's
+    # docstring in models.py for exactly what this can/can't promise.
+    GroupSessionParticipant.objects.update_or_create(
+        session=session, user=user, defaults={"left_at": None}
+    )
 
     # Compute remaining ms for client countdown.
     # Host is always unlimited (no entitlement check, by design). A non-host
@@ -1233,6 +1278,20 @@ def join_group_session(request, session_id):
         cap_end = min(guest_cap_end, room_hard_end)
         remaining_ms = max(0, int((cap_end - timezone.now()).total_seconds() * 1000))
 
+    # ── Live-session rules enrichment (design_handoff_live_sessions) ──────
+    # Additive only: every key below is NEW. The existing keys above (in
+    # particular "role" — the in-room HOST/TEACHER/STUDENT badge — and
+    # "remaining_ms" — the existing GUEST_TRIAL_MINUTES-anchored guest clock)
+    # are left completely alone so old clients keep working unchanged. The
+    # design handoff's own "role" (account role) and "remaining_ms"
+    # (recomputed from GlobalSettings) would have collided with those two
+    # existing keys under different semantics, so they were deliberately NOT
+    # added under the same names — the equivalent information is available
+    # to new clients via "entitlement" (free_minutes / minutes_used_today)
+    # and "is_host" instead.
+    ent = live_rules.entitlement(user, session)
+    cap = live_rules.cap_ends_at(session) if session.room_started_at else None
+
     return Response({
         "livekit_url": settings.LIVEKIT_URL,
         "token": token,
@@ -1241,6 +1300,123 @@ def join_group_session(request, session_id):
         "duration_minutes": session.duration_minutes,
         "room_started_at": session.room_started_at.isoformat() if session.room_started_at else None,
         "remaining_ms": remaining_ms,
+        # ── new keys ──
+        "is_host": is_host,
+        "features": live_limits["features"],
+        "limits": live_limits,
+        "entitlement": ent,
+        "cap_ends_at": cap.isoformat() if cap else None,
+    })
+
+
+# ===========================================================================
+# LIVE-SESSION RULES  (design_handoff_live_sessions §4a/§4c)
+# ===========================================================================
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def group_session_preflight(request, session_id):
+    """Everything the pre-join lobby needs, in one call (screen 03)."""
+    try:
+        session = GroupSession.objects.select_related("host").get(pk=session_id)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    ent = live_rules.entitlement(request.user, session)
+    lim = live_rules.limits(session)
+    lim["participants_now"] = session.active_connections or 0
+    cap = live_rules.cap_ends_at(session) if session.room_started_at else None
+
+    return Response({
+        "session": GroupSessionDetailSerializer(session).data,
+        "host": {
+            "id": session.host_id,
+            "name": get_user_name(session.host),
+            "is_teacher": session.host.has_role("TEACHER"),
+            "in_room": session.participants.filter(
+                user=session.host, left_at__isnull=True
+            ).exists(),
+        },
+        "entitlement": ent,
+        "limits": lim,
+        # Real field is GroupSession.admit_mode ("open"/"lobby") — the
+        # handoff's doc assumed a boolean ``require_approval`` that doesn't
+        # exist on this model.
+        "admit_mode": session.admit_mode,
+        "can_host": live_rules.can_host(request.user),
+        "is_enrolled": live_rules.is_enrolled_for(request.user, session),
+        "cap_ends_at": cap.isoformat() if cap else None,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def extend_group_session(request, session_id):
+    """Host adds time, bounded by the admin cap (screen 07).
+
+    Deliberately does NOT reuse the existing ``_schedule_hard_duration_cutoff``
+    helper — that helper's eta is hard-coded to
+    ``room_started_at + duration_minutes`` with no notion of extensions, and
+    changing it in place would retroactively apply the admin's
+    ``live_max_session_minutes`` ceiling (default 90) to every existing
+    session type, including 3-hour instant meetings, which would be a real
+    regression. Instead this schedules its own eta directly from the newly
+    computed ``cap_ends_at``, which is itself floored at the room's original
+    duration-based cutoff (see the comment at the "already live" check in
+    ``join_group_session``) so it only ever pushes the deadline later.
+    """
+    try:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    if request.user.id != session.host_id:
+        return Response({"detail": "Only the host can extend."}, status=403)
+    if session.status != "live" or not session.room_started_at:
+        return Response({"detail": "Session is not live."}, status=400)
+
+    s = live_rules.rules()
+    if session.extensions_used >= s.live_host_extensions_allowed:
+        return Response(
+            {"detail": "No extensions left.", "code": "extensions_exhausted"},
+            status=409,
+        )
+
+    session.extensions_used += 1
+    baseline_end = session.room_started_at + timedelta(minutes=session.duration_minutes)
+    session.cap_ends_at = max(live_rules.cap_ends_at(session), baseline_end)
+    session.save(update_fields=["extensions_used", "cap_ends_at", "updated_at"])
+
+    try:
+        from .group_session_tasks import hard_expire_group_session
+        hard_expire_group_session.apply_async(
+            args=[str(session.id)], eta=session.cap_ends_at
+        )
+    except Exception:
+        logger.exception(
+            "Failed to reschedule hard-duration cutoff for %s", session.id
+        )
+
+    channel_layer = get_channel_layer()
+    if channel_layer is not None:
+        try:
+            async_to_sync(channel_layer.group_send)(
+                f"group_session_chat_{session.id}",
+                {
+                    "type": "session_extended",
+                    "cap_ends_at": session.cap_ends_at.isoformat(),
+                    "extensions_used": session.extensions_used,
+                    "extensions_allowed": s.live_host_extensions_allowed,
+                },
+            )
+        except Exception:
+            pass
+
+    return Response({
+        "cap_ends_at": session.cap_ends_at,
+        "extensions_used": session.extensions_used,
+        "extensions_allowed": s.live_host_extensions_allowed,
     })
 
 
@@ -1497,6 +1673,7 @@ def instant_create(request):
         )
 
     now = timezone.now()
+    local_now = timezone.localtime(now)
     duration_minutes = int(request.data.get("duration_minutes") or 60)
     if duration_minutes not in {30, 45, 60, 90, 120, 150, 180}:
         duration_minutes = 60
@@ -1511,8 +1688,14 @@ def instant_create(request):
             subject_name="",
             course_title="",
             topic=topic or "Instant meeting",
-            scheduled_date=now.date(),
-            scheduled_time=now.time().replace(microsecond=0),
+            # scheduled_date/scheduled_time are IST-calendar fields (every
+            # other reader of this session combines them back via
+            # _scheduled_aware_dt()'s make_aware(), which assumes local
+            # time) — using the raw UTC `now` here shifts the displayed
+            # date/time by 5.5h and flips the date during 18:30-23:59 UTC
+            # (00:00-05:29 IST).
+            scheduled_date=local_now.date(),
+            scheduled_time=local_now.time().replace(microsecond=0),
             duration_minutes=duration_minutes,
             session_type="instant",
             admit_mode="open",
@@ -1820,3 +2003,168 @@ def admin_group_session_list(request):
             "attendance": attendance,
         })
     return Response({"sessions": rows})
+
+
+# ===========================================================================
+# POST-SESSION SUMMARY + REVIEW  (design_handoff_live_sessions Phase 5,
+# screen 09 — 01-FLOW.md section F)
+# ===========================================================================
+# 01-FLOW.md §F assumed ``GET /sessions/group-sessions/:id/summary/`` and a
+# review POST to "the existing SessionReview endpoint" both already existed.
+# Neither did: there was no summary endpoint anywhere in this file, and the
+# only real ``SessionReview`` model belongs to the unrelated ``livestream``
+# app (LiveSession, not GroupSession) — see GroupSessionReview's docstring in
+# models.py for the full explanation. Both are added here, additively; no
+# existing endpoint's behaviour changes.
+
+
+def _file_summary(f, request):
+    """Same shape as live_files_views.py's own ``_serialize`` — kept as a
+    separate function (not imported) so this view has no dependency on that
+    module's internals, but the field names match exactly so the frontend's
+    FilesPanel-style row rendering works unmodified against either response.
+    """
+    return {
+        "id": f.id,
+        "name": f.original_name,
+        "url": request.build_absolute_uri(f.file.url),
+        "size_bytes": f.size_bytes,
+        "content_type": f.content_type,
+        "uploaded_by": f.uploaded_by.get_full_name() or f.uploaded_by.username,
+        "uploaded_by_id": f.uploaded_by_id,
+        "created_at": f.created_at,
+        "expires_at": f.expires_at,
+        "saved_to_course": f.saved_to_course,
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def group_session_summary(request, session_id):
+    """GET /group-sessions/<id>/summary/ — everything screen 09 needs.
+
+    Access mirrors every other read-only group-session endpoint: host,
+    invited teacher, any invitee, or (for instant rooms) any authenticated
+    user — see ``_can_view``. Deliberately NOT gated on
+    ``session.status == "completed"``: a participant who was just
+    disconnected by the T-0 ending-soon cutoff (or who hit "Leave") lands
+    here immediately, often before the room's own status flip / attendance
+    webhook has finished landing, so every stat below tolerates a
+    still-``live`` session and missing/partial attendance rows rather than
+    404ing.
+    """
+    try:
+        session = GroupSession.objects.select_related(
+            "host", "subject", "subject__course"
+        ).get(pk=session_id)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    if not _can_view(session, request.user):
+        return Response(
+            {"error": "You do not have access to this group session."}, status=403
+        )
+
+    # ── your own attendance (duration attended) ──
+    my_attendance = GroupSessionAttendance.objects.filter(
+        session=session, user=request.user
+    ).first()
+    my_seconds = my_attendance.total_seconds if my_attendance else 0
+    # Host/others who never accumulated a rollup row yet (e.g. summary
+    # loaded seconds after redirect, before the webhook lands) still get a
+    # sane floor from room_started_at, so "0m" doesn't flash for the host.
+    if not my_seconds and session.room_started_at:
+        end = session.ended_at or timezone.now()
+        my_seconds = max(0, int((end - session.room_started_at).total_seconds()))
+
+    # ── participants (everyone with an attendance rollup, i.e. actually
+    #    attended — not just "currently connected") ──
+    attendance_rows = (
+        GroupSessionAttendance.objects.filter(session=session)
+        .select_related("user")
+    )
+    participants = [
+        {
+            "user_id": str(a.user_id),
+            "name": get_user_name(a.user),
+            "is_host": a.user_id == session.host_id,
+            "total_seconds": a.total_seconds,
+        }
+        for a in attendance_rows
+    ]
+    if session.host_id and not any(p["is_host"] for p in participants):
+        participants.insert(0, {
+            "user_id": str(session.host_id),
+            "name": get_user_name(session.host),
+            "is_host": True,
+            "total_seconds": my_seconds if session.host_id == request.user.id else 0,
+        })
+
+    # ── files (with expiry) ──
+    files = [
+        _file_summary(f, request)
+        for f in session.files.select_related("uploaded_by")
+    ]
+
+    # ── remote-assist count — grants that actually activated, not just
+    #    requested/declined ──
+    remote_assist_count = RemoteControlGrant.objects.filter(
+        session=session, granted_at__isnull=False
+    ).count()
+
+    # ── your private note ──
+    my_note = GroupSessionNote.objects.filter(
+        session=session, user=request.user
+    ).first()
+
+    # ── your existing review, if you already submitted one ──
+    my_review = GroupSessionReview.objects.filter(
+        session=session, user=request.user
+    ).first()
+
+    return Response({
+        "session": GroupSessionDetailSerializer(session).data,
+        "you_attended_seconds": my_seconds,
+        "participants": participants,
+        "participants_count": len(participants),
+        "files": files,
+        "files_count": len(files),
+        "remote_assist_count": remote_assist_count,
+        "my_note": my_note.content if my_note else "",
+        "chat_path": f"/sessions/group-sessions/{session.id}/chat/",
+        "my_review": GroupSessionReviewSerializer(my_review).data if my_review else None,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def submit_group_session_review(request, session_id):
+    """POST /group-sessions/<id>/review/ — 1-5 star rating + optional
+    description from the summary screen's "How was the session?" card.
+
+    Mirrors ``submit_private_session_review`` exactly: not gated on
+    ``session.status``, and resubmitting overwrites via
+    ``update_or_create`` rather than erroring on the unique constraint.
+    """
+    try:
+        session = GroupSession.objects.get(pk=session_id)
+    except GroupSession.DoesNotExist:
+        return Response({"error": "Session not found."}, status=404)
+
+    if not _can_view(session, request.user):
+        return Response(
+            {"error": "You do not have access to this group session."}, status=403
+        )
+
+    serializer = GroupSessionReviewSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    review, _ = GroupSessionReview.objects.update_or_create(
+        session=session,
+        user=request.user,
+        defaults=serializer.validated_data,
+    )
+
+    return Response(
+        GroupSessionReviewSerializer(review).data, status=http_status.HTTP_201_CREATED
+    )

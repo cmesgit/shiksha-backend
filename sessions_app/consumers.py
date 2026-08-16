@@ -213,6 +213,11 @@ class GroupSessionChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
         self.group_name = f"group_session_chat_{self.session_id}"
+        # Needed to target remote_control_requested at the intended student
+        # only (see that handler below) — JWTAuthMiddleware (config/asgi.py)
+        # already populates scope["user"] for every consumer; this consumer
+        # simply hadn't read it before.
+        self.user = self.scope.get("user")
 
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
@@ -247,6 +252,66 @@ class GroupSessionChatConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             "type": "chat_message",
             "data": event["data"],
+        }))
+
+    # ── Live-session rules events (design_handoff_live_sessions §7) ────
+    # Group-send "type" values from group_session_views.extend_group_session,
+    # live_files_views.py, and remote_control_views.py land on the matching
+    # method below by Channels' own dispatch convention. Each just forwards
+    # to the socket, following this consumer's existing
+    # ``self.send(text_data=json.dumps({"type": ..., ...}))`` shape (this
+    # codebase doesn't use a ``send_json``/``"kind"`` convention anywhere).
+
+    async def session_extended(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "session_extended",
+            "cap_ends_at": event["cap_ends_at"],
+            "extensions_used": event["extensions_used"],
+            "extensions_allowed": event["extensions_allowed"],
+        }))
+
+    async def session_file_added(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "session_file_added",
+            "file": event["file"],
+        }))
+
+    async def session_file_removed(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "session_file_removed",
+            "file_id": event["file_id"],
+        }))
+
+    async def remote_control_requested(self, event):
+        # Only deliver to the intended target — everyone else in the room
+        # shares this same channel-layer group.
+        user = getattr(self, "user", None)
+        if user is not None and getattr(user, "id", None) == event.get("target_user_id"):
+            await self.send(text_data=json.dumps({
+                "type": "remote_control_requested",
+                "grant_id": event["grant_id"],
+                "target_user_id": event["target_user_id"],
+                "controller": event["controller"],
+            }))
+
+    async def remote_control_granted(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "remote_control_granted",
+            "grant_id": event["grant_id"],
+            "controller_user_id": event["controller_user_id"],
+            "target_user_id": event["target_user_id"],
+        }))
+
+    async def remote_control_declined(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "remote_control_declined",
+            "grant_id": event["grant_id"],
+        }))
+
+    async def remote_control_revoked(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "remote_control_revoked",
+            "grant_id": event["grant_id"],
         }))
 
     # ── DB helpers ───────────────────────────────────────────────────

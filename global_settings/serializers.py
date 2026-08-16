@@ -61,6 +61,23 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
             "skill_intro_session_paise",
             "skill_bundle_discount_pct",
             "effective_mode",        # read-only, computed
+            # ── Live sessions ──────────────────────────────────────────
+            "live_free_minutes_per_join",
+            "live_max_participants",
+            "live_max_session_minutes",
+            "live_daily_minutes_per_user",
+            "live_host_extensions_allowed",
+            "live_host_extension_minutes",
+            "live_max_upload_mb",
+            "live_max_files_per_session",
+            "live_file_retention_days",
+            "live_recording_enabled",
+            "live_remote_access_enabled",
+            "live_chat_enabled",
+            "live_screenshare_enabled",
+            "live_show_first_visit_tour",
+            "live_host_policy",
+            "live_launch_free_mode",
             "updated_at",
         ]
         read_only_fields = ["updated_at"]

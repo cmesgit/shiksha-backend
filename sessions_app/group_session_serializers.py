@@ -8,7 +8,7 @@ the original serializers module where useful.
 
 from rest_framework import serializers
 
-from .models import GroupSession, GroupSessionInvite, GroupSessionNote
+from .models import GroupSession, GroupSessionInvite, GroupSessionNote, GroupSessionReview
 from .serializers import get_user_name, get_student_id
 
 
@@ -252,3 +252,13 @@ class GroupSessionNoteSerializer(serializers.ModelSerializer):
         model = GroupSessionNote
         fields = ["content", "updated_at"]
         read_only_fields = ["updated_at"]
+
+
+class GroupSessionReviewSerializer(serializers.ModelSerializer):
+    """NEW — design_handoff_live_sessions Phase 5, screen 09. Mirrors
+    ``PrivateSessionReviewSerializer`` (sessions_app/serializers.py)."""
+
+    class Meta:
+        model = GroupSessionReview
+        fields = ["id", "rating", "description", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]

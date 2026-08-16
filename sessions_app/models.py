@@ -528,6 +528,16 @@ class GroupSession(models.Model):
         blank=True,
     )
 
+    # --- Live-session rules (sessions_app/live_rules.py) ---
+    # How many times the host has used the "extend" action (screen 07). Each
+    # extension adds GlobalSettings.live_host_extension_minutes, bounded by
+    # live_max_session_minutes — see live_rules.cap_ends_at().
+    extensions_used = models.PositiveSmallIntegerField(default=0)
+    # Cached absolute end-of-room instant, recomputed on join/extend so
+    # clients can render a countdown without recomputing the formula
+    # themselves. Nullable — unset until the room actually goes live.
+    cap_ends_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["-created_at"]
         indexes = [
@@ -712,8 +722,14 @@ class GroupSessionNote(models.Model):
     """A participant's private notes for one GroupSession.
 
     Private per (session, user) — mirrors livestream.SessionNote /
-    PrivateSessionNote. No review-model counterpart: group sessions never
-    show a post-call review modal per the design spec.
+    PrivateSessionNote.
+
+    NOTE: an earlier revision of this docstring said "no review-model
+    counterpart: group sessions never show a post-call review modal per the
+    design spec." That was true through the Phase 1-4 live-session work but
+    is superseded by design_handoff_live_sessions Phase 5 (screen 09, the
+    post-session summary), which does add a review form — see
+    ``GroupSessionReview`` below.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     session = models.ForeignKey(
@@ -731,6 +747,42 @@ class GroupSessionNote(models.Model):
 
     def __str__(self):
         return f"{self.user_id} notes on {self.session_id}"
+
+
+class GroupSessionReview(models.Model):
+    """A participant's post-session rating for one GroupSession (design
+    screen 09 — the summary page's "How was the session?" card).
+
+    Mirrors ``PrivateSessionReview`` exactly (same rating scale, same
+    update_or_create-on-resubmit semantics via the unique constraint) — this
+    is genuinely NEW, added for design_handoff_live_sessions Phase 5. No
+    such model or endpoint existed for GroupSession before this; the
+    handoff's 01-FLOW.md assumed one already existed ("posts to the
+    existing SessionReview endpoint"), but the only real ``SessionReview``
+    in this codebase belongs to the unrelated ``livestream`` app (LiveSession,
+    not GroupSession), and the only other reviewable session type
+    (PrivateSession) has its own, differently-named model. Kept additive:
+    no existing model/endpoint changed.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        GroupSession, on_delete=models.CASCADE, related_name="reviews"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+    )
+    rating = models.PositiveSmallIntegerField(
+        choices=[(1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")]
+    )
+    description = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("session", "user")
+
+    def __str__(self):
+        return f"{self.user_id} rated {self.session_id}: {self.rating}"
 
 
 class GroupSessionAttendanceInterval(models.Model):
@@ -768,3 +820,137 @@ class GroupSessionAttendanceInterval(models.Model):
         if self.joined_at and self.left_at:
             return int((self.left_at - self.joined_at).total_seconds())
         return 0
+
+
+# ===========================================================================
+# LIVE SESSIONS — Phase 1 additions (file sharing, remote control)
+# ===========================================================================
+# Design handoff: design_handoff_live_sessions/02-BACKEND.md + backend/
+# sessions_app/{live_rules,live_files_views,remote_control_views,
+# models_additions}.py.
+#
+# Deviation from the handoff worth flagging: its live_files_views.py and
+# remote_control_views.py both assume a ``session.participants`` reverse
+# relation (rows with ``user``/``left_at``/``is_sharing_screen``) to answer
+# "is this user currently in the room" and "are they sharing their screen".
+# No such model exists anywhere in this codebase today — GroupSession only
+# tracks an aggregate ``active_connections`` counter (consumers.py), and the
+# two existing per-user tables (GroupSessionAttendance, which rolls up
+# first-join/last-leave across the whole lifetime, and
+# GroupSessionAttendanceInterval above, an append-only join/leave audit log)
+# are both driven by the LiveKit webhook pipeline and don't answer "right
+# now." GroupSessionParticipant below is a NEW model that fills that gap: one
+# row per (session, user), upserted with ``left_at=None`` in
+# group_session_views.join_group_session (the one call every real client
+# makes before it ever opens the LiveKit connection) and closed out
+# (``left_at`` set) when the room itself ends. This is honest, not
+# aspirational: leaving a room WITHOUT the room ending (e.g. closing the tab
+# mid-session) is not yet wired back to this table — the WS consumer
+# (GroupSessionChatConsumer) never resolves an authenticated user identity
+# today, only an anonymous connection counter — so "in_room" here is a
+# best-effort join-time signal, not a live presence heartbeat. Likewise
+# ``is_sharing_screen`` has no producer yet: there is no LiveKit
+# track-published webhook handler for group sessions, so nothing flips this
+# flag to True today. Both are flagged as open follow-up work, not silently
+# faked.
+class GroupSessionParticipant(models.Model):
+    """Best-effort "who is in this room right now" — see the module note
+    above for exactly what this can and can't promise in Phase 1."""
+
+    session = models.ForeignKey(
+        GroupSession, related_name="participants", on_delete=models.CASCADE
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="group_session_participations",
+        on_delete=models.CASCADE,
+    )
+    joined_at = models.DateTimeField(auto_now_add=True)
+    left_at = models.DateTimeField(null=True, blank=True)
+    is_sharing_screen = models.BooleanField(default=False)
+
+    class Meta:
+        unique_together = ("session", "user")
+        indexes = [
+            models.Index(fields=["session", "left_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id} in {self.session_id} (left_at={self.left_at})"
+
+
+class SessionFile(models.Model):
+    """A file shared inside a live session. Purged after the retention window
+    (see management/commands/purge_expired_session_files.py) unless a
+    learner explicitly saved it to their course."""
+
+    session = models.ForeignKey(
+        GroupSession, related_name="files", on_delete=models.CASCADE
+    )
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="session_files", on_delete=models.CASCADE
+    )
+    file = models.FileField(upload_to="session_files/%Y/%m/%d/")
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120, blank=True)
+    size_bytes = models.PositiveBigIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(db_index=True)
+    saved_to_course = models.BooleanField(
+        default=False,
+        help_text="Survives the purge — copied into course materials.",
+    )
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.original_name} ({self.session_id})"
+
+
+class RemoteControlGrant(models.Model):
+    """Audit row for one teacher→student screen-control grant. See
+    remote_control_views.py's module docstring for the open question about
+    what actually drives the input on the target's side — this model only
+    covers authorisation + audit, not the input transport itself."""
+
+    STATUS_REQUESTED = "requested"
+    STATUS_ACTIVE = "active"
+    STATUS_DECLINED = "declined"
+    STATUS_REVOKED = "revoked"
+    STATUS_EXPIRED = "expired"
+    STATUS_CHOICES = [
+        (STATUS_REQUESTED, "Requested"),
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_DECLINED, "Declined"),
+        (STATUS_REVOKED, "Revoked"),
+        (STATUS_EXPIRED, "Expired"),
+    ]
+
+    session = models.ForeignKey(
+        GroupSession, related_name="remote_grants", on_delete=models.CASCADE
+    )
+    controller = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="rc_controlling",
+        on_delete=models.CASCADE,
+    )
+    target = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="rc_targeted",
+        on_delete=models.CASCADE,
+    )
+    status = models.CharField(
+        max_length=12, choices=STATUS_CHOICES, default=STATUS_REQUESTED
+    )
+    requested_at = models.DateTimeField(auto_now_add=True)
+    granted_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    # target|controller|system — free-text audit tag, not an FK.
+    ended_by = models.CharField(max_length=16, blank=True)
+
+    class Meta:
+        ordering = ["-requested_at"]
+
+    def __str__(self):
+        return f"RC {self.controller_id}->{self.target_id} on {self.session_id} [{self.status}]"

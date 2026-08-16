@@ -105,6 +105,69 @@ class GlobalSettings(models.Model):
         help_text="Discount % off rate×remaining-sessions when buying the full track.",
     )
 
+    # ── Live sessions ────────────────────────────────────────────────
+    # Single source of truth for every /live room (instant meetings, group
+    # sessions, and eventually course classes) — read exclusively through
+    # sessions_app.live_rules so this admin panel is the only place limits
+    # are set. See that module for how each field is used.
+    live_free_minutes_per_join = models.PositiveIntegerField(
+        default=15,
+        help_text="Minutes a non-enrolled participant gets per join. Hosts are never capped.",
+    )
+    live_max_participants = models.PositiveIntegerField(
+        default=40, help_text="Hard cap on participants per room, enforced at token issue."
+    )
+    live_max_session_minutes = models.PositiveIntegerField(
+        default=90, help_text="Ceiling for the room's own duration, including host extensions."
+    )
+    live_daily_minutes_per_user = models.PositiveIntegerField(
+        default=120, help_text="Daily budget per user. 0 disables the daily limit."
+    )
+    live_host_extensions_allowed = models.PositiveIntegerField(
+        default=2, help_text="How many times a host may extend one session."
+    )
+    live_host_extension_minutes = models.PositiveIntegerField(
+        default=15, help_text="Minutes added to the room's cap per host extension."
+    )
+    live_max_upload_mb = models.PositiveIntegerField(
+        default=25, help_text="Max size of a single file shared inside a live session."
+    )
+    live_max_files_per_session = models.PositiveIntegerField(
+        default=10, help_text="Max files shared inside one live session."
+    )
+    live_file_retention_days = models.PositiveIntegerField(
+        default=2, help_text="Days shared files survive after the session ends."
+    )
+    live_recording_enabled = models.BooleanField(
+        default=False, help_text="Master switch for session recording."
+    )
+    live_remote_access_enabled = models.BooleanField(
+        default=True, help_text="Master switch for teacher screen-control of a student."
+    )
+    live_chat_enabled = models.BooleanField(
+        default=True, help_text="Master switch for in-room chat."
+    )
+    live_screenshare_enabled = models.BooleanField(
+        default=True, help_text="Master switch for screen sharing."
+    )
+    live_show_first_visit_tour = models.BooleanField(
+        default=True, help_text="Show the first-visit product tour in the live room."
+    )
+    live_host_policy = models.CharField(
+        max_length=24,
+        default="teachers_and_enrolled",
+        choices=[
+            ("anyone", "Any signed-in user"),
+            ("teachers_and_enrolled", "Teachers and enrolled learners"),
+            ("teachers_only", "Teachers only"),
+        ],
+        help_text="Who may host (create/start) a live room.",
+    )
+    live_launch_free_mode = models.BooleanField(
+        default=True,
+        help_text="Launch promo: nobody is time-capped, whatever the values above say.",
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

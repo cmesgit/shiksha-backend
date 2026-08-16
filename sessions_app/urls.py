@@ -1,6 +1,8 @@
 from django.urls import path
 from . import views
 from . import group_session_views as gs_views
+from . import live_files_views as lf_views
+from . import remote_control_views as rc_views
 from .views import subject_teachers, subject_students  # 👈 add this
 
 urlpatterns = [
@@ -131,4 +133,42 @@ urlpatterns = [
     path("group-sessions/<uuid:session_id>/notes/",
          gs_views.group_session_note,
          name="group-session-notes"),
+
+    # =========================================================
+    # Live sessions — Phase 1 (design_handoff_live_sessions)
+    # =========================================================
+    path("group-sessions/<uuid:session_id>/preflight/",
+         gs_views.group_session_preflight,
+         name="group-session-preflight"),
+    path("group-sessions/<uuid:session_id>/extend/",
+         gs_views.extend_group_session,
+         name="group-session-extend"),
+    path("group-sessions/<uuid:session_id>/files/",
+         lf_views.session_files,
+         name="group-session-files"),
+    path("group-sessions/<uuid:session_id>/files/<int:file_id>/",
+         lf_views.delete_session_file,
+         name="group-session-file-delete"),
+    path("group-sessions/<uuid:session_id>/remote-control/request/",
+         rc_views.request_remote_control,
+         name="group-session-remote-control-request"),
+    path("group-sessions/<uuid:session_id>/remote-control/respond/",
+         rc_views.respond_remote_control,
+         name="group-session-remote-control-respond"),
+    path("group-sessions/<uuid:session_id>/remote-control/revoke/",
+         rc_views.revoke_remote_control,
+         name="group-session-remote-control-revoke"),
+
+    # =========================================================
+    # Live sessions — Phase 5 (design_handoff_live_sessions) — summary +
+    # review. Additive: neither existed before this (see
+    # group_session_summary's own docstring for why the handoff's assumption
+    # that a review endpoint already existed was wrong).
+    # =========================================================
+    path("group-sessions/<uuid:session_id>/summary/",
+         gs_views.group_session_summary,
+         name="group-session-summary"),
+    path("group-sessions/<uuid:session_id>/review/",
+         gs_views.submit_group_session_review,
+         name="group-session-review"),
 ]
