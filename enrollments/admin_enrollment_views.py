@@ -27,7 +27,7 @@ from accounts.models import LearnerProfile
 from courses.models import Batch, Course
 from .models import Enrollment, Subscription
 from .serializers import BatchStudentSerializer
-from .payment_views import _create_or_extend_subscription
+from .payment_views import _create_or_extend_subscription, _validate_batch_choice
 
 
 def _subscription_expiry_subquery():
@@ -166,18 +166,20 @@ class AdminCreateEnrollmentView(APIView):
         if not course:
             raise NotFound("Course not found.")
 
-        batch = None
         batch_id = request.data.get("batch")
-        if batch_id:
-            batch = Batch.objects.filter(id=batch_id, course=course).first()
-            if not batch:
-                raise ValidationError({"batch": "Batch not found for this course."})
-            if batch.is_full:
-                raise ValidationError({
-                    "batch": f"'{batch.name}' is full ({batch.seats_taken}/{batch.capacity})."
-                })
 
         with transaction.atomic():
+            batch = None
+            if batch_id:
+                # select_for_update inside the same transaction as the write —
+                # matches _validate_batch_choice's own reasoning (payment_views.py):
+                # without the row lock, two concurrent admin enrollments (or an
+                # admin racing a student's own self-enroll) could both read
+                # is_full=False and both win the last seat in a capped batch.
+                batch, err = _validate_batch_choice(course, batch_id)
+                if err is not None:
+                    return err
+
             enrollment, created = Enrollment.objects.get_or_create(
                 learner_profile=learner, course=course,
                 defaults={
