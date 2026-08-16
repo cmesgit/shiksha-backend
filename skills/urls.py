@@ -36,7 +36,7 @@ from .course_views import (
 from .livekit_views import (
     JoinSessionView, MySessionsView,
     TeacherSessionsView, TeacherConfirmSessionView, TeacherCompleteSessionView,
-    TeacherReportNoShowView, TeacherSessionNoteView,
+    TeacherReportNoShowView, TeacherSessionNoteView, TeacherMarkPaidView,
     AdminSessionListView,        # NEW — admin platform-wide session monitor
     AdminUserSkillProfileView,   # NEW — per-user skill context for admin
 )
@@ -134,6 +134,7 @@ urlpatterns = [
     path("teacher/sessions/<uuid:session_id>/complete/",    TeacherCompleteSessionView.as_view()),
     path("teacher/sessions/<uuid:session_id>/report-no-show/", TeacherReportNoShowView.as_view()),
     path("teacher/sessions/<uuid:session_id>/note/",            TeacherSessionNoteView.as_view()),
+    path("teacher/sessions/<uuid:session_id>/mark-paid/",       TeacherMarkPaidView.as_view()),
 
     # ── Student skill dashboard ───────────────────────────────────────────────
     path("student/dashboard/",  StudentSkillDashboardView.as_view()),

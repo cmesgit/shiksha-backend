@@ -300,7 +300,12 @@ class Participant(models.Model):
         if self.kind == self.KIND_LEARNER and self.learner_profile:
             return self.learner_profile.display_name
         if self.kind == self.KIND_TEACHER and self.teacher_profile:
-            return self.teacher_profile.user.username or "Teacher"
+            # Resolve the teacher's real display name the same way the
+            # "start a new chat" directory does (prefer the teacher's SELF
+            # learner-profile name) so the conversation list/header shows
+            # "Arjun Mehta" instead of the raw username "demo.expert".
+            from .services import teacher_display_name
+            return teacher_display_name(self.teacher_profile)
         if self.kind == self.KIND_STAFF and self.staff_user:
             return self.staff_user.get_full_name() or self.staff_user.username or "Support Team"
         return "Unknown"

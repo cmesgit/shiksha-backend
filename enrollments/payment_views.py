@@ -17,7 +17,7 @@ from rest_framework.views import APIView
 from rest_framework import status
 
 from accounts.permissions import IsEmailVerified
-from accounts.auth_flow import get_active_profile
+from accounts.auth_flow import get_active_profile, profile_mismatch_response
 from courses.models import Course, Batch
 
 from .models import Enrollment, Subscription
@@ -151,6 +151,9 @@ class FreeEnrollView(APIView):
         if learner is None:
             return Response({"detail": "Select a learner profile before enrolling."},
                             status=status.HTTP_400_BAD_REQUEST)
+        mismatch = profile_mismatch_response(request, request.data.get("active_profile_id"))
+        if mismatch is not None:
+            return mismatch
 
         # Optional: student's own batch choice (Morning/Afternoon/Evening/Night
         # etc — see courses.models.Batch). Validated + locked inside the same
@@ -224,6 +227,9 @@ class SelectEnrollmentBatchView(APIView):
         if learner is None:
             return Response({"detail": "Select a learner profile."},
                             status=status.HTTP_400_BAD_REQUEST)
+        mismatch = profile_mismatch_response(request, request.data.get("active_profile_id"))
+        if mismatch is not None:
+            return mismatch
 
         try:
             course = Course.objects.get(pk=course_id)

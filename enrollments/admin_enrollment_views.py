@@ -18,13 +18,16 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework import status
 from django.db import transaction
 from django.db.models import OuterRef, Q, Subquery
 
 from accounts.permissions import IsAdmin
-from courses.models import Batch
+from accounts.models import LearnerProfile
+from courses.models import Batch, Course
 from .models import Enrollment, Subscription
 from .serializers import BatchStudentSerializer
+from .payment_views import _create_or_extend_subscription
 
 
 def _subscription_expiry_subquery():
@@ -131,6 +134,75 @@ class AdminEnrollmentActionView(APIView):
         # roster still read batch_code for pre-Batch-model rows.
         enrollment.batch_code = batch.code
         enrollment.save(update_fields=["batch", "batch_code"])
+
+
+class AdminCreateEnrollmentView(APIView):
+    """
+    POST /api/enrollments/admin/enroll/
+        { "learner_profile": "<uuid>", "course": "<uuid>", "batch": "<uuid|null>" }
+
+    Admin-initiated enrollment — the gap Free mode left open: self-serve
+    enrollment (FreeEnrollView) works great for a student acting on their own
+    behalf, but an admin had NO way to place a student directly (offline/cash
+    payment, bulk cohort setup before Free mode ends, reinstating a student
+    who can't self-enroll for some reason). This bypasses payment-mode
+    checks entirely — it's an explicit admin override, not a payment path —
+    and reuses the exact same activation helper (_create_or_extend_subscription)
+    real self-serve enrollment uses, so the resulting access is indistinguishable
+    from a normal enrollment.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        learner_id = request.data.get("learner_profile")
+        course_id = request.data.get("course")
+        if not learner_id or not course_id:
+            raise ValidationError("learner_profile and course are required.")
+
+        learner = LearnerProfile.objects.filter(id=learner_id).select_related("account").first()
+        if not learner:
+            raise NotFound("Student not found.")
+        course = Course.objects.filter(id=course_id).first()
+        if not course:
+            raise NotFound("Course not found.")
+
+        batch = None
+        batch_id = request.data.get("batch")
+        if batch_id:
+            batch = Batch.objects.filter(id=batch_id, course=course).first()
+            if not batch:
+                raise ValidationError({"batch": "Batch not found for this course."})
+            if batch.is_full:
+                raise ValidationError({
+                    "batch": f"'{batch.name}' is full ({batch.seats_taken}/{batch.capacity})."
+                })
+
+        with transaction.atomic():
+            enrollment, created = Enrollment.objects.get_or_create(
+                learner_profile=learner, course=course,
+                defaults={
+                    "user": learner.account,
+                    "status": Enrollment.STATUS_ACTIVE,
+                    "batch": batch,
+                    "batch_code": batch.code if batch else "",
+                },
+            )
+            if not created:
+                # Already enrolled — an admin re-submitting this (e.g. a
+                # student who was REVOKED) should reactivate + optionally
+                # place the batch, not silently no-op.
+                enrollment.status = Enrollment.STATUS_ACTIVE
+                update_fields = ["status"]
+                if batch is not None and enrollment.batch_id is None:
+                    enrollment.batch = batch
+                    enrollment.batch_code = batch.code
+                    update_fields += ["batch", "batch_code"]
+                enrollment.save(update_fields=update_fields)
+
+            _create_or_extend_subscription(user=learner.account, learner=learner, course=course)
+
+        row = BatchStudentSerializer(enrollment, context={"request": request}).data
+        return Response({"ok": True, "created": created, **row}, status=status.HTTP_201_CREATED)
 
 
 class AdminEnrollmentBulkBatchView(APIView):

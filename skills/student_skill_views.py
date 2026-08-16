@@ -117,6 +117,11 @@ class StudentSkillDashboardView(APIView):
                 "started":            bool(s.started_at),
                 "status":             s.status,
                 "reviewed":           str(s.id) in reviewed_ids if is_past else None,
+                # Settlement is direct P2P (see skills/views.py CreateOrderView's
+                # docstring) — this is purely informational so the learner can
+                # see whether the expert has confirmed receiving payment.
+                "payment_status":     s.payment_status,
+                "amount_rupees":      (s.amount or 0) // 100,
             }
 
         upcoming_data = [fmt_session(s) for s in upcoming]
@@ -269,10 +274,18 @@ class StudentSkillDashboardView(APIView):
         )
 
         # ── Top experts rail ──────────────────────────────────────────
-        # Design's "Top experts" card is the platform's top-RATED listed
-        # experts overall, not just this learner's own tutors (a different
-        # list from `experts_data` above). ExpertProfile.Meta.ordering is
-        # already ("-rating", "-sessions_count").
+        # Design's "Top experts" card is the platform's top listed experts
+        # overall, not just this learner's own tutors (a different list from
+        # `experts_data` above).
+        #
+        # BUG FIX: this used ExpertProfile.objects.filter(is_listed=True)
+        # .exclude(rating=None), which dropped every genuinely-listed expert
+        # that has no aggregate rating yet — so a fresh platform showed "No
+        # experts listed yet" while /skill/teachers/ (the public directory)
+        # returned them fine. Match that endpoint's queryset instead
+        # (is_listed + a real teacher_profile), and order unrated experts
+        # LAST rather than excluding them.
+        from django.db.models import F
         top_experts = [
             {
                 "id":         str(ep.id),
@@ -281,7 +294,9 @@ class StudentSkillDashboardView(APIView):
                 "skill":      ep.headline or "",
                 "rating":     float(ep.rating) if ep.rating is not None else None,
             }
-            for ep in ExpertProfile.objects.filter(is_listed=True).exclude(rating=None)[:4]
+            for ep in ExpertProfile.objects
+                .filter(is_listed=True, teacher_profile__isnull=False)
+                .order_by(F("rating").desc(nulls_last=True), "-sessions_count")[:4]
         ]
 
         # ── Session-based stats ──────────────────────────────────────

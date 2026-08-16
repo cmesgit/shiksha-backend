@@ -39,9 +39,15 @@ def average_quiz_score_pct(attempts):
     ``dashboard.views`` (account/profile-scoped across possibly several
     courses' subjects) so the "average quiz score" definition stays in one
     place.
+
+    Clamped to 100 per attempt — same reason as ``QuizDashboardSerializer.
+    get_best_score`` and ``StudentQuizStatsView`` (quizzes/serializers.py,
+    quizzes/views.py): a quiz's ``total_marks`` can fall out of sync with
+    its questions, or a stored ``score`` can otherwise exceed it, which
+    would otherwise divide out to well over 100%.
     """
     pct_list = [
-        attempt.score / attempt.quiz.total_marks * 100
+        min(100.0, attempt.score / attempt.quiz.total_marks * 100)
         for attempt in attempts
         if attempt.quiz.total_marks
     ]

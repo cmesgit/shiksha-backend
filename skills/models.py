@@ -644,6 +644,12 @@ class SkillSession(models.Model):
     payment_status = models.CharField(
         max_length=10, choices=PAYMENT_CHOICES, default=PAYMENT_UNPAID
     )
+    # Set when the EXPERT confirms they received the direct P2P payment (see
+    # TeacherMarkPaidView) — purely a record of that confirmation, never a
+    # gate on joining/completing (CreateOrderView's docstring: the platform
+    # can't observe an off-platform transfer, it can only record what the
+    # receiving party says happened).
+    paid_at = models.DateTimeField(null=True, blank=True)
     razorpay_order_id = models.CharField(max_length=120, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

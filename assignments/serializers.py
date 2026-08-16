@@ -80,6 +80,7 @@ class AssignmentListSerializer(serializers.ModelSerializer):
     )
     # Legacy single attachment kept for backwards compat
     attachment = serializers.FileField(read_only=True)
+    marks_obtained = serializers.SerializerMethodField()
 
     class Meta:
         model = Assignment
@@ -92,15 +93,21 @@ class AssignmentListSerializer(serializers.ModelSerializer):
             "subject_id",
             "course_id",
             "attachment",
+            "max_marks",
+            "marks_obtained",
         )
 
     def get_status(self, obj):
         submission = getattr(obj, "user_submission", None)
         if submission:
-            return "SUBMITTED"
+            return "GRADED" if submission.marks_obtained is not None else "SUBMITTED"
         if obj.due_date < timezone.now():
             return "EXPIRED"
         return "PENDING"
+
+    def get_marks_obtained(self, obj):
+        submission = getattr(obj, "user_submission", None)
+        return submission.marks_obtained if submission else None
 
 
 class AssignmentDetailSerializer(serializers.ModelSerializer):
@@ -108,6 +115,9 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
     submission_status_label = serializers.SerializerMethodField()
     submitted_file = serializers.SerializerMethodField()
     submitted_at = serializers.SerializerMethodField()
+    marks_obtained = serializers.SerializerMethodField()
+    feedback = serializers.SerializerMethodField()
+    graded_at = serializers.SerializerMethodField()
 
     subject_name = serializers.CharField(
         source="chapter.subject.name",         read_only=True)
@@ -140,6 +150,10 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
             "submitted_file",
             "submitted_at",
             "submission_status_label",
+            "max_marks",
+            "marks_obtained",
+            "feedback",
+            "graded_at",
         )
 
     def get_submission(self, obj):
@@ -162,6 +176,18 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
     def get_submitted_at(self, obj):
         submission = self.get_submission(obj)
         return submission.submitted_at if submission else None
+
+    def get_marks_obtained(self, obj):
+        submission = self.get_submission(obj)
+        return submission.marks_obtained if submission else None
+
+    def get_feedback(self, obj):
+        submission = self.get_submission(obj)
+        return submission.feedback if submission else ""
+
+    def get_graded_at(self, obj):
+        submission = self.get_submission(obj)
+        return submission.graded_at if submission else None
 
     def get_teacher_name(self, obj):
         subject = obj.chapter.subject
@@ -210,7 +236,9 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
             "due_date",
             "attachment",
             "idempotency_key",
+            "max_marks",
         )
+        extra_kwargs = {"max_marks": {"required": False}}
 
     def validate(self, attrs):
         due_date = attrs.get("due_date")
@@ -273,7 +301,9 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
             "attachment",
             "new_files",
             "delete_file_ids",
+            "max_marks",
         )
+        extra_kwargs = {"max_marks": {"required": False}}
 
     def validate_due_date(self, value):
         if value and value < timezone.now():
@@ -343,6 +373,7 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
             "total_submissions",
             "attachment",   # legacy
             "files",        # new multi-file
+            "max_marks",
         )
 
     def get_chapter_name(self, obj):
@@ -369,6 +400,7 @@ class TeacherSubmissionListSerializer(serializers.ModelSerializer):
     learner_profile_id = serializers.UUIDField(
         source="learner_profile.id", read_only=True, default=None)
     submission_status = serializers.CharField(read_only=True)
+    max_marks = serializers.IntegerField(source="assignment.max_marks", read_only=True)
 
     class Meta:
         model = AssignmentSubmission
@@ -381,6 +413,10 @@ class TeacherSubmissionListSerializer(serializers.ModelSerializer):
             "submitted_file",
             "submitted_at",
             "submission_status",
+            "marks_obtained",
+            "max_marks",
+            "feedback",
+            "graded_at",
         )
 
     def get_student_name(self, obj):

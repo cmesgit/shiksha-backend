@@ -150,6 +150,37 @@ def get_active_profile(request):
     )
 
 
+def profile_mismatch_response(request, claimed_profile_id):
+    """
+    Purchase/booking write paths (enrollments, expert-session requests) attribute
+    the acting learner solely from the server's `get_active_profile(request)` —
+    the JWT's `active_profile` claim. That claim lives in a cookie shared by every
+    tab/device on the account: if profile A's tab has a request mid-flight when a
+    DIFFERENT tab switches to profile B, the request that lands after the switch
+    silently attributes to B, not the profile the first tab's UI still shows.
+
+    Callers that know which profile they believe is active (pass it as
+    `claimed_profile_id`, e.g. from `AuthContext`'s `activeProfile.id`) get a
+    self-verifying check: if it no longer matches the server's real active
+    profile, return a clear 409 instead of silently writing to the wrong one.
+    Returns None (do nothing) if `claimed_profile_id` is falsy — callers that
+    haven't been updated to send it yet keep today's behavior; this is an
+    additive guard, not a new requirement.
+    """
+    if not claimed_profile_id:
+        return None
+    active = get_active_profile(request)
+    if active and str(active.id) == str(claimed_profile_id):
+        return None
+    return Response(
+        {
+            "code": "profile_changed",
+            "detail": "Your active profile changed in another tab. Please refresh and try again.",
+        },
+        status=status.HTTP_409_CONFLICT,
+    )
+
+
 def serialize_profile_card(p):
     return {
         "id":               str(p.id),

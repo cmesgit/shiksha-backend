@@ -10,7 +10,7 @@ from courses.services import teaches_subject
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import MultiPartParser, FormParser
 
 from enrollments.models import Enrollment
@@ -501,6 +501,94 @@ class TeacherAssignmentSubmissionsView(generics.ListAPIView):
             )
             .order_by("-submitted_at")
         )
+
+
+class TeacherGradeSubmissionView(APIView):
+    """
+    POST /assignments/teacher/submissions/<submission_id>/grade/
+    body: { marks_obtained: int, feedback?: str }
+
+    Lets the assignment's teacher record a grade + written feedback on a real
+    submission — the gap the student-facing "You'll receive feedback once
+    graded" promise depended on but that had no backend support at all.
+    Re-gradeable (a teacher fixing a mistake just POSTs again); each call
+    re-stamps graded_at/graded_by and re-notifies the student.
+    """
+    permission_classes = [IsAuthenticated, IsTeacherContext]
+
+    def post(self, request, submission_id):
+        submission = get_object_or_404(
+            AssignmentSubmission.objects.select_related(
+                "assignment", "assignment__chapter__subject", "learner_profile__account",
+            ),
+            id=submission_id,
+        )
+        _assert_teacher_owns_assignment(request.user, submission.assignment)
+
+        marks = request.data.get("marks_obtained")
+        if marks in (None, ""):
+            raise ValidationError({"marks_obtained": "This field is required."})
+        try:
+            marks = int(marks)
+        except (TypeError, ValueError):
+            raise ValidationError({"marks_obtained": "Must be a whole number."})
+        max_marks = submission.assignment.max_marks
+        if marks < 0 or marks > max_marks:
+            raise ValidationError(
+                {"marks_obtained": f"Must be between 0 and {max_marks}."}
+            )
+
+        submission.marks_obtained = marks
+        submission.feedback = (request.data.get("feedback") or "").strip()
+        submission.graded_at = timezone.now()
+        submission.graded_by = request.user
+        submission.save(update_fields=["marks_obtained", "feedback", "graded_at", "graded_by"])
+
+        _notify_graded(submission)
+
+        return Response({
+            "detail": "Graded.",
+            "marks_obtained": submission.marks_obtained,
+            "max_marks": max_marks,
+            "feedback": submission.feedback,
+            "graded_at": submission.graded_at,
+        })
+
+
+def _notify_graded(submission):
+    """Best-effort — a notification failure must never break grading itself."""
+    try:
+        from django.contrib.contenttypes.models import ContentType
+        from activity.models import Activity
+        from livestream.services.notifications import push_ws_notification
+
+        recipient = submission.learner_profile.account if submission.learner_profile else submission.student
+        title = f"✅ Your assignment \"{submission.assignment.title}\" was graded — {submission.marks_obtained}/{submission.assignment.max_marks}"
+        content_type = ContentType.objects.get_for_model(AssignmentSubmission)
+        activity, created = Activity.objects.update_or_create(
+            user=recipient,
+            type=Activity.TYPE_ASSIGNMENT,
+            content_type=content_type,
+            object_id=submission.id,
+            defaults={
+                "title": title,
+                "subject_name": submission.assignment.title,
+                "audience": Activity.AUDIENCE_LEARNER,
+                "learner_profile": submission.learner_profile,
+                "is_read": False,
+                "created_at": timezone.now(),
+            },
+        )
+        push_ws_notification(recipient.id, {
+            "type": "ASSIGNMENT",
+            "title": title,
+            "subject_name": submission.assignment.title,
+            "id": str(submission.id),
+            "is_read": False,
+            "created_at": activity.created_at.isoformat(),
+        })
+    except Exception:
+        pass
 
 
 # ==========================================

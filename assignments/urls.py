@@ -10,6 +10,7 @@ from .views import (
     TeacherSubjectAssignmentsView,
     TeacherAllAssignmentsView,
     TeacherAssignmentSubmissionsView,
+    TeacherGradeSubmissionView,
     SubjectAssignmentsView,
     DownloadAllSubmissionsView,
 )
@@ -68,6 +69,10 @@ urlpatterns = [
     path(
         "teacher/<uuid:assignment_id>/submissions/",
         TeacherAssignmentSubmissionsView.as_view(),
+    ),
+    path(
+        "teacher/submissions/<uuid:submission_id>/grade/",
+        TeacherGradeSubmissionView.as_view(),
     ),
     path(
         "teacher/<uuid:assignment_id>/download-all/",

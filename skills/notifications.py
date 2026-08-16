@@ -11,6 +11,10 @@ from .models import SkillSession
 
 # One entry per event: (recipient_fn, title_fn). recipient_fn(session) -> User
 _SKILL_NOTIFICATIONS = {
+    "requested": (
+        lambda s: s.expert.user,
+        lambda s: f"🔔 {s.learner_profile.display_name} requested a session with you",
+    ),
     "confirmed": (
         lambda s: s.learner_profile.account,
         lambda s: f"✅ {s.expert.display_name()} confirmed your session",
@@ -39,6 +43,10 @@ _SKILL_NOTIFICATIONS = {
         lambda s: s.expert.user,
         lambda s: f"❌ {s.learner_profile.display_name} declined the new time",
     ),
+    "paid": (
+        lambda s: s.learner_profile.account,
+        lambda s: f"💰 {s.expert.display_name()} marked your session as paid",
+    ),
 }
 
 
@@ -58,6 +66,17 @@ def push_skill_bell(session, event):
         if not recipient or not title:
             return
 
+        # The feed is strictly scoped per activity/views.py's _scoped_qs:
+        # LEARNER-audience rows need learner_profile = the active profile (or
+        # NULL); TEACHER-audience rows need learner_profile IS NULL. This rule
+        # applies to EVERY event here, not just the learner-facing ones — an
+        # expert-recipient row (requested/cancelled/reschedule_*) must be
+        # audience=TEACHER with learner_profile=None, or it's invisible to the
+        # expert's own feed regardless of which User it's attached to.
+        is_for_learner = recipient == session.learner_profile.account
+        audience = Activity.AUDIENCE_LEARNER if is_for_learner else Activity.AUDIENCE_TEACHER
+        row_learner_profile = session.learner_profile if is_for_learner else None
+
         content_type = ContentType.objects.get_for_model(SkillSession)
         activity, created = Activity.objects.get_or_create(
             user=recipient,
@@ -66,9 +85,15 @@ def push_skill_bell(session, event):
             object_id=session.id,
             title=title,
             defaults={
+                # subject_id doubles as the deep-link target the bell routes
+                # on (see NotificationBell's is_skill_session branch) — the
+                # SkillSession id, so "confirmed your session" is clickable
+                # straight through to that session instead of a dead item.
+                "subject_id": session.id,
                 "subject_name": session.expert.headline,
                 "due_date": session.scheduled_for,
-                "learner_profile": session.learner_profile,
+                "audience": audience,
+                "learner_profile": row_learner_profile,
             },
         )
         if created:
@@ -76,7 +101,8 @@ def push_skill_bell(session, event):
                 "type": "SESSION",
                 "title": title,
                 "subject_name": session.expert.headline,
-                "id": str(session.id),
+                "id": str(activity.id),
+                "subject_id": str(session.id),
                 "is_read": False,
                 "created_at": activity.created_at.isoformat(),
                 "is_skill_session": True,

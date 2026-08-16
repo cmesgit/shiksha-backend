@@ -26,11 +26,12 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from accounts.models import LearnerProfile, Role, UserRole
 from accounts.permissions import IsAdmin
-from accounts.auth_flow import get_active_profile
+from accounts.auth_flow import get_active_profile, profile_mismatch_response
 
 # Slot bookkeeping lives next to the teacher-facing availability views so the
 # booking flow and the expert's own grid share one source of truth.
 from .teacher_views import slot_is_open, mark_slot_booked
+from .notifications import push_skill_bell
 
 from .models import (
     SkillCategory,
@@ -415,6 +416,9 @@ class SessionRequestView(APIView):
         learner = get_active_profile(request)
         if learner is None:
             raise PermissionDenied("Select a learner profile before requesting a session.")
+        mismatch = profile_mismatch_response(request, request.data.get("active_profile_id"))
+        if mismatch is not None:
+            return mismatch
 
         serializer = SkillSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -422,6 +426,7 @@ class SessionRequestView(APIView):
             learner_profile=learner,
             status=SkillSession.STATUS_REQUESTED,
         )
+        push_skill_bell(session, "requested")
         return Response(
             {"ok": True, "sessionId": str(session.id)},
             status=status.HTTP_201_CREATED,
@@ -447,6 +452,9 @@ class CreateOrderView(APIView):
         learner = get_active_profile(request)
         if learner is None:
             raise PermissionDenied("Select a learner profile first.")
+        mismatch = profile_mismatch_response(request, request.data.get("active_profile_id"))
+        if mismatch is not None:
+            return mismatch
 
         expert_id = request.data.get("teacherId") or request.data.get("expert")
         if not expert_id:
@@ -526,6 +534,8 @@ class CreateOrderView(APIView):
             # again on decline/complete so the weekly grid stays reusable.)
             if slot_key:
                 mark_slot_booked(expert, slot_key)
+
+        push_skill_bell(session, "requested")
 
         booking_ref = f"SHK-{session.id.hex[:8].upper()}"
 

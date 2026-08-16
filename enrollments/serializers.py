@@ -150,6 +150,13 @@ class EnrollmentRequestCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Select a learner profile before enrolling."
             )
+        # See accounts.auth_flow.profile_mismatch_response's docstring: guards
+        # against a different tab switching the active profile mid-flow.
+        claimed = request.data.get("active_profile_id")
+        if claimed and str(learner.id) != str(claimed):
+            raise serializers.ValidationError(
+                "Your active profile changed in another tab. Please refresh and try again."
+            )
         course = attrs["course"]
 
         if EnrollmentRequest.objects.filter(

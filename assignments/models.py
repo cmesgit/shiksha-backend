@@ -52,6 +52,11 @@ class Assignment(models.Model):
 
     due_date = models.DateTimeField(db_index=True)
 
+    # What a submission is graded out of. A plain default rather than a
+    # required field so existing assignments (created before grading existed)
+    # stay valid without a backfill.
+    max_marks = models.PositiveIntegerField(default=100)
+
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     # -------------------------------------------------------
@@ -174,6 +179,21 @@ class AssignmentSubmission(models.Model):
     submitted_file = models.FileField(upload_to="assignments/submissions/")
 
     submitted_at = models.DateTimeField(auto_now=True, db_index=True)
+
+    # ── Grading ──────────────────────────────────────────────────────
+    # Nullable/blank: an ungraded submission has none of these set. Marks are
+    # validated against the assignment's own max_marks in the grading view,
+    # not here, since that requires the related Assignment instance.
+    marks_obtained = models.PositiveIntegerField(null=True, blank=True)
+    feedback = models.TextField(blank=True)
+    graded_at = models.DateTimeField(null=True, blank=True)
+    graded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="graded_assignment_submissions",
+    )
 
     class Meta:
         constraints = [
