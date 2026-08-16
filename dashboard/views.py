@@ -173,10 +173,13 @@ def _learner_private_sessions(user, now):
     # PrivateSession has no learner_profile FK yet (account-level by
     # design of that model) — scope to sessions this ACCOUNT requested,
     # never ones it teaches. See AUDIT.md → "known model gaps".
+    # localtime: scheduled_date is an IST-calendar DateField — comparing
+    # against raw (UTC) now.date() shows yesterday's already-elapsed
+    # sessions as "upcoming" for up to ~5.5h after IST midnight.
     return list(
         PrivateSession.objects.filter(
             requested_by=user,
-            scheduled_date__gte=now.date(),
+            scheduled_date__gte=timezone.localtime(now).date(),
             status__in=["pending", "approved", "needs_reconfirmation"],
         )
         .select_related("teacher", "requested_by")
@@ -221,10 +224,11 @@ def _teacher_quizzes(user):
 
 
 def _teacher_private_sessions(user, now):
+    # localtime: see _learner_private_sessions above.
     return list(
         PrivateSession.objects.filter(
             teacher=user,
-            scheduled_date__gte=now.date(),
+            scheduled_date__gte=timezone.localtime(now).date(),
             status__in=["pending", "approved", "needs_reconfirmation"],
         )
         .select_related("teacher", "requested_by")

@@ -82,14 +82,21 @@ class StudentSkillDashboardView(APIView):
             is_live = bool(is_confirmed and (s.started_at or in_window))
             when_str = ""
             if scheduled:
-                today = now.date()
-                d     = scheduled.date()
+                # localtime: scheduled_for comes back UTC-represented from the
+                # DB — comparing/formatting it raw shows the wrong calendar
+                # date (Today/Tomorrow mislabeled during IST 00:00-05:29) AND
+                # the wrong clock time (off by 5.5h, IST offset). Aware-to-
+                # aware comparisons above (in_window) are unaffected either
+                # way — tzinfo doesn't change which instant a datetime is.
+                local_scheduled = timezone.localtime(scheduled)
+                today = timezone.localtime(now).date()
+                d     = local_scheduled.date()
                 if d == today:
-                    when_str = "Today · " + scheduled.strftime("%-I:%M %p")
+                    when_str = "Today · " + local_scheduled.strftime("%-I:%M %p")
                 elif d == today + datetime.timedelta(days=1):
-                    when_str = "Tomorrow · " + scheduled.strftime("%-I:%M %p")
+                    when_str = "Tomorrow · " + local_scheduled.strftime("%-I:%M %p")
                 else:
-                    when_str = scheduled.strftime("%-d %b · %-I:%M %p")
+                    when_str = local_scheduled.strftime("%-d %b · %-I:%M %p")
 
             # Expert photo
             img = None
@@ -469,11 +476,13 @@ class SkillSessionDetailView(APIView):
 
         booking_ref = f"SHK-{session.id.hex[:8].upper()}"
 
-        # Friendly time string
+        # Friendly time string. localtime: scheduled_for is UTC-represented
+        # from the DB — comparing/formatting it raw mislabels Today/Tomorrow
+        # and shows the wrong clock time (5.5h IST offset).
         when_str = ""
         if session.scheduled_for:
-            d     = session.scheduled_for
-            today = now.date()
+            d     = timezone.localtime(session.scheduled_for)
+            today = timezone.localtime(now).date()
             if d.date() == today:
                 when_str = "Today · " + d.strftime("%-I:%M %p")
             elif d.date() == today + datetime.timedelta(days=1):

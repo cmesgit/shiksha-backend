@@ -479,7 +479,9 @@ class TeachingAssignment(models.Model):
     )
     teacher = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="teaching_assignments",
     )
 
@@ -547,7 +549,9 @@ class TeachingAssignment(models.Model):
             raise ValidationError("Subject and batch belong to different courses.")
 
     def __str__(self):
-        return f"{self.batch.code} · {self.subject.name} → {self.teacher.email} ({self.role})"
+        teacher_label = self.teacher.email if self.teacher_id else "(deleted teacher)"
+        batch_label = self.batch.code if self.batch_id else "(course-wide)"
+        return f"{batch_label} · {self.subject.name} → {teacher_label} ({self.role})"
 
 
 class BoardNotifyRequest(models.Model):

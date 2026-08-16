@@ -184,7 +184,7 @@ _SUSPENDED_REASON = (
     "platform moderator."
 )
 _MEMBERSHIP_LAPSED_REASON = (
-    "You no longer have access to this class chat."
+    "You no longer have access to this conversation."
 )
 
 

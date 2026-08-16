@@ -65,6 +65,10 @@ VALID_TA_ROLES = (
 # Payload helpers
 # --------------------------------------------------------------------------- #
 def _teacher_name(user):
+    if user is None:
+        # TeachingAssignment.teacher is SET_NULL — a hard-deleted teacher
+        # account leaves the audit-trail row in place with no user to name.
+        return "(deleted teacher)"
     lp = None
     if hasattr(user, "default_learner_profile"):
         try:
@@ -123,6 +127,24 @@ def _profile_tracks(profile):
 def teacher_brief(user, st=None, request=None):
     """A teacher's assignable/assigned summary, including profile bits the admin
     wants to see at a glance (role, qualification, photo, rating)."""
+    if user is None:
+        # TeachingAssignment.teacher is SET_NULL — a hard-deleted teacher
+        # account leaves this row's brief with nothing to describe.
+        data = {
+            "user_id": None,
+            "name": _teacher_name(None),
+            "email": "",
+            "qualification": "",
+            "rating": None,
+            "photo": None,
+            "tracks": [],
+        }
+        if st is not None:
+            data["assignment_id"] = str(st.id)
+            data["display_role"] = st.role
+            data["order"] = st.order
+        return data
+
     profile = getattr(user, "teacher_profile", None)
 
     photo = None

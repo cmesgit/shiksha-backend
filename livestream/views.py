@@ -265,9 +265,17 @@ def join_live_session(request, session_id):
         is_creator = str(session.created_by_id) == str(user.id)
         is_teacher = is_creator
 
-        # Revive session if teacher reconnects within 30 min
+        # Revive session if teacher reconnects within 60 min — matches the
+        # session-completed cutoff a few lines up (line 241), the student
+        # cutoff below (line 299), and computed_status()'s own PAUSED window
+        # (models.py). This was drifted to 30 independently: a teacher
+        # reconnecting 30-60 min after leaving still passed the outer
+        # `diff > 60min` check and reached this branch, but this narrower
+        # window silently skipped reviving teacher_left_at/status, so
+        # computed_status() kept reporting PAUSED/RECONNECTING even though
+        # the teacher already had a working LiveKit token from below.
         if is_creator and session.teacher_left_at:
-            if now <= session.teacher_left_at + timedelta(minutes=30):
+            if now <= session.teacher_left_at + timedelta(minutes=60):
                 session.teacher_left_at = None
                 session.status = LiveSession.STATUS_LIVE
                 session.save(update_fields=["teacher_left_at", "status"])
@@ -985,14 +993,20 @@ def _handle_skill_session_left(room_name, event):
 
 
 def _handle_room_started(event):
+    # Defense-in-depth: this LiveKit event carries no participant identity
+    # (unlike participant_joined below), so there is nothing here to gate a
+    # creator check on — flipping status=LIVE unconditionally would mean
+    # ANY participant's connection (a student arriving first, in a room a
+    # teacher hasn't joined yet) marks the session live, bypassing the
+    # created_by_id check _handle_participant_join correctly applies.
+    # _handle_participant_join is the sole place that sets status=LIVE, so
+    # this just records when the underlying room technically came into
+    # existence.
     now = timezone.now()
     for session in LiveSession.objects.filter(room_name=_event_room_name(event)):
-        session.status = LiveSession.STATUS_LIVE
-        fields = ["status"]
         if session.actual_started_at is None:
             session.actual_started_at = now
-            fields.append("actual_started_at")
-        session.save(update_fields=fields)
+            session.save(update_fields=["actual_started_at"])
         broadcast_session_update(session)
 
 

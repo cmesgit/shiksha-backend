@@ -197,7 +197,11 @@ class TeacherDashboardView(APIView):
         }
 
         # ── Dashboard stat tiles + 7-day chart (design_handoff_skilldev) ──
-        monday = (now - timezone.timedelta(days=now.weekday())).date()
+        # localtime: `now` is UTC-represented — deriving weekday()/date()
+        # from it raw skews the this-week/last-week boundary (and Today's
+        # schedule below) by up to a day during IST 00:00-05:29.
+        local_now = timezone.localtime(now)
+        monday = (local_now - timezone.timedelta(days=local_now.weekday())).date()
         week_start = timezone.make_aware(datetime.datetime.combine(monday, datetime.time.min))
         week_end = week_start + timezone.timedelta(days=7)
         prev_week_start = week_start - timezone.timedelta(days=7)
@@ -214,9 +218,11 @@ class TeacherDashboardView(APIView):
 
         week_chart = [0] * 7
         for s in week_sessions:
-            week_chart[(s.scheduled_for.date() - monday).days] += 1
+            week_chart[(timezone.localtime(s.scheduled_for).date() - monday).days] += 1
 
-        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        # Same localtime concern as `monday` above — day=1 must mean the
+        # 1st of the month in IST, not in UTC.
+        month_start = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         hours_this_month = round(
             sum(sessions.filter(
                 status=SkillSession.STATUS_COMPLETED, updated_at__gte=month_start,
@@ -228,8 +234,11 @@ class TeacherDashboardView(APIView):
             .values("learner_profile").distinct().count()
         )
 
-        today = now.date()
-        today_schedule = [n for n in next_up if n["scheduled_for"] and n["scheduled_for"].date() == today]
+        today = local_now.date()
+        today_schedule = [
+            n for n in next_up
+            if n["scheduled_for"] and timezone.localtime(n["scheduled_for"]).date() == today
+        ]
 
         # Rank among listed experts by cached rating (ties broken by session count).
         rank = None
@@ -281,13 +290,15 @@ class TeacherEarningsView(APIView):
             .order_by("-updated_at")
         )
 
-        # Group by date label
+        # Group by date label. localtime: updated_at is UTC-represented —
+        # comparing raw .date() mislabels Today/Yesterday during IST
+        # 00:00-05:29.
         grouped = defaultdict(list)
-        today     = now.date()
+        today     = timezone.localtime(now).date()
         yesterday = today - datetime.timedelta(days=1)
 
         for s in completed:
-            d = s.updated_at.date()
+            d = timezone.localtime(s.updated_at).date()
             if d == today:
                 day_label = f"Today · {d.strftime('%-d %b')}"
             elif d == yesterday:

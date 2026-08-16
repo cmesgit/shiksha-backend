@@ -75,7 +75,7 @@ def _get_conv_and_me(request, conversation_id):
     if not me:
         raise PermissionDenied("You are not a participant in this conversation.")
     if not services.is_course_membership_still_valid(conv, me):
-        raise PermissionDenied("You no longer have access to this class chat.")
+        raise PermissionDenied("You no longer have access to this conversation.")
     return conv, me
 
 

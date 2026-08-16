@@ -242,7 +242,13 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         due_date = attrs.get("due_date")
-        if due_date and due_date.date() < timezone.now().date():
+        # localtime: due_date is an aware DateTimeField — comparing raw
+        # (UTC) .date() against raw (UTC) today rejects/accepts the wrong
+        # calendar day near IST midnight (this check is deliberately
+        # calendar-date-based, not an instant comparison, so a due_date set
+        # for later TODAY, IST, at an already-past clock time is still
+        # allowed).
+        if due_date and timezone.localtime(due_date).date() < timezone.localtime(timezone.now()).date():
             raise serializers.ValidationError(
                 {"due_date": "Due date must be today or in the future."}
             )

@@ -192,10 +192,13 @@ def booking_conflict(counselor, scheduled_at, duration_minutes):
 def inside_availability(counselor, scheduled_at, duration_minutes):
     """True if the requested time fits inside one active weekly window."""
     end = scheduled_at + timedelta(minutes=duration_minutes)
-    if end.date() != scheduled_at.date():
-        return False
     local = timezone.localtime(scheduled_at)
     local_end = timezone.localtime(end)
+    # Compare LOCAL calendar dates, not the raw (UTC) ones — a session
+    # spanning e.g. 5:15-6:00 AM IST is 23:45-00:30 UTC the PREVIOUS day,
+    # two different UTC dates for what is, locally, entirely one day.
+    if local_end.date() != local.date():
+        return False
     for w in counselor.availability.filter(is_active=True, weekday=local.weekday()):
         if w.start_time <= local.time() and local_end.time() <= w.end_time:
             return True

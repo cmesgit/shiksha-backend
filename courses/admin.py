@@ -68,7 +68,10 @@ class SubjectAdmin(admin.ModelAdmin):
 
     def get_teachers(self, obj):
         assignments = obj.teaching_assignments.filter(is_active=True).select_related("teacher")
-        return ", ".join([ta.teacher.email for ta in assignments])
+        return ", ".join(
+            ta.teacher.email if ta.teacher_id else "(deleted teacher)"
+            for ta in assignments
+        )
 
     get_teachers.short_description = "Teachers"
 

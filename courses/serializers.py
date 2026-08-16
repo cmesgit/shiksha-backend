@@ -54,6 +54,11 @@ class SubjectSerializer(serializers.ModelSerializer):
         data = []
         for ta in assignments:
             teacher = ta.teacher
+            if teacher is None:
+                # TeachingAssignment.teacher is SET_NULL — a hard-deleted
+                # teacher account has nothing left to show in this public
+                # list, so skip the row rather than crash on it.
+                continue
             profile = getattr(teacher, "teacher_profile", None)
             data.append({
                 "id": teacher.id,

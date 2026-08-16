@@ -945,7 +945,12 @@ class RefreshView(APIView):
 
         try:
             old_token = RefreshToken(refresh_token)
-            user = User.objects.get(id=old_token["user_id"])
+            # is_active=True: without this, a deactivated account could keep
+            # refreshing indefinitely (this view mints a brand-new token
+            # pair, so the account never needed to re-authenticate) — the
+            # same check CookieJWTAuthentication and the WS auth middleware
+            # both already enforce.
+            user = User.objects.get(id=old_token["user_id"], is_active=True)
 
             # --- Preserve context claims from the expiring token ---
             context = old_token.get("context") or CTX_ACCOUNT
