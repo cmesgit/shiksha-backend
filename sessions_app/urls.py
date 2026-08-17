@@ -52,6 +52,10 @@ urlpatterns = [
          name="private-session-review"),
     path("<uuid:session_id>/notes/", views.private_session_notes,
          name="private-session-notes"),
+    path("<uuid:session_id>/files/", lf_views.private_session_files,
+         name="private-session-files"),
+    path("<uuid:session_id>/files/<int:file_id>/", lf_views.delete_private_session_file,
+         name="private-session-file-delete"),
 
     # ✅ ADD THIS HERE (clean)
     path("subjects/<uuid:subject_id>/teachers/", subject_teachers),

@@ -73,6 +73,18 @@ class PrivateSessionChatConsumer(AsyncWebsocketConsumer):
             "data": event["data"],
         }))
 
+    async def session_file_added(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "session_file_added",
+            "file": event["file"],
+        }))
+
+    async def session_file_removed(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "session_file_removed",
+            "file_id": event["file_id"],
+        }))
+
     # ──────────────────────────────────────────────────────────────
     # Connection-count helpers (DB operations via sync_to_async)
     # ──────────────────────────────────────────────────────────────

@@ -268,6 +268,35 @@ class PrivateSessionNote(models.Model):
         return f"{self.user_id} notes on {self.session_id}"
 
 
+class PrivateSessionFile(models.Model):
+    """A file shared inside a PrivateSession — mirrors GroupSession's
+    SessionFile exactly (same purge command sweeps both; see
+    management/commands/purge_expired_session_files.py)."""
+
+    session = models.ForeignKey(
+        PrivateSession, related_name="files", on_delete=models.CASCADE
+    )
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="private_session_files", on_delete=models.CASCADE
+    )
+    file = models.FileField(upload_to="session_files/%Y/%m/%d/")
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120, blank=True)
+    size_bytes = models.PositiveBigIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(db_index=True)
+    saved_to_course = models.BooleanField(
+        default=False,
+        help_text="Survives the purge — copied into course materials.",
+    )
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.original_name} ({self.session_id})"
+
+
 class SessionRescheduleHistory(models.Model):
     """Audit log for every reschedule proposal on a session."""
 

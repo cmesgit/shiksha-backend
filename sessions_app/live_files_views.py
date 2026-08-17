@@ -24,7 +24,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from . import live_rules
-from .models import GroupSession, SessionFile
+from .models import GroupSession, SessionFile, PrivateSession, PrivateSessionFile
+from .views import _is_private_session_participant
 
 
 def _serialize(f, request):
@@ -111,6 +112,88 @@ def delete_session_file(request, session_id, file_id):
         try:
             async_to_sync(channel_layer.group_send)(
                 f"group_session_chat_{session.id}",
+                {"type": "session_file_removed", "file_id": file_id},
+            )
+        except Exception:
+            pass
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# PrivateSession files — same shape as the GroupSession views above, gated
+# by _is_private_session_participant (teacher, requester, or an accepted
+# group-type participant) instead of the join-time GroupSessionParticipant
+# row, and broadcasting on private_session_chat_<id> (PrivateSessionChatConsumer)
+# instead of group_session_chat_<id>.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser])
+def private_session_files(request, session_id):
+    session = get_object_or_404(PrivateSession, id=session_id)
+    if not _is_private_session_participant(session, request.user):
+        return Response({"detail": "Not a participant."}, status=403)
+
+    if request.method == "GET":
+        rows = session.files.select_related("uploaded_by")
+        return Response([_serialize(f, request) for f in rows])
+
+    s = live_rules.rules()
+    upload = request.FILES.get("file")
+    if not upload:
+        return Response({"detail": "No file."}, status=400)
+    if upload.size > s.live_max_upload_mb * 1024 * 1024:
+        return Response(
+            {"detail": f"Max {s.live_max_upload_mb} MB.", "code": "too_large"},
+            status=413,
+        )
+    if session.files.count() >= s.live_max_files_per_session:
+        return Response(
+            {"detail": f"Max {s.live_max_files_per_session} files.", "code": "too_many"},
+            status=409,
+        )
+
+    row = PrivateSessionFile.objects.create(
+        session=session,
+        uploaded_by=request.user,
+        file=upload,
+        original_name=upload.name[:255],
+        content_type=getattr(upload, "content_type", "")[:120],
+        size_bytes=upload.size,
+        expires_at=live_rules.file_expires_at(session),
+    )
+    data = _serialize(row, request)
+
+    channel_layer = get_channel_layer()
+    if channel_layer is not None:
+        try:
+            async_to_sync(channel_layer.group_send)(
+                f"private_session_chat_{session.id}",
+                {"type": "session_file_added", "file": data},
+            )
+        except Exception:
+            pass
+    return Response(data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def delete_private_session_file(request, session_id, file_id):
+    session = get_object_or_404(PrivateSession, id=session_id)
+    row = get_object_or_404(PrivateSessionFile, id=file_id, session=session)
+    if request.user.id not in (row.uploaded_by_id, session.teacher_id):
+        return Response({"detail": "Not allowed."}, status=403)
+
+    row.file.delete(save=False)
+    row.delete()
+
+    channel_layer = get_channel_layer()
+    if channel_layer is not None:
+        try:
+            async_to_sync(channel_layer.group_send)(
+                f"private_session_chat_{session.id}",
                 {"type": "session_file_removed", "file_id": file_id},
             )
         except Exception:
