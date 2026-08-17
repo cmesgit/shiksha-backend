@@ -21,6 +21,7 @@ import os
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
+from .blocks import validate_blocks, validate_theme
 from .models import (
     Announcement, BlogPost, ContentImage, ContentTag, CurrentAffair,
     FAQItem, HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
@@ -115,7 +116,8 @@ class BlogPostAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
         model = BlogPost
         fields = [
             "id", "title", "slug", "class_level", "subject", "chapter_number",
-            "excerpt", "cover", "body_html", "body_html_source", "trusted_html",
+            "excerpt", "cover", "body_html", "body_blocks", "body_theme",
+            "body_html_source", "trusted_html",
             "tags", "author", "author_name", "is_featured", "seo_title",
             "seo_description", "reading_minutes", "view_count",
             "status", "publish_at", "created_at", "updated_at",
@@ -140,6 +142,16 @@ class BlogPostAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
             return ""
         full = getattr(obj.author, "get_full_name", lambda: "")() or ""
         return full or getattr(obj.author, "username", "") or ""
+
+    # Strict on write (unknown block type / non-hex theme value -> 400),
+    # mirroring counseling/guide_serializers.py's validate_blocks(). Nothing
+    # runs on read — an older backend build tolerates a post saved by a
+    # newer frontend.
+    def validate_body_blocks(self, value):
+        return validate_blocks(value)
+
+    def validate_body_theme(self, value):
+        return validate_theme(value)
 
 
 # ── Editor-uploaded images (rich-text body content) ────────────────

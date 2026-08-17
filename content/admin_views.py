@@ -10,6 +10,8 @@
 # content/views.py's ContentPagination) — editors scan more rows per page
 # than the public site's cards; still capped at 50 via ?page_size=.
 
+import re
+
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -28,9 +30,9 @@ from .admin_serializers import (
     ShowcaseCourseAdminSerializer,
 )
 from .models import (
-    Announcement, BlogPost, ContentImage, ContentTag, CurrentAffair,
-    FAQItem, HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
-    Locale, PublishStatus, ShowcaseCourse,
+    Announcement, BlogPost, BlogRevision, ContentImage, ContentTag,
+    CurrentAffair, FAQItem, HomeContentBlock, HomeFloater, HomeListItem,
+    HomeSectionOrder, Locale, PublishStatus, ShowcaseCourse,
 )
 from .permissions import IsContentEditor
 
@@ -270,7 +272,34 @@ class BlogPostAdminViewSet(viewsets.ModelViewSet):
             instance.save(update_fields=["author"])
         _sync_tags(instance, tags)
 
+    def _snapshot_revision(self, post, reason=""):
+        # body_html_source is not a usable undo path — models.py's save()
+        # reassigns it from the incoming payload on every write, before
+        # sanitization, so it only ever holds a copy of the save currently
+        # in flight, never the version being replaced.
+        BlogRevision.objects.create(
+            post=post,
+            body_html=post.body_html,
+            body_blocks=post.body_blocks,
+            body_theme=post.body_theme,
+            created_by=self.request.user if self.request.user.is_authenticated else None,
+            reason=reason,
+        )
+
     def perform_update(self, serializer):
+        # Snapshot the PRE-update state before serializer.save() overwrites it.
+        # Deliberately re-fetched from the DB rather than read off
+        # serializer.instance: FullCleanMixin.validate() (admin_serializers.py)
+        # setattr()s the incoming payload onto that exact instance object
+        # during serializer.is_valid() — which DRF's UpdateModelMixin.update()
+        # runs BEFORE perform_update() is ever called — so by this point
+        # serializer.instance already holds the NEW values in memory, even
+        # though nothing has been saved yet. A fresh query is the only copy
+        # of the true pre-update row left.
+        self._snapshot_revision(
+            BlogPost.objects.get(pk=serializer.instance.pk),
+            reason=self.request.data.get("revision_reason", ""),
+        )
         tags = serializer.validated_data.pop("tags", None)
         instance = serializer.save()
         _sync_tags(instance, tags)
@@ -329,6 +358,8 @@ class BlogPostAdminViewSet(viewsets.ModelViewSet):
             excerpt=source.excerpt,
             cover=source.cover,
             body_html=source.body_html,
+            body_blocks=source.body_blocks,
+            body_theme=source.body_theme,
             trusted_html=source.trusted_html,
             author=request.user,
             is_featured=False,
@@ -338,6 +369,47 @@ class BlogPostAdminViewSet(viewsets.ModelViewSet):
         )
         new_post.tags.set(source.tags.all())
         return Response(self.get_serializer(new_post).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get"])
+    def revisions(self, request, pk=None):
+        post = self.get_object()
+        rows = post.revisions.select_related("created_by")[:100]
+        return Response([
+            {
+                "id": r.id,
+                "created_at": r.created_at,
+                "created_by": getattr(r.created_by, "username", None),
+                "reason": r.reason,
+                "reading_minutes_estimate": max(1, round(
+                    len(re.sub(r"<[^>]+>", " ", r.body_html).split()) / 200
+                )),
+            }
+            for r in rows
+        ])
+
+    # Restoring writes a FRESH revision of the current (about-to-be-replaced)
+    # state first — so undoing an undo is always possible — then PUTs the old
+    # body_* fields back through the normal serializer path rather than
+    # mutating the row directly, so it goes through the exact same
+    # sanitize/validate/reading_minutes/cache-bump logic as any other save.
+    @action(detail=True, methods=["post"], url_path="revisions/(?P<revision_id>[^/.]+)/restore")
+    def restore_revision(self, request, pk=None, revision_id=None):
+        post = self.get_object()
+        try:
+            rev = post.revisions.get(pk=revision_id)
+        except BlogRevision.DoesNotExist:
+            return Response({"detail": "Revision not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        self._snapshot_revision(post, reason=f"Before restoring revision #{rev.id}")
+
+        serializer = self.get_serializer(post, data={
+            "body_html": rev.body_html,
+            "body_blocks": rev.body_blocks,
+            "body_theme": rev.body_theme,
+        }, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(self.get_serializer(post).data)
 
 # ── Current affairs ───────────────────────────────────────────────
 

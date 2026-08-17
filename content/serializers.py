@@ -57,7 +57,11 @@ class BlogPostDetailSerializer(BlogPostListSerializer):
 
     class Meta(BlogPostListSerializer.Meta):
         fields = BlogPostListSerializer.Meta.fields + [
-            "body_html", "seo_title", "seo_description",
+            # body_blocks/body_theme are authoritative when body_blocks is
+            # non-empty — BlogDetail.jsx renders from them directly and only
+            # falls back to body_html for legacy (pre-block-editor) posts.
+            "body_html", "body_blocks", "body_theme",
+            "seo_title", "seo_description",
             "author_name", "view_count", "updated_at",
             "translations", "is_fallback_locale",
         ]

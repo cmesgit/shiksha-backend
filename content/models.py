@@ -23,6 +23,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.text import slugify
 
+from .blocks import blocks_to_text
 from .sanitize import clean_html, clean_html_restricted
 
 # ─────────────────────────────────────────────────────────────────
@@ -186,7 +187,30 @@ class BlogPost(PublishableModel):
     )
     body_html = models.TextField(
         help_text="Chapter/article body as HTML. Sanitized on save unless "
-                  "'trusted html' is ticked.",
+                  "'trusted html' is ticked. When body_blocks is non-empty "
+                  "this becomes a DERIVED FALLBACK — computed and stored on "
+                  "every save for legacy consumers and non-block-aware code "
+                  "paths, but the public reader treats body_blocks as "
+                  "authoritative and renders from it directly at read time. "
+                  "See shared/src/blogBlocks/render.js.",
+    )
+    body_blocks = models.JSONField(
+        default=list, blank=True,
+        help_text="Block-tree body (shared/src/blogBlocks/schema.js). When "
+                  "non-empty, this is what the public reader actually "
+                  "renders — never body_html. Validated on write against "
+                  "content.blocks.KNOWN_BLOCK_TYPES; permissive on read, so "
+                  "a block type added by a newer frontend build simply "
+                  "contributes no text to reading_minutes on an older one.",
+    )
+    body_theme = models.JSONField(
+        default=dict, blank=True,
+        help_text="Palette override for a block-authored post — a subset "
+                  "of the 24 tokens in schema.js's THEME_TOKENS, each a hex "
+                  "color. Travels as plain JSON and is injected into the "
+                  "reader iframe as a <style> block by the frontend; never "
+                  "passed through clean_html(), since the sanitizer's "
+                  "ALLOWED_TAGS has no 'style' tag and would strip it.",
     )
     body_html_source = models.TextField(
         blank=True, default="", editable=False,
@@ -268,9 +292,15 @@ class BlogPost(PublishableModel):
         self.body_html_source = self.body_html
         if not self.trusted_html:
             self.body_html = clean_html(self.body_html)
-        self.reading_minutes = max(
-            1, round(len(re.sub(r"<[^>]+>", " ", self.body_html).split()) / 200)
-        )
+        # A block-authored post's word count comes from the blocks
+        # themselves, not the derived body_html fallback — the two can
+        # briefly disagree (e.g. a stylesheet-only change never touches
+        # body_blocks) and blocks are the source of truth for a block post.
+        if self.body_blocks:
+            word_source = blocks_to_text(self.body_blocks)
+        else:
+            word_source = re.sub(r"<[^>]+>", " ", self.body_html)
+        self.reading_minutes = max(1, round(len(word_source.split()) / 200))
         if not self.seo_title:
             self.seo_title = self.title[:70]
         super().save(*args, **kwargs)
@@ -735,6 +765,41 @@ class HomeFloater(TimeStampedModel):
 
     def __str__(self):
         return f"[{self.get_section_display()}] {self.slot}"
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Blog revision history
+# ─────────────────────────────────────────────────────────────────
+
+class BlogRevision(models.Model):
+    """A snapshot of a BlogPost's body taken right before an admin update
+    overwrites it (see BlogPostAdminViewSet.perform_update). This is the real
+    undo path for the block editor and its legacy-post importer —
+    body_html_source is NOT a backup, since save() reassigns it from the
+    incoming payload on every write, before sanitization runs; it is the
+    pre-sanitizer copy of the CURRENT save, not the previous version.
+
+    No pruning/retention policy — text fields, one row per edit, deliberately
+    unbounded. A 53KB hand-authored chapter losing its history to a size cap
+    would defeat the point."""
+    post = models.ForeignKey(BlogPost, on_delete=models.CASCADE, related_name="revisions")
+    body_html = models.TextField(blank=True, default="")
+    body_blocks = models.JSONField(default=list, blank=True)
+    body_theme = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+    )
+    # Free text, e.g. "before legacy-HTML→blocks import" — optional context
+    # for why this snapshot was taken, shown in the revision list.
+    reason = models.CharField(max_length=200, blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["post", "created_at"])]
+
+    def __str__(self):
+        return f"Revision of {self.post_id} @ {self.created_at:%Y-%m-%d %H:%M}"
 
 
 # ─────────────────────────────────────────────────────────────────
