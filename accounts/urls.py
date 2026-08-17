@@ -43,6 +43,7 @@ from .auth_flow import (
     ProfileListCreateView,
     ProfileDetailView,
     ProfileEmailLookupView,
+    ProfileEnrollmentsSummaryView,
     EmailCheckView,
 )
 
@@ -85,6 +86,7 @@ urlpatterns = [
 
     path("profiles/select/",             ProfileSelectView.as_view()),
     path("profiles/lookup/",             ProfileEmailLookupView.as_view()),
+    path("profiles/enrollments/",        ProfileEnrollmentsSummaryView.as_view()),
     path("profiles/",                    ProfileListCreateView.as_view()),
     path("profiles/<uuid:profile_id>/",  ProfileDetailView.as_view()),
     path("profiles/pin/",                ProfilePinView.as_view()),

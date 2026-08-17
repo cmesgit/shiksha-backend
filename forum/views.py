@@ -903,7 +903,10 @@ class FollowCategoryView(APIView):
             return Response({"detail": "Category not found."},
                             status=status.HTTP_404_NOT_FOUND)
         following = _toggle_follow(request.user, Follow.TARGET_CATEGORY, category_id)
-        return Response({"following": following})
+        follower_count = Follow.objects.filter(
+            target_type=Follow.TARGET_CATEGORY, target_key=category_id
+        ).count()
+        return Response({"following": following, "follower_count": follower_count})
 
 
 class ToggleSaveView(APIView):

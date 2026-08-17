@@ -20,6 +20,7 @@ ONE email · ONE password · profiles with PIN.
 """
 from django.conf import settings
 from django.contrib.auth import authenticate
+from django.db.models import Q
 
 from rest_framework import status
 from rest_framework.views import APIView
@@ -803,6 +804,42 @@ class ProfileListCreateView(APIView):
 
         profile.save()
         return Response(serialize_profile_card(profile), status=status.HTTP_201_CREATED)
+
+
+class ProfileEnrollmentsSummaryView(APIView):
+    """
+    GET /accounts/profiles/enrollments/
+
+    Whole-account "which profile holds which course" view — every active
+    profile on the account, each with its own list of actively-enrolled
+    courses. Additive and read-only; does not touch `serialize_profile_card`
+    (used on hot paths like login/`/me/`/the profile switcher) so this stays
+    a purpose-built endpoint rather than a shared-serializer risk.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from enrollments.models import Enrollment
+
+        profiles = request.user.learner_profiles.filter(is_active=True)
+        out = []
+        for profile in profiles:
+            q = Q(learner_profile=profile)
+            if profile.is_default:
+                q |= Q(learner_profile__isnull=True, user=profile.account)
+            enrollments = (
+                Enrollment.objects
+                .filter(q, status="ACTIVE")
+                .select_related("course")
+            )
+            out.append({
+                "profile": serialize_profile_card(profile),
+                "courses": [
+                    {"id": e.course.id, "title": e.course.title}
+                    for e in enrollments
+                ],
+            })
+        return Response(out)
 
 
 class ProfileDetailView(APIView):
