@@ -30,6 +30,7 @@ from .views import (
     FollowSpaceView,
     FollowThreadView,
     FollowCategoryView,
+    FollowUserView,
     ToggleSaveView,
     ListSavedView,
     AnswerQueueView,
@@ -98,6 +99,7 @@ urlpatterns = [
     path("profile/", UpdateForumProfileView.as_view(), name="forum-update-profile"),
     path("users/<str:username>/", PublicForumProfileView.as_view(), name="forum-public-profile"),
     path("users/<str:username>/replies/", ListUserRepliesView.as_view(), name="forum-user-replies"),
+    path("users/<str:username>/follow/", FollowUserView.as_view(), name="forum-user-follow"),
 
     # Notifications — LEGACY ALIASES (same URLs, same shapes, notifications table).
     path("notifications/", LegacyListNotificationsView.as_view(), name="forum-notifications"),

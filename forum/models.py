@@ -278,16 +278,20 @@ class SavedPost(models.Model):
 
 class Follow(models.Model):
     """A generic follow relationship. target_type is one of space/question/
-    category; target_key is the space slug, the post id, or the category id.
-    One table powers all three follows plus space member counts."""
+    category/user; target_key is the space slug, the post id, the category id,
+    or the followed user's username (same identifier scheme used by
+    PublicForumProfileView / author_badge elsewhere in this app).
+    One table powers all four follows plus space member counts."""
 
     TARGET_SPACE = "space"
     TARGET_QUESTION = "question"
     TARGET_CATEGORY = "category"
+    TARGET_USER = "user"
     TARGET_CHOICES = [
         (TARGET_SPACE, "Space"),
         (TARGET_QUESTION, "Question"),
         (TARGET_CATEGORY, "Category"),
+        (TARGET_USER, "User"),
     ]
 
     user = models.ForeignKey(

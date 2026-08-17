@@ -8,7 +8,7 @@ from django.test import TestCase, Client
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import User, Role, UserRole, Permission, RolePermission
-from forum.models import ForumPost, Reply, Report
+from forum.models import Follow, ForumCategory, ForumPost, Reply, Report
 from forum.moderation_views import _remove_content
 
 
@@ -155,3 +155,28 @@ class ForumHardeningTests(TestCase):
         r = auth_client(self.author).get("/api/forum/me/")
         self.assertIn("is_moderator", r.json())
         self.assertIn("permissions", r.json())
+
+    def test_me_resolves_followed_categories_and_questions(self):
+        category = ForumCategory.objects.create(name="Physics", slug="physics")
+        Follow.objects.create(
+            user=self.author, target_type=Follow.TARGET_CATEGORY,
+            target_key=category.slug)
+        Follow.objects.create(
+            user=self.author, target_type=Follow.TARGET_QUESTION,
+            target_key=str(self.post.id))
+        # A dangling follow (target since deleted) must be dropped, not crash.
+        Follow.objects.create(
+            user=self.author, target_type=Follow.TARGET_QUESTION,
+            target_key="999999")
+        Follow.objects.create(
+            user=self.author, target_type=Follow.TARGET_CATEGORY,
+            target_key="ghost-category")
+
+        following = auth_client(self.author).get("/api/forum/me/").json()["following"]
+
+        self.assertEqual(
+            following["categories"],
+            [{"id": category.id, "slug": "physics", "name": "Physics"}])
+        self.assertEqual(
+            following["questions"],
+            [{"id": self.post.id, "title": self.post.title}])

@@ -909,6 +909,27 @@ class FollowCategoryView(APIView):
         return Response({"following": following, "follower_count": follower_count})
 
 
+class FollowUserView(APIView):
+    """POST /forum/users/:username/follow/ — follow/unfollow another forum
+    member. Keyed on username (not id) to match PublicForumProfileView /
+    author_badge, the identifier scheme this app already uses for users."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, username):
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
+        target_user = get_object_or_404(User, username=username)
+        if target_user.id == request.user.id:
+            return Response({"detail": "You can't follow yourself."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        following = _toggle_follow(request.user, Follow.TARGET_USER, target_user.username)
+        follower_count = Follow.objects.filter(
+            target_type=Follow.TARGET_USER, target_key=target_user.username
+        ).count()
+        return Response({"following": following, "follower_count": follower_count})
+
+
 class ToggleSaveView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1063,15 +1084,51 @@ class ForumMeView(APIView):
         profile, _ = ForumProfile.objects.get_or_create(user=u)
         badge = author_badge(u)
         saved = list(SavedPost.objects.filter(user=u).values_list("post_id", flat=True))
-        following = {"spaces": [], "questions": [], "categories": []}
+        following = {"spaces": [], "questions": [], "categories": [], "users": []}
+        followed_usernames = []
+        followed_question_ids = []
+        followed_category_slugs = []
         for f in Follow.objects.filter(user=u):
             if f.target_type == Follow.TARGET_SPACE:
                 following["spaces"].append(f.target_key)
             elif f.target_type == Follow.TARGET_QUESTION:
-                following["questions"].append(
+                followed_question_ids.append(
                     int(f.target_key) if f.target_key.isdigit() else f.target_key)
             elif f.target_type == Follow.TARGET_CATEGORY:
-                following["categories"].append(f.target_key)
+                followed_category_slugs.append(f.target_key)
+            elif f.target_type == Follow.TARGET_USER:
+                followed_usernames.append(f.target_key)
+        if followed_usernames:
+            # Unlike spaces/categories (raw slugs the frontend already has data
+            # for), followed users have no other source on the client — resolve
+            # to the same badge shape SearchView/PublicForumProfileView use so a
+            # "Following" list can render without another round trip.
+            followed_users = User.objects.filter(username__in=followed_usernames)
+            by_username = {user.username: user for user in followed_users}
+            following["users"] = [
+                author_badge(by_username[uname])
+                for uname in followed_usernames if uname in by_username
+            ]
+        if followed_category_slugs:
+            # Same reasoning as users above: the frontend only has the slug
+            # from the Follow row, so resolve to the category's display data
+            # in one bulk query. A followed category that's since been
+            # deleted (or deactivated) is silently dropped rather than 500ing.
+            categories = ForumCategory.objects.filter(slug__in=followed_category_slugs)
+            by_slug = {c.slug: c for c in categories}
+            following["categories"] = [
+                {"id": by_slug[slug].id, "slug": slug, "name": by_slug[slug].name}
+                for slug in followed_category_slugs if slug in by_slug
+            ]
+        if followed_question_ids:
+            numeric_ids = [qid for qid in followed_question_ids if isinstance(qid, int)]
+            posts = ForumPost.objects.filter(pk__in=numeric_ids)
+            by_id = {p.id: p for p in posts}
+            following["questions"] = [
+                {"id": qid, "title": by_id[qid].title}
+                for qid in followed_question_ids
+                if isinstance(qid, int) and qid in by_id
+            ]
         perms = sorted(u.get_permissions())
         is_moderator = bool(
             u.is_staff or "forum.moderate" in perms or u.has_role("MODERATOR")
