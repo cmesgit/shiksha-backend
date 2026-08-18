@@ -1273,5 +1273,6 @@ class Identity(models.Model):
 from .settings_models import (  # noqa: F401, E402
     AccountDeletionRequest,
     LearningGoal,
+    TourState,
     UserSession,
 )

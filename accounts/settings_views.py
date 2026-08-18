@@ -37,7 +37,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .auth_flow import get_active_profile, session_id_for, verify_account_password
-from .models import AccountDeletionRequest, LearnerProfile, LearningGoal, UserSession
+from .models import (
+    AccountDeletionRequest, LearnerProfile, LearningGoal, TourState, UserSession,
+)
 from .revocation import revoke_sessions
 
 
@@ -345,6 +347,185 @@ class BillingView(APIView):
                 for o in orders
             ],
         })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Product tours
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _identity_for_tours(request):
+    """→ (identity_key, error_response|None) for the caller.
+
+    Resolves via chat.services.active_identity_from_request — the same
+    context+active_profile / identity-claim resolution every other
+    per-identity surface in this codebase already uses (TOUR_SYSTEM_SPEC.md
+    §4.2), rather than a parallel one. Mirrors activity.views._identity()'s
+    409 shape for "no identity selected yet."
+    """
+    from chat.services import active_identity_from_request, identity_key_for_ids
+
+    kind, obj = active_identity_from_request(request)
+    if not kind:
+        return None, Response(
+            {"code": "profile_required",
+             "detail": "Select a learner profile or enter teacher mode first."},
+            status=status.HTTP_409_CONFLICT,
+        )
+    return identity_key_for_ids(kind, obj.id), None
+
+
+def _bump_last_seen(state, now):
+    """Once-per-UTC-day rotation — the entire absence mechanism (§6.3).
+
+    Returns whether this is the very first GET this identity has ever made
+    (no absence to speak of yet, and `is_first_session` for the R3 welcome-
+    tour rule). Only ever called from the GET view — PATCH/reset never touch
+    last_seen_at/prev_seen_at.
+    """
+    if state.last_seen_at is None:
+        state.last_seen_at = now
+        state.save(update_fields=["last_seen_at"])
+        return True
+
+    if state.last_seen_at.date() < now.date():
+        state.prev_seen_at = state.last_seen_at
+        state.last_seen_at = now
+        state.save(update_fields=["prev_seen_at", "last_seen_at"])
+
+    return False
+
+
+def _absence_days(state):
+    if not state.prev_seen_at or not state.last_seen_at:
+        return 0
+    return (state.last_seen_at.date() - state.prev_seen_at.date()).days
+
+
+def _serialize_tour_state(state, is_first_session, absence_days):
+    from global_settings.models import GlobalSettings
+
+    gs = GlobalSettings.load()
+    return {
+        "identity_key": state.identity_key,
+        "autoplay_enabled": state.autoplay_enabled,
+        "tours": state.tours,
+        "last_auto_tour_at": state.last_auto_tour_at,
+        "consecutive_dismissals": state.consecutive_dismissals,
+        "absence_days": absence_days,
+        "is_first_session": is_first_session,
+        "server_now": timezone.now(),
+        "features": {
+            "tours_enabled": gs.tours_enabled,
+            "show_tour": gs.live_show_first_visit_tour,
+        },
+    }
+
+
+class TourStateView(APIView):
+    """GET/PATCH the caller's whole tour-state map (TOUR_SYSTEM_SPEC.md §4.2).
+
+    One request at boot gets everything the client-side rule engine needs to
+    decide what (if anything) to auto-trigger; there are deliberately no
+    per-step round-trips.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        identity_key, err = _identity_for_tours(request)
+        if err:
+            return err
+
+        state = TourState.for_identity(identity_key, request.user)
+        is_first_session = _bump_last_seen(state, timezone.now())
+        return Response(_serialize_tour_state(state, is_first_session, _absence_days(state)))
+
+    def patch(self, request):
+        identity_key, err = _identity_for_tours(request)
+        if err:
+            return err
+
+        state = TourState.for_identity(identity_key, request.user)
+        data = request.data or {}
+
+        has_tour_update = "tour_key" in data
+        has_autoplay_update = "autoplay_enabled" in data
+        if not has_tour_update and not has_autoplay_update:
+            raise ValidationError(
+                {"detail": "Provide either tour_key/status or autoplay_enabled."})
+
+        if has_autoplay_update:
+            if not isinstance(data["autoplay_enabled"], bool):
+                raise ValidationError({"autoplay_enabled": "Must be true or false."})
+            state.autoplay_enabled = data["autoplay_enabled"]
+
+        if has_tour_update:
+            tour_key = (data.get("tour_key") or "").strip()
+            tour_status = data.get("status")
+            if not tour_key:
+                raise ValidationError({"tour_key": "Required."})
+            if tour_status not in (TourState.STATUS_COMPLETED, TourState.STATUS_DISMISSED):
+                raise ValidationError(
+                    {"status": f"Must be one of: {TourState.STATUS_COMPLETED}, "
+                               f"{TourState.STATUS_DISMISSED}."})
+
+            # Merge into tours[tour_key] — never replace the whole map, so a
+            # second open tab PATCHing a different key can't clobber this one.
+            existing = state.tours.get(tour_key, {})
+            state.tours = {
+                **state.tours,
+                tour_key: {
+                    "status": tour_status,
+                    "version": data.get("version", existing.get("version", 1)),
+                    "step": data.get("step", existing.get("step", 0)),
+                    "at": timezone.now().isoformat(),
+                    "count": existing.get("count", 0) + 1,
+                },
+            }
+
+            # R5 — three consecutive dismissals turns off autoplay globally.
+            # The client reacts to this; it does not decide it.
+            if tour_status == TourState.STATUS_DISMISSED:
+                state.consecutive_dismissals += 1
+                if state.consecutive_dismissals >= 3:
+                    state.autoplay_enabled = False
+            else:
+                state.consecutive_dismissals = 0
+
+            # Additive to the spec's documented body: the client marks an
+            # auto-triggered run so the 24h cooldown (R2) only ever applies to
+            # auto-triggers, never to a manual Help-panel replay.
+            if data.get("auto"):
+                state.last_auto_tour_at = timezone.now()
+
+        state.save()
+        return Response(_serialize_tour_state(state, False, _absence_days(state)))
+
+
+class TourResetView(APIView):
+    """POST {tour_key} or {all: true} — "Reset all tours" in the Help panel."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        identity_key, err = _identity_for_tours(request)
+        if err:
+            return err
+
+        state = TourState.for_identity(identity_key, request.user)
+        data = request.data or {}
+
+        if data.get("all"):
+            state.tours = {}
+        elif data.get("tour_key"):
+            state.tours = {
+                k: v for k, v in state.tours.items() if k != data["tour_key"]
+            }
+        else:
+            raise ValidationError({"detail": "Provide either tour_key or all=true."})
+
+        state.save(update_fields=["tours", "updated_at"])
+        return Response(_serialize_tour_state(state, False, _absence_days(state)))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

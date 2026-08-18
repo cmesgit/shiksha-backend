@@ -20,6 +20,8 @@ from .settings_views import (
     SessionRevokeOthersView,
     SessionRevokeView,
     SettingsChoicesView,
+    TourResetView,
+    TourStateView,
 )
 
 from .rbac_views import (
@@ -117,6 +119,10 @@ urlpatterns = [
     path("data-export/",                     DataExportView.as_view()),
     path("delete-account/",                  DeleteAccountView.as_view()),
     path("choices/",                         SettingsChoicesView.as_view()),
+
+    # ── Product tours (TOUR_SYSTEM_SPEC.md §4.2) ──────────────────────────
+    path("tours/",        TourStateView.as_view()),
+    path("tours/reset/",  TourResetView.as_view()),
 
     path("password-reset/request/", PasswordResetRequestView.as_view()),
     path("password-reset/verify/",  PasswordResetVerifyView.as_view()),

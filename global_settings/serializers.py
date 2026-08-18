@@ -78,6 +78,7 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
             "live_show_first_visit_tour",
             "live_host_policy",
             "live_launch_free_mode",
+            "tours_enabled",
             "updated_at",
         ]
         read_only_fields = ["updated_at"]

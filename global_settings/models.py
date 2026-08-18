@@ -168,6 +168,14 @@ class GlobalSettings(models.Model):
         help_text="Launch promo: nobody is time-capped, whatever the values above say.",
     )
 
+    # ── Product tours ──────────────────────────────────────────────────
+    # Separate from live_show_first_visit_tour, which remains the live-room
+    # sub-switch — see TOUR_SYSTEM_SPEC.md §4.3. Effective gate for the
+    # live-room tour is tours_enabled AND live_show_first_visit_tour.
+    tours_enabled = models.BooleanField(
+        default=True, help_text="Master switch for all product tours across every app."
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
