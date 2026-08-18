@@ -66,6 +66,7 @@ class DocumentCardSerializer(serializers.ModelSerializer):
     file_url = serializers.SerializerMethodField()
     is_saved = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
+    likes_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Document
@@ -73,7 +74,7 @@ class DocumentCardSerializer(serializers.ModelSerializer):
             "id", "title", "type", "typeMeta", "author", "subject", "level",
             "language", "institution", "filetype", "date", "dateLabel", "pages",
             "views", "downloads", "rating", "tags", "desc", "file_url",
-            "is_saved", "is_liked", "created_at",
+            "is_saved", "is_liked", "likes_count", "created_at",
         )
 
     def get_type(self, obj):
@@ -122,6 +123,12 @@ class DocumentCardSerializer(serializers.ModelSerializer):
             return obj.likes.filter(user=request.user).exists()
         return False
 
+    def get_likes_count(self, obj):
+        annotated = getattr(obj, "likes_count_annotated", None)
+        if annotated is not None:
+            return annotated
+        return obj.likes.count()
+
 
 class DocumentDetailSerializer(DocumentCardSerializer):
     full = serializers.CharField(read_only=True)
@@ -167,6 +174,24 @@ class CollectionSerializer(serializers.ModelSerializer):
         if annotated is not None:
             return annotated
         return obj.documents.filter(is_removed=False).count()
+
+
+class CollectionWriteSerializer(serializers.Serializer):
+    """Create/update input for a user's own collection. Used with
+    partial=True for PATCH — fields absent from the payload are left
+    untouched by the view rather than reset to their default."""
+    title = serializers.CharField(max_length=180)
+    description = serializers.CharField(required=False, allow_blank=True, default="")
+    color = serializers.CharField(required=False, allow_blank=True, default="#125027", max_length=9)
+    visibility = serializers.ChoiceField(
+        choices=[c[0] for c in Collection.VIS_CHOICES],
+        required=False, default=Collection.VIS_PUBLIC,
+    )
+
+
+class AddCollectionDocumentSerializer(serializers.Serializer):
+    """Input for POST /explore/collections/<slug>/documents/."""
+    document_id = serializers.IntegerField()
 
 
 # =====================================================

@@ -10,6 +10,7 @@ from .views import (
     CreateReportView,
     AuthorDetailView, FollowAuthorView,
     CollectionsView, CollectionDetailView,
+    CollectionDocumentsView, CollectionDocumentDetailView,
 )
 from .moderation_views import (
     ModReportsView, ModReportDismissView, ModReportRemoveView,
@@ -42,6 +43,8 @@ urlpatterns = [
     # Collections
     path("collections/", CollectionsView.as_view(), name="explore-collections"),
     path("collections/<slug:slug>/", CollectionDetailView.as_view(), name="explore-collection-detail"),
+    path("collections/<slug:slug>/documents/", CollectionDocumentsView.as_view(), name="explore-collection-documents"),
+    path("collections/<slug:slug>/documents/<int:document_id>/", CollectionDocumentDetailView.as_view(), name="explore-collection-document-detail"),
 
     # =====================================================
     # Explore Moderation panel (IsDocumentsModerator-gated)

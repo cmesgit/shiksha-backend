@@ -27,7 +27,8 @@ from .models import (
 )
 from .serializers import (
     DocumentCardSerializer, DocumentDetailSerializer, DocumentCategorySerializer,
-    CollectionSerializer, CreateReportSerializer, UploadDocumentSerializer,
+    CollectionSerializer, CollectionWriteSerializer, AddCollectionDocumentSerializer,
+    CreateReportSerializer, UploadDocumentSerializer,
 )
 from .utils import contributor_badge
 from . import constants
@@ -69,6 +70,7 @@ def _base_documents(user, include_removed=False):
     qs = Document.objects.select_related("owner", "owner__document_profile", "category")
     if not include_removed:
         qs = qs.filter(is_removed=False)
+    qs = qs.annotate(likes_count_annotated=Count("likes", distinct=True))
     if user and user.is_authenticated:
         qs = qs.annotate(
             is_saved_annotated=Exists(
@@ -101,6 +103,20 @@ def _within_range_cutoff(range_label):
     }
     span = spans.get(range_label)
     return (now - span) if span else None
+
+
+def _owned_collection(request, slug):
+    """Fetch a collection by slug and verify the requesting user is its
+    curator. Returns (collection, None) on success or (None, Response) with
+    the appropriate 401/403 to return as-is."""
+    col = get_object_or_404(Collection, slug=slug)
+    if not request.user.is_authenticated:
+        return None, Response({"detail": "Authentication required."},
+                              status=status.HTTP_401_UNAUTHORIZED)
+    if col.curator_id != request.user.id:
+        return None, Response({"detail": "Only the collection owner can do this."},
+                              status=status.HTTP_403_FORBIDDEN)
+    return col, None
 
 
 def _toggle_follow(user, target_type, target_key):
@@ -212,8 +228,12 @@ class DocumentsView(APIView):
 
         # `?ids=1,2,3` — fetch a specific set (used by the Library page for
         # saved / history / following lists). Returns them unpaginated.
-        ids_param = (p.get("ids") or "").strip()
-        if ids_param:
+        # Note: presence of the param (even as an empty string, e.g. a user
+        # with nothing saved) must short-circuit to an explicit result —
+        # falling through to the general listing below would show
+        # everything instead of nothing.
+        if "ids" in request.query_params:
+            ids_param = (p.get("ids") or "").strip()
             ids = [int(x) for x in ids_param.split(",") if x.strip().isdigit()]
             rows = qs.filter(pk__in=ids)
             return Response({
@@ -439,6 +459,29 @@ class CollectionsView(APIView):
         return Response(
             CollectionSerializer(cols, many=True, context={"request": request}).data)
 
+    def post(self, request):
+        if not request.user.is_authenticated:
+            return Response({"detail": "Authentication required."},
+                            status=status.HTTP_401_UNAUTHORIZED)
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
+
+        serializer = CollectionWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        col = Collection.objects.create(
+            curator=request.user,
+            title=data["title"],
+            description=data.get("description", ""),
+            color=data.get("color", "#125027"),
+            visibility=data.get("visibility", Collection.VIS_PUBLIC),
+        )
+        return Response(
+            CollectionSerializer(col, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
 
 class CollectionDetailView(APIView):
     permission_classes = [AllowAny]
@@ -451,6 +494,60 @@ class CollectionDetailView(APIView):
         data = CollectionSerializer(col, context=ctx).data
         data["docs"] = DocumentCardSerializer(docs, many=True, context=ctx).data
         return Response(data)
+
+    def patch(self, request, slug):
+        col, err = _owned_collection(request, slug)
+        if err is not None:
+            return err
+        serializer = CollectionWriteSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        for field in ("title", "description", "color", "visibility"):
+            if field in serializer.validated_data:
+                setattr(col, field, serializer.validated_data[field])
+        col.save()
+        return Response(CollectionSerializer(col, context={"request": request}).data)
+
+    def delete(self, request, slug):
+        col, err = _owned_collection(request, slug)
+        if err is not None:
+            return err
+        col.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CollectionDocumentsView(APIView):
+    """Add a document to the requesting user's own collection."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, slug):
+        col, err = _owned_collection(request, slug)
+        if err is not None:
+            return err
+        banned = _ban_error(request.user)
+        if banned is not None:
+            return banned
+        serializer = AddCollectionDocumentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        doc = get_object_or_404(
+            Document, pk=serializer.validated_data["document_id"], is_removed=False)
+        col.documents.add(doc)
+        return Response(
+            CollectionSerializer(col, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class CollectionDocumentDetailView(APIView):
+    """Remove a document from the requesting user's own collection."""
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, slug, document_id):
+        col, err = _owned_collection(request, slug)
+        if err is not None:
+            return err
+        doc = get_object_or_404(Document, pk=document_id)
+        col.documents.remove(doc)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # =====================================================

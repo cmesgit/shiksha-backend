@@ -63,6 +63,15 @@ class ExplorePublicTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["count"], 2)
 
+    def test_search_by_empty_ids_returns_nothing(self):
+        # A user with nothing saved hits this with `ids=` (empty) — must
+        # NOT fall through to the general listing (which would show every
+        # published document instead of none).
+        r = Client().get("/api/explore/documents/?ids=")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["count"], 0)
+        self.assertEqual(r.json()["results"], [])
+
     def test_upload_creates_document(self):
         c = auth_client(self.reader)
         r = c.post("/api/explore/documents/",
