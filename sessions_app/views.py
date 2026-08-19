@@ -105,6 +105,35 @@ _PRIVATE_LEARNER_LINK = "/private-sessions"
 _PRIVATE_TEACHER_LINK = "/teacher/private-sessions"
 
 
+def _notify_session_requested(session, actor=None):
+    """Durable notification to the TEACHER that a session was requested.
+
+    Separate from _emit_session_notification because that one is keyed on a
+    status TRANSITION and is driven by _push_session_bell's Activity ledger;
+    "pending" is the session's initial state, so it never passes through
+    there. push_ws defaults to True here — unlike every other call site in
+    this module there is no pre-existing bell frame for this event to
+    collide with, so notify()'s own frame is the only live signal.
+    """
+    try:
+        from notifications.services import notify
+
+        tp_id = getattr(getattr(session.teacher, "teacher_profile", None), "id", None)
+        learner_name = get_user_name(session.requested_by)
+        notify(
+            recipient=session.teacher,
+            actor=actor,
+            verb="session.requested",
+            title=f"📩 {learner_name} requested a {session.subject} session",
+            link_url=_PRIVATE_TEACHER_LINK,
+            payload={"session_id": str(session.id), "kind": "private_session"},
+            audience_identity=f"T:{tp_id}" if tp_id else "",
+        )
+    except Exception:
+        logger.exception("sessions_app: request notify failed (session=%s)",
+                         session.id)
+
+
 def _emit_session_notification(session, recipient, title, is_learner_side,
                                cancelled_by=None):
     """Write the durable Notification for a private-session transition.
@@ -405,6 +434,16 @@ def request_session(request):
                 )
             except User.DoesNotExist:
                 pass
+
+    # Tell the teacher a request is waiting.
+    #
+    # This lifecycle had NO notification of any kind — not an Activity row,
+    # not a WS frame, nothing. _push_session_bell only covers transitions
+    # OUT of "pending", so until a teacher happened to open
+    # /teacher/private-sessions they had no idea a student was waiting on
+    # them. Emitted outside the atomic block so a notification failure can
+    # never roll back the booking itself.
+    _notify_session_requested(session, actor=request.user)
 
     return Response(
         PrivateSessionSerializer(session).data,
@@ -1137,11 +1176,6 @@ def subject_students(request, subject_id):
 
     q = request.query_params.get("q", "").strip()
 
-    try:
-        subject = Subject.objects.select_related("course").get(pk=subject_id)
-    except Subject.DoesNotExist:
-        return Response({"error": "Subject not found"}, status=404)
-
     # IsAuthenticated alone used to be the whole gate, which made this an
     # enumerable roster dump. The rule is shared with courses' own roster view
     # (courses.services.may_view_subject_directory) precisely because this
@@ -1150,7 +1184,18 @@ def subject_students(request, subject_id):
     # call it to invite classmates to a group session (see
     # groupSessionService.getCourseStudents), which is why the shared rule
     # admits enrolled students too.
-    if not may_view_subject_directory(request, subject):
+    #
+    # A MISSING subject answers 403, not 404, and with the identical body.
+    # The gate needs the Subject instance, so the lookup cannot simply be
+    # moved after it (the way courses.SubjectStudentsView orders its coarse
+    # teacher-context check first). Returning a distinguishable 404 here
+    # would leave the endpoint an existence oracle: an outsider could still
+    # enumerate which subject ids are real by diffing 404 against 403, which
+    # is a weaker version of the very leak this gate was added to close.
+    # Callers only ever pass ids from their own course list, so they cannot
+    # tell the difference.
+    subject = Subject.objects.select_related("course").filter(pk=subject_id).first()
+    if subject is None or not may_view_subject_directory(request, subject):
         return Response(
             {"detail": "You are not part of this course."},
             status=status.HTTP_403_FORBIDDEN,

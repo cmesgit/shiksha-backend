@@ -579,6 +579,28 @@ def _notify_graded(submission):
                 "created_at": timezone.now(),
             },
         )
+        # Durable row alongside the Activity+WS pair. Grading is exactly
+        # the kind of event a student is usually offline for; until now it
+        # existed only as a fire-and-forget frame. push_ws=False because
+        # the frame below already carries the type/id the bell routes on.
+        from notifications.services import notify
+        subject_id = getattr(
+            getattr(submission.assignment, "chapter", None), "subject_id", None)
+        notify(
+            recipient=recipient,
+            actor=submission.graded_by,
+            verb="assignment.graded",
+            title=title,
+            link_url=(f"/subjects/{subject_id}/assignments/{submission.assignment_id}"
+                      if subject_id else "/assignments"),
+            payload={"submission_id": str(submission.id),
+                     "assignment_id": str(submission.assignment_id)},
+            audience_identity=(f"L:{submission.learner_profile_id}"
+                               if submission.learner_profile_id else ""),
+            learner_profile=submission.learner_profile,
+            push_ws=False,
+        )
+
         push_ws_notification(recipient.id, {
             "type": "ASSIGNMENT",
             "title": title,
@@ -586,6 +608,7 @@ def _notify_graded(submission):
             "id": str(submission.id),
             "is_read": False,
             "created_at": activity.created_at.isoformat(),
+            "track": "academy",
         })
     except Exception:
         pass

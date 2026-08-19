@@ -994,6 +994,28 @@ class SubjectStudentsAccessTest(TestCase):
         r = self._get(self.teacher, context="teacher")
         self.assertEqual(r.status_code, 200)
 
+    def test_a_missing_subject_is_indistinguishable_from_no_access(self):
+        """No existence oracle.
+
+        The gate needs the Subject instance, so the lookup can't be moved
+        after it. If a missing subject answered 404 while a real-but-
+        forbidden one answered 403, an outsider could still enumerate which
+        subject ids exist by diffing the two — a weaker form of the roster
+        leak this gate closes. Both must answer identically.
+        """
+        import uuid
+
+        client = APIClient()
+        client.force_authenticate(user=self.outsider, token={})
+        forbidden = client.get(self.url)
+        absent = client.get(f"/api/sessions/subjects/{uuid.uuid4()}/students/")
+
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertEqual(absent.status_code, 403,
+                         "a missing subject must not answer 404 here")
+        self.assertEqual(absent.data, forbidden.data,
+                         "response bodies must be identical too")
+
     def test_enrolled_student_can_read_for_group_invites(self):
         """Must keep working — this is the group-session invite picker."""
         r = self._get(self.classmate)

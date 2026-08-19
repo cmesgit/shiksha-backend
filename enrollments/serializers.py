@@ -388,11 +388,55 @@ class AdminActionSerializer(serializers.Serializer):
             request_obj.save()
 
         _send_enrollment_decision_email(request_obj)
+        _notify_enrollment_decision(request_obj, reviewer)
 
         return request_obj
 
 
 # -------- Batch roster (admin) --------
+
+def _notify_enrollment_decision(request_obj, reviewer):
+    """Durable in-app notification for an enrolment approval/rejection.
+
+    Until now the ONLY signal was the bespoke HTML email above — nothing in
+    the bell, and nothing at all for a student who never opens that inbox.
+
+    email=False is deliberate. Both verbs carry email: REQUIRED in
+    notifications/policy.py, so letting notify() send would double up on
+    _send_enrollment_decision_email — whose template is richer (it includes
+    the reviewer's admin_note on a rejection, which notify() has no field
+    for). The bespoke mail stays the email channel; notify() supplies the
+    bell row, the push, and the approval SMS.
+    """
+    try:
+        from notifications.services import notify
+
+        approved = request_obj.status == EnrollmentRequest.STATUS_APPROVED
+        course_title = getattr(request_obj.course, "title", "your course")
+        notify(
+            recipient=request_obj.user,
+            actor=reviewer,
+            verb=("enrollment.approved" if approved else "enrollment.rejected"),
+            title=(f"🎉 You're enrolled in {course_title}" if approved
+                   else f"Your enrolment request for {course_title} wasn't approved"),
+            body=("" if approved else (request_obj.admin_note or "")),
+            # No course to open on a rejection — send them back to the
+            # catalog rather than to a course they cannot access.
+            link_url=(f"/my-courses/{request_obj.course_id}" if approved
+                      else "/browse-courses"),
+            payload={"request_id": str(request_obj.id),
+                     "course_id": str(request_obj.course_id)},
+            audience_identity=(f"L:{request_obj.learner_profile_id}"
+                               if request_obj.learner_profile_id else ""),
+            # Routes the approval SMS to THIS child's guardian number
+            # rather than the account holder's.
+            learner_profile=request_obj.learner_profile,
+            email=False,
+        )
+    except Exception:
+        logger.exception("enrollments: decision notify failed (request=%s)",
+                         getattr(request_obj, "id", None))
+
 
 class BatchStudentSerializer(serializers.ModelSerializer):
     """Serializes an Enrollment for the admin batch roster view.

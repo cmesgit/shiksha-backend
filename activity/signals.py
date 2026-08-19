@@ -74,10 +74,23 @@ def _ws_payload(activity, extra=None):
 
 
 def _bulk_notify_students(enrollments, obj, activity_type, title, due_date,
-                          subject_id, subject_name, extra=None):
+                          subject_id, subject_name, extra=None, verb=None,
+                          link_url=""):
     """One Activity per (account, learner_profile) enrollment row, then a
     targeted WS push per row. UUID pks are generated client-side, so the
-    objects passed to bulk_create already have ids we can serialize."""
+    objects passed to bulk_create already have ids we can serialize.
+
+    `verb` opts the batch into DURABLE notifications.Notification rows as
+    well. Until now this whole path was Activity + a fire-and-forget WS
+    frame, so a student who was offline when an assignment or quiz was
+    posted never found out — the same gap that was just closed for session
+    bookings. Call sites without a notifications/policy.py row leave it
+    None and keep their existing Activity-only behaviour.
+
+    push_ws=False on the notify() below: the loop already pushes a frame
+    per row, and notify()'s own frame carries a different id (integer pk vs
+    Activity UUID), so both would render as separate bell items.
+    """
     content_type = ContentType.objects.get_for_model(obj)
     rows = list(enrollments)  # evaluate once
 
@@ -98,6 +111,26 @@ def _bulk_notify_students(enrollments, obj, activity_type, title, due_date,
         for e in rows
     ]
     Activity.objects.bulk_create(activities)
+
+    if verb:
+        from notifications.services import notify
+        for e in rows:
+            # audience_identity keeps a sibling's assignment off the other
+            # child's bell — the same per-profile scope Activity gets from
+            # learner_profile above. A legacy enrollment with no profile
+            # falls back to account-wide, matching the Activity row.
+            notify(
+                recipient=e.user,
+                verb=verb,
+                title=title,
+                link_url=link_url,
+                payload={"object_id": str(obj.id),
+                         "subject_id": str(subject_id) if subject_id else ""},
+                audience_identity=(f"L:{e.learner_profile_id}"
+                                   if e.learner_profile_id else ""),
+                learner_profile=e.learner_profile,
+                push_ws=False,
+            )
 
     for act in activities:
         # bulk_create skips auto_now_add on some backends' returned attrs;
@@ -152,6 +185,10 @@ def assignment_created(sender, instance, created, **kwargs):
         due_date=instance.due_date,
         subject_id=subject.id,
         subject_name=subject.name,
+        verb="assignment.posted",
+        # Matches the student bell's ASSIGNMENT branch and the
+        # subjects/:subjectId/assignments route.
+        link_url=f"/subjects/{subject.id}/assignments",
     )
 
 
@@ -224,6 +261,10 @@ def quiz_published(sender, instance, created, **kwargs):
         due_date=None,  # quizzes have no due date
         subject_id=subject.id,
         subject_name=subject.name,
+        verb="quiz.posted",
+        # Same path quizzes/views.py already uses for quiz.reminder, so a
+        # "posted" and a "reminder" about one quiz land on the same page.
+        link_url=f"/subjects/quiz/{subject.id}",
     )
 
 
