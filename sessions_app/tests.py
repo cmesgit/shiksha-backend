@@ -994,6 +994,73 @@ class SubjectStudentsAccessTest(TestCase):
         r = self._get(self.teacher, context="teacher")
         self.assertEqual(r.status_code, 200)
 
+    def test_rows_are_labelled_with_the_enrolled_student_not_the_account(self):
+        """The row used to read `user.profile`, which does not exist on this
+        model — the related_name is `learner_profiles`. So `name` silently
+        fell through to the ACCOUNT and `student_id` was ALWAYS "", which is
+        why two enrolled siblings looked identical in the invite picker.
+        """
+        from accounts.models import LearnerProfile
+        from enrollments.models import Enrollment
+
+        parent = User.objects.create_user(
+            username="ros_par@x.com", email="ros_par@x.com", password="x")
+        parent.first_name, parent.last_name = "Parent", "Account"
+        parent.save(update_fields=["first_name", "last_name"])
+
+        kids = [
+            LearnerProfile.objects.create(
+                account=parent, display_name=n, full_name=n,
+                relationship="SON", student_id=sid,
+                is_default=(n == "Aaron Doe"))
+            for n, sid in (("Aaron Doe", "S-101"), ("Bina Doe", "S-102"))
+        ]
+        for kid in kids:
+            Enrollment.objects.create(
+                user=parent, learner_profile=kid, course=self.course,
+                status=Enrollment.STATUS_ACTIVE)
+
+        rows = self._get(self.teacher, context="teacher").data
+        row = next(r for r in rows if r["user_id"] == str(parent.id))
+
+        self.assertNotIn("Parent Account", row["name"],
+                         "row is still labelled with the account holder")
+        self.assertIn("Aaron Doe", row["name"])
+        self.assertIn("Bina Doe", row["name"])
+        self.assertEqual(row["student_id"], "S-101",
+                         "student_id was always empty before this")
+
+        # One row per ACCOUNT, because an invite is keyed on User and
+        # physically cannot target one sibling — but the per-student data
+        # is carried so a future per-profile invite needs no API change.
+        self.assertEqual(len([r for r in rows if r["user_id"] == str(parent.id)]), 1)
+        self.assertEqual(
+            sorted(s["name"] for s in row["students"]),
+            ["Aaron Doe", "Bina Doe"])
+        self.assertEqual(
+            sorted(s["student_id"] for s in row["students"]),
+            ["S-101", "S-102"])
+
+    def test_search_matches_the_student_name_not_the_account_name(self):
+        from accounts.models import LearnerProfile
+        from enrollments.models import Enrollment
+
+        parent = User.objects.create_user(
+            username="ros_par2@x.com", email="ros_par2@x.com", password="x")
+        LearnerProfile.objects.create(
+            account=parent, display_name="Zubin Rao", full_name="Zubin Rao",
+            relationship="SON", student_id="S-777", is_default=True)
+        Enrollment.objects.create(
+            user=parent, learner_profile=parent.learner_profiles.first(),
+            course=self.course, status=Enrollment.STATUS_ACTIVE)
+
+        client = APIClient()
+        client.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        hit = client.get(self.url, {"q": "zubin"}).data
+        self.assertTrue(any(r["name"] == "Zubin Rao" for r in hit))
+        miss = client.get(self.url, {"q": "nobodyhere"}).data
+        self.assertEqual(miss, [])
+
     def test_a_missing_subject_is_indistinguishable_from_no_access(self):
         """No existence oracle.
 

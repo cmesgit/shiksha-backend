@@ -31,6 +31,7 @@
 #    flashes a child's assignment and vice versa.
 
 from django.contrib.contenttypes.models import ContentType
+from django.db.models import Q
 from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 from django.utils import timezone
@@ -71,6 +72,37 @@ def _ws_payload(activity, extra=None):
     if extra:
         data.update(extra)
     return data
+
+
+def _enrollments_for(course, batch_id):
+    """Active enrollments that should be told about a course item.
+
+    Mirrors the STUDENT-VISIBILITY rule exactly, which is the only correct
+    basis for a notification: tell precisely the people who can see the
+    thing. Two halves, both load-bearing:
+
+      · batch_id is None  → the item is course-wide; everyone gets it.
+      · batch_id is set   → that batch, PLUS enrollments with NO batch.
+        The un-batched half is not sloppiness. assignments/views.py:202-210
+        shows a student who has not been placed in a cohort is shown EVERY
+        assignment in the course, because we cannot tell which cohort
+        applies to them — so they must be notified about batch-scoped items
+        too, or they would see an assignment appear with no notification.
+
+    This is the same shape notifications/tasks.py:224 already uses for
+    livestream reminders.
+
+    Before this existed, assignment_created and quiz_published filtered on
+    course alone, so a batch-scoped assignment notified EVERY batch. That
+    was survivable as an Activity row; as a durable notification (with
+    push, and email/SMS for some verbs) it is not.
+    """
+    qs = (Enrollment.objects
+          .filter(course=course, status=Enrollment.STATUS_ACTIVE)
+          .select_related("user", "learner_profile"))
+    if batch_id is not None:
+        qs = qs.filter(Q(batch_id=batch_id) | Q(batch__isnull=True))
+    return qs
 
 
 def _bulk_notify_students(enrollments, obj, activity_type, title, due_date,
@@ -171,11 +203,7 @@ def assignment_created(sender, instance, created, **kwargs):
     subject = instance.chapter.subject
     course = subject.course
 
-    enrollments = (
-        Enrollment.objects
-        .filter(course=course, status=Enrollment.STATUS_ACTIVE)
-        .select_related("user", "learner_profile")
-    )
+    enrollments = _enrollments_for(course, instance.batch_id)
 
     _bulk_notify_students(
         enrollments=enrollments,
@@ -247,11 +275,7 @@ def quiz_published(sender, instance, created, **kwargs):
     subject = instance.subject
     course = subject.course
 
-    enrollments = (
-        Enrollment.objects
-        .filter(course=course, status=Enrollment.STATUS_ACTIVE)
-        .select_related("user", "learner_profile")
-    )
+    enrollments = _enrollments_for(course, instance.batch_id)
 
     _bulk_notify_students(
         enrollments=enrollments,

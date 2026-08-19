@@ -103,6 +103,66 @@ class AssignmentPostedTest(AcademyVerbFixture):
             "assignment twice")
 
 
+class BatchScopingTest(AcademyVerbFixture):
+    """A batch-scoped assignment must not notify the whole course.
+
+    Before this, assignment_created filtered on `course` alone, so every
+    batch on the course got told. Survivable as an Activity row; not as a
+    durable notification that also pushes (and, for some verbs, emails).
+    """
+
+    def setUp(self):
+        super().setUp()
+        from courses.models import Batch
+        self.batch_a = Batch.objects.create(course=self.course, name="A", code="A1")
+        self.batch_b = Batch.objects.create(course=self.course, name="B", code="B1")
+
+        # child_a is in batch A, child_b in batch B, plus a third student
+        # with NO batch (never placed by an admin).
+        Enrollment.objects.filter(learner_profile=self.child_a).update(batch=self.batch_a)
+        Enrollment.objects.filter(learner_profile=self.child_b).update(batch=self.batch_b)
+
+        self.unplaced_account = User.objects.create_user(
+            username="u2", email="u2@example.com", password="x")
+        self.unplaced = LearnerProfile.objects.create(
+            account=self.unplaced_account, display_name="U", full_name="U",
+            relationship="SELF", is_default=True)
+        Enrollment.objects.create(
+            user=self.unplaced_account, learner_profile=self.unplaced,
+            course=self.course, status=Enrollment.STATUS_ACTIVE, batch=None)
+
+    def _post_assignment(self, batch):
+        from assignments.models import Assignment
+        with patch(WS_SIGNALS):
+            Assignment.objects.create(
+                chapter=self.chapter, title="Batch work", max_marks=10,
+                batch=batch, due_date=timezone.now() + timedelta(days=7))
+        return set(Notification.objects
+                   .filter(verb="assignment.posted")
+                   .values_list("audience_identity", flat=True))
+
+    def test_batch_scoped_assignment_skips_the_other_batch(self):
+        got = self._post_assignment(self.batch_a)
+        self.assertIn(f"L:{self.child_a.id}", got)
+        self.assertNotIn(f"L:{self.child_b.id}", got,
+                         "batch B was told about a batch A assignment")
+
+    def test_an_unplaced_student_is_still_notified(self):
+        # Not sloppiness: assignments/views.py shows a student with no batch
+        # EVERY assignment in the course, because their cohort is unknown.
+        # If we skipped them here the assignment would appear with no
+        # notification at all.
+        got = self._post_assignment(self.batch_a)
+        self.assertIn(f"L:{self.unplaced.id}", got)
+
+    def test_a_course_wide_assignment_still_reaches_everyone(self):
+        got = self._post_assignment(None)
+        self.assertEqual(
+            got,
+            {f"L:{self.child_a.id}", f"L:{self.child_b.id}",
+             f"L:{self.unplaced.id}"})
+
+
 class QuizPostedTest(AcademyVerbFixture):
     def test_publishing_emits_the_verb_and_deep_links_to_the_quiz_list(self):
         from quizzes.models import Quiz

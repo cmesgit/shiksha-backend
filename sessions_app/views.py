@@ -1206,33 +1206,78 @@ def subject_students(request, subject_id):
             course=subject.course,
             status=Enrollment.STATUS_ACTIVE,   # "ACTIVE"
         )
-        .select_related("user")
+        .select_related("user", "learner_profile")
         .exclude(user=request.user)
     )
 
-    data = []
+    # One row per ACCOUNT, labelled with the enrolled STUDENT(S).
+    #
+    # Why not one row per student, which is what the picker visually wants:
+    # neither GroupSessionInvite nor SessionParticipant has a
+    # learner_profile field — both are keyed on User — so an invite
+    # physically cannot target one sibling. Emitting two selectable rows for
+    # two children of one account would be a lie: picking either produces
+    # the identical account-level invite, and the pickers' own
+    # exclude-by-user_id would blank both rows on the first pick. Making
+    # that real is a schema + room-identity change (LiveKit identity is the
+    # User id), not a serializer change.
+    #
+    # What WAS broken and is fixed here: the row read `user.profile`, which
+    # does not exist on this model at all — the related_name is
+    # `learner_profiles` (plural). So `name` silently fell through to the
+    # ACCOUNT's name and `student_id` was ALWAYS the empty string, for every
+    # row, since this endpoint was written. A parent account showed the
+    # parent's name with no student id, which is exactly why two enrolled
+    # siblings were indistinguishable. Rows now carry the enrolled
+    # children's names and real student ids, plus a `students` array so a
+    # future per-profile invite has the data it needs without another
+    # endpoint change.
+    by_account = {}
     for enr in enrollments:
-        user = enr.user
-        profile = getattr(user, "profile", None)
-        name = (
-            getattr(profile, "full_name", None)
-            or user.get_full_name()
-            or user.username
-        )
-        student_id = getattr(profile, "student_id", None) or ""
+        entry = by_account.setdefault(enr.user_id, {"user": enr.user, "profiles": []})
+        if enr.learner_profile is not None:
+            entry["profiles"].append(enr.learner_profile)
 
-        # Filter by search query if provided
+    data = []
+    for entry in by_account.values():
+        user = entry["user"]
+        profiles = entry["profiles"]
+
+        students = [
+            {
+                "profile_id": str(p.id),
+                "name": p.full_name or p.display_name or "Learner",
+                "student_id": p.student_id or "",
+            }
+            for p in profiles
+        ]
+
+        # Legacy scalar fields stay populated for existing consumers (the
+        # two JS pickers and the Flutter sheet all read name/student_id).
+        # Several siblings on one account collapse into one label because
+        # one invite is all the backend can express.
+        if students:
+            name = " / ".join(s["name"] for s in students)
+            student_id = next((s["student_id"] for s in students if s["student_id"]), "")
+        else:
+            # Legacy enrollment with no learner_profile attached.
+            name = user.get_full_name() or user.username
+            student_id = ""
+
         if q:
             qlo = q.lower()
-            if qlo not in name.lower() and qlo not in student_id.lower():
+            haystack = f"{name} {student_id}".lower()
+            if qlo not in haystack:
                 continue
 
         data.append({
             "user_id": str(user.id),
             "name": name,
             "student_id": student_id,
+            "students": students,
         })
 
+    data.sort(key=lambda r: r["name"].lower())
     return Response(data)
 
 
