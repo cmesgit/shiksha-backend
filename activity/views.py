@@ -57,6 +57,39 @@ def _identity(request):
     )
 
 
+def _skill_session_ct_id():
+    """ContentType id of skills.SkillSession, or None if unavailable.
+
+    Cached on the ContentType manager's own per-process cache, so this is
+    one query per process rather than per request. Returns None rather than
+    raising when the skills app isn't installed/migrated — the caller
+    degrades to "nothing is a skill row".
+    """
+    try:
+        from django.contrib.contenttypes.models import ContentType
+        return ContentType.objects.get_for_model(
+            __import__("skills.models", fromlist=["SkillSession"]).SkillSession
+        ).id
+    except Exception:
+        return None
+
+
+def _cross_track_unread(scoped_qs, track):
+    """Unread rows in the track the caller is NOT currently viewing.
+
+    Feeds the bell's cross-track peek. Returns 0 when no track filter is
+    active, because then nothing is being hidden and a peek would be a lie.
+    """
+    if track not in ("academy", "skill"):
+        return 0
+    skill_ct = _skill_session_ct_id()
+    if skill_ct is None:
+        return 0
+    unread = scoped_qs.filter(is_read=False)
+    return (unread.exclude(content_type_id=skill_ct).count() if track == "skill"
+            else unread.filter(content_type_id=skill_ct).count())
+
+
 def _scoped_qs(user, audience, profile):
     qs = Activity.objects.filter(user=user, audience=audience)
     if audience == Activity.AUDIENCE_LEARNER:
@@ -100,6 +133,31 @@ class ActivityFeedView(APIView):
             }
             qs = qs.filter(type__in=lower_map.get(t.lower(), [t.upper()]))
 
+        # ── Track scope (Academy vs Skill Dev) ──────────────────────────
+        # A skill row is one whose generic FK points at skills.SkillSession;
+        # everything else is academy. Filtering on the ContentType id keeps
+        # this a single indexed comparison instead of pulling every row and
+        # probing content_type per object (which is what the serializer's
+        # is_skill_session does, one row at a time).
+        #
+        # An unknown/absent ?track= is a deliberate no-op: a typo in a
+        # client must not blank the bell. Same rule as
+        # notifications.tracks.filter_queryset.
+        track = (request.query_params.get("track") or "").strip().lower()
+        if track in ("academy", "skill"):
+            skill_ct = _skill_session_ct_id()
+            if skill_ct is None:
+                # skills app/table absent (fresh install): nothing can be a
+                # skill row, so "skill" is empty and "academy" is everything.
+                qs = qs.none() if track == "skill" else qs
+            elif track == "skill":
+                qs = qs.filter(content_type_id=skill_ct)
+            else:
+                qs = qs.exclude(content_type_id=skill_ct)
+
+        cross_track_unread = _cross_track_unread(
+            _scoped_qs(request.user, audience, profile), track)
+
         try:
             limit = min(int(request.query_params.get("limit", 20)), 50)
         except (TypeError, ValueError):
@@ -116,6 +174,10 @@ class ActivityFeedView(APIView):
             "total": total,
             "limit": limit,
             "offset": offset,
+            # Unread count in the track this response is NOT showing, so the
+            # bell can render its "2 new in Skill Dev" peek without a second
+            # request. 0 when no ?track= was sent (nothing is being hidden).
+            "cross_track_unread": cross_track_unread,
         })
 
 
@@ -138,14 +200,34 @@ class MarkActivityReadView(APIView):
 
 class MarkAllReadView(APIView):
     """Marks THIS identity's rows read — switching to the teacher tab no
-    longer silently clears a child's unread badge."""
+    longer silently clears a child's unread badge.
+
+    Also honours ?track=academy|skill (or the same key in the POST body):
+    without it, "mark all read" in the Academy bell also cleared the Skill
+    Dev bell, dismissing rows the user was never shown. Sending no track
+    keeps the old clear-everything behaviour.
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         audience, profile, err = _identity(request)
         if err:
             return err
-        _scoped_qs(request.user, audience, profile).filter(
-            is_read=False
-        ).update(is_read=True)
+
+        qs = _scoped_qs(request.user, audience, profile).filter(is_read=False)
+
+        raw = request.query_params.get("track")
+        if raw is None and isinstance(getattr(request, "data", None), dict):
+            raw = request.data.get("track")
+        track = (raw or "").strip().lower()
+
+        if track in ("academy", "skill"):
+            skill_ct = _skill_session_ct_id()
+            if skill_ct is not None:
+                qs = (qs.filter(content_type_id=skill_ct) if track == "skill"
+                      else qs.exclude(content_type_id=skill_ct))
+            elif track == "skill":
+                qs = qs.none()
+
+        qs.update(is_read=True)
         return Response({"status": "ok"})

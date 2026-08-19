@@ -11,11 +11,13 @@
 # endpoints. When every bell is migrated, delete the Legacy* views here
 # and the three notification paths in forum/urls.py.
 
+from django.db.models import Count
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import tracks as _tracks
 from .models import Notification
 from .serializers import (
     LegacyForumNotificationSerializer,
@@ -39,6 +41,54 @@ def _base_qs(user):
     )
 
 
+def _apply_audience_filters(qs, request):
+    """Apply the three audience scopes shared by the list and count views.
+
+    All three follow the same `__in=["", value]` shape: asking for a scope
+    returns rows in that scope PLUS the unscoped rows, so narrowing a bell
+    never hides a genuinely account-wide / cross-track notification. Kept
+    in one place because the list and the badge MUST agree — a badge
+    counting rows the list won't show is the classic phantom-unread bug.
+    """
+    role = request.query_params.get("role")
+    if role:
+        qs = qs.filter(audience_role__in=["", role.upper()])
+
+    # M2 (Phase 3 §18): precise per-identity filter. A dashboard sends
+    # its identity key ("L:<uuid>" / "T:<id>") and gets rows scoped to
+    # that identity PLUS account-wide rows (blank audience_identity).
+    # This is what actually keeps child A's bell from showing child B's
+    # notifications; `role` alone can't, since both children are STUDENT.
+    identity = request.query_params.get("identity")
+    if identity:
+        qs = qs.filter(audience_identity__in=["", identity])
+
+    # Track scope. Orthogonal to identity — see notifications/tracks.py for
+    # why one cannot be derived from the other.
+    return _tracks.filter_queryset(qs, request.query_params.get("track"))
+
+
+def _track_unread_counts(user):
+    """EXACT unread counts per track — {"academy": n, "skill": n, "general": n}.
+
+    Exact, not scope-style: "general" is the neutral rows only, and is NOT
+    added into the other two. The cross-track peek ("2 new in Skill Dev")
+    needs the count of rows the current bell is genuinely NOT showing.
+    """
+    rows = (
+        Notification.objects
+        .filter(recipient=user, is_read=False)
+        .values_list("track")
+        .annotate(n=Count("track"))
+    )
+    counts = {track or "general": n for track, n in rows}
+    return {
+        "academy": counts.get(_tracks.ACADEMY, 0),
+        "skill": counts.get(_tracks.SKILL, 0),
+        "general": counts.get("general", 0),
+    }
+
+
 # =====================================================
 # Canonical endpoints — /api/notifications/
 # =====================================================
@@ -55,6 +105,16 @@ class ListNotificationsView(APIView):
       identity=L:<uuid>   → rows for that ONE identity + account-wide rows
                             (precise per-profile scope — send this from each
                             dashboard so child A's bell never shows child B's)
+      track=academy|skill → rows for that track + cross-track rows. Send it
+                            from each bell so Skill Dev bookings never render
+                            inside Academy chrome. Cross-track rows (chat,
+                            forum, counselling) are never hidden by this.
+
+    The response also carries `track_unread`: EXACT per-track unread counts
+    (not "+ neutral"), so a bell can render a "2 new in Skill Dev" peek
+    without a second request. Exact counts are what that affordance needs —
+    folding neutral into both numbers would make the peek claim rows the
+    user can already see in the bell they're looking at.
     """
 
     permission_classes = [IsAuthenticated]
@@ -69,23 +129,17 @@ class ListNotificationsView(APIView):
         if verb_prefix:
             qs = qs.filter(verb__startswith=verb_prefix)
 
-        role = request.query_params.get("role")
-        if role:
-            qs = qs.filter(audience_role__in=["", role.upper()])
-
-        # M2 (Phase 3 §18): precise per-identity filter. A dashboard sends
-        # its identity key ("L:<uuid>" / "T:<id>") and gets rows scoped to
-        # that identity PLUS account-wide rows (blank audience_identity).
-        # This is what actually keeps child A's bell from showing child B's
-        # notifications; `role` alone can't, since both children are STUDENT.
-        identity = request.query_params.get("identity")
-        if identity:
-            qs = qs.filter(audience_identity__in=["", identity])
+        qs = _apply_audience_filters(qs, request)
 
         page = _int_param(request, "page", 1, 100000)
         page_size = _int_param(request, "page_size", 8, 100)
         total = qs.count()
-        unread = _base_qs(request.user).filter(is_read=False).count()
+        # The badge counts the SAME scope the list renders. This previously
+        # counted the whole account regardless of ?role=/?identity=, so a
+        # scoped bell showed a count it could not account for; with ?track=
+        # that discrepancy would have been permanent and visible.
+        unread = _apply_audience_filters(
+            _base_qs(request.user), request).filter(is_read=False).count()
         start = (page - 1) * page_size
 
         serializer = NotificationSerializer(
@@ -94,43 +148,68 @@ class ListNotificationsView(APIView):
             "results": serializer.data,
             "count": total,
             "unread_count": unread,
+            "track_unread": _track_unread_counts(request.user),
         })
 
 
 class UnreadCountView(APIView):
     """GET /api/notifications/unread-count/ — cheap badge poll.
 
-    Honors the same ?identity= / ?role= scoping as the list endpoint, so a
-    per-profile bell shows a per-profile count. Sending neither preserves
-    the old account-wide count exactly.
+    Honors the same ?identity= / ?role= / ?track= scoping as the list
+    endpoint, so a per-profile, per-track bell shows a matching count.
+    Sending none of them preserves the old account-wide count exactly.
+
+    Also returns `track_unread` (exact per-track counts) so the bell can
+    render its cross-track peek from this cheap poll alone.
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         qs = Notification.objects.filter(recipient=request.user, is_read=False)
-
-        role = request.query_params.get("role")
-        if role:
-            qs = qs.filter(audience_role__in=["", role.upper()])
-
-        identity = request.query_params.get("identity")
-        if identity:
-            qs = qs.filter(audience_identity__in=["", identity])
-
-        return Response({"unread_count": qs.count()})
+        qs = _apply_audience_filters(qs, request)
+        return Response({
+            "unread_count": qs.count(),
+            "track_unread": _track_unread_counts(request.user),
+        })
 
 
 class MarkAllNotificationsReadView(APIView):
-    """POST /api/notifications/read/"""
+    """POST /api/notifications/read/
+
+    Honors ?role= / ?identity= / ?track= (also accepted in the JSON body,
+    since this is a POST and callers naturally put them there). Without
+    them it clears the whole account, exactly as before.
+
+    Scoping matters here: "mark all read" in the Academy bell used to clear
+    the Skill Dev bell too, which silently destroys the cross-track peek —
+    the user dismisses notifications they were never shown.
+    """
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        Notification.objects.filter(
-            recipient=request.user, is_read=False
-        ).update(is_read=True)
-        return Response({"detail": "All notifications marked as read."})
+        qs = Notification.objects.filter(recipient=request.user, is_read=False)
+        qs = _apply_audience_filters(qs, _BodyOrQuery(request))
+        updated = qs.update(is_read=True)
+        return Response({
+            "detail": "All notifications marked as read.",
+            "updated": updated,
+            "track_unread": _track_unread_counts(request.user),
+        })
+
+
+class _BodyOrQuery:
+    """Adapter so _apply_audience_filters can read a POST's scope params
+    from either the query string or the JSON body without duplicating the
+    filter logic. Query string wins when both are present."""
+
+    def __init__(self, request):
+        merged = {}
+        if isinstance(getattr(request, "data", None), dict):
+            merged.update(request.data)
+        merged.update(request.query_params.dict())
+        self.query_params = merged
 
 
 class MarkNotificationReadView(APIView):

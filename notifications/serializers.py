@@ -24,6 +24,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             "actor_username",
             "audience_role",
             "audience_identity",
+            "track",
             "is_read",
             "created_at",
         )

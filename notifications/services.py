@@ -165,6 +165,8 @@ def notify(
     sms_vars=None,
     sms_to=None,
     learner_profile=None,
+    track=None,
+    push_ws=True,
     ws_extra=None,
 ):
     """Create + push one notification. Returns the Notification, or None.
@@ -195,6 +197,22 @@ def notify(
     every existing consumer/filter keeps working; callers migrate to the
     precise field verb-by-verb without a flag day.
 
+    track: "academy" / "skill", or None to derive it from the verb via
+    notifications.tracks.track_for_verb() — which is what every caller
+    should do unless the same verb can legitimately belong to either track.
+    Blank/NEUTRAL means cross-track and shows in BOTH bells. This is a
+    SEPARATE axis from audience_identity: identity picks which profile, and
+    cannot pick a track at all, because one TeacherProfile/LearnerProfile
+    spans both (see chat/models.py's identity contract).
+
+    push_ws: set False when the CALLER already pushes its own bell frame for
+    this same event. Both frames arrive as {"type": "notification"} on the
+    same socket but carry different ids — the caller's Activity UUID vs this
+    row's integer pk — so the bell's id-based dedupe can't collapse them and
+    the user sees the event TWICE. The caller's frame is the one to keep: it
+    carries the type/subject_id/is_*_session keys the bell's click handler
+    routes on, which this generic frame does not.
+
     ws_extra: extra keys merged into the websocket frame's `data` dict.
     Used by the forum to keep emitting the legacy keys
     (type/notification_type/message/thread_id) the current NotificationBell
@@ -214,6 +232,14 @@ def notify(
     if audience_identity and not audience_role:
         audience_role = _role_from_identity_key(audience_identity)
 
+    # Track: explicit caller value wins, otherwise derive from the verb.
+    # `normalize` also guards against a caller passing junk or a stale
+    # spelling — an unrecognised value degrades to NEUTRAL (both bells)
+    # rather than to a track that would hide the row from everyone.
+    from . import tracks as _tracks
+    resolved_track = (_tracks.normalize(track) if track is not None
+                      else _tracks.track_for_verb(verb))
+
     try:
         notification = Notification.objects.create(
             recipient=recipient,
@@ -225,6 +251,7 @@ def notify(
             payload=payload or {},
             audience_role=audience_role,
             audience_identity=audience_identity,
+            track=resolved_track,
         )
     except Exception:
         logger.exception("notifications: row insert failed (verb=%s)", verb)
@@ -239,6 +266,10 @@ def notify(
         "payload": notification.payload,
         "audience_role": audience_role,
         "audience_identity": audience_identity,
+        # Live pushes carry the track too, so a bell that scoped its REST
+        # seed can apply the SAME scope to sockets instead of letting the
+        # other track's rows leak in through the realtime path.
+        "track": resolved_track,
         "created_at": notification.created_at.isoformat(),
     }
     # M2: map the identity onto the {audience, learner_profile_id} envelope
@@ -257,7 +288,8 @@ def notify(
             data["learner_profile_id"] = lp_id
     if ws_extra:
         data.update(ws_extra)
-    _push_ws(recipient.pk, data)
+    if push_ws:
+        _push_ws(recipient.pk, data)
 
     # ── Away-from-app channels: policy × preferences × explicit flags ──
     try:

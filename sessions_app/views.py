@@ -73,6 +73,88 @@ _SESSION_NOTIFICATIONS = {
 }
 
 
+# Durable-notification spec for the private-session lifecycle.
+#
+# Until now this lifecycle was Activity + a fire-and-forget WS frame ONLY,
+# so an approval that landed while the student was offline simply vanished
+# — while the Skill Dev equivalent (skills/notifications.py) wrote a full
+# durable row. That asymmetry is why the bell looked skill-dominated.
+#
+# Keyed by the same (status, cancelled_by) the Activity rules above use, so
+# the two layers cannot disagree about WHICH events fire. The recipient is
+# deliberately NOT re-derived here — _push_session_bell passes in whatever
+# it already resolved, the same discipline skills/notifications.py uses.
+_SESSION_VERBS = {
+    "approved":             "session.approved",
+    "declined":             "session.declined",
+    "needs_reconfirmation": "session.rescheduled",
+    "cancelled":            "session.cancelled",
+    # "ongoing"/"completed"/"withdrawn" stay Activity-only on purpose: they
+    # are in-the-moment/aftermath states with no policy row in
+    # notifications/policy.py, so notify() would classify them as an unknown
+    # verb and route channels by fallback. Add a policy row first if these
+    # ever need to survive being offline.
+}
+
+# The learner and teacher both land on their side's session list. Neither
+# app has a per-private-session detail route (unlike Skill Dev's
+# /skill-dev/sessions/:id), which is why these are list URLs rather than
+# deep links — see notifications/tasks.py, which already uses exactly these
+# two paths for the private-session reminder sweep.
+_PRIVATE_LEARNER_LINK = "/private-sessions"
+_PRIVATE_TEACHER_LINK = "/teacher/private-sessions"
+
+
+def _emit_session_notification(session, recipient, title, is_learner_side,
+                               cancelled_by=None):
+    """Write the durable Notification for a private-session transition.
+
+    Additive: the Activity row and WS frame are unchanged and still drive
+    the live bell. push_ws=False because the caller already pushed a frame
+    for this same event — two frames would render as two bell items (they
+    carry different ids, so the id-dedupe can't collapse them).
+    """
+    verb = _SESSION_VERBS.get(session.status)
+    if not verb:
+        return
+    try:
+        from notifications.services import notify
+
+        if is_learner_side:
+            link_url = _PRIVATE_LEARNER_LINK
+            identity = (f"L:{session.learner_profile_id}"
+                        if session.learner_profile_id else "")
+            learner_profile = session.learner_profile
+        else:
+            link_url = _PRIVATE_TEACHER_LINK
+            tp_id = getattr(getattr(session.teacher, "teacher_profile", None), "id", None)
+            identity = f"T:{tp_id}" if tp_id else ""
+            learner_profile = None
+
+        # The actor is whoever caused the transition. Passing it lets
+        # notify()'s self-notify guard drop a row aimed at the person who
+        # performed the action.
+        actor = None
+        if session.status == "cancelled":
+            actor = session.teacher if cancelled_by == "teacher" else (
+                session.requested_by if cancelled_by == "student" else None)
+
+        notify(
+            recipient=recipient,
+            actor=actor,
+            verb=verb,
+            title=title,
+            link_url=link_url,
+            payload={"session_id": str(session.id), "kind": "private_session"},
+            audience_identity=identity,
+            learner_profile=learner_profile,
+            push_ws=False,
+        )
+    except Exception:
+        logger.exception("sessions_app: durable notify failed (session=%s)",
+                         session.id)
+
+
 def _push_session_bell(session, cancelled_by=None):
     """
     Create Activity records and push WS bell notifications for a
@@ -148,6 +230,12 @@ def _push_session_bell(session, cancelled_by=None):
             )
 
             if created:
+                # Inside the `created` guard on purpose: get_or_create is
+                # already this layer's "is this a NEW real event" ledger, so
+                # a retried transition can't spend a second email or SMS.
+                _emit_session_notification(
+                    session, recipient, title, is_learner_side,
+                    cancelled_by=cancelled_by)
                 push_ws_notification(recipient.id, {
                     "type": "SESSION",
                     "title": title,
@@ -157,6 +245,12 @@ def _push_session_bell(session, cancelled_by=None):
                     "created_at": activity.created_at.isoformat(),
                     # frontend uses this to navigate to /private-sessions
                     "is_private_session": True,
+                    # Lets the track-scoped bell drop this frame when the
+                    # user is looking at Skill Dev. Without it the row has
+                    # no track and is treated as cross-track (shown in
+                    # BOTH bells), which is exactly the leak the scoping
+                    # was added to stop.
+                    "track": "academy",
                 })
     except Exception:
         pass  # never let bell errors break the main response

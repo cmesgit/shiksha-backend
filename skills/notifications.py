@@ -213,6 +213,14 @@ def _emit_notification(session, event, recipient, is_for_learner, actor):
         audience_identity=identity,
         sms_vars=_sms_vars(session, is_for_learner),
         learner_profile=learner_profile,
+        # push_skill_bell already pushes its own WS frame for this event.
+        # Both arrive as {"type": "notification"} but carry different ids
+        # (this row's integer pk vs the Activity UUID), so the bell's
+        # id-based dedupe cannot collapse them and the user saw every skill
+        # event TWICE in the live dropdown. The caller's frame is the one to
+        # keep — it carries is_skill_session/subject_id, which is what the
+        # click handler routes on.
+        push_ws=False,
     )
 
 
@@ -285,6 +293,8 @@ def push_skill_bell(session, event, actor=None):
                 "is_read": False,
                 "created_at": activity.created_at.isoformat(),
                 "is_skill_session": True,
+                # Track-scoped bells drop the other track's frames.
+                "track": "skill",
             })
     except Exception:
         pass

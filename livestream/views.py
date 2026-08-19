@@ -829,10 +829,30 @@ def _handle_participant_join(event):
             course=session.course,
             status=Enrollment.STATUS_ACTIVE
         ).select_related("user")
+        from notifications.services import notify as _notify
+        title = f"🔴 {session.title} is now LIVE!"
         for enrollment in students:
+            # Durable row first, so a student whose socket is closed still
+            # finds out the class started. This lifecycle used to be
+            # WS-ONLY: the frame was fire-and-forget and simply vanished for
+            # anyone not currently connected, while the Skill Dev equivalent
+            # wrote a full durable record. push_ws=False because the frame
+            # below is the one the bell's click handler can actually route
+            # (it carries object_id); notify()'s generic frame would arrive
+            # as a SECOND, differently-id'd bell item for the same event.
+            _notify(
+                recipient=enrollment.user,
+                actor=session.created_by,
+                verb="livestream.started",
+                title=title,
+                link_url=f"/live/{session.id}",
+                payload={"session_id": str(session.id),
+                         "course_id": str(session.course_id)},
+                push_ws=False,
+            )
             push_ws_notification(enrollment.user.id, {
                 "type": "live_session",
-                "title": f"🔴 {session.title} is now LIVE!",
+                "title": title,
                 "session_id": str(session.id),
                 # The bell's click handler resolves the join link off
                 # `object_id` (matching the persisted Activity rows other
@@ -842,6 +862,9 @@ def _handle_participant_join(event):
                 "id": str(session.id),
                 "object_id": str(session.id),
                 "start_time": session.start_time.isoformat(),
+                # Track-scoped bells drop the other track's frames; without
+                # this the row reads as cross-track and shows in both.
+                "track": "academy",
             })
 
 

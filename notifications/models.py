@@ -36,6 +36,8 @@
 from django.conf import settings
 from django.db import models
 
+from . import tracks as _tracks
+
 
 class Notification(models.Model):
     ROLE_STUDENT = "STUDENT"
@@ -87,6 +89,20 @@ class Notification(models.Model):
                   "identity on the account. This is the precise per-profile "
                   "scope; audience_role is the coarse legacy fallback.",
     )
+    track = models.CharField(
+        max_length=10,
+        choices=_tracks.TRACK_CHOICES,
+        blank=True,
+        default=_tracks.NEUTRAL,
+        db_index=True,
+        help_text="Which product track this belongs to: academy / skill. "
+                  "Blank = cross-track (chat, forum, counselling) and shows "
+                  "in BOTH bells. Orthogonal to audience_identity, which "
+                  "separates profiles and CANNOT separate tracks — one "
+                  "TeacherProfile spans both. Derived from the verb by "
+                  "notifications.tracks.track_for_verb() unless the caller "
+                  "passes it explicitly.",
+    )
 
     is_read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -98,6 +114,8 @@ class Notification(models.Model):
             models.Index(fields=["recipient", "created_at"]),
             # M2: dashboards query "rows for my identity + account-wide rows".
             models.Index(fields=["recipient", "audience_identity"]),
+            # Track-scoped bell: "my unread, in this track (+ neutral)".
+            models.Index(fields=["recipient", "track", "is_read"]),
         ]
 
     def __str__(self):

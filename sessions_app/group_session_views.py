@@ -139,8 +139,67 @@ def _before_room_started(session):
     return session.room_started_at is None
 
 
-def _notify_user(user, title, session):
+# Deep links per side. Group sessions DO have a detail route
+# (/sessions/group/<id>), which notifications/tasks.py already uses for the
+# reminder sweep — reuse the exact same shape so a reminder and a lifecycle
+# event about the same session land on the same page.
+_GROUP_LINK = "/sessions/group/{id}"
+
+
+def _emit_group_notification(user, title, session, verb, actor, is_teacher_role):
+    """Durable Notification for a group-session lifecycle event.
+
+    Additive — the Activity row and WS frame are unchanged and still drive
+    the live bell. push_ws=False because the caller already pushes a frame
+    for this same event; two frames carry different ids and would render as
+    two separate bell items.
+
+    Only fires when the call site named a `verb`. Several transitions here
+    (accept/decline/withdraw acknowledgements to the host) deliberately stay
+    Activity-only: they have no row in notifications/policy.py, so notify()
+    would treat them as an unknown verb and route channels by fallback. Add
+    the policy row first if one of them ever needs to survive being offline.
+    """
+    if not verb:
+        return
+    try:
+        from notifications.services import notify
+
+        identity = ""
+        learner_profile = None
+        if is_teacher_role:
+            tp_id = getattr(getattr(user, "teacher_profile", None), "id", None)
+            if tp_id:
+                identity = f"T:{tp_id}"
+        else:
+            lp = user.default_learner_profile()
+            if lp:
+                identity = f"L:{lp.id}"
+                learner_profile = lp
+
+        notify(
+            recipient=user,
+            actor=actor,
+            verb=verb,
+            title=title,
+            link_url=_GROUP_LINK.format(id=session.short_code or session.id),
+            payload={"session_id": str(session.id), "kind": "group_session"},
+            audience_identity=identity,
+            learner_profile=learner_profile,
+            push_ws=False,
+        )
+    except Exception:
+        logger.exception("group-session durable notify failed (session=%s)",
+                         session.id)
+
+
+def _notify_user(user, title, session, verb=None, actor=None):
     """Create an Activity row + push a bell notification to ``user``.
+
+    `verb` opts this event into a DURABLE notifications.Notification row as
+    well (see _emit_group_notification). Left None by call sites whose
+    transition has no policy row, which keeps their existing Activity-only
+    behaviour exactly.
 
     Safe-by-design: never raises.
     """
@@ -194,6 +253,11 @@ def _notify_user(user, title, session):
             },
         )
         if created:
+            # Inside the `created` guard: get_or_create is already this
+            # layer's "is this a NEW real event" ledger, so a retried
+            # transition can't spend a second email or SMS.
+            _emit_group_notification(user, title, session, verb, actor,
+                                     is_teacher_role)
             push_ws_notification(user.id, {
                 "type": "SESSION",
                 "title": title,
@@ -202,6 +266,10 @@ def _notify_user(user, title, session):
                 "is_read": False,
                 "created_at": activity.created_at.isoformat(),
                 "is_group_session": True,
+                # Lets the track-scoped bell drop this frame when the user
+                # is viewing Skill Dev; without it the row reads as
+                # cross-track and shows in BOTH bells.
+                "track": "academy",
             })
     except Exception:
         logger.exception("Failed to push group-session notification")
@@ -421,7 +489,8 @@ def create_group_session(request):
             title = f"📚 {host_name} invited you to a {session.subject_name} group session"
         else:
             title = f"📚 {host_name} invited you to a {session.subject_name} group session"
-        _notify_user(inv.user, title, session)
+        _notify_user(inv.user, title, session,
+                     verb="group.invite", actor=request.user)
 
     full = _gs_qs().get(pk=session.pk)
     return Response(GroupSessionDetailSerializer(full).data, status=201)
@@ -486,6 +555,7 @@ def invite_more(request, session_id):
             inv.user,
             f"📚 {host_name} invited you to a {session.subject_name} group session",
             session,
+            verb="group.invite", actor=request.user,
         )
 
     full = _gs_qs().get(pk=session.pk)
@@ -651,6 +721,7 @@ def reinvite(request, session_id):
         invite.user,
         f"📚 {host_name} re-invited you to their {session.subject_name} group session",
         session,
+        verb="group.invite", actor=request.user,
     )
     _broadcast(session)
 
@@ -745,6 +816,7 @@ def cancel_group_session(request, session_id):
             inv.user,
             f"❌ {host_name} cancelled the {session.subject_name} group session",
             session,
+            verb="group.cancelled", actor=request.user,
         )
     _broadcast(session)
 
@@ -924,6 +996,7 @@ def _update_group_session(request, session_id):
                     inv.user,
                     f"📚 {host_name} invited you to a {session.subject_name} group session",
                     session,
+                    verb="group.invite", actor=request.user,
                 )
 
     full = _gs_qs().get(pk=session.pk)

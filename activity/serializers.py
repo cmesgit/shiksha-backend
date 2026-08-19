@@ -48,6 +48,17 @@ class ActivitySerializer(serializers.ModelSerializer):
     # delivery path, so both agree.
     is_skill_session = serializers.SerializerMethodField()
 
+    # Which product track this row belongs to, using the same vocabulary as
+    # notifications.tracks ("academy" / "skill"). The bell scopes itself to
+    # the track the user is currently in, so a Skill Dev booking never
+    # renders inside Academy chrome.
+    #
+    # Unlike notifications.Notification there is no NEUTRAL case here: all
+    # four Activity types (ASSIGNMENT/QUIZ/SESSION/SUBMISSION) are bound to
+    # a course or a session, so every row belongs to exactly one track.
+    # Cross-track things (chat, forum) never become Activity rows.
+    track = serializers.SerializerMethodField()
+
     class Meta:
         model = Activity
         fields = [
@@ -67,6 +78,7 @@ class ActivitySerializer(serializers.ModelSerializer):
             "subject",
             "object_id",
             "is_skill_session",
+            "track",
         ]
 
     _TYPE_MAP = {
@@ -93,3 +105,10 @@ class ActivitySerializer(serializers.ModelSerializer):
             return obj.content_type.model == "skillsession"
         except Exception:
             return False
+
+    def get_track(self, obj):
+        # Derived from the same content_type probe as is_skill_session so
+        # the two can never disagree. Defaults to "academy" (not blank) on
+        # a lookup failure: an Activity row always belongs to a track, and
+        # academy is the larger, default-landing surface.
+        return "skill" if self.get_is_skill_session(obj) else "academy"
