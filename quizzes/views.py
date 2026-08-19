@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 from accounts.permissions import IsEmailVerified, IsAdmin, require_teacher_context, IsTeacherContext, _in_teacher_context
 from accounts.auth_flow import get_active_profile
 from enrollments.models import Enrollment
+from enrollments.services import active_batch_id
 from django.db import models
 from django.db.models import (
     Count, Avg, Max, Min, Q, Case, When, Value, F,
@@ -546,6 +547,7 @@ class StudentDashboardView(APIView):
     def get(self, request):
         status_filter = request.query_params.get("status")
         subject_id = request.query_params.get("subject")
+        course_id = request.query_params.get("course")
 
         user = request.user
 
@@ -599,6 +601,30 @@ class StudentDashboardView(APIView):
             .distinct()
         )
 
+        # Course scoping. A learner profile can hold live subscriptions to
+        # several courses at once (Class 7 + Class 10 + Class 12), and the
+        # subscription join above spans ALL of them — so without this the
+        # Hub showed another class's quizzes under the active course, which
+        # is exactly what was reported. Assignments/materials avoid this by
+        # taking the course id as a URL kwarg; quizzes is a flat endpoint,
+        # so it takes it as a query param instead. Optional for backwards
+        # compatibility with any caller that genuinely wants the whole
+        # profile (e.g. a future cross-course "everything" view).
+        if course_id:
+            quizzes = quizzes.filter(subject__course_id=course_id)
+
+            # Batch isolation, finally enforced — see the warning on
+            # Quiz.batch. Course-wide quizzes (batch IS NULL) plus this
+            # learner's own batch's quizzes, matching
+            # materials/views.py's StudentCourseMaterials exactly. Only
+            # meaningful when a course is in scope, since a batch belongs
+            # to one course.
+            batch_id = active_batch_id(
+                learner_profile=learner,
+                course_id=course_id,
+            )
+            quizzes = quizzes.filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
+
         if subject_id:
             quizzes = quizzes.filter(subject_id=subject_id)
 
@@ -631,11 +657,14 @@ class StudentDashboardView(APIView):
 
 class StudentQuizStatsView(APIView):
     """
-    GET /student/quizzes/stats/?subject=<id>
+    GET /student/quizzes/stats/?course=<id>&subject=<id>
 
     Stat strip for the Hub, scoped to the active learner profile (and
-    optionally one subject): practice streak, average mock score, questions
-    solved this week, weakest topic. StudentAnswer has no timestamp of its
+    optionally one course and/or subject): practice streak, average mock
+    score, questions solved this week, weakest topic. Without ?course= the
+    numbers are profile-wide across every subscribed course, which made the
+    strip read identically no matter which class the learner had selected —
+    the Hub always sends it. StudentAnswer has no timestamp of its
     own, so "this week"/streak use the parent attempt's started_at as a
     proxy for when the answering happened — fine for a rollup stat, not
     used anywhere scores are computed.
@@ -653,8 +682,11 @@ class StudentQuizStatsView(APIView):
                 status=403,
             )
         subject_id = request.query_params.get("subject")
+        course_id = request.query_params.get("course")
 
         attempts_qs = QuizAttempt.objects.filter(learner_profile=learner)
+        if course_id:
+            attempts_qs = attempts_qs.filter(quiz__subject__course_id=course_id)
         if subject_id:
             attempts_qs = attempts_qs.filter(quiz__subject_id=subject_id)
 
@@ -688,7 +720,13 @@ class StudentQuizStatsView(APIView):
 
         # ── questions solved this week ───────────────────────────────────────
         week_ago = timezone.now() - timedelta(days=7)
+        # Course-scoped for the same reason attempts_qs is: this queryset
+        # feeds BOTH questions_solved and weakest_topic, so leaving it
+        # profile-wide keeps two of the four stat cards reading identically
+        # no matter which class is selected.
         all_answers = StudentAnswer.objects.filter(attempt__learner_profile=learner)
+        if course_id:
+            all_answers = all_answers.filter(question__quiz__subject__course_id=course_id)
         if subject_id:
             all_answers = all_answers.filter(question__quiz__subject_id=subject_id)
         questions_solved = all_answers.filter(attempt__started_at__gte=week_ago).count()
@@ -736,6 +774,18 @@ class StartQuizView(APIView):
     an incremented attempt_number, UNLESS there is already an active
     (PENDING) attempt in progress, in which case we return the existing one
     to prevent ghost attempts from page refreshes.
+
+    ⚠️ Starting a fresh attempt over an ALREADY-SUBMITTED one now requires
+    an explicit `{"new_attempt": true}` in the body. Without it, this
+    returns the submitted attempt with `already_submitted: true` and creates
+    nothing. Reason: the attempt route re-mounts and calls this endpoint on
+    every mount, and the browser Back button lands there — so a single stray
+    back-click from the result screen silently burned an attempt. That is not
+    cosmetic: it inflates attempt_number past `reveal_answers_after`, which
+    permanently costs the learner access to the answer key, and it reshuffles
+    the question order under a new attempt key. Unlimited retakes remain
+    intentional; they just have to be ASKED for (the Reattempt buttons pass
+    the flag) rather than happening by accident.
     """
     permission_classes = [IsAuthenticated, IsEmailVerified]
 
@@ -839,6 +889,28 @@ class StartQuizView(APIView):
                 quiz=quiz,
                 learner_profile=learner
             ).order_by("-attempt_number").first()
+
+            # A retake over a finished attempt must be deliberate — see the
+            # class docstring. Only guards the RETAKE case: with no prior
+            # attempt at all, last_attempt is None and the first attempt is
+            # created as before, so a learner starting a quiz normally is
+            # unaffected and no caller needs updating for that path.
+            if (
+                last_attempt is not None
+                and last_attempt.status == QuizAttempt.STATUS_SUBMITTED
+                and not request.data.get("new_attempt")
+            ):
+                return Response(
+                    {
+                        "detail": "You have already submitted this quiz.",
+                        "already_submitted": True,
+                        "attempt_id": last_attempt.id,
+                        "attempt_number": last_attempt.attempt_number,
+                        "started_at": last_attempt.started_at,
+                        "expires_at": None,
+                    },
+                    status=status.HTTP_200_OK,
+                )
 
             new_attempt_number = (
                 last_attempt.attempt_number + 1) if last_attempt else 1

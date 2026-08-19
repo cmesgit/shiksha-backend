@@ -129,7 +129,11 @@ class FAQItemSerializer(serializers.ModelSerializer):
 class AnnouncementSerializer(serializers.ModelSerializer):
     class Meta:
         model = Announcement
-        fields = ["id", "message", "link_url", "link_label", "level"]
+        # updated_at is what lets the navbar key its "dismissed" flag on
+        # (id, updated_at) instead of id alone. Without it, editing a live
+        # announcement kept it hidden forever for anyone who had already
+        # dismissed the previous wording — the row id never changes.
+        fields = ["id", "message", "link_url", "link_label", "level", "updated_at"]
 
 
 class ShowcaseCourseSerializer(serializers.ModelSerializer):

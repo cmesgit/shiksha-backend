@@ -32,12 +32,20 @@ class Activity(models.Model):
     TYPE_QUIZ = "QUIZ"
     TYPE_SESSION = "SESSION"
     TYPE_SUBMISSION = "SUBMISSION"
+    # Study material upload. Added late: material uploads were the one
+    # lifecycle that never wrote an Activity row, so they existed only as a
+    # fire-and-forget WS frame and vanished on refresh. Routing them through
+    # _bulk_notify_students needs a type of their own — reusing ASSIGNMENT
+    # would have shown a handout under an assignment icon and sent the click
+    # to the assignments screen.
+    TYPE_MATERIAL = "MATERIAL"
 
     TYPE_CHOICES = [
         (TYPE_ASSIGNMENT, "Assignment"),
         (TYPE_QUIZ, "Quiz"),
         (TYPE_SESSION, "Live Session"),
         (TYPE_SUBMISSION, "Submission"),
+        (TYPE_MATERIAL, "Study Material"),
     ]
 
     # Which dashboard identity this row belongs to.

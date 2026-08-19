@@ -56,9 +56,13 @@ class StudentSkillDashboardView(APIView):
             s for s in all_sessions
             if s.status in (SkillSession.STATUS_CONFIRMED, SkillSession.STATUS_REQUESTED)
         ]
+        # LAPSED belongs in Past: the slot came and went without the session
+        # being held (skills/tasks.lapse_unheld_sessions). Before that status
+        # existed these rows stayed CONFIRMED and therefore sat in Upcoming
+        # forever, offering a Join button for a session months in the past.
         past = [
             s for s in all_sessions
-            if s.status == SkillSession.STATUS_COMPLETED
+            if s.status in (SkillSession.STATUS_COMPLETED, SkillSession.STATUS_LAPSED)
         ]
 
         reviewed_ids = set(
@@ -142,7 +146,10 @@ class StudentSkillDashboardView(APIView):
                 "completed_at": s.updated_at,
             }
             for s in past
-            if str(s.id) not in reviewed_ids
+            # COMPLETED only — `past` now also holds LAPSED sessions, and
+            # asking someone to rate a session that never took place would
+            # both insult them and pollute the expert's rating.
+            if s.status == SkillSession.STATUS_COMPLETED and str(s.id) not in reviewed_ids
         ]
 
         # ── Enrollments / courses ────────────────────────────────────
@@ -313,7 +320,12 @@ class StudentSkillDashboardView(APIView):
         # Dashboard screen: "Courses enrolled" = distinct mastery courses,
         # "Lessons completed" = total completed sessions across all of them,
         # "Hours learned", "Avg. rating given" = this learner's own reviews.
-        completed_minutes = sum(s.duration_mins for s in past)
+        # `past` includes LAPSED sessions (shown so the learner can see what
+        # didn't happen), but NONE of the stats below may count them — hours
+        # learned, lessons completed and sessions done must reflect sessions
+        # that actually took place.
+        completed = [s for s in past if s.status == SkillSession.STATUS_COMPLETED]
+        completed_minutes = sum(s.duration_mins for s in completed)
         session_hours     = round(completed_minutes / 60, 1)
 
         my_review_ratings = list(
@@ -327,13 +339,13 @@ class StudentSkillDashboardView(APIView):
             "stats": {
                 # Primary — session/tutor focused (drives the learner dashboard)
                 "tutors_booked":  len(experts_data),
-                "sessions_done":  len(past),
+                "sessions_done":  len(completed),
                 "session_hours":  session_hours,
                 "upcoming_count": len(upcoming_data),
                 # Dashboard stat-tile values (verified against the live
                 # design prototype's exact tile labels).
                 "courses_enrolled_count":  len(mastery_courses),
-                "lessons_completed_count": len(past),
+                "lessons_completed_count": len(completed),
                 "avg_rating_given":        avg_rating_given,
                 # Legacy course fields — retained for backward compatibility
                 # with any consumer still reading them.

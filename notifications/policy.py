@@ -104,6 +104,12 @@ POLICY = {
     "livestream.started":  {"category": "classes",  "email": OFF,     "sms": OFF, "push": REQUIRED},
     "assignment.posted":   {"category": "learning", "email": OFF,     "sms": OFF, "push": OPT_OUT},
     "assignment.graded":   {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
+    # TEACHER-facing: a student turned work in. Declared explicitly rather
+    # than left to fall through to _DEFAULT, so the channel choice is a
+    # decision and not an accident. Email OFF deliberately — a class of 40
+    # submitting near a deadline would be 40 emails; push is opt-out so it
+    # arrives by default but can be silenced.
+    "assignment.submitted": {"category": "learning", "email": OFF,    "sms": OFF, "push": OPT_OUT},
     "quiz.posted":         {"category": "learning", "email": OFF,     "sms": OFF, "push": OPT_OUT},
     "quiz.deadline":       {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": REQUIRED},
     # Teacher-triggered nudge for students who haven't attempted a

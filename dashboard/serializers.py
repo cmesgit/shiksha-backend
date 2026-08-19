@@ -129,7 +129,21 @@ class DashboardAssignmentSerializer(serializers.ModelSerializer):
     subject_name = serializers.SerializerMethodField()
 
     # ── Fields mobile index.tsx needs ───────────────────────────────────────
-    # Assignment.status exists on your model (pending / submitted / graded).
+    # `status` is a CONSTANT, and that is now correct rather than accidental.
+    #
+    # The old comment here claimed "Assignment.status exists on your model
+    # (pending / submitted / graded)". It does not — Assignment has no status
+    # field and no status property, so the attribute lookup always failed and
+    # DRF silently fell back to this default. Every assignment reported
+    # "pending" to every learner forever, including ones they had submitted.
+    #
+    # The queryset is now the source of truth instead: _learner_assignments
+    # excludes anything this learner profile has already submitted, so
+    # everything serialized here genuinely IS outstanding. Do not "fix" this
+    # into a SerializerMethodField reading obj.status — derive it from
+    # AssignmentSubmission (see assignments/serializers.py's
+    # AssignmentListSerializer.get_status) if a real per-row status is ever
+    # needed here.
     # priority is optional — falls back to "low" if field absent.
     status   = serializers.CharField(default="pending")
     priority = serializers.SerializerMethodField()

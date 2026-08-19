@@ -16,8 +16,6 @@ from django.core.exceptions import PermissionDenied
 
 from courses.models import Chapter, Batch
 from courses.services import teaches_subject
-from enrollments.models import Enrollment
-from livestream.services.notifications import push_ws_notification
 from accounts.auth_flow import get_active_profile
 from enrollments.services import active_batch_id, has_active_subscription
 
@@ -168,55 +166,48 @@ class UploadStudyMaterial(APIView):
             file.material = material
             file.save()
 
-        # Notify enrolled students.
+        # Notify students who can actually SEE this material.
         #
-        # This was the only lifecycle in the codebase with NO durable record
-        # of any kind — not even an Activity row — so an upload simply
-        # vanished for anyone without an open socket. The frame also carried
-        # type "material", which matches no branch in either bell's click
-        # handler, so the few students who did see it landed on the
-        # dashboard root when they clicked.
+        # Two bugs lived here, both now fixed by reusing the exact path
+        # assignments and quizzes already take (activity/signals.py):
         #
-        # learner_profile is now select_related and threaded into
-        # audience_identity: without it these rows are account-wide and a
-        # sibling's material shows on the other child's bell, which is the
-        # same leak M2/Phase-3 §18 fixed for quizzes and assignments.
+        #  1. RECIPIENTS IGNORED BATCH. The old query filtered on course +
+        #     status only, so a material scoped to one batch notified every
+        #     active enrollee in the course — and the read side DOES enforce
+        #     batch isolation (see StudentSubjectMaterials / the
+        #     PermissionDenied at :300 and :378 below), so the wrong-batch
+        #     half got a notification that could only ever 403 them.
+        #     _enrollments_for applies the same visibility rule the reader
+        #     applies, which is the only correct basis for a notification.
+        #
+        #  2. NO ACTIVITY ROW. This was the one lifecycle in the codebase
+        #     with no durable record, so an upload lived only in a
+        #     fire-and-forget WS frame: it vanished on refresh (both bells
+        #     read /activity/feed/, which serves Activity rows only) and its
+        #     frame carried the MATERIAL's uuid, so mark-read PATCHed an id
+        #     no Activity had and 404'd forever.
+        #
+        # _bulk_notify_students writes the Activity rows, the durable
+        # Notification rows (verb → track/policy), and one WS frame per row
+        # carrying the SERIALIZED ACTIVITY — same id and shape as the REST
+        # feed, so dedupe and mark-read work. Profile isolation comes from
+        # the enrollment's learner_profile, exactly as before.
+        from activity.models import Activity
+        from activity.signals import _bulk_notify_students, _enrollments_for
+
         course = chapter.subject.course
-        students = Enrollment.objects.filter(
-            course=course,
-            status=Enrollment.STATUS_ACTIVE
-        ).select_related("user", "learner_profile")
-
-        from notifications.services import notify
-        material_title = f"New study material: {title}"
-        link_url = f"/study-material/list/{chapter.subject_id}"
-
-        for enrollment in students:
-            notify(
-                recipient=enrollment.user,
-                actor=request.user,
-                verb="materials.uploaded",
-                title=material_title,
-                link_url=link_url,
-                payload={"material_id": str(material.id),
-                         "subject_id": str(chapter.subject_id)},
-                audience_identity=(f"L:{enrollment.learner_profile_id}"
-                                   if enrollment.learner_profile_id else ""),
-                learner_profile=enrollment.learner_profile,
-                push_ws=False,
-            )
-            push_ws_notification(enrollment.user.id, {
-                'type': 'material',
-                'title': material_title,
-                'chapter': chapter.title,
-                'subject': chapter.subject.name,
-                'id': str(material.id),
-                # link_url is checked FIRST by both bells' click handlers,
-                # so adding it here is what finally makes this frame
-                # routable instead of dumping the user on the dashboard.
-                'link_url': link_url,
-                'track': 'academy',
-            })
+        _bulk_notify_students(
+            _enrollments_for(course, material.batch_id),
+            material,
+            Activity.TYPE_MATERIAL,
+            f"New study material: {title}",
+            None,                       # materials have no due date
+            chapter.subject_id,
+            chapter.subject.name,
+            extra={"chapter": chapter.title},
+            verb="materials.uploaded",
+            link_url=f"/study-material/list/{chapter.subject_id}",
+        )
 
         serializer = StudyMaterialSerializer(
             material, context={"request": request})

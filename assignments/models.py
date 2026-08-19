@@ -57,6 +57,26 @@ class Assignment(models.Model):
     # stay valid without a backfill.
     max_marks = models.PositiveIntegerField(default=100)
 
+    # Draft gate, mirroring Quiz.is_published.
+    #
+    # Until this existed, activity/signals.assignment_created fired on the
+    # post_save of a brand-new row, so every student was notified the instant
+    # a teacher hit save — there was no way to stage an assignment, fix a
+    # typo, or attach a file before it went out.
+    #
+    # DEFAULT TRUE, deliberately: every existing assignment is live, and a
+    # default of False would make the whole back catalogue vanish from
+    # students' lists the moment this migration ran. Staging is opt-in — a
+    # teacher chooses to save a draft. Publishing later (False → True) fires
+    # the notification then, via the same pre_save/post_save transition pair
+    # quizzes use.
+    is_published = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Unpublished assignments are drafts: invisible to students "
+                  "and silent. Publishing notifies the class.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     # -------------------------------------------------------

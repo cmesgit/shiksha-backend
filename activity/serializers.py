@@ -53,8 +53,8 @@ class ActivitySerializer(serializers.ModelSerializer):
     # the track the user is currently in, so a Skill Dev booking never
     # renders inside Academy chrome.
     #
-    # Unlike notifications.Notification there is no NEUTRAL case here: all
-    # four Activity types (ASSIGNMENT/QUIZ/SESSION/SUBMISSION) are bound to
+    # Unlike notifications.Notification there is no NEUTRAL case here: every
+    # Activity type (ASSIGNMENT/QUIZ/SESSION/SUBMISSION/MATERIAL) is bound to
     # a course or a session, so every row belongs to exactly one track.
     # Cross-track things (chat, forum) never become Activity rows.
     track = serializers.SerializerMethodField()
@@ -81,11 +81,18 @@ class ActivitySerializer(serializers.ModelSerializer):
             "track",
         ]
 
+    # NOTE the legacy mobile vocabulary overloads "material" to mean
+    # "coursework-ish", which is why ASSIGNMENT and SUBMISSION both map to
+    # it. TYPE_MATERIAL genuinely IS a study material and lands on the same
+    # legacy string via the .lower() fallback — listed explicitly so nobody
+    # reads the omission as an oversight. Web consumers use raw_type and
+    # see the distinct "MATERIAL".
     _TYPE_MAP = {
         Activity.TYPE_SESSION:    "session",
         Activity.TYPE_QUIZ:       "quiz",
         Activity.TYPE_ASSIGNMENT: "material",
         Activity.TYPE_SUBMISSION: "material",
+        Activity.TYPE_MATERIAL:   "material",
     }
 
     def get_unread(self, obj):

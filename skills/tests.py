@@ -9,6 +9,7 @@ Covers:
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts.models import User, Role, UserRole, TeacherProfile, LearnerProfile
@@ -1050,3 +1051,101 @@ class SkillSessionNotificationTests(TestCase):
         for event, (verb, _t, _b) in _NOTIFY_SPEC.items():
             self.assertIn(verb, policy.POLICY, f"{event} -> {verb} unregistered")
             self.assertIn(policy.POLICY[verb]["category"], policy.CATEGORIES)
+
+
+class SkillSessionLapseSweepTests(TestCase):
+    """A CONFIRMED session whose slot passed without being held must close out.
+
+    COMPLETED is only ever set by livekit_views when someone actually ends the
+    room, so a session nobody joined had no terminal state — it stayed
+    CONFIRMED, and because the learner's Upcoming/Past split is status-based
+    (never clock-based) it sat in "Upcoming" indefinitely with a live Join
+    button. Reported from production.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="STUDENT")
+
+        teacher_user = User.objects.create_user(
+            username="lapse_t", email="lapse_t@test.com", password="x",
+        )
+        teacher_profile = TeacherProfile.objects.create(
+            user=teacher_user, teacher_type=TeacherProfile.TYPE_GUEST,
+        )
+        cls.expert = ExpertProfile.objects.create(
+            teacher_profile=teacher_profile, headline="Guitar", is_listed=True,
+        )
+        account = User.objects.create_user(
+            username="lapse_s", email="lapse_s@test.com", password="x",
+        )
+        cls.learner = LearnerProfile.objects.create(
+            account=account, display_name="L", is_default=True,
+        )
+
+    def _session(self, *, status, minutes_ago, duration=60):
+        return SkillSession.objects.create(
+            learner_profile=self.learner,
+            expert=self.expert,
+            status=status,
+            duration_mins=duration,
+            scheduled_for=timezone.now() - timezone.timedelta(minutes=minutes_ago),
+        )
+
+    def test_confirmed_session_well_past_its_slot_is_lapsed(self):
+        from skills.tasks import lapse_unheld_sessions
+        # 60-min session that started 6h ago: ended 5h ago, far beyond grace.
+        s = self._session(status=SkillSession.STATUS_CONFIRMED, minutes_ago=360)
+        self.assertEqual(lapse_unheld_sessions(), 1)
+        s.refresh_from_db()
+        self.assertEqual(s.status, SkillSession.STATUS_LAPSED)
+
+    def test_session_still_inside_its_slot_is_untouched(self):
+        from skills.tasks import lapse_unheld_sessions
+        # Started 10 minutes ago, runs 60 — still live.
+        s = self._session(status=SkillSession.STATUS_CONFIRMED, minutes_ago=10)
+        self.assertEqual(lapse_unheld_sessions(), 0)
+        s.refresh_from_db()
+        self.assertEqual(s.status, SkillSession.STATUS_CONFIRMED)
+
+    def test_grace_window_protects_a_session_that_ran_over(self):
+        from skills.tasks import lapse_unheld_sessions
+        # Ended 30 minutes ago — inside the 2h grace, so a pair who started
+        # late and are still talking must not have it yanked away.
+        s = self._session(status=SkillSession.STATUS_CONFIRMED, minutes_ago=90)
+        self.assertEqual(lapse_unheld_sessions(), 0)
+        s.refresh_from_db()
+        self.assertEqual(s.status, SkillSession.STATUS_CONFIRMED)
+
+    def test_only_confirmed_sessions_are_swept(self):
+        from skills.tasks import lapse_unheld_sessions
+        # REQUESTED has its own 24h SLA sweep; the rest await a human.
+        untouched = [
+            self._session(status=st, minutes_ago=600)
+            for st in (
+                SkillSession.STATUS_REQUESTED,
+                SkillSession.STATUS_PENDING_PAYMENT,
+                SkillSession.STATUS_NEEDS_RECONFIRMATION,
+                SkillSession.STATUS_COMPLETED,
+                SkillSession.STATUS_CANCELLED,
+            )
+        ]
+        self.assertEqual(lapse_unheld_sessions(), 0)
+        for s in untouched:
+            before = s.status
+            s.refresh_from_db()
+            self.assertEqual(s.status, before)
+
+    def test_confirmed_session_with_no_slot_is_left_alone(self):
+        from skills.tasks import lapse_unheld_sessions
+        # A confirmed session with no scheduled_for is a data problem to
+        # surface, not one to bury under a terminal status.
+        s = SkillSession.objects.create(
+            learner_profile=self.learner, expert=self.expert,
+            status=SkillSession.STATUS_CONFIRMED, duration_mins=60,
+            scheduled_for=None,
+        )
+        self.assertEqual(lapse_unheld_sessions(), 0)
+        s.refresh_from_db()
+        self.assertEqual(s.status, SkillSession.STATUS_CONFIRMED)

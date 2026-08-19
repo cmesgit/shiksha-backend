@@ -259,6 +259,14 @@ def admin_recordings(request):
             "session_date": r.session_date.isoformat() if r.session_date else None,
             "duration_seconds": r.duration_seconds,
             "status": r.get_status_display(),
+            # The ONLY playback handle there is — SessionRecording has no
+            # video_url/playback_url field; every client composes the Bunny
+            # embed URL from library id + this. Omitting it (as this
+            # hand-built dict used to) is why the admin Recordings page could
+            # list recordings but never play one. The shared
+            # SessionRecordingSerializer the student/teacher apps use has
+            # always exposed it.
+            "bunny_video_id": r.bunny_video_id,
             "thumbnail_url": r.thumbnail_url,
             "is_published": r.is_published,
             "live_session_id": str(r.live_session_id) if r.live_session_id else None,

@@ -67,8 +67,18 @@ class QuizRetakeAndTimerTest(TestCase):
         )
         return c
 
-    def _start_and_submit(self, client, choice):
-        start = client.post(f"/api/quizzes/{self.quiz.id}/start/")
+    def _start_and_submit(self, client, choice, *, new_attempt=False):
+        # new_attempt: a RETAKE over an already-submitted attempt must be
+        # asked for explicitly (see StartQuizView's docstring). The attempt
+        # route re-posts to this endpoint on every mount, and the browser
+        # Back button lands there, so a stray back-click used to silently
+        # burn an attempt — which can push a learner past
+        # reveal_answers_after and cost them the answer key for good.
+        start = client.post(
+            f"/api/quizzes/{self.quiz.id}/start/",
+            {"new_attempt": True} if new_attempt else {},
+            format="json",
+        )
         self.assertEqual(start.status_code, 200, start.content)
         submit = client.post(
             f"/api/student/quizzes/{self.quiz.id}/submit/",
@@ -97,7 +107,7 @@ class QuizRetakeAndTimerTest(TestCase):
     def test_second_attempt_hides_the_answer_key_but_keeps_score(self):
         c = self.client_as_student()
         self._start_and_submit(c, self.wrong)  # attempt 1 — burns the reveal
-        submit2 = self._start_and_submit(c, self.right)  # attempt 2
+        submit2 = self._start_and_submit(c, self.right, new_attempt=True)  # attempt 2
         self.assertEqual(submit2.status_code, 200, submit2.content)
 
         result = c.get(f"/api/quizzes/{self.quiz.id}/result/")
@@ -290,3 +300,231 @@ class DualRoleStudentQuizAccessTest(TestCase):
         )
         r = c.get(f"/api/quizzes/{self.quiz.id}/")
         self.assertEqual(r.status_code, 200, r.content)
+
+
+class QuizCourseScopingTest(TestCase):
+    """A learner profile subscribed to several courses must only see the
+    ACTIVE course's quizzes.
+
+    The Hub endpoint is flat (/api/student/quizzes/) rather than
+    course-scoped by URL the way assignments and materials are, and its
+    subscription join spans every course the profile holds. With no ?course=
+    filter it therefore returned a Class 7 quiz to a learner sitting in
+    Class 12 — reported from production, where the Completed tab showed
+    another class's Civics quizzes entirely.
+
+    Also pins batch isolation, which Quiz.batch's own docstring flagged as
+    declared-but-unenforced.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="STUDENT")
+        Role.objects.get_or_create(name="TEACHER")
+
+        cls.teacher = User.objects.create_user(username="cs_t", email="cs_t@test.com", password="x")
+        cls.student = User.objects.create_user(
+            username="cs_s", email="cs_s@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.student, role=Role.objects.get(name="STUDENT"),
+            is_active=True, is_primary=True,
+        )
+        cls.profile = LearnerProfile.objects.create(
+            account=cls.student, display_name="Nil", is_default=True,
+        )
+
+        now = timezone.now()
+        cls.course_a = Course.objects.create(title="Class 12 (Commerce)")
+        cls.course_b = Course.objects.create(title="Class 7")
+        cls.subject_a = Subject.objects.create(course=cls.course_a, name="Accountancy")
+        cls.subject_b = Subject.objects.create(course=cls.course_b, name="Civics")
+
+        for course in (cls.course_a, cls.course_b):
+            Subscription.objects.create(
+                user=cls.student, learner_profile=cls.profile, course=course,
+                status=Subscription.STATUS_ACTIVE,
+                starts_at=now, expires_at=now + timedelta(days=30),
+            )
+
+        cls.quiz_a = Quiz.objects.create(
+            subject=cls.subject_a, created_by=cls.teacher, title="Ledger basics",
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, review_status=Quiz.REVIEW_APPROVED,
+        )
+        cls.quiz_b = Quiz.objects.create(
+            subject=cls.subject_b, created_by=cls.teacher, title="Fundamental rights",
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, review_status=Quiz.REVIEW_APPROVED,
+        )
+
+    def client_as_student(self):
+        c = APIClient()
+        c.force_authenticate(
+            user=self.student,
+            token={"context": "learner", "active_profile": str(self.profile.id)},
+        )
+        return c
+
+    def _titles(self, response):
+        self.assertEqual(response.status_code, 200, response.content)
+        return {row["title"] for row in response.data}
+
+    def test_course_param_excludes_other_courses_quizzes(self):
+        c = self.client_as_student()
+        self.assertEqual(
+            self._titles(c.get("/api/student/quizzes/", {"course": str(self.course_a.id)})),
+            {"Ledger basics"},
+        )
+        self.assertEqual(
+            self._titles(c.get("/api/student/quizzes/", {"course": str(self.course_b.id)})),
+            {"Fundamental rights"},
+        )
+
+    def test_without_course_param_the_whole_profile_is_returned(self):
+        # The un-scoped behaviour is retained deliberately for any caller
+        # that wants a cross-course view; the leak was the Hub never passing
+        # ?course=, not the parameter being optional.
+        c = self.client_as_student()
+        self.assertEqual(
+            self._titles(c.get("/api/student/quizzes/")),
+            {"Ledger basics", "Fundamental rights"},
+        )
+
+    def test_batch_scoped_quiz_is_hidden_from_another_batch(self):
+        from courses.models import Batch
+        from enrollments.models import Enrollment
+
+        batch_mine = Batch.objects.create(course=self.course_a, name="Morning 2026", code="M26")
+        batch_other = Batch.objects.create(course=self.course_a, name="Evening 2026", code="E26")
+        Enrollment.objects.create(
+            user=self.student, learner_profile=self.profile, course=self.course_a,
+            batch=batch_mine, status=Enrollment.STATUS_ACTIVE,
+        )
+        Quiz.objects.create(
+            subject=self.subject_a, created_by=self.teacher, title="Evening-only test",
+            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            review_status=Quiz.REVIEW_APPROVED, batch=batch_other,
+        )
+        mine = Quiz.objects.create(
+            subject=self.subject_a, created_by=self.teacher, title="Morning-only test",
+            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            review_status=Quiz.REVIEW_APPROVED, batch=batch_mine,
+        )
+
+        c = self.client_as_student()
+        titles = self._titles(c.get("/api/student/quizzes/", {"course": str(self.course_a.id)}))
+        self.assertIn(mine.title, titles)
+        self.assertIn("Ledger basics", titles)          # course-wide (batch NULL)
+        self.assertNotIn("Evening-only test", titles)
+
+    def test_stats_are_scoped_to_the_course(self):
+        # Answering a Class 7 question must not move the Class 12 strip.
+        question = Question.objects.create(quiz=self.quiz_b, text="Art. 21?", marks=1, order=0)
+        choice = Choice.objects.create(question=question, text="Life", is_correct=True)
+        attempt = QuizAttempt.objects.create(
+            quiz=self.quiz_b, learner_profile=self.profile, student=self.student,
+            status=QuizAttempt.STATUS_SUBMITTED, attempt_number=1, score=1,
+        )
+        StudentAnswer.objects.create(
+            attempt=attempt, question=question, selected_choice=choice, is_correct=True,
+        )
+
+        c = self.client_as_student()
+        a = c.get("/api/student/quizzes/stats/", {"course": str(self.course_a.id)})
+        b = c.get("/api/student/quizzes/stats/", {"course": str(self.course_b.id)})
+        self.assertEqual(a.status_code, 200, a.content)
+        self.assertEqual(b.status_code, 200, b.content)
+        self.assertEqual(a.data["questions_solved"], 0)
+        self.assertEqual(b.data["questions_solved"], 1)
+
+
+class QuizAccidentalRetakeTest(TestCase):
+    """Landing on the attempt route again must not silently start a retake.
+
+    QuizMock re-posts /start/ on every mount and the browser Back button
+    lands there, so a stray back-click from the result screen used to create
+    a whole new attempt: reshuffled questions, a running timer, and an
+    inflated attempt_number that can push the learner past
+    reveal_answers_after and permanently cost them the answer key.
+    Retakes stay unlimited — they just have to be asked for.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="STUDENT")
+        cls.teacher = User.objects.create_user(username="ar_t", email="ar_t@test.com", password="x")
+        cls.student = User.objects.create_user(
+            username="ar_s", email="ar_s@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.student, role=Role.objects.get(name="STUDENT"),
+            is_active=True, is_primary=True,
+        )
+        cls.profile = LearnerProfile.objects.create(
+            account=cls.student, display_name="S", is_default=True,
+        )
+        cls.course = Course.objects.create(title="Bio")
+        cls.subject = Subject.objects.create(course=cls.course, name="Biology")
+        Subscription.objects.create(
+            user=cls.student, learner_profile=cls.profile, course=cls.course,
+            status=Subscription.STATUS_ACTIVE,
+            starts_at=timezone.now(), expires_at=timezone.now() + timedelta(days=30),
+        )
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Cells",
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, review_status=Quiz.REVIEW_APPROVED,
+        )
+        cls.question = Question.objects.create(quiz=cls.quiz, text="Powerhouse?", marks=1, order=0)
+        cls.right = Choice.objects.create(question=cls.question, text="Mitochondria", is_correct=True)
+
+    def _client(self):
+        c = APIClient()
+        c.force_authenticate(
+            user=self.student,
+            token={"context": "learner", "active_profile": str(self.profile.id)},
+        )
+        return c
+
+    def _submit(self, c):
+        return c.post(
+            f"/api/student/quizzes/{self.quiz.id}/submit/",
+            {"answers": [{"question": str(self.question.id), "selected_choice": str(self.right.id)}]},
+            format="json",
+        )
+
+    def test_first_start_still_creates_an_attempt_with_no_flag(self):
+        c = self._client()
+        r = c.post(f"/api/quizzes/{self.quiz.id}/start/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertFalse(r.data.get("already_submitted", False))
+        self.assertEqual(QuizAttempt.objects.filter(quiz=self.quiz).count(), 1)
+
+    def test_reposting_start_after_submitting_creates_nothing(self):
+        c = self._client()
+        c.post(f"/api/quizzes/{self.quiz.id}/start/")
+        self.assertEqual(self._submit(c).status_code, 200)
+
+        again = c.post(f"/api/quizzes/{self.quiz.id}/start/")
+        self.assertEqual(again.status_code, 200, again.content)
+        self.assertTrue(again.data["already_submitted"])
+        # Still exactly one attempt — the back-click cost the learner nothing.
+        self.assertEqual(QuizAttempt.objects.filter(quiz=self.quiz).count(), 1)
+
+    def test_explicit_new_attempt_still_starts_a_retake(self):
+        c = self._client()
+        c.post(f"/api/quizzes/{self.quiz.id}/start/")
+        self._submit(c)
+
+        retake = c.post(
+            f"/api/quizzes/{self.quiz.id}/start/", {"new_attempt": True}, format="json",
+        )
+        self.assertEqual(retake.status_code, 200, retake.content)
+        self.assertFalse(retake.data.get("already_submitted", False))
+        self.assertEqual(QuizAttempt.objects.filter(quiz=self.quiz).count(), 2)
+
+    def test_an_in_progress_attempt_is_still_resumed_not_duplicated(self):
+        # Refreshing mid-attempt must keep the same attempt (and its clock).
+        c = self._client()
+        first = c.post(f"/api/quizzes/{self.quiz.id}/start/")
+        resumed = c.post(f"/api/quizzes/{self.quiz.id}/start/")
+        self.assertEqual(resumed.data["attempt_id"], first.data["attempt_id"])
+        self.assertEqual(QuizAttempt.objects.filter(quiz=self.quiz).count(), 1)

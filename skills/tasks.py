@@ -34,3 +34,54 @@ def auto_decline_stale_requests():
         push_skill_bell(sess, "declined")
         count += 1
     return count
+
+
+# Grace period after a session's scheduled END before we call it lapsed.
+# Generous on purpose: a tutor and learner who start 20 minutes late and run
+# over must never have the session yanked out from under them mid-call. The
+# cost of waiting is a stale row for an extra hour; the cost of being hasty
+# is ending a live session.
+LAPSE_GRACE = timezone.timedelta(hours=2)
+
+
+@app.task
+def lapse_unheld_sessions():
+    """Move CONFIRMED sessions whose slot has fully passed to LAPSED.
+
+    A session only becomes COMPLETED when someone actually ends the LiveKit
+    room (skills/livekit_views.py). Nothing closed out a session that simply
+    never happened, so it stayed CONFIRMED indefinitely — and because the
+    learner's Upcoming/Past split is status-based rather than time-based, a
+    long-past session sat in "Upcoming" with an active Join button.
+
+    Deliberately narrow:
+      · CONFIRMED only. REQUESTED has its own 24h SLA sweep above;
+        PENDING_PAYMENT/NEEDS_RECONFIRMATION are awaiting a human, not a
+        clock, and stealing them would hide work someone still has to do.
+      · scheduled_for must be set. A confirmed session with no slot is a
+        data problem to surface, not one to bury under a terminal status.
+      · The whole booked duration plus LAPSE_GRACE must have elapsed.
+
+    Payment is settled directly between learner and expert with no platform
+    intermediary, so there is deliberately no refund step here — unlike
+    auto_decline_stale_requests, this task only records what happened.
+    """
+    from django.db.models import F, ExpressionWrapper, DateTimeField
+    from datetime import timedelta as _td
+
+    now = timezone.now()
+    candidates = (
+        SkillSession.objects
+        .filter(status=SkillSession.STATUS_CONFIRMED, scheduled_for__isnull=False)
+        .select_related("expert")
+    )
+
+    count = 0
+    for sess in candidates:
+        ends_at = sess.scheduled_for + _td(minutes=sess.duration_mins or 0)
+        if now < ends_at + LAPSE_GRACE:
+            continue
+        sess.status = SkillSession.STATUS_LAPSED
+        sess.save(update_fields=["status", "updated_at"])
+        count += 1
+    return count

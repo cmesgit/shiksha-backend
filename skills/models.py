@@ -552,6 +552,15 @@ class SkillSession(models.Model):
     # student-facing outcome as DECLINED (refunded, notified) but a distinct
     # status so "declined" vs "expired unanswered" isn't lost.
     STATUS_AUTO_DECLINED = "auto_declined"
+    # A CONFIRMED session whose slot came and went without anyone joining.
+    #
+    # Needed because COMPLETED is only ever set by livekit_views when someone
+    # actually ends the room — so a session that simply didn't happen had no
+    # terminal state at all. It stayed CONFIRMED forever, which meant the
+    # learner's "Upcoming" tab (split purely on status, never on the clock)
+    # kept showing a months-old session with a live "Join session" button.
+    # Distinct from CANCELLED: nobody called this off, it just lapsed.
+    STATUS_LAPSED = "lapsed"
     STATUS_CHOICES = [
         (STATUS_REQUESTED, "Requested"),
         (STATUS_PENDING_PAYMENT, "Pending payment"),
@@ -561,6 +570,7 @@ class SkillSession(models.Model):
         (STATUS_CANCELLED, "Cancelled"),
         (STATUS_DECLINED, "Declined"),
         (STATUS_AUTO_DECLINED, "Auto-declined (24h SLA)"),
+        (STATUS_LAPSED, "Didn't take place"),
     ]
 
     PAYMENT_UNPAID = "unpaid"

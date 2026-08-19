@@ -126,18 +126,89 @@ def _live_sessions_for_subjects(subject_ids, today_start, excluded, week_only):
     )
 
 
-def _learner_assignments(chapter_ids, teacher_prefetch):
+def _batch_ids_for(profile, course_ids):
+    """This profile's batch in each of its courses, as {course_id: batch_id}.
+
+    A course the learner is enrolled in with no batch assigned maps to None,
+    which the callers below treat as "show every batch" — the same deliberate
+    over-share assignments/views.py documents: we cannot tell which cohort an
+    unplaced learner belongs to, so hiding batch-scoped work would make it
+    vanish with no notification.
+    """
+    return dict(
+        Enrollment.objects.filter(
+            learner_profile=profile,
+            course_id__in=course_ids,
+            status=Enrollment.STATUS_ACTIVE,
+        ).values_list("course_id", "batch_id")
+    )
+
+
+def _batch_visibility_q(batch_ids_by_course, course_field):
+    """Q object matching course-wide items plus this learner's own batch's.
+
+    Mirrors CourseAssignmentsView / StudentCourseMaterials exactly:
+    `Q(batch__isnull=True) | Q(batch_id=<my batch for THAT course>)`. Built
+    per course because the dashboard spans several at once, and a learner can
+    sit in a different batch in each.
+    """
+    q = Q(batch__isnull=True)
+    for course_id, batch_id in batch_ids_by_course.items():
+        if batch_id is None:
+            # Unplaced in this course → don't restrict it at all.
+            q |= Q(**{course_field: course_id})
+        else:
+            q |= Q(**{course_field: course_id, "batch_id": batch_id})
+    return q
+
+
+def _learner_assignments(chapter_ids, teacher_prefetch, batch_q, submitted_ids):
+    """Assignments still outstanding for this learner.
+
+    Two things this used to get wrong, both reported from production:
+
+    1. NO BATCH FILTER. It scoped on chapter only, so a subject with a
+       Morning and an Evening batch showed BOTH batches' assignments on the
+       dashboard — while the Assignments tab, which goes through
+       CourseAssignmentsView, correctly showed one. Same widget, two
+       different answers.
+    2. SUBMITTED WORK NEVER DROPPED OFF. Nothing here consulted
+       AssignmentSubmission, so an assignment the learner had already turned
+       in sat on the dashboard forever. Quizzes behave correctly, which is
+       what made it obvious something was wrong here.
+    """
     return list(
-        Assignment.objects.filter(chapter_id__in=chapter_ids)
+        Assignment.objects.filter(chapter_id__in=chapter_ids, is_published=True)
+        .filter(batch_q)
+        .exclude(id__in=submitted_ids)
         .select_related("chapter__subject")
         .prefetch_related(teacher_prefetch)
         .order_by("due_date")[:20]
     )
 
 
-def _learner_quizzes(subject_ids):
+def _submitted_assignment_ids(profile, chapter_ids):
+    """Assignments this PROFILE has already submitted.
+
+    Keyed on learner_profile, never on the account: AssignmentSubmission
+    carries both, and `student` is the account kept for audit. Two siblings
+    on one parent email share an account, so keying on it would let one
+    child's submission clear the other child's dashboard.
+    """
+    return set(
+        AssignmentSubmission.objects.filter(
+            learner_profile=profile,
+            assignment__chapter_id__in=chapter_ids,
+        ).values_list("assignment_id", flat=True)
+    )
+
+
+def _learner_quizzes(subject_ids, batch_q):
+    # Same batch leak as assignments had — Quiz.batch was equally unfiltered
+    # here. Not user-reported yet only because this widget shows no due date.
     return list(
         Quiz.objects.filter(subject_id__in=subject_ids, is_published=True)
+        .filter(batch_q)
         .select_related("created_by")
         .order_by("-created_at")[:20]
     )
@@ -442,11 +513,27 @@ class DashboardView(APIView):
             all_sessions = _guard(
                 "learner.all_sessions",
                 lambda: _live_sessions_for_subjects(subject_ids, today_start, excluded, False), [])
+            # Batch scoping + "already done" exclusion for the coursework
+            # widgets. Both default to permissive on failure (_guard's
+            # fallbacks) so a hiccup here can never blank the dashboard.
+            batch_ids_by_course = _guard(
+                "learner.batches",
+                lambda: _batch_ids_for(profile, course_ids), {})
+            assignment_batch_q = _batch_visibility_q(
+                batch_ids_by_course, "chapter__subject__course_id")
+            quiz_batch_q = _batch_visibility_q(
+                batch_ids_by_course, "subject__course_id")
+            submitted_ids = _guard(
+                "learner.submitted_assignments",
+                lambda: _submitted_assignment_ids(profile, chapter_ids), set())
+
             assignments = _guard(
                 "learner.assignments",
-                lambda: _learner_assignments(chapter_ids, teacher_prefetch), [])
+                lambda: _learner_assignments(
+                    chapter_ids, teacher_prefetch, assignment_batch_q, submitted_ids), [])
             quizzes = _guard(
-                "learner.quizzes", lambda: _learner_quizzes(subject_ids), [])
+                "learner.quizzes",
+                lambda: _learner_quizzes(subject_ids, quiz_batch_q), [])
             quiz_avg_pct = _guard(
                 "learner.quiz_avg_pct",
                 lambda: _learner_quiz_avg_pct(profile, subject_ids), None)

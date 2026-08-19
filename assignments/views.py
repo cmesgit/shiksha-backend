@@ -188,8 +188,11 @@ class CourseAssignmentsView(generics.ListAPIView):
                 raise PermissionDenied("Course not found.")
             if not has_active_subscription(user=user, course=course_obj, learner_profile=learner):
                 raise PermissionDenied("Your subscription for this course has expired.")
+            # is_published: drafts are the teacher's alone. The branch above
+            # deliberately does NOT filter on it — a teacher must see their
+            # own drafts in order to finish and publish them.
             queryset = Assignment.objects.filter(
-                chapter__subject__course__id=course_id)
+                chapter__subject__course__id=course_id, is_published=True)
             # Batch isolation: show course-wide assignments (batch IS NULL) plus
             # this student's own batch's assignments. Due dates are cohort-
             # relative, so a later batch must not inherit an earlier one's.
@@ -656,7 +659,8 @@ class SubjectAssignmentsView(APIView):
 
         assignments = (
             Assignment.objects
-            .filter(chapter__subject_id=subject_id)
+            # Student-facing view — drafts stay hidden until published.
+            .filter(chapter__subject_id=subject_id, is_published=True)
             .select_related("chapter__subject")
             .prefetch_related(submission_prefetch, teacher_prefetch, "files")
         )

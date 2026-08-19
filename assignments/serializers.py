@@ -237,8 +237,15 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
             "attachment",
             "idempotency_key",
             "max_marks",
+            # Optional; the model defaults to True so an existing client that
+            # never sends it keeps publishing immediately, exactly as before.
+            # Send false to save a draft.
+            "is_published",
         )
-        extra_kwargs = {"max_marks": {"required": False}}
+        extra_kwargs = {
+            "max_marks": {"required": False},
+            "is_published": {"required": False},
+        }
 
     def validate(self, attrs):
         due_date = attrs.get("due_date")
@@ -308,8 +315,16 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
             "new_files",
             "delete_file_ids",
             "max_marks",
+            # PATCH is_published=true to publish a draft — that transition is
+            # what fires the class notification (activity/signals.py's
+            # assignment_created gates on the False→True edge, so publishing
+            # notifies exactly once and re-saving a live assignment is silent).
+            "is_published",
         )
-        extra_kwargs = {"max_marks": {"required": False}}
+        extra_kwargs = {
+            "max_marks": {"required": False},
+            "is_published": {"required": False},
+        }
 
     def validate_due_date(self, value):
         if value and value < timezone.now():
@@ -380,6 +395,7 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
             "attachment",   # legacy
             "files",        # new multi-file
             "max_marks",
+            "is_published",   # false = draft: students can't see it yet
         )
 
     def get_chapter_name(self, obj):

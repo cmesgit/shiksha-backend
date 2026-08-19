@@ -173,7 +173,8 @@ def _bulk_notify_students(enrollments, obj, activity_type, title, due_date,
 
 
 def _notify_teacher(teacher, obj, activity_type, title, due_date,
-                    subject_id, subject_name, extra=None):
+                    subject_id, subject_name, extra=None,
+                    verb=None, link_url=""):
     content_type = ContentType.objects.get_for_model(obj)
 
     act = Activity.objects.create(
@@ -188,6 +189,26 @@ def _notify_teacher(teacher, obj, activity_type, title, due_date,
         content_type=content_type,
         object_id=obj.id,
     )
+
+    # A durable Notification alongside the Activity row, so the event also
+    # reaches the Communication Center and whatever email/push the verb's
+    # policy allows. Without it a teacher who was offline when a student
+    # submitted learned about it only if they happened to scroll the feed —
+    # no email, no push, nothing in the Comm Center list. Optional (verb=None
+    # keeps the old Activity-only behaviour) so existing callers are
+    # unaffected until they opt in.
+    if verb:
+        from notifications.services import notify
+        notify(
+            recipient=teacher,
+            actor=None,
+            verb=verb,
+            title=title,
+            link_url=link_url,
+            payload={"object_id": str(obj.id), "subject_id": str(subject_id)},
+            push_ws=False,   # the Activity frame below already carries it
+        )
+
     push_ws_notification(teacher.id, _ws_payload(act, extra))
 
 
@@ -195,9 +216,29 @@ def _notify_teacher(teacher, obj, activity_type, title, due_date,
 # ASSIGNMENT CREATED → notify enrolled learner profiles
 # =====================================================
 
+@receiver(pre_save, sender=Assignment)
+def cache_assignment_published_state(sender, instance, **kwargs):
+    # Same shape as cache_quiz_published_state: post_save re-queries the
+    # already-saved row, so the False→True transition can only be observed
+    # by snapshotting it here first.
+    if instance.pk:
+        instance._was_published = (
+            Assignment.objects
+            .filter(pk=instance.pk)
+            .values_list("is_published", flat=True)
+            .first()
+        ) or False
+    else:
+        instance._was_published = False
+
+
 @receiver(post_save, sender=Assignment)
 def assignment_created(sender, instance, created, **kwargs):
-    if not created:
+    # Fires on FIRST PUBLICATION, not on creation. A draft saved now and
+    # published tomorrow notifies tomorrow; re-saving an already-published
+    # assignment (fixing a typo) notifies nobody a second time.
+    was = getattr(instance, "_was_published", False)
+    if was or not instance.is_published:
         return
 
     subject = instance.chapter.subject
@@ -233,9 +274,34 @@ def assignment_submitted(sender, instance, created, **kwargs):
     subject = assignment.chapter.subject
     student_name = _display_name(instance.student)
 
-    for ta in subject.teaching_assignments.filter(
-        batch__isnull=True, is_active=True,
-    ).select_related("teacher"):
+    # WHICH teachers to tell. This used to filter `batch__isnull=True`, which
+    # silently excluded every batch-scoped teacher — the people most likely to
+    # own the submission. A teacher assigned only to "Morning 2026" was never
+    # told when one of their own students submitted.
+    #
+    # Now: course-wide teachers (batch IS NULL) plus the teachers of the
+    # submitting learner's batch. distinct() because one teacher can hold
+    # several teaching assignments on a subject and must not be notified twice.
+    learner_batch_id = None
+    if instance.learner_profile_id:
+        from enrollments.services import active_batch_id
+        learner_batch_id = active_batch_id(
+            learner_profile=instance.learner_profile,
+            course_id=subject.course_id,
+        )
+
+    tas = subject.teaching_assignments.filter(is_active=True)
+    if learner_batch_id is not None:
+        tas = tas.filter(Q(batch__isnull=True) | Q(batch_id=learner_batch_id))
+    # learner_batch_id None → the learner isn't placed in a batch, so we
+    # cannot tell whose cohort this is; tell every teacher on the subject
+    # rather than nobody. Same deliberate over-share as _enrollments_for.
+
+    notified = set()
+    for ta in tas.select_related("teacher").distinct():
+        if ta.teacher_id in notified:
+            continue
+        notified.add(ta.teacher_id)
         _notify_teacher(
             teacher=ta.teacher,
             obj=assignment,
@@ -244,6 +310,10 @@ def assignment_submitted(sender, instance, created, **kwargs):
             due_date=assignment.due_date,
             subject_id=subject.id,
             subject_name=subject.name,
+            verb="assignment.submitted",
+            # The faculty bell's SUBMISSION branch routes on subject_id + the
+            # parent object id; this path is its direct equivalent.
+            link_url=f"/teacher/classes/{subject.id}/assignments/{assignment.id}/submissions",
         )
 
 

@@ -61,6 +61,10 @@ app.conf.beat_schedule.update({
         "task": "chat.tasks.expire_old_attachments",
         "schedule": crontab(hour=3, minute=30),  # daily, off-peak
     },
+    "lapse-unheld-skill-sessions": {
+        "task": "skills.tasks.lapse_unheld_sessions",
+        "schedule": crontab(minute="*/30"),  # closes out sessions that never happened
+    },
     "auto-decline-stale-skill-requests": {
         "task": "skills.tasks.auto_decline_stale_requests",
         "schedule": crontab(minute="*/15"),  # 24h SLA sweep
