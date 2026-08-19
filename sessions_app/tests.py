@@ -925,3 +925,102 @@ class GroupSessionUpdateTest(TestCase):
             format="json",
         )
         self.assertEqual(r.status_code, 400)
+
+
+# ===================================================================
+# SUBJECT ROSTER — authorization
+# ===================================================================
+# /api/sessions/subjects/<id>/students/ was gated on IsAuthenticated alone,
+# which made it an enumerable roster dump: subject ids are discoverable from
+# the catalog, so any logged-in account could pull every enrolled student's
+# name and student_id for any course. It cannot simply become teacher-only —
+# learners legitimately call it to invite classmates to a group session
+# (groupSessionService.getCourseStudents) — so both audiences, and nobody
+# else, must pass.
+
+class SubjectStudentsAccessTest(TestCase):
+    def setUp(self):
+        from courses.models import Board, Course, Subject, TeachingAssignment
+        from enrollments.models import Enrollment
+
+        board = Board.objects.create(name="CBSE-R", board_type=Board.TYPE_CENTRAL)
+        self.course = Course.objects.create(board=board, title="C9", class_level=9)
+        self.subject = Subject.objects.create(course=self.course, name="Maths")
+
+        teacher_role, _ = Role.objects.get_or_create(name="TEACHER")
+
+        self.teacher = User.objects.create_user(
+            username="ros_t@x.com", email="ros_t@x.com", password="x")
+        UserRole.objects.create(user=self.teacher, role=teacher_role,
+                                is_active=True, is_primary=True)
+        TeachingAssignment.objects.create(
+            subject=self.subject, teacher=self.teacher, is_active=True)
+
+        self.other_teacher = User.objects.create_user(
+            username="ros_t2@x.com", email="ros_t2@x.com", password="x")
+        UserRole.objects.create(user=self.other_teacher, role=teacher_role,
+                                is_active=True, is_primary=True)
+
+        self.classmate = User.objects.create_user(
+            username="ros_s@x.com", email="ros_s@x.com", password="x")
+        Enrollment.objects.create(user=self.classmate, course=self.course,
+                                  status=Enrollment.STATUS_ACTIVE)
+
+        self.peer = User.objects.create_user(
+            username="ros_s2@x.com", email="ros_s2@x.com", password="x")
+        Enrollment.objects.create(user=self.peer, course=self.course,
+                                  status=Enrollment.STATUS_ACTIVE)
+
+        self.outsider = User.objects.create_user(
+            username="ros_out@x.com", email="ros_out@x.com", password="x")
+
+        self.url = f"/api/sessions/subjects/{self.subject.id}/students/"
+
+    def _get(self, user, context=None):
+        client = APIClient()
+        client.force_authenticate(
+            user=user, token={"context": context} if context else {})
+        return client.get(self.url)
+
+    def test_outsider_cannot_enumerate_the_roster(self):
+        """The actual hole: any authenticated non-member could read it."""
+        self.assertEqual(self._get(self.outsider).status_code, 403)
+
+    def test_unrelated_teacher_cannot_read_the_roster(self):
+        r = self._get(self.other_teacher, context="teacher")
+        self.assertEqual(r.status_code, 403)
+
+    def test_assigned_teacher_in_teacher_context_can_read(self):
+        r = self._get(self.teacher, context="teacher")
+        self.assertEqual(r.status_code, 200)
+
+    def test_enrolled_student_can_read_for_group_invites(self):
+        """Must keep working — this is the group-session invite picker."""
+        r = self._get(self.classmate)
+        self.assertEqual(r.status_code, 200)
+        # Sees the peer, never themselves.
+        ids = {row["user_id"] for row in r.data}
+        self.assertIn(str(self.peer.id), ids)
+        self.assertNotIn(str(self.classmate.id), ids)
+
+    # ── the sibling fork: /subjects/<id>/teachers/ ────────────────────────
+    def _get_teachers(self, user, context=None):
+        client = APIClient()
+        client.force_authenticate(
+            user=user, token={"context": context} if context else {})
+        return client.get(f"/api/sessions/subjects/{self.subject.id}/teachers/")
+
+    def test_outsider_cannot_list_subject_teachers(self):
+        """Was the last fork still gated on IsAuthenticated alone."""
+        self.assertEqual(self._get_teachers(self.outsider).status_code, 403)
+
+    def test_enrolled_student_can_list_subject_teachers(self):
+        """Must keep working — this is the private-session request picker."""
+        r = self._get_teachers(self.classmate)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(str(self.teacher.id), {row["id"] for row in r.data})
+
+    def test_assigned_teacher_can_list_subject_teachers(self):
+        """Must keep working — host inviting a co-teacher to a group session."""
+        self.assertEqual(
+            self._get_teachers(self.teacher, context="teacher").status_code, 200)

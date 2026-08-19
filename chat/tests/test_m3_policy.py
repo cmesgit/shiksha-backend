@@ -114,15 +114,19 @@ class DmMatrixTest(TestCase):
         self.assertEqual(reason, "")
 
     def test_learner_can_message_skill_track_approved_expert_with_no_shared_course(self):
-        """Regression (bug #3/#7): accounts.TeacherListView (the Academy
-        Teachers page + private-session form) surfaces every `is_approved`
-        teacher, and is_approved is "approved on ANY track". A guest expert
-        approved on the SKILL track but with no listed ExpertProfile (and no
-        academy approval) is offered a Message button there, yet the DM gate
+        """Regression (bug #3/#7): a guest expert approved on the SKILL track,
+        with no listed ExpertProfile and no academy approval, is offered a
+        Message button on Skill Dev's Explore Experts surface, yet the DM gate
         used to 403 them — which also left that expert unable to DM anyone
         from their own Skill Dev inbox, since a teacher->learner DM runs
-        through teacher_is_public_faculty(self). skill_status == TRACK_APPROVED
-        now counts as publicly reachable, matching is_approved's semantics."""
+        through teacher_is_public_faculty(self).
+
+        NOTE: this test originally justified itself by pointing at
+        accounts.TeacherListView listing every `is_approved` teacher. That is
+        no longer true — the Academy directory is academy_status-only now, on
+        purpose (unvetted experts were being shown as school faculty). The DM
+        gate is deliberately WIDER than that directory; do not narrow it to
+        match. See chat.services.teacher_is_public_faculty."""
         from accounts.models import TeacherProfile
 
         learner = make_learner()

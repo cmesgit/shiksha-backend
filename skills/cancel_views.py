@@ -69,5 +69,5 @@ class StudentCancelSessionView(APIView):
         # booked at request time, before the expert ever confirmed.
         if session.slot_key:
             free_slot(session.expert, session.slot_key)
-        push_skill_bell(session, "cancelled")
+        push_skill_bell(session, "cancelled", actor=request.user)
         return Response({"status": session.status})

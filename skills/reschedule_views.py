@@ -54,7 +54,7 @@ class TeacherRescheduleSessionView(APIView):
             "proposed_slot_key", "proposed_scheduled_for",
             "reschedule_reason", "status_before_reschedule", "status", "updated_at",
         ])
-        push_skill_bell(sess, "reschedule_proposed")
+        push_skill_bell(sess, "reschedule_proposed", actor=request.user)
         return Response({"ok": True, "status": sess.status})
 
 
@@ -109,7 +109,7 @@ class StudentConfirmRescheduleView(APIView):
             "slot_key", "scheduled_for", "proposed_slot_key",
             "proposed_scheduled_for", "status_before_reschedule", "status", "updated_at",
         ])
-        push_skill_bell(sess, "reschedule_confirmed")
+        push_skill_bell(sess, "reschedule_confirmed", actor=request.user)
         return Response({"ok": True, "status": sess.status})
 
 
@@ -141,5 +141,5 @@ class StudentDeclineRescheduleView(APIView):
             "status", "status_before_reschedule", "proposed_slot_key",
             "proposed_scheduled_for", "reschedule_reason", "updated_at",
         ])
-        push_skill_bell(sess, "reschedule_declined")
+        push_skill_bell(sess, "reschedule_declined", actor=request.user)
         return Response({"ok": True, "status": sess.status})

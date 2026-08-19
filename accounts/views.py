@@ -1014,8 +1014,17 @@ class TeacherListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # academy_status, NOT is_approved. is_approved means "approved on ANY
+        # track" and the Skill track auto-approves at signup with no review,
+        # so filtering on it listed every self-registered guest expert here as
+        # bookable school faculty — complete with subject and qualification.
+        # That was both false credentialing and a dead end: the private-session
+        # request re-validates against TeachingAssignment and 400s for them.
+        # Skill experts remain reachable through Skill Dev's own Explore
+        # Experts surface, and remain DM-able (see chat.services
+        # .teacher_is_public_faculty, which stays deliberately wider).
         qs = TeacherProfile.objects.filter(
-            is_approved=True,
+            academy_status=TeacherProfile.TRACK_APPROVED,
             user__user_roles__role__name="TEACHER",
             user__user_roles__is_active=True,
         ).select_related("user").distinct()
@@ -1067,8 +1076,12 @@ class TeacherPublicProfileView(APIView):
                 .select_related("user")
                 .prefetch_related("course_applications", "skill_applications")
                 .get(
+                    # Matches TeacherListView — this is the detail page for
+                    # that directory, so an unvetted guest expert must not be
+                    # reachable here either (it exposes degree, experience and
+                    # employment status). See that view for the full reasoning.
                     user__id=user_id,
-                    is_approved=True,
+                    academy_status=TeacherProfile.TRACK_APPROVED,
                     user__user_roles__role__name="TEACHER",
                     user__user_roles__is_active=True,
                 )

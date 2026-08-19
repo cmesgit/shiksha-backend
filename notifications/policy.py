@@ -71,6 +71,27 @@ POLICY = {
     "session.reminder_24h": {"category": "reminders", "email": OPT_OUT, "sms": OFF,      "push": REQUIRED},
     "session.reminder_1h":  {"category": "reminders", "email": OFF,     "sms": REQUIRED, "push": REQUIRED, "sms_template": "session_reminder"},
 
+    # ── Skill Dev sessions (skills.SkillSession) ───────────────────────
+    # Deliberately mirrors the session.* block above rather than inventing a
+    # second policy shape: a Skill Dev booking is the same promise to the
+    # same person as a private-session booking, so it earns the same
+    # channels. The one divergence is skill.paid — see below.
+    "skill.requested":            {"category": "bookings", "email": OPT_OUT,  "sms": OFF,      "push": REQUIRED},
+    "skill.confirmed":            {"category": "bookings", "email": REQUIRED, "sms": REQUIRED, "push": REQUIRED, "sms_template": "booking_confirmed"},
+    "skill.declined":             {"category": "bookings", "email": OPT_OUT,  "sms": OFF,      "push": REQUIRED},
+    "skill.cancelled":            {"category": "bookings", "email": REQUIRED, "sms": REQUIRED, "push": REQUIRED, "sms_template": "booking_cancelled"},
+    "skill.reschedule_proposed":  {"category": "bookings", "email": REQUIRED, "sms": REQUIRED, "push": REQUIRED, "sms_template": "booking_rescheduled"},
+    # The two reschedule *responses* land on the expert, who is the party
+    # already sitting in the app waiting on an answer — no SMS spend.
+    "skill.reschedule_confirmed": {"category": "bookings", "email": OPT_OUT,  "sms": OFF,      "push": REQUIRED},
+    "skill.reschedule_declined":  {"category": "bookings", "email": OPT_OUT,  "sms": OFF,      "push": REQUIRED},
+    "skill.completed":            {"category": "bookings", "email": OFF,      "sms": OFF,      "push": OPT_OUT},
+    # Skill payment is direct P2P (skills/views.py CreateOrderView) — this is
+    # the expert *asserting* they were paid, not a platform-observed receipt,
+    # so it must not go out as a REQUIRED transactional confirmation the way
+    # payments.receipt does. In-app + opt-out push only.
+    "skill.paid":                 {"category": "payments", "email": OFF,      "sms": OFF,      "push": OPT_OUT},
+
     # ── Group sessions ─────────────────────────────────────────────────
     "group.invite":       {"category": "classes",   "email": OPT_OUT, "sms": OFF,     "push": REQUIRED},
     "group.cancelled":    {"category": "classes",   "email": OPT_OUT, "sms": OFF,     "push": REQUIRED},

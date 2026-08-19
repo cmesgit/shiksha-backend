@@ -386,11 +386,19 @@ class SubmitEvaluationView(APIView):
         if evaluation.recommended_tier:
             tp.tier = evaluation.recommended_tier
         TP = tp.__class__
+        # Approving the SKILL track means setting skill_status, not just
+        # is_approved. TeacherContextView and the dashboard's TrackSwitcher
+        # both gate on tracks.skill == "approved" (i.e. skill_status), so
+        # without this the admin saw a success response while the expert
+        # stayed track_locked and could never open the dashboard they were
+        # just granted. See academy-vs-skill gating: is_approved is derived
+        # from the track statuses, never the other way round.
+        tp.set_track_status(TP.TRACK_SKILL, TP.TRACK_APPROVED)
         if tp.teacher_type == TP.TYPE_FACULTY:
             tp.teacher_type = TP.TYPE_BOTH
         elif not tp.teacher_type:
             tp.teacher_type = TP.TYPE_GUEST
-        tp.save(update_fields=["is_approved", "tier", "teacher_type"])
+        tp.save(update_fields=["is_approved", "tier", "teacher_type", "skill_status"])
 
         rate_band = {
             Evaluation.TIER_STANDARD: 40000,
@@ -436,7 +444,7 @@ class SessionRequestView(APIView):
             learner_profile=learner,
             status=SkillSession.STATUS_REQUESTED,
         )
-        push_skill_bell(session, "requested")
+        push_skill_bell(session, "requested", actor=request.user)
         return Response(
             {"ok": True, "sessionId": str(session.id)},
             status=status.HTTP_201_CREATED,
@@ -563,7 +571,7 @@ class CreateOrderView(APIView):
             if slot_key:
                 mark_slot_booked(expert, slot_key)
 
-        push_skill_bell(session, "requested")
+        push_skill_bell(session, "requested", actor=request.user)
 
         booking_ref = f"SHK-{session.id.hex[:8].upper()}"
 

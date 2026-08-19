@@ -171,7 +171,7 @@ class TeacherConfirmSessionView(APIView):
         if scheduled_for:
             sess.scheduled_for = scheduled_for
         sess.save(update_fields=["status","scheduled_for","updated_at"])
-        push_skill_bell(sess, "confirmed")
+        push_skill_bell(sess, "confirmed", actor=request.user)
         return Response({"detail": "Session confirmed.", "id": str(sess.id)})
 
 
@@ -196,7 +196,7 @@ class TeacherCompleteSessionView(APIView):
         if sess.slot_key:
             from .teacher_views import free_slot
             free_slot(ep, sess.slot_key)
-        push_skill_bell(sess, "completed")
+        push_skill_bell(sess, "completed", actor=request.user)
         return Response({"detail": "Session marked complete."})
 
 
@@ -220,7 +220,7 @@ class TeacherMarkPaidView(APIView):
             sess.payment_status = SkillSession.PAYMENT_PAID
             sess.paid_at = timezone.now()
             sess.save(update_fields=["payment_status", "paid_at", "updated_at"])
-            push_skill_bell(sess, "paid")
+            push_skill_bell(sess, "paid", actor=request.user)
         return Response({
             "detail": "Session marked paid.",
             "payment_status": sess.payment_status,

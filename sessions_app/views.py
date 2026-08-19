@@ -976,7 +976,23 @@ def private_session_notes(request, session_id):
 @permission_classes([IsAuthenticated])
 def subject_teachers(request, subject_id):
     """Get teachers for a subject. Optional: filters out busy teachers."""
-    from courses.models import TeachingAssignment
+    from courses.models import Subject, TeachingAssignment
+    from courses.services import may_view_subject_directory
+
+    # Same course-membership gate as subject_students above. Teacher names are
+    # less sensitive than a student roster, but this is the third fork of the
+    # same directory lookup and the last one still on IsAuthenticated alone —
+    # leaving it open would keep the pattern that produced the roster leak.
+    # Both real callers already satisfy it: a learner requesting a private
+    # session is enrolled, and a host inviting a co-teacher teaches the subject.
+    subject = Subject.objects.select_related("course").filter(pk=subject_id).first()
+    if subject is None:
+        return Response({"error": "Subject not found"}, status=404)
+    if not may_view_subject_directory(request, subject):
+        return Response(
+            {"detail": "You are not part of this course."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     date = request.query_params.get("date")
     time = request.query_params.get("time")
@@ -1022,6 +1038,7 @@ def subject_students(request, subject_id):
     Supports ?q=search for name/student_id filtering.
     """
     from courses.models import Subject
+    from courses.services import may_view_subject_directory
     from enrollments.models import Enrollment
 
     q = request.query_params.get("q", "").strip()
@@ -1030,6 +1047,20 @@ def subject_students(request, subject_id):
         subject = Subject.objects.select_related("course").get(pk=subject_id)
     except Subject.DoesNotExist:
         return Response({"error": "Subject not found"}, status=404)
+
+    # IsAuthenticated alone used to be the whole gate, which made this an
+    # enumerable roster dump. The rule is shared with courses' own roster view
+    # (courses.services.may_view_subject_directory) precisely because this
+    # endpoint began life as an ungated fork of it — see that docstring.
+    # Unlike courses.SubjectStudentsView this one is NOT teacher-only: learners
+    # call it to invite classmates to a group session (see
+    # groupSessionService.getCourseStudents), which is why the shared rule
+    # admits enrolled students too.
+    if not may_view_subject_directory(request, subject):
+        return Response(
+            {"detail": "You are not part of this course."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     enrollments = (
         Enrollment.objects.filter(

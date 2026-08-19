@@ -82,20 +82,15 @@ def _teacher_name(user):
 
 
 def is_academy_faculty(tp):
-    """True iff this TeacherProfile holds an APPROVED Academy track — i.e. a
-    human admin reviewed them for school teaching.
+    """Null-safe wrapper over TeacherProfile.is_academy_faculty.
 
-    Deliberately NOT `tp.is_approved`, and NOT `tp.teacher_type`:
-      • `is_approved` is `bool(approved_tracks())`, and the Skill track is
-        AUTO-approved at signup with no review (accounts/signup_serializer.py's
-        `_initial_status_for`). So every self-registered guest expert has
-        is_approved=True and would otherwise be assignable to a school subject.
-      • `teacher_type` counts a track as "on" while merely PENDING (see
-        TeacherProfile.sync_type_from_tracks), so it is not proof of approval.
-    A teacher holding BOTH tracks approved passes this — that's correct, they
-    really are Academy faculty who also sell skill sessions.
+    The rule itself now lives on the model, so `accounts` (the teacher
+    directory) and `courses` (subject assignment) share one definition
+    instead of restating it — see that property for why it is neither
+    `is_approved` nor `teacher_type`. Kept as a function because callers here
+    pass a possibly-None profile.
     """
-    return bool(tp and tp.academy_status == TeacherProfile.TRACK_APPROVED)
+    return bool(tp and tp.is_academy_faculty)
 
 
 def academy_faculty_users():

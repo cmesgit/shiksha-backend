@@ -521,17 +521,22 @@ def teacher_is_public_faculty(tp):
 
     "Publicly reachable" = approved on EITHER track (academy_status or
     skill_status == TRACK_APPROVED), or a listed guest expert
-    (ExpertProfile.is_listed). This is deliberately the SAME set the rest of
-    the app already offers a "Message" button for: accounts.TeacherListView
-    (the Academy Teachers page + private-session form) lists every
-    `is_approved=True` teacher, and TeacherProfile.sync_type_from_tracks()
-    defines is_approved as "approved on any track" — so gating on academy
-    approval ALONE 403'd exactly the skill-track-approved guest experts that
-    page offers to message (and, since a teacher DMing a learner also runs
-    through this check with themselves as `tp`, left those experts unable to
-    message anyone from their own Skill Dev inbox). Mirrors _teacher_roles()'s
-    own guest detection (skill_status == TRACK_APPROVED), so the DM gate and
-    the role labels can't drift.
+    (ExpertProfile.is_listed).
+
+    THIS IS INTENTIONALLY WIDER THAN THE ACADEMY TEACHER DIRECTORY. Do not
+    "align" it by narrowing to academy_status — that is backwards, and it was
+    tried once already. Being messageable and being bookable-as-faculty are
+    different questions:
+      • accounts.TeacherListView (Academy Teachers page + private-session
+        form) is academy-only, because a guest expert there is unvetted and
+        the booking 400s anyway.
+      • Skill Dev surfaces its own experts via Explore Experts, and every one
+        of them offers a Message button. Gating DMs on academy approval 403'd
+        exactly those experts — and, since a teacher DMing a learner runs
+        through this check with themselves as `tp`, it also left them unable
+        to message anyone from their own Skill Dev inbox.
+    Mirrors _teacher_roles()'s own guest detection (skill_status ==
+    TRACK_APPROVED), so the DM gate and the role labels can't drift.
 
     Approval alone is deliberately sufficient, with no shared-course/
     enrollment check: the directory already lists every approved/listed

@@ -895,3 +895,158 @@ class SkillBrowseRedesignTests(TestCase):
         listing.save(update_fields=["is_active"])
         r = APIClient().get("/api/skill/teachers/", {"search": "accompaniment"})
         self.assertEqual(r.data["count"], 0)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Durable notifications for skill events
+# ══════════════════════════════════════════════════════════════════════════
+
+class SkillSessionNotificationTests(TestCase):
+    """Skill Dev used to emit ONLY an Activity row + a live WS frame, so a
+    learner who wasn't staring at the tab was never told their session had
+    been confirmed or declined — no email, no push, no bell history. These
+    lock in the durable Notification row, its recipient, and its deep link.
+
+    The link assertions matter as much as the row: learner links point at the
+    student dashboard (/skill-dev/sessions/<id>) and expert links at the
+    teacher app (/teacher/expert/...) — two different apps, so a link built
+    for the wrong side is a dead click, not a cosmetic bug.
+    """
+
+    LEARNER_APP = "/skill-dev/sessions/"
+    EXPERT_APP = "/teacher/expert/bookings"
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.teacher_role = Role.objects.create(name="TEACHER")
+        cls.student_role = Role.objects.create(name="STUDENT")
+
+        cls.expert_user = User.objects.create_user(
+            username="notif_expert", email="notif_expert@test.com",
+            password="testpass123",
+        )
+        UserRole.objects.create(user=cls.expert_user, role=cls.teacher_role,
+                                is_active=True, is_primary=True)
+        cls.teacher_profile = TeacherProfile.objects.create(
+            user=cls.expert_user, teacher_type=TeacherProfile.TYPE_GUEST,
+        )
+        cls.expert = ExpertProfile.objects.create(
+            teacher_profile=cls.teacher_profile,
+            headline="Guitar teacher", is_listed=True,
+        )
+
+        cls.learner_user = User.objects.create_user(
+            username="notif_learner", email="notif_learner@test.com",
+            password="testpass123",
+        )
+        UserRole.objects.create(user=cls.learner_user, role=cls.student_role,
+                                is_active=True, is_primary=True)
+        cls.learner = LearnerProfile.objects.create(
+            account=cls.learner_user, display_name="Nina Learner",
+            first_name="Nina", last_name="Learner", is_default=True,
+        )
+
+    def setUp(self):
+        # Email/SMS/push dispatch is a real network call for the REQUIRED-level
+        # skill verbs. Stub the three side-effect helpers so these tests assert
+        # the persisted row (the thing that was actually missing) without
+        # depending on Resend/MSG91/FCM credentials.
+        for target in ("_dispatch_email", "_dispatch_sms", "_dispatch_push",
+                       "_push_ws"):
+            patcher = patch(f"notifications.services.{target}")
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def client_for(self, user, active_profile=None):
+        client = APIClient()
+        token = {"active_profile": str(active_profile.id)} if active_profile else None
+        client.force_authenticate(user=user, token=token)
+        return client
+
+    def only_notification(self, verb):
+        from notifications.models import Notification
+        qs = Notification.objects.filter(verb=verb)
+        self.assertEqual(qs.count(), 1, f"expected exactly one {verb} row")
+        return qs.get()
+
+    # ── booking request → the EXPERT ──────────────────────────────────
+    def test_session_request_notifies_the_expert(self):
+        client = self.client_for(self.learner_user, self.learner)
+        r = client.post("/api/skill/sessions/", {
+            "expert": self.expert.id, "contact_mode": "session",
+        })
+        self.assertEqual(r.status_code, 201)
+
+        n = self.only_notification("skill.requested")
+        self.assertEqual(n.recipient, self.expert_user)
+        self.assertEqual(n.actor, self.learner_user)
+        self.assertEqual(n.link_url, self.EXPERT_APP)
+        self.assertEqual(n.audience_identity, f"T:{self.teacher_profile.id}")
+        self.assertEqual(n.audience_role, "TEACHER")
+        self.assertEqual(n.payload["session_id"], r.data["sessionId"])
+
+    # ── confirmation → the LEARNER ────────────────────────────────────
+    def test_confirmation_notifies_the_learner_with_the_student_app_link(self):
+        session = SkillSession.objects.create(
+            expert=self.expert, learner_profile=self.learner,
+            contact_mode="session", status=SkillSession.STATUS_REQUESTED,
+        )
+        client = self.client_for(self.expert_user)
+        r = client.post(f"/api/skill/teacher/sessions/{session.id}/confirm/")
+        self.assertEqual(r.status_code, 200)
+
+        n = self.only_notification("skill.confirmed")
+        self.assertEqual(n.recipient, self.learner_user)
+        self.assertEqual(n.actor, self.expert_user)
+        self.assertEqual(n.link_url, f"{self.LEARNER_APP}{session.id}")
+        # Per-profile scope: a sibling on the same account must not see it.
+        self.assertEqual(n.audience_identity, f"L:{self.learner.id}")
+        self.assertEqual(n.audience_role, "STUDENT")
+
+    # ── cancellation → the OTHER party, never the actor ───────────────
+    def test_learner_cancellation_notifies_the_expert_not_the_learner(self):
+        session = SkillSession.objects.create(
+            expert=self.expert, learner_profile=self.learner,
+            contact_mode="session", status=SkillSession.STATUS_REQUESTED,
+        )
+        client = self.client_for(self.learner_user, self.learner)
+        r = client.post(f"/api/skill/sessions/{session.id}/cancel/")
+        self.assertEqual(r.status_code, 200)
+
+        n = self.only_notification("skill.cancelled")
+        self.assertEqual(n.recipient, self.expert_user)
+        self.assertEqual(n.actor, self.learner_user)
+        self.assertEqual(n.link_url, self.EXPERT_APP)
+
+        from notifications.models import Notification
+        self.assertFalse(
+            Notification.objects.filter(recipient=self.learner_user).exists(),
+            "the person who cancelled must not be notified of their own action",
+        )
+
+    # ── the Activity/WS layer is untouched ────────────────────────────
+    def test_activity_row_still_written_alongside_the_notification(self):
+        """Notifications are additive — the live bell still runs off Activity."""
+        from activity.models import Activity
+        session = SkillSession.objects.create(
+            expert=self.expert, learner_profile=self.learner,
+            contact_mode="session", status=SkillSession.STATUS_REQUESTED,
+        )
+        client = self.client_for(self.expert_user)
+        client.post(f"/api/skill/teacher/sessions/{session.id}/confirm/")
+
+        self.assertTrue(
+            Activity.objects.filter(user=self.learner_user,
+                                    object_id=session.id).exists()
+        )
+        self.only_notification("skill.confirmed")
+
+    # ── every emitted verb is registered ──────────────────────────────
+    def test_every_skill_verb_is_registered_in_policy(self):
+        """An unregistered verb falls through to policy._DEFAULT — silently
+        no email, and invisible to the user's preference toggles."""
+        from notifications import policy
+        from .notifications import _NOTIFY_SPEC
+        for event, (verb, _t, _b) in _NOTIFY_SPEC.items():
+            self.assertIn(verb, policy.POLICY, f"{event} -> {verb} unregistered")
+            self.assertIn(policy.POLICY[verb]["category"], policy.CATEGORIES)

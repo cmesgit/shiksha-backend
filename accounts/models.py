@@ -927,6 +927,27 @@ class TeacherProfile(models.Model):
             out.append(self.TRACK_SKILL)
         return out
 
+    @property
+    def is_academy_faculty(self):
+        """True iff a human admin reviewed this teacher for school teaching.
+
+        The single source of truth for "may act as Academy faculty". Lives on
+        the model so `accounts` and `courses` can share one definition without
+        importing each other (courses.admin_academy_views.is_academy_faculty
+        delegates here).
+
+        Deliberately NOT `is_approved`, and NOT `teacher_type`:
+          • `is_approved` is `bool(approved_tracks())`, and the Skill track
+            AUTO-approves at signup with no review (signup_serializer's
+            `_initial_status_for`) — so every self-registered guest expert has
+            is_approved=True despite never being vetted.
+          • `teacher_type` counts a track as "on" while merely PENDING (see
+            sync_type_from_tracks), so it is not proof of approval either.
+        Holding BOTH tracks approved passes — genuine faculty who also sell
+        skill sessions.
+        """
+        return self.academy_status == self.TRACK_APPROVED
+
     @staticmethod
     def track_for_type(teacher_type):
         """Map a signup teacher_type (GUEST/FACULTY) to a track name."""

@@ -38,6 +38,43 @@ def teaches_subject(user, subject):
     ).exists()
 
 
+def may_view_subject_directory(request, subject):
+    """Is this caller a member of `subject`'s course, and so entitled to see
+    who else is in it — the student roster or the teacher list?
+
+    One definition, deliberately. Several directory endpoints grew up as
+    independent forks of each other (courses.SubjectStudentsView,
+    sessions_app.subject_students, sessions_app.subject_teachers), and two of
+    those forks shipped with no gate beyond IsAuthenticated: any logged-in
+    account could dump every enrolled student's name and student_id for any
+    course, with subject ids discoverable from the public catalog. Divergence
+    is precisely what allowed that, so the RULE lives here even though the
+    views still differ in response shape (and courses' own roster view stays
+    stricter, teacher-only).
+
+    Returns True for:
+      • a teacher, in teacher context, assigned to this subject
+      • a student with an ACTIVE enrollment in the course that owns it
+    """
+    # Imported here: accounts.permissions and enrollments both import from
+    # courses at module scope, so top-level imports would cycle.
+    from accounts.permissions import IsTeacherContext
+    from enrollments.models import Enrollment
+
+    user = getattr(request, "user", None)
+    if user is None or not getattr(user, "is_authenticated", False) or subject is None:
+        return False
+
+    if IsTeacherContext().has_permission(request, None) and teaches_subject(user, subject):
+        return True
+
+    return Enrollment.objects.filter(
+        course=subject.course,
+        user=user,
+        status=Enrollment.STATUS_ACTIVE,
+    ).exists()
+
+
 def scope_to_enrollment(qs, enrollment):
     """Filter a content queryset to what this enrollment may see:
     course-wide items (batch is NULL) plus the student's own batch's items.

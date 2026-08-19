@@ -76,6 +76,12 @@ class CreateRecordingView(APIView):
 
     def post(self, request, subject_id):
         subject = get_object_or_404(Subject, id=subject_id)
+        # Both siblings below gate on this; only create was missing it, which
+        # let any teacher-context account (including an auto-approved skill
+        # expert, who is never reviewed) attach a recording to ANY subject —
+        # it then renders to that course's enrolled students.
+        if not teaches_subject(request.user, subject):
+            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
         serializer = SessionRecordingSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save(subject=subject, uploaded_by=request.user)

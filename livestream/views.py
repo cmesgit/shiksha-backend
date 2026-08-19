@@ -222,7 +222,11 @@ from django.utils.decorators import method_decorator
 @ratelimit(key="user", rate="10/m", method="POST", block=True)
 def join_live_session(request, session_id):
     user = request.user
-    session = get_object_or_404(LiveSession, id=session_id)
+    # select_related: the response below reads course/subject/batch names.
+    session = get_object_or_404(
+        LiveSession.objects.select_related("course", "subject", "batch"),
+        id=session_id,
+    )
     now = timezone.now()
 
     if session.status == LiveSession.STATUS_CANCELLED:
@@ -315,11 +319,20 @@ def join_live_session(request, session_id):
         is_teacher=is_teacher,
     )
 
+    # Identify the session in the response. Both room pages (teacher and
+    # student) call ONLY this endpoint, so without these the room had nothing
+    # to render but a hardcoded "Live Session" — a host could not tell which
+    # batch, or even which course, they were about to teach. The teacher-only
+    # /detail/ endpoint can't fill the gap: it 403s for students.
     return Response({
         "livekit_url": settings.LIVEKIT_URL,
         "token": token,
         "room": session.room_name,
         "role": "PRESENTER" if is_teacher else "STUDENT",
+        "title": session.title,
+        "subject_name": session.subject.name,
+        "course_name": session.course.title,
+        "batch_name": session.batch.name if session.batch_id else None,
     })
 
 

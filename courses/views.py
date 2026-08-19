@@ -70,7 +70,12 @@ class EnrollCourseSummaryView(APIView):
 
 
 class CreateCourseView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacherContext]
+    # Admin-only. Course has no owner FK and new rows land straight in the
+    # AllowAny public catalog, so "any teacher-context account" — which
+    # includes never-reviewed, auto-approved skill experts — could publish
+    # unattributable courses to the marketing site. No frontend uses this
+    # endpoint: the Admin-dashboard creates courses via /courses/admin/courses/.
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request):
         serializer = CourseSerializer(data=request.data)
@@ -482,6 +487,12 @@ class SubjectDashboardView(APIView):
         return Response({
             "id": subject.id,
             "name": subject.name,
+            # Subject names repeat across courses ("Mathematics" exists in
+            # every class), so callers rendering a heading need the course to
+            # say WHICH Mathematics this is. select_related on `course` is
+            # already in place above, so this costs no extra query.
+            "course_id": str(subject.course_id),
+            "course_title": subject.course.title,
             "teachers": serializer.data["teachers"],
             "assignments": {
                 "pending": pending_assignments,

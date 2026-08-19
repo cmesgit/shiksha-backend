@@ -560,7 +560,7 @@ class TeacherDeclineSessionView(APIView):
         # Release the reserved availability slot back to the expert's grid.
         if sess.slot_key:
             free_slot(ep, sess.slot_key)
-        push_skill_bell(sess, "declined")
+        push_skill_bell(sess, "declined", actor=request.user)
         return Response({"ok": True, "status": sess.status})
 
 
