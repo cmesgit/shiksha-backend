@@ -301,9 +301,17 @@ class Board(models.Model):
     TYPE_STATE = "STATE"
     TYPE_CENTRAL = "CENTRAL"
 
+    # A competitive exam (MPSC, UPSC, NEET, JEE, SSC, banking…) is not a
+    # school board and fits neither "State" nor "Central" — forcing one made
+    # the catalog claim, on a public page, that UPSC is a central *board*.
+    # It is otherwise the same shape: a syllabus authority a course hangs off,
+    # with its own logo and its own courses.
+    TYPE_COMPETITIVE = "COMPETITIVE"
+
     TYPE_CHOICES = [
         (TYPE_STATE, "State"),
         (TYPE_CENTRAL, "Central"),
+        (TYPE_COMPETITIVE, "Competitive exam"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
