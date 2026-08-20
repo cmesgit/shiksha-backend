@@ -23,6 +23,22 @@
 # in-app + WebSocket are ALWAYS on for every verb (that's the bell); the
 # matrix below only governs the three "away from the app" channels.
 #
+# ⚠️ NEVER leave a TIME-CRITICAL verb routed only to channels that aren't
+# configured on the deployment. A level is an *intent*, not a delivery: an
+# unconfigured channel drops the message with no error, and SMS is worse
+# than silent — with SMS_PROVIDER unset it defaults to the `console`
+# provider, which logs the text and reports SUCCESS (sms.py `_send_console`
+# returns True), so the send looks healthy in every log and metric.
+#
+# This bit us for real: the 1-hour reminders were email=OFF + sms/push only,
+# and with no MSG91 key and no FCM credentials in production they reached
+# NOBODY — students got a 24h email and then silence, with nothing to tell
+# anyone the reminder had failed. Email is the only channel wired today, so
+# every reminder now keeps a working path through it. The rule to hold:
+# a verb someone must receive while OUTSIDE the app needs at least one
+# channel that is actually configured. `notifications/checks.py` enforces
+# this at deploy time — run `manage.py check` before shipping a policy edit.
+#
 # sms_template is the key into settings.SMS_TEMPLATES — every SMS body in
 # India must byte-match a DLT-registered template, so SMS is *never*
 # freeform title/body text (see notifications/sms.py + NOTIFICATIONS_DESIGN.md).
@@ -56,7 +72,7 @@ POLICY = {
     "counseling.report":       {"category": "bookings", "email": REQUIRED, "sms": OFF,      "push": OPT_OUT},
     "counseling.assessment":   {"category": "bookings", "email": OPT_OUT,  "sms": OFF,      "push": OPT_OUT},
     "counseling.reminder_24h": {"category": "reminders", "email": OPT_OUT, "sms": OFF,      "push": REQUIRED},
-    "counseling.reminder_1h":  {"category": "reminders", "email": OFF,     "sms": REQUIRED, "push": REQUIRED, "sms_template": "session_reminder"},
+    "counseling.reminder_1h":  {"category": "reminders", "email": OPT_OUT, "sms": REQUIRED, "push": REQUIRED, "sms_template": "session_reminder"},
     # counselor onboarding (account-level, email only)
     "counseling.application":  {"category": "account", "email": REQUIRED, "sms": OFF, "push": OFF},
     "counseling.approved":     {"category": "account", "email": REQUIRED, "sms": OFF, "push": OFF},
@@ -69,7 +85,7 @@ POLICY = {
     "session.rescheduled": {"category": "bookings", "email": REQUIRED, "sms": REQUIRED, "push": REQUIRED, "sms_template": "booking_rescheduled"},
     "session.cancelled":   {"category": "bookings", "email": REQUIRED, "sms": REQUIRED, "push": REQUIRED, "sms_template": "booking_cancelled"},
     "session.reminder_24h": {"category": "reminders", "email": OPT_OUT, "sms": OFF,      "push": REQUIRED},
-    "session.reminder_1h":  {"category": "reminders", "email": OFF,     "sms": REQUIRED, "push": REQUIRED, "sms_template": "session_reminder"},
+    "session.reminder_1h":  {"category": "reminders", "email": OPT_OUT, "sms": REQUIRED, "push": REQUIRED, "sms_template": "session_reminder"},
 
     # ── Skill Dev sessions (skills.SkillSession) ───────────────────────
     # Deliberately mirrors the session.* block above rather than inventing a
@@ -96,12 +112,15 @@ POLICY = {
     "group.invite":       {"category": "classes",   "email": OPT_OUT, "sms": OFF,     "push": REQUIRED},
     "group.cancelled":    {"category": "classes",   "email": OPT_OUT, "sms": OFF,     "push": REQUIRED},
     "group.reminder_24h": {"category": "reminders", "email": OPT_OUT, "sms": OFF,     "push": REQUIRED},
-    "group.reminder_1h":  {"category": "reminders", "email": OFF,     "sms": OPT_OUT, "push": REQUIRED, "sms_template": "session_reminder"},
+    "group.reminder_1h":  {"category": "reminders", "email": OPT_OUT, "sms": OPT_OUT, "push": REQUIRED, "sms_template": "session_reminder"},
     "livestream.reminder_24h": {"category": "reminders", "email": OPT_OUT, "sms": OFF,     "push": REQUIRED},
-    "livestream.reminder_1h":  {"category": "reminders", "email": OFF,     "sms": REQUIRED, "push": REQUIRED, "sms_template": "session_reminder"},
+    "livestream.reminder_1h":  {"category": "reminders", "email": OPT_OUT, "sms": REQUIRED, "push": REQUIRED, "sms_template": "session_reminder"},
 
     # ── Live classes / learning ────────────────────────────────────────
-    "livestream.started":  {"category": "classes",  "email": OFF,     "sms": OFF, "push": REQUIRED},
+    # OPT_OUT, not REQUIRED: this is the third email a student gets for one
+    # class (24h + 1h + now), so the "classes" category toggle must be able
+    # to switch it off without also killing the reminders they do want.
+    "livestream.started":  {"category": "classes",  "email": OPT_OUT, "sms": OFF, "push": REQUIRED},
     "assignment.posted":   {"category": "learning", "email": OFF,     "sms": OFF, "push": OPT_OUT},
     "assignment.graded":   {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
     # TEACHER-facing: a student turned work in. Declared explicitly rather

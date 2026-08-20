@@ -66,6 +66,25 @@ def _send_email(recipient, subject, body):
 # WS push above — a dead broker degrades to slower requests, not lost
 # confirmations.
 
+def _safe_dispatch(channel, verb, fn, /, *args, **kwargs):
+    """Send on one channel; never let its failure reach the other two.
+
+    A notification is not transactional across channels — "the email bounced"
+    is no reason to also withhold the SMS. Failures are logged per channel so
+    a dead provider is greppable by name instead of hiding behind a generic
+    dispatch error.
+
+    The first three parameters are positional-only: `_dispatch_sms` takes its
+    own `verb=` keyword, which would otherwise collide with this wrapper's.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        logger.exception("notifications: %s dispatch failed (verb=%s)",
+                         channel, verb)
+        return None
+
+
 def _channel_wanted(level, enabled, category, muted):
     from . import policy as _p
     if level == _p.REQUIRED:
@@ -305,18 +324,29 @@ def notify(
         want_push = push if push is not None else _channel_wanted(
             rules["push"], pref_push, category, muted)
 
+        # Each channel is isolated. These used to share one try/except, with
+        # email dispatched first — so a single Resend hiccup (down, throttled,
+        # bad address) aborted the whole block and the SMS and push for that
+        # notification were never even attempted. That stayed hidden only
+        # because the time-critical reminders had email=OFF and never entered
+        # this path; the moment email was switched on for them, a transient
+        # email failure would have silently taken the SMS down with it — on
+        # precisely the messages that most need to arrive.
         if want_email and recipient.email:
-            _dispatch_email(recipient, subject=title, body=body or title)
+            _safe_dispatch("email", verb, _dispatch_email, recipient,
+                           subject=title, body=body or title)
         if want_sms:
-            _dispatch_sms(recipient,
-                          template_key=rules.get("sms_template") or verb,
-                          sms_vars=sms_vars, verb=verb, sms_to=sms_to,
-                          learner_profile=learner_profile)
+            _safe_dispatch("sms", verb, _dispatch_sms, recipient,
+                           template_key=rules.get("sms_template") or verb,
+                           sms_vars=sms_vars, verb=verb, sms_to=sms_to,
+                           learner_profile=learner_profile)
         if want_push:
-            _dispatch_push(recipient, title, body, link_url,
-                           notification.payload)
+            _safe_dispatch("push", verb, _dispatch_push, recipient, title,
+                           body, link_url, notification.payload)
     except Exception:
-        logger.exception("notifications: channel dispatch failed (verb=%s)", verb)
+        # Only reached if resolving policy/preferences above failed, i.e. no
+        # channel could be decided at all — not a per-channel send error.
+        logger.exception("notifications: channel routing failed (verb=%s)", verb)
 
     return notification
 
