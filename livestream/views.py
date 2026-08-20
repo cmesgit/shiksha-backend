@@ -8,7 +8,7 @@ from .serializers import (
     SessionReviewSerializer,
     SessionNoteSerializer,
 )
-from .services.token import generate_livekit_token
+from .services.token import generate_livekit_token, build_identity, parse_identity
 from .services.room_admin import close_room
 from .services import attendance as attendance_svc
 from .models import (
@@ -647,7 +647,11 @@ def mute_live_participant(request, session_id):
     muted = request.data.get("muted", True)
     from livestream.services.room_admin import mute_participant
     try:
-        mute_participant(session.room_name, target_id, muted=bool(muted))
+        # Composite identity — the token now carries "{user}_{session}",
+        # so addressing a bare user id would silently match nobody.
+        mute_participant(session.room_name,
+                         build_identity(target_id, session.id),
+                         muted=bool(muted))
     except Exception:
         logger.exception("mute failed (session=%s target=%s)", session.pk, target_id)
         # Do NOT claim success: the teacher needs to know the student can
@@ -698,7 +702,7 @@ def remove_live_participant(request, session_id):
     from livestream.services.room_admin import remove_participant
     disconnected = True
     try:
-        remove_participant(session.room_name, target_id)
+        remove_participant(session.room_name, build_identity(target_id, session.id))
     except Exception:
         # The bar is already recorded, so they cannot rejoin — but they may
         # still be connected right now. Say so rather than implying silence.
@@ -1141,12 +1145,15 @@ def livekit_webhook(request):
 @transaction.atomic
 def _handle_participant_join(event):
     room_name = _event_room_name(event)
-    session = LiveSession.objects.filter(room_name=room_name).first()
+    # See _handle_participant_left: both handlers must take the same row lock
+    # or the lock is worthless.
+    session = LiveSession.objects.select_for_update().filter(
+        room_name=room_name).first()
     if not session:
         _handle_group_session_join(room_name, event)
         return
 
-    user_id = str(event.participant.identity)
+    user_id = parse_identity(event.participant.identity)
     User = get_user_model()
     user = User.objects.filter(id=user_id).first()
     if not user:
@@ -1173,8 +1180,21 @@ def _handle_participant_join(event):
     session.save(update_fields=update_fields)
     broadcast_session_update(session)
 
-    # Notify enrolled students when teacher goes live
-    if str(session.created_by_id) == user_id:
+    # Notify enrolled students when teacher goes live.
+    #
+    # Gated to the window in which students can ACTUALLY join. The teacher
+    # branch of join_live_session has no time check at all, so a teacher
+    # opening the room the night before — or just early, to check their mic —
+    # pushed "🔴 ... is now LIVE!" to every enrolled student in the batch,
+    # while the student join gate refuses anyone until start_time − 15min.
+    # Students tapped the notification and were told "Too early", which is
+    # the kind of thing that teaches a whole cohort to ignore the bell.
+    #
+    # The 15 minutes deliberately mirrors that gate's own constant: if a
+    # student can join, telling them is useful; if they cannot, it is noise.
+    students_can_join_yet = now >= session.start_time - timedelta(minutes=15)
+
+    if str(session.created_by_id) == user_id and students_can_join_yet:
         from livestream.services.notifications import push_ws_notification
         # Tell the people who can actually JOIN. Filtering on course alone
         # notified every batch, so the evening cohort got a "class is LIVE"
@@ -1231,12 +1251,17 @@ def _handle_participant_join(event):
 @transaction.atomic
 def _handle_participant_left(event):
     room_name = _event_room_name(event)
-    session = LiveSession.objects.filter(room_name=room_name).first()
+    # Locked: participant_joined and participant_left arrive concurrently and
+    # both mutate the session row. Without this, a read here can be flushed
+    # over a commit that landed in between. @transaction.atomic alone gives
+    # no such protection.
+    session = LiveSession.objects.select_for_update().filter(
+        room_name=room_name).first()
     if not session:
         _handle_group_session_left(room_name, event)
         return
 
-    user_id = str(event.participant.identity)
+    user_id = parse_identity(event.participant.identity)
     User = get_user_model()
     user = User.objects.filter(id=user_id).first()
     if not user:
@@ -1248,16 +1273,28 @@ def _handle_participant_left(event):
     attendance_svc.close_intervals(session, user, when=now)
 
     session.last_activity_at = now
+    update_fields = ["last_activity_at"]
 
     if str(session.created_by_id) == user_id:
         # Only set reconnecting if session was LIVE — don't override manual PAUSED
         if session.status != LiveSession.STATUS_PAUSED:
             session.teacher_left_at = now
             session.status = LiveSession.STATUS_RECONNECTING
+            update_fields += ["teacher_left_at", "status"]
         # If manually paused, teacher just left — keep PAUSED, no timer
 
-    session.save(update_fields=["teacher_left_at",
-                 "status", "last_activity_at"])
+    # Write ONLY the fields this event actually changed. This used to save
+    # teacher_left_at and status unconditionally, for every participant — so
+    # a STUDENT leaving flushed back whatever those columns held when the row
+    # was read at the top of this function. Interleaved with the teacher's
+    # rejoin (which clears teacher_left_at and sets LIVE), the student's
+    # handler would resurrect the stale "teacher is gone" timer, and
+    # sync_open_session_statuses would then walk it to RECONNECTING, PAUSED
+    # and finally COMPLETED 60 minutes later — force-ending a class that was
+    # still running, in front of everyone, with no way for the teacher to
+    # undo it. The select_for_update above closes the race; this closes the
+    # blast radius if anything ever slips past it.
+    session.save(update_fields=update_fields)
     broadcast_session_update(session)
 
 

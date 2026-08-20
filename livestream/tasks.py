@@ -147,7 +147,16 @@ def sample_live_viewers():
                 .values_list("user_id", flat=True)
                 .distinct()
             )
-            present = {str(i) for i in identities}
+            # Parse before comparing. LiveKit identities are composite
+            # ("{user}_{session}") while open_user_ids are bare user ids, so a
+            # raw comparison matches NOTHING — and this sweep runs every
+            # minute, so it would close every open interval for everyone
+            # actually sitting in the class, wiping their attendance and
+            # zeroing the live viewer count. parse_identity also accepts the
+            # legacy bare form, which is what participants who joined before
+            # the composite change still hold.
+            from livestream.services.token import parse_identity
+            present = {parse_identity(i) for i in identities}
             for uid in list(open_user_ids):
                 if str(uid) not in present:
                     from django.contrib.auth import get_user_model

@@ -5,6 +5,37 @@ from django.conf import settings
 from livekit.api import AccessToken, VideoGrants
 
 
+def build_identity(user_id, session_id):
+    """The LiveKit participant identity for a live class.
+
+    Composite, matching what group and private sessions already do. This was
+    a bare str(user.id), and livestream was the only feature that did so —
+    the other two carry an explicit comment about avoiding collisions when a
+    user has more than one room open.
+
+    LiveKit treats a repeated identity within a room as a replacement, so the
+    bare form meant a student opening the class in a second tab silently
+    killed the first with no explanation. Worse for attendance: if the kicked
+    tab's participant_left landed after the new tab's participant_joined, the
+    leave closed the freshly opened interval, leaving the student watching
+    with no open interval at all — undercounted in the live viewer number and
+    credited nothing for the rest of the lesson.
+    """
+    return f"{user_id}_{session_id}"
+
+
+def parse_identity(raw):
+    """user id out of a participant identity, tolerating the legacy form.
+
+    Tokens are bearer credentials with a 2h TTL, so for two hours after this
+    ships there are still live participants whose identity is a bare user id.
+    Handling both is what stops a deploy mid-class from corrupting attendance
+    for everyone already connected.
+    """
+    raw = str(raw or "")
+    return raw.split("_", 1)[0] if "_" in raw else raw
+
+
 def generate_livekit_token(
     user,
     session,
@@ -16,7 +47,7 @@ def generate_livekit_token(
         settings.LIVEKIT_API_SECRET,
     )
 
-    token.with_identity(str(user.id))
+    token.with_identity(build_identity(user.id, session.id))
 
     # ✅ display name
     if display_name is None:
