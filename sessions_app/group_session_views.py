@@ -323,6 +323,19 @@ def _end_group_session_internal(session, reason="ended"):
         GroupSessionParticipant.objects.filter(
             session=session, left_at__isnull=True
         ).update(left_at=session.ended_at)
+
+    # End the CALL too, outside the transaction — a network round-trip must
+    # not hold a DB lock open. Without this the hard-duration cutoff marked
+    # the meeting completed and purged its chat while everyone carried on
+    # talking, for up to the 60-minute token TTL.
+    try:
+        from livestream.services.room_admin import close_room
+        if getattr(session, "room_name", None):
+            close_room(session.room_name)
+    except Exception:
+        logger.warning("GroupSession %s: close_room failed", session.id,
+                       exc_info=True)
+
     logger.info(
         "GroupSession %s ended (reason: %s) — purged %d chat msgs",
         session.id, reason, deleted,

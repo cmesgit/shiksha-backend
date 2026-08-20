@@ -141,10 +141,13 @@ def sample_live_viewers():
             # Reconcile: anyone with an open interval but absent from the room
             # left without a webhook — close their interval defensively.
             from livestream.models import LiveSessionAttendanceInterval
-            open_user_ids = (
+            # (user, profile) pairs — two children of one parent in the
+            # same class are two attendees, and reconciling by user alone
+            # would evict both when only one had left.
+            open_pairs = (
                 LiveSessionAttendanceInterval.objects
                 .filter(session=session, left_at__isnull=True)
-                .values_list("user_id", flat=True)
+                .values_list("user_id", "learner_profile_id")
                 .distinct()
             )
             # Parse before comparing. LiveKit identities are composite
@@ -156,13 +159,19 @@ def sample_live_viewers():
             # legacy bare form, which is what participants who joined before
             # the composite change still hold.
             from livestream.services.token import parse_identity
-            present = {parse_identity(i) for i in identities}
-            for uid in list(open_user_ids):
-                if str(uid) not in present:
+            from livestream.services.token import parse_profile_id
+            present = {
+                (parse_identity(i), parse_profile_id(i)) for i in identities
+            }
+            for uid, pid in list(open_pairs):
+                key = (str(uid), str(pid) if pid else None)
+                if key not in present:
                     from django.contrib.auth import get_user_model
                     u = get_user_model().objects.filter(id=uid).first()
                     if u:
-                        attendance_svc.close_intervals(session, u, when=now, reconcile=True)
+                        attendance_svc.close_intervals(
+                            session, u, when=now, reconcile=True,
+                            learner_profile=pid)
             count = len(identities)
         else:
             count = attendance_svc.current_watching(session)
@@ -221,14 +230,13 @@ def auto_complete_expired_sessions():
         # end_time / abandoned both resolve to COMPLETED via computed_status();
         # sync_status persists it and clears the reconnect timer.
         did_change, new_status = session.sync_status(save=True)
-        if new_status == LiveSession.STATUS_COMPLETED:
-            # Force-complete the abandoned case even if computed_status hasn't
-            # crossed its own 60-min boundary yet (defensive).
-            if session.status != LiveSession.STATUS_COMPLETED:
-                session.status = LiveSession.STATUS_COMPLETED
-                session.teacher_left_at = None
-                session.save(update_fields=["status", "teacher_left_at"])
-                did_change = True
+        # NOTE: there used to be a "defensive" force-complete here, guarded by
+        # `if session.status != COMPLETED`. It was unreachable: sync_status()
+        # has already assigned session.status = new_status by this point, so
+        # inside `new_status == COMPLETED` the guard is always false. It read
+        # as a safety net that had never once run — worse than no safety net,
+        # because it stopped anyone looking for a real one. sync_status is the
+        # single path to COMPLETED and is trusted as such.
         if session.status == LiveSession.STATUS_COMPLETED:
             # A session that ends on the clock used to flip this column and
             # nothing else — unlike every other end path. Two consequences,

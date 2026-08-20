@@ -6,12 +6,29 @@ import logging
 import redis
 from django.utils import timezone
 
-from livestream.services.session_state import get_session_state, set_session_state
+from livestream.services.session_state import (
+    get_client, get_session_state, set_session_state,
+)
 from .models import LiveSession, LiveSessionChatMessage
 from enrollments.models import Enrollment
 
 logger = logging.getLogger(__name__)
-r = redis.Redis(host="127.0.0.1", port=6379, db=0)
+
+
+class _LazyRedis:
+    """Defers connecting until first use and reads the configured endpoint.
+
+    This was `redis.Redis(host="127.0.0.1", port=6379, db=0)` at module
+    import: hardcoded, so REDIS_PLATFORM_URL was ignored and the chat cache
+    would quietly point at the wrong box the day Redis moves, and eager, so
+    importing this module reached for a socket during startup.
+    """
+
+    def __getattr__(self, name):
+        return getattr(get_client(), name)
+
+
+r = _LazyRedis()
 
 
 class LiveSessionConsumer(AsyncWebsocketConsumer):

@@ -8,7 +8,9 @@ from .serializers import (
     SessionReviewSerializer,
     SessionNoteSerializer,
 )
-from .services.token import generate_livekit_token, build_identity, parse_identity
+from .services.token import (
+    generate_livekit_token, build_identity, parse_identity, parse_profile_id,
+)
 from .services.room_admin import close_room
 from .services import attendance as attendance_svc
 from .models import (
@@ -231,7 +233,11 @@ from django.utils.decorators import method_decorator
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
-@ratelimit(key="user", rate="10/m", method="POST", block=True)
+# 30/min, not 10. Each reconnect costs one call, and a student on flaky mobile
+# data can legitimately burn ten in a minute — at which point they were locked
+# out of the rest of the class with a bare 403 and no explanation, which looks
+# identical to being banned. Still low enough to bound token minting.
+@ratelimit(key="user", rate="30/m", method="POST", block=True)
 def join_live_session(request, session_id):
     user = request.user
     # select_related: the response below reads course/subject/batch names.
@@ -293,6 +299,11 @@ def join_live_session(request, session_id):
         bool(token) and token.get("context") == CTX_TEACHER and user.has_role("TEACHER")
     )
 
+    # Set by the learner branch; stays None for a teacher, who has no
+    # learner profile. Declared here so the token call below cannot depend on
+    # which branch happened to run.
+    joining_profile = None
+
     # ── Teacher ──
     if in_teacher_context:
         if not teaches_subject(user, session.subject):
@@ -327,6 +338,7 @@ def join_live_session(request, session_id):
         from accounts.auth_flow import get_active_profile
 
         learner = get_active_profile(request)
+        joining_profile = learner
         if learner is None:
             return Response(
                 {"detail": "Select a learner profile to join.", "lock_reason": "no_learner_profile"},
@@ -364,6 +376,9 @@ def join_live_session(request, session_id):
         user=user,
         session=session,
         is_teacher=is_teacher,
+        # Baked into the LiveKit identity so the attendance webhooks can
+        # tell WHICH child was in the room. None in teacher context.
+        learner_profile=joining_profile,
     )
 
     # Identify the session in the response. Both room pages (teacher and
@@ -696,8 +711,11 @@ def remove_live_participant(request, session_id):
                   "reason": (request.data.get("reason") or "")[:255],
                   "revoked_at": None},
     )
-    attendance_svc.close_intervals(session, _user_or_none(target_id),
-                                   when=timezone.now())
+    # close_user, not close_intervals: we have no profile here, and
+    # close_intervals would match only the NULL-profile rows — leaving the
+    # removed learner's real interval open, i.e. 0 minutes on the roster.
+    attendance_svc.close_user(session, _user_or_none(target_id),
+                              when=timezone.now())
 
     from livestream.services.room_admin import remove_participant
     disconnected = True
@@ -1154,6 +1172,7 @@ def _handle_participant_join(event):
         return
 
     user_id = parse_identity(event.participant.identity)
+    profile_id = parse_profile_id(event.participant.identity)
     User = get_user_model()
     user = User.objects.filter(id=user_id).first()
     if not user:
@@ -1161,8 +1180,10 @@ def _handle_participant_join(event):
 
     now = timezone.now()
 
-    # Append-only attendance interval (rejoins no longer overwrite).
-    attendance_svc.open_interval(session, user, when=now)
+    # Append-only attendance interval (rejoins no longer overwrite), scoped to
+    # the learner profile so two siblings on one account are two attendees.
+    attendance_svc.open_interval(session, user, when=now,
+                                 learner_profile=profile_id)
 
     session.last_activity_at = now
     update_fields = ["last_activity_at"]
@@ -1262,6 +1283,7 @@ def _handle_participant_left(event):
         return
 
     user_id = parse_identity(event.participant.identity)
+    profile_id = parse_profile_id(event.participant.identity)
     User = get_user_model()
     user = User.objects.filter(id=user_id).first()
     if not user:
@@ -1270,18 +1292,29 @@ def _handle_participant_left(event):
     now = timezone.now()
 
     # Close the open interval(s) and refresh the rollup (first/last/total).
-    attendance_svc.close_intervals(session, user, when=now)
+    attendance_svc.close_intervals(session, user, when=now,
+                                   learner_profile=profile_id)
 
     session.last_activity_at = now
     update_fields = ["last_activity_at"]
 
     if str(session.created_by_id) == user_id:
-        # Only set reconnecting if session was LIVE — don't override manual PAUSED
+        # ALWAYS start the abandonment timer, even from PAUSED. This used to
+        # skip it entirely for a manually-paused session, on the reasoning
+        # that pause is deliberate — but that left a teacher who hit Pause and
+        # then closed their laptop with a session that had no timer at all:
+        # not LIVE, not ending, and still handing out valid join tokens to
+        # students walking into an empty room until end_time.
+        #
+        # The status is still not overridden, so a teacher who is present and
+        # paused stays PAUSED; computed_status() only walks the reconnect
+        # ladder once teacher_left_at is set, which now means "the teacher is
+        # actually gone" rather than "the teacher is gone AND wasn't paused".
+        session.teacher_left_at = now
+        update_fields.append("teacher_left_at")
         if session.status != LiveSession.STATUS_PAUSED:
-            session.teacher_left_at = now
             session.status = LiveSession.STATUS_RECONNECTING
-            update_fields += ["teacher_left_at", "status"]
-        # If manually paused, teacher just left — keep PAUSED, no timer
+            update_fields.append("status")
 
     # Write ONLY the fields this event actually changed. This used to save
     # teacher_left_at and status unconditionally, for every participant — so

@@ -330,10 +330,28 @@ class LiveSessionAttendance(models.Model):
     left_at = models.DateTimeField(null=True, blank=True)
     total_seconds = models.PositiveIntegerField(default=0)
 
+    # WHICH child. One email is one account holding many LearnerProfiles, and
+    # keying attendance on the account alone merged two siblings' watch time
+    # into one row that then appeared on both their records. NULL for
+    # teachers (who have no learner profile) and for rows written before this
+    # existed.
+    learner_profile = models.ForeignKey(
+        "accounts.LearnerProfile",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="live_attendances",
+    )
+
     class Meta:
-        unique_together = ("session", "user")
+        # (session, user) was the old key, which is exactly what merged the
+        # siblings. NOTE the NULL caveat: SQL treats NULLs as distinct, so
+        # this does not constrain teacher rows — harmless, because the ORM
+        # path upserts on learner_profile=None (an IS NULL match) and so still
+        # reuses the one row.
+        unique_together = ("session", "user", "learner_profile")
         indexes = [
             models.Index(fields=["session", "user"]),
+            models.Index(fields=["session", "learner_profile"]),
             models.Index(fields=["session", "joined_at"]),
         ]
 
@@ -428,10 +446,19 @@ class LiveSessionAttendanceInterval(models.Model):
     left_at = models.DateTimeField(null=True, blank=True)
     closed_by_reconcile = models.BooleanField(default=False)
 
+    # Which child was actually in the room — see LiveSessionAttendance.
+    learner_profile = models.ForeignKey(
+        "accounts.LearnerProfile",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="live_attendance_intervals",
+    )
+
     class Meta:
         ordering = ["joined_at"]
         indexes = [
             models.Index(fields=["session", "user"]),
+            models.Index(fields=["session", "learner_profile"]),
             models.Index(fields=["session", "joined_at"]),
             models.Index(fields=["session", "left_at"]),
         ]

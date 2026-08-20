@@ -5,8 +5,18 @@ from django.conf import settings
 from livekit.api import AccessToken, VideoGrants
 
 
-def build_identity(user_id, session_id):
+def build_identity(user_id, session_id, profile_id=None):
     """The LiveKit participant identity for a live class.
+
+    Carries the LEARNER PROFILE as well as the user, because one email is one
+    account with many profiles (a parent and their children). Attendance is
+    written from the LiveKit webhooks, which see nothing but this string — so
+    without the profile here there is no way to tell which child was in the
+    room, and two siblings on one account had their watch time merged into a
+    single row that then showed on both their records. It cannot be looked up
+    server-side either: when both children are enrolled in the same course,
+    the enrolment alone is ambiguous. Only the join request knows, so it is
+    baked in at token time.
 
     Composite, matching what group and private sessions already do. This was
     a bare str(user.id), and livestream was the only feature that did so —
@@ -21,19 +31,44 @@ def build_identity(user_id, session_id):
     with no open interval at all — undercounted in the live viewer number and
     credited nothing for the rest of the lesson.
     """
-    return f"{user_id}_{session_id}"
+    return f"{user_id}_{profile_id or NO_PROFILE}_{session_id}"
+
+
+# Teachers have no learner profile. A placeholder keeps every identity the
+# same shape, so segment positions never shift.
+NO_PROFILE = "x"
 
 
 def parse_identity(raw):
-    """user id out of a participant identity, tolerating the legacy form.
+    """user id out of a participant identity, tolerating both legacy forms.
 
-    Tokens are bearer credentials with a 2h TTL, so for two hours after this
-    ships there are still live participants whose identity is a bare user id.
-    Handling both is what stops a deploy mid-class from corrupting attendance
-    for everyone already connected.
+    Tokens are bearer credentials with a 2h TTL, so after each shape change
+    there are live participants still holding the previous one. Handling all
+    of them is what stops a deploy mid-class from corrupting the attendance of
+    everyone already connected. Three shapes exist:
+
+        "<user>"                     original bare form
+        "<user>_<session>"           first composite (tab-collision fix)
+        "<user>_<profile>_<session>" current
+
+    The user id is the first segment in all three. Session and profile ids are
+    UUIDs, which contain hyphens but never underscores, so splitting is safe.
     """
     raw = str(raw or "")
     return raw.split("_", 1)[0] if "_" in raw else raw
+
+
+def parse_profile_id(raw):
+    """Learner profile id, or None when the identity does not carry one.
+
+    Returns None for both legacy shapes — deliberately, since a two-segment
+    identity's second field is the SESSION id, and mistaking that for a
+    profile id would write attendance against a profile that does not exist.
+    """
+    parts = str(raw or "").split("_")
+    if len(parts) >= 3 and parts[1] and parts[1] != NO_PROFILE:
+        return parts[1]
+    return None
 
 
 def generate_livekit_token(
@@ -41,13 +76,17 @@ def generate_livekit_token(
     session,
     is_teacher=False,
     display_name=None,
+    learner_profile=None,
 ):
     token = AccessToken(
         settings.LIVEKIT_API_KEY,
         settings.LIVEKIT_API_SECRET,
     )
 
-    token.with_identity(build_identity(user.id, session.id))
+    token.with_identity(
+        build_identity(user.id, session.id,
+                       getattr(learner_profile, "id", None))
+    )
 
     # ✅ display name
     if display_name is None:

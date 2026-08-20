@@ -800,8 +800,17 @@ def start_session(request, session_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
     
-    # auto-decline pending students
-    session.participants.filter(status="pending").update(status="declined")
+    # Pending invitees are deliberately LEFT PENDING.
+    #
+    # This used to auto-decline them the instant the teacher hit Start, and
+    # the join gate below only admits `accepted` — so an invited student who
+    # hadn't got round to clicking Accept was permanently locked out of a
+    # session that was already running, and told "You are not a participant in
+    # this session", wording that reads as though they were never invited at
+    # all. There was no way back in: accept_invite can't help once the session
+    # is ongoing. Starting a class is not a decision about who was invited, so
+    # it no longer silently makes one; the join gate accepts pending invitees
+    # instead.
 
     session.status = "ongoing"
     session.room_name = f"private_{session.id}"
@@ -823,6 +832,20 @@ def _end_session_internal(session, reason="ended"):
     session.save()
 
     ChatMessage.objects.filter(session=session).delete()
+
+    # Actually end the CALL, not just the database row. Without this the
+    # LiveKit room stayed open and everyone still connected kept publishing
+    # media until their token expired (60 min here) — so the UI said the
+    # session was over and the chat history vanished while the video call
+    # carried on. Best-effort: a room that never existed, or that LiveKit has
+    # already reaped, is not a reason to fail ending the session.
+    try:
+        from livestream.services.room_admin import close_room
+        if session.room_name:
+            close_room(session.room_name)
+    except Exception:
+        logger.warning("private session %s: close_room failed", session.id,
+                       exc_info=True)
 
     logger.info("Session %s %s (reason: %s)", session.id, "completed", reason)
     return True
@@ -895,9 +918,12 @@ def join_private_session(request, session_id):
     is_teacher = (session.teacher == user)
     is_student = (
         session.requested_by == user
+        # `pending` counts: an invitee who simply hadn't clicked Accept before
+        # the teacher started was previously refused outright. Turning up IS
+        # accepting. `declined` is still excluded — that is a real answer.
         or session.participants.filter(
             user=user,
-            status="accepted"
+            status__in=["accepted", "pending"],
         ).exists()
     )
 
