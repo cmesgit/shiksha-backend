@@ -65,17 +65,31 @@ def _version_dict(v, *, full=False):
         "created_by":     (v.created_by.email if v.created_by else None),
         "document_url":   _document_url(v),
         "document_name":  (v.document.name.rsplit("/", 1)[-1] if v.document else None),
+        "status":         v.status,
+        "is_draft":       v.status == AgreementLetterVersion.STATUS_DRAFT,
     }
     if full:
         d["body"] = v.body
     return d
 
 
+def _draft_of(letter):
+    """The letter's single mutable draft, or None."""
+    if letter is None:
+        return None
+    return letter.versions.filter(
+        status=AgreementLetterVersion.STATUS_DRAFT).first()
+
+
 def _letter_dict(letter, *, full=False):
+    """Admin view of a letter: what is LIVE, plus the unpublished draft if any.
+    Both are returned so the editor can show "live is v3, you have unsaved
+    draft changes" instead of silently conflating them."""
     return {
         "key":             letter.key,
         "title":           letter.title,
         "current_version": _version_dict(letter.current_version, full=full),
+        "draft":           _version_dict(_draft_of(letter), full=full),
         "updated_at":      letter.updated_at,
     }
 
@@ -126,7 +140,14 @@ class AdminAgreementDetailView(APIView):
 
 
 class AdminAgreementSaveView(APIView):
-    """Create a new immutable version and make it current.
+    """Save the DRAFT. Does NOT go live — see AdminAgreementPublishView.
+
+    Every save used to create a numbered version AND repoint
+    `current_version`, so a half-finished clause was binding on every
+    subsequent signup the instant it was typed, and drafting next year's
+    letter across several sittings was impossible. This now upserts the
+    letter's single mutable draft; nothing an applicant sees changes until
+    Publish.
 
     Accepts EITHER authoring route (see AgreementLetterVersion.document):
     author the text in `body`, or import a ready-made file as `document`
@@ -164,24 +185,77 @@ class AdminAgreementSaveView(APIView):
             except DjangoValidationError as e:
                 raise ValidationError({"document": str(e.message)})
 
-        # select_for_update: two admins saving the same letter concurrently
-        # both read the same Max(version_number) and both create version N+1,
-        # which the DB's unique_together constraint then turns into an
-        # IntegrityError/500 for whoever commits second. Locking the row
-        # first serializes the two saves instead of racing them.
+        # select_for_update so two admins saving concurrently serialize on the
+        # letter row instead of racing to create a second draft, which the
+        # single-draft constraint would turn into an IntegrityError/500.
         letter, _ = AgreementLetter.objects.select_for_update().get_or_create(
             key=key, defaults={"title": title}
         )
-        letter.title = title
-        next_num = (letter.versions.aggregate(m=Max("version_number"))["m"] or 0) + 1
-        version = AgreementLetterVersion.objects.create(
-            letter=letter, version_number=next_num, title=title,
-            body=body, change_note=change_note, created_by=request.user,
-            document=document or None,
-        )
-        letter.current_version = version
-        letter.save(update_fields=["title", "current_version", "updated_at"])
-        return Response({"ok": True, **_letter_dict(letter, full=True)})
+        # NOTE: letter.title is deliberately NOT updated here. It reflects the
+        # PUBLISHED letter's name; renaming it from an unpublished draft would
+        # change what the admin list shows for a letter that hasn't changed.
+        draft = _draft_of(letter)
+        if draft is None:
+            draft = AgreementLetterVersion(
+                letter=letter, status=AgreementLetterVersion.STATUS_DRAFT,
+                version_number=None,
+            )
+        draft.title = title
+        draft.body = body
+        draft.change_note = change_note
+        draft.created_by = request.user
+        if document:
+            draft.document = document
+        draft.save()
+        return Response({"ok": True, "saved": "draft", **_letter_dict(letter, full=True)})
+
+
+class AdminAgreementPublishView(APIView):
+    """Freeze the draft as the next numbered version and make it live.
+
+    This is the only endpoint that changes what an applicant sees. The number
+    is assigned HERE rather than at draft-creation time, so abandoning a draft
+    leaves no gap in the history.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    @transaction.atomic
+    def post(self, request, key):
+        _valid_key_or_404(key)
+        letter = AgreementLetter.objects.select_for_update().filter(key=key).first()
+        if not letter:
+            raise NotFound("Nothing to publish.")
+        draft = _draft_of(letter)
+        if draft is None:
+            raise ValidationError({"detail": "There is no draft to publish."})
+
+        next_num = (letter.versions
+                    .filter(status=AgreementLetterVersion.STATUS_PUBLISHED)
+                    .aggregate(m=Max("version_number"))["m"] or 0) + 1
+        draft.status = AgreementLetterVersion.STATUS_PUBLISHED
+        draft.version_number = next_num
+        draft.save(update_fields=["status", "version_number"])
+
+        letter.current_version = draft
+        letter.title = draft.title
+        letter.save(update_fields=["current_version", "title", "updated_at"])
+        return Response({"ok": True, "published_version": next_num,
+                         **_letter_dict(letter, full=True)})
+
+
+class AdminAgreementDiscardDraftView(APIView):
+    """Throw the draft away. The live version is untouched."""
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    @transaction.atomic
+    def post(self, request, key):
+        _valid_key_or_404(key)
+        letter = AgreementLetter.objects.select_for_update().filter(key=key).first()
+        draft = _draft_of(letter)
+        if draft is None:
+            raise ValidationError({"detail": "There is no draft to discard."})
+        draft.delete()
+        return Response({"ok": True, "discarded": True, **_letter_dict(letter, full=True)})
 
 
 class AdminAgreementVersionsView(APIView):
@@ -194,9 +268,16 @@ class AdminAgreementVersionsView(APIView):
             return Response([])
         current_id = letter.current_version_id
         rows = []
-        for v in letter.versions.select_related("created_by").all():
+        # PUBLISHED only — history is the record of what was actually live.
+        # The unpublished draft is returned separately by the detail endpoint
+        # so the editor can show it without it masquerading as a version.
+        published = (letter.versions
+                     .filter(status=AgreementLetterVersion.STATUS_PUBLISHED)
+                     .select_related("created_by"))
+        for v in published:
             d = _version_dict(v)
             d["is_current"] = (v.id == current_id)
+            d["signed_count"] = v.signed_by.count()
             rows.append(d)
         return Response(rows)
 
@@ -214,7 +295,13 @@ class AdminAgreementVersionDetailView(APIView):
 
 
 class AdminAgreementRestoreView(APIView):
-    """Restore an old version by appending a NEW version that copies its body."""
+    """Load an old version's contents into the DRAFT for review.
+
+    Restore used to publish immediately. Now it stages, so restoring is
+    reviewable and reversible like any other edit — the admin still has to
+    press Publish, and nothing an applicant sees changes until they do.
+    Overwrites an existing draft (there is only ever one).
+    """
     permission_classes = [IsAuthenticated, IsAdmin]
 
     @transaction.atomic
@@ -222,33 +309,40 @@ class AdminAgreementRestoreView(APIView):
         old = AgreementLetterVersion.objects.select_related("letter").filter(id=version_id).first()
         if not old:
             raise NotFound("Version not found.")
+        if old.status != AgreementLetterVersion.STATUS_PUBLISHED:
+            raise ValidationError({"detail": "That version is the current draft."})
         # Lock the letter row for the same race-prevention reason as Save.
         letter = AgreementLetter.objects.select_for_update().get(pk=old.letter_id)
-        next_num = (letter.versions.aggregate(m=Max("version_number"))["m"] or 0) + 1
-        version = AgreementLetterVersion.objects.create(
-            letter=letter, version_number=next_num, title=old.title,
-            body=old.body,
-            # Carry the imported file forward as well, or restoring a
-            # file-based version would silently produce a body-only one —
-            # i.e. quietly change what applicants actually sign. Points at the
-            # same stored file rather than copying bytes; versions are
-            # immutable so nothing can rewrite it underneath either of them.
-            document=(old.document.name or None) if old.document else None,
-            change_note=f"Restored from v{old.version_number}",
-            created_by=request.user,
-        )
-        letter.current_version = version
-        # Was missing: restoring an old version's TEXT without also restoring
-        # its TITLE left AgreementLetter.title stuck on whatever the most
-        # recent save had set — so the admin list and the letter that
-        # actually renders to faculty could disagree about its own name.
-        letter.title = old.title
-        letter.save(update_fields=["current_version", "title", "updated_at"])
-        return Response({"ok": True, **_letter_dict(letter, full=True)})
+
+        draft = _draft_of(letter)
+        if draft is None:
+            draft = AgreementLetterVersion(
+                letter=letter, status=AgreementLetterVersion.STATUS_DRAFT,
+                version_number=None,
+            )
+        draft.title = old.title
+        draft.body = old.body
+        # Carry the imported file forward as well, or restoring a file-based
+        # version would silently produce a body-only one — i.e. quietly
+        # change what applicants actually sign. Points at the same stored
+        # file rather than copying bytes; published versions are immutable so
+        # nothing can rewrite it underneath either of them.
+        draft.document = (old.document.name or None) if old.document else None
+        draft.change_note = f"Restored from v{old.version_number}"
+        draft.created_by = request.user
+        draft.save()
+        return Response({"ok": True, "saved": "draft", **_letter_dict(letter, full=True)})
 
 
 class PublicAgreementView(APIView):
-    """The current agreement text, for the faculty signup / form-fillup screen."""
+    """The current PUBLISHED agreement text, for the faculty signup screen.
+
+    Reads `current_version` only, which the publish path is the sole writer
+    of — so an unpublished draft can never reach an applicant. The status
+    assertion below is belt-and-braces: it costs nothing and it means a
+    future bug that repoints current_version at a draft fails loudly here
+    rather than quietly binding someone to unreviewed terms.
+    """
     permission_classes = [AllowAny]
     throttle_classes = [AgreementPublicRateThrottle]
 
@@ -256,6 +350,8 @@ class PublicAgreementView(APIView):
         _valid_key_or_404(key)
         letter = AgreementLetter.objects.select_related("current_version").filter(key=key).first()
         if not letter or not letter.current_version:
+            raise NotFound("Agreement not published yet.")
+        if letter.current_version.status != AgreementLetterVersion.STATUS_PUBLISHED:
             raise NotFound("Agreement not published yet.")
         return Response(_public_letter_dict(letter))
 

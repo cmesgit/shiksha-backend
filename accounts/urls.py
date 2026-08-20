@@ -53,7 +53,7 @@ from .agreement_views import (
     AdminAgreementListView, AdminAgreementDetailView, AdminAgreementSaveView,
     AdminAgreementVersionsView, AdminAgreementVersionDetailView,
     AdminAgreementRestoreView, PublicAgreementView, ReapplyAcademyView,
-    FacultyChoicesView,
+    FacultyChoicesView, AdminAgreementPublishView, AdminAgreementDiscardDraftView,
 )
 from .views import (
     SignupView,
@@ -151,6 +151,8 @@ urlpatterns = [
     path("admin/agreements/versions/<uuid:version_id>/restore/", AdminAgreementRestoreView.as_view()),
     path("admin/agreements/<slug:key>/",               AdminAgreementDetailView.as_view()),
     path("admin/agreements/<slug:key>/save/",          AdminAgreementSaveView.as_view()),
+    path("admin/agreements/<slug:key>/publish/",       AdminAgreementPublishView.as_view()),
+    path("admin/agreements/<slug:key>/discard-draft/", AdminAgreementDiscardDraftView.as_view()),
     path("admin/agreements/<slug:key>/versions/",      AdminAgreementVersionsView.as_view()),
     # Public: current agreement text for the signup screen
     path("agreements/<slug:key>/",                     PublicAgreementView.as_view()),

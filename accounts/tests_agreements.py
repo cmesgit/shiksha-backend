@@ -16,6 +16,10 @@ from rest_framework import status
 from accounts.models import User, AgreementLetter, AgreementLetterVersion, TeacherProfile
 
 
+def _draft(letter):
+    return letter.versions.filter(status=AgreementLetterVersion.STATUS_DRAFT).first()
+
+
 class AgreementCMSTest(TestCase):
     PASSWORD = "s3cret-pass"
 
@@ -38,28 +42,91 @@ class AgreementCMSTest(TestCase):
         c.force_authenticate(user=user)
         return c
 
+    def save_and_publish(self, c, **payload):
+        """Save the draft then publish it — the two-step the CMS now requires.
+        Most of these tests care about the PUBLISHED outcome, not the staging."""
+        r1 = c.post("/api/accounts/admin/agreements/faculty/save/", payload,
+                    format=payload.pop("_format", "json"))
+        assert r1.status_code == status.HTTP_200_OK, r1.data
+        r2 = c.post("/api/accounts/admin/agreements/faculty/publish/")
+        assert r2.status_code == status.HTTP_200_OK, r2.data
+        return r2
+
     # ---- Save / versioning ------------------------------------------------
 
-    def test_save_creates_first_version_and_sets_current(self):
+    def test_save_stages_a_draft_and_does_not_go_live(self):
+        """The core of the draft/publish split: saving must not change what
+        an applicant sees."""
         res = self.client_for(self.admin).post(
             "/api/accounts/admin/agreements/faculty/save/",
             {"title": "Faculty Agreement", "body": "1. Engagement\n\nTerms."},
             format="json",
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["saved"], "draft")
+        letter = AgreementLetter.objects.get(key="faculty")
+        self.assertIsNone(letter.current_version, "saving must not publish")
+        self.assertIsNotNone(res.data["draft"])
+        self.assertIsNone(res.data["draft"]["version_number"])
+        # Still invisible to applicants.
+        self.assertEqual(
+            APIClient().get("/api/accounts/agreements/faculty/").status_code,
+            status.HTTP_404_NOT_FOUND)
+
+    def test_publish_makes_the_draft_live_as_v1(self):
+        c = self.client_for(self.admin)
+        self.save_and_publish(c, title="Faculty Agreement", body="1. Engagement\n\nTerms.")
         letter = AgreementLetter.objects.get(key="faculty")
         self.assertEqual(letter.current_version.version_number, 1)
         self.assertEqual(letter.title, "Faculty Agreement")
+        self.assertIsNone(_draft(letter), "publishing consumes the draft")
 
-    def test_second_save_appends_immutable_version(self):
+    def test_repeated_saves_update_the_same_draft(self):
         c = self.client_for(self.admin)
+        for body in ("first pass", "second pass", "third pass"):
+            c.post("/api/accounts/admin/agreements/faculty/save/",
+                   {"title": "Faculty Agreement", "body": body}, format="json")
+        letter = AgreementLetter.objects.get(key="faculty")
+        drafts = letter.versions.filter(status="draft")
+        self.assertEqual(drafts.count(), 1, "must not spawn a draft per save")
+        self.assertEqual(drafts.first().body, "third pass")
+        # And no numbers were burned along the way.
+        self.assertEqual(letter.versions.filter(status="published").count(), 0)
+
+    def test_discard_draft_leaves_the_live_version_untouched(self):
+        c = self.client_for(self.admin)
+        self.save_and_publish(c, title="Live", body="live text")
         c.post("/api/accounts/admin/agreements/faculty/save/",
-               {"title": "Faculty Agreement", "body": "v1 body"}, format="json")
+               {"title": "WIP", "body": "half-written clause"}, format="json")
+        res = c.post("/api/accounts/admin/agreements/faculty/discard-draft/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        letter = AgreementLetter.objects.get(key="faculty")
+        self.assertIsNone(_draft(letter))
+        self.assertEqual(letter.current_version.body, "live text")
+        self.assertEqual(letter.current_version.version_number, 1)
+
+    def test_publish_with_no_draft_is_rejected(self):
+        res = self.client_for(self.admin).post(
+            "/api/accounts/admin/agreements/faculty/publish/")
+        self.assertIn(res.status_code,
+                      (status.HTTP_400_BAD_REQUEST, status.HTTP_404_NOT_FOUND))
+
+    def test_version_history_excludes_the_draft(self):
+        c = self.client_for(self.admin)
+        self.save_and_publish(c, title="Faculty Agreement", body="v1")
         c.post("/api/accounts/admin/agreements/faculty/save/",
-               {"title": "Faculty Agreement", "body": "v2 body"}, format="json")
+               {"title": "Faculty Agreement", "body": "unpublished"}, format="json")
+        rows = c.get("/api/accounts/admin/agreements/faculty/versions/").data
+        self.assertEqual([r["version_number"] for r in rows], [1])
+        self.assertTrue(all(not r["is_draft"] for r in rows))
+
+    def test_publishing_twice_appends_an_immutable_version(self):
+        c = self.client_for(self.admin)
+        self.save_and_publish(c, title="Faculty Agreement", body="v1 body")
+        self.save_and_publish(c, title="Faculty Agreement", body="v2 body")
         letter = AgreementLetter.objects.get(key="faculty")
         self.assertEqual(letter.current_version.version_number, 2)
-        self.assertEqual(letter.versions.count(), 2)
+        self.assertEqual(letter.versions.filter(status="published").count(), 2)
         v1 = letter.versions.get(version_number=1)
         self.assertEqual(v1.body, "v1 body")  # never mutated
 
@@ -78,9 +145,11 @@ class AgreementCMSTest(TestCase):
             format="multipart",
         )
         self.assertEqual(res.status_code, status.HTTP_200_OK, res.data)
+        # Staged on the draft; publish to make it the live version.
+        self.assertIsNotNone(res.data["draft"]["document_url"])
+        self.client_for(self.admin).post("/api/accounts/admin/agreements/faculty/publish/")
         v = AgreementLetter.objects.get(key="faculty").current_version
         self.assertTrue(bool(v.document))
-        self.assertIsNotNone(res.data["current_version"]["document_url"])
 
     def test_save_rejects_a_non_document_import(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
@@ -113,23 +182,28 @@ class AgreementCMSTest(TestCase):
                 "document": SimpleUploadedFile("a.pdf", b"%PDF-1.4 one",
                                                content_type="application/pdf")},
                format="multipart")
+        c.post("/api/accounts/admin/agreements/faculty/publish/")
         v1_id = AgreementLetter.objects.get(key="faculty").current_version_id
-        c.post("/api/accounts/admin/agreements/faculty/save/",
-               {"title": "Text only", "body": "v2"}, format="json")
+        self.save_and_publish(c, title="Text only", body="v2")
         self.assertFalse(bool(AgreementLetter.objects.get(key="faculty").current_version.document))
 
         c.post(f"/api/accounts/admin/agreements/versions/{v1_id}/restore/")
+        # Restore stages — the file must survive into the draft, and then live.
+        letter = AgreementLetter.objects.get(key="faculty")
+        self.assertTrue(bool(_draft(letter).document))
+        c.post("/api/accounts/admin/agreements/faculty/publish/")
         restored = AgreementLetter.objects.get(key="faculty").current_version
         self.assertTrue(bool(restored.document))
 
     def test_public_endpoint_exposes_the_document_url(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
-        self.client_for(self.admin).post(
-            "/api/accounts/admin/agreements/faculty/save/",
-            {"title": "Faculty Agreement", "body": "terms",
-             "document": SimpleUploadedFile("a.pdf", b"%PDF-1.4 x",
-                                            content_type="application/pdf")},
-            format="multipart")
+        c = self.client_for(self.admin)
+        c.post("/api/accounts/admin/agreements/faculty/save/",
+               {"title": "Faculty Agreement", "body": "terms",
+                "document": SimpleUploadedFile("a.pdf", b"%PDF-1.4 x",
+                                               content_type="application/pdf")},
+               format="multipart")
+        c.post("/api/accounts/admin/agreements/faculty/publish/")
         res = APIClient().get("/api/accounts/agreements/faculty/")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertIsNotNone(res.data["current_version"]["document_url"])
@@ -155,15 +229,17 @@ class AgreementCMSTest(TestCase):
 
     def test_restore_copies_body_and_title_into_new_version(self):
         c = self.client_for(self.admin)
-        c.post("/api/accounts/admin/agreements/faculty/save/",
-               {"title": "Original Title", "body": "original body"}, format="json")
+        self.save_and_publish(c, title="Original Title", body="original body")
         letter = AgreementLetter.objects.get(key="faculty")
         v1_id = letter.current_version_id
-        c.post("/api/accounts/admin/agreements/faculty/save/",
-               {"title": "Newer Title", "body": "newer body"}, format="json")
+        self.save_and_publish(c, title="Newer Title", body="newer body")
 
         res = c.post(f"/api/accounts/admin/agreements/versions/{v1_id}/restore/")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
+        # Restore stages rather than publishing, so nothing is live yet.
+        letter.refresh_from_db()
+        self.assertEqual(letter.current_version.version_number, 2)
+        c.post("/api/accounts/admin/agreements/faculty/publish/")
 
         letter.refresh_from_db()
         self.assertEqual(letter.current_version.version_number, 3)
@@ -191,10 +267,8 @@ class AgreementCMSTest(TestCase):
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_public_endpoint_never_leaks_admin_email(self):
-        self.client_for(self.admin).post(
-            "/api/accounts/admin/agreements/faculty/save/",
-            {"title": "Faculty Agreement", "body": "terms"}, format="json",
-        )
+        self.save_and_publish(self.client_for(self.admin),
+                              title="Faculty Agreement", body="terms")
         res = APIClient().get("/api/accounts/agreements/faculty/")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(res.data["current_version"]["body"], "terms")
@@ -220,10 +294,8 @@ class AgreementCMSTest(TestCase):
             AgreementPublicRateThrottle.THROTTLE_RATES.update(saved),
         ))
 
-        self.client_for(self.admin).post(
-            "/api/accounts/admin/agreements/faculty/save/",
-            {"title": "Faculty Agreement", "body": "terms"}, format="json",
-        )
+        self.save_and_publish(self.client_for(self.admin),
+                              title="Faculty Agreement", body="terms")
         statuses = set()
         for _ in range(70):
             res = APIClient().get("/api/accounts/agreements/faculty/")
@@ -246,10 +318,13 @@ class AgreementSignatureBindingTest(TestCase):
         )
 
     def _publish(self, body="v1 body"):
+        """Save the draft AND publish it — these tests need a LIVE version to
+        bind signatures against."""
         c = APIClient()
         c.force_authenticate(user=self.admin)
         c.post("/api/accounts/admin/agreements/faculty/save/",
                {"title": "Faculty Agreement", "body": body}, format="json")
+        c.post("/api/accounts/admin/agreements/faculty/publish/")
         return AgreementLetter.objects.get(key="faculty").current_version
 
     def test_binds_current_version_and_timestamp_once(self):

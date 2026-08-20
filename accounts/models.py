@@ -1264,12 +1264,38 @@ class AgreementLetter(models.Model):
 
 
 class AgreementLetterVersion(models.Model):
-    """An immutable snapshot of an agreement's text at a point in time."""
+    """A snapshot of an agreement's text.
+
+    Two states, and the distinction is the whole point:
+
+    - DRAFT: a mutable working copy. At most ONE per letter. Editing rewrites
+      it in place, and it is invisible to applicants. Has NO version_number
+      yet, so abandoning a draft leaves no gap in the numbering.
+    - PUBLISHED: immutable and permanently numbered. Only a published version
+      can be `letter.current_version`, which is the only thing the public
+      signup endpoint ever reads.
+
+    Before this split every Save went live instantly to every subsequent
+    signup, so a half-written clause was legally binding the moment it was
+    typed and there was no way to draft next year's letter over several
+    sittings. Faculty stay bound to the exact published version they signed
+    via TeacherProfile.signed_agreement_version.
+    """
+    STATUS_DRAFT = "draft"
+    STATUS_PUBLISHED = "published"
+    STATUS_CHOICES = [(STATUS_DRAFT, "Draft"), (STATUS_PUBLISHED, "Published")]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     letter = models.ForeignKey(
         AgreementLetter, on_delete=models.CASCADE, related_name="versions"
     )
-    version_number = models.PositiveIntegerField()
+    status = models.CharField(
+        max_length=10, choices=STATUS_CHOICES, default=STATUS_PUBLISHED,
+        help_text="Drafts are mutable and hidden from applicants.",
+    )
+    # NULL while a draft — assigned at publish time, so a discarded draft
+    # never burns a number and history reads 1,2,3 with no holes.
+    version_number = models.PositiveIntegerField(null=True, blank=True)
     title = models.CharField(max_length=200)
     body = models.TextField()
     # An OPTIONAL admin-uploaded copy of this exact version (a lawyer-drafted
@@ -1292,9 +1318,26 @@ class AgreementLetterVersion(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["-version_number"]
-        unique_together = ("letter", "version_number")
+        # -created_at as the tiebreaker so the (unnumbered) draft sorts first
+        # rather than landing arbitrarily among the published versions.
+        ordering = ["-version_number", "-created_at"]
         indexes = [models.Index(fields=["letter", "version_number"])]
+        constraints = [
+            # Replaces the old unique_together. Postgres treats NULLs as
+            # distinct, so this still lets the one draft sit alongside the
+            # numbered published versions.
+            models.UniqueConstraint(
+                fields=["letter", "version_number"],
+                name="uniq_agreement_letter_version_number",
+            ),
+            # At most ONE draft per letter — a second concurrent draft would
+            # make "the draft" ambiguous for every endpoint below.
+            models.UniqueConstraint(
+                fields=["letter"],
+                condition=models.Q(status="draft"),
+                name="uniq_agreement_letter_single_draft",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.letter.key} v{self.version_number}"
