@@ -194,7 +194,11 @@ class StudentSkillDashboardView(APIView):
             resume_lesson = f"Lesson {done_lec + 1}"
 
             tp          = c.teacher_profile
-            lp          = tp.user.default_learner_profile() if tp else None
+            # self_, not default_: the account holder's OWN profile. The
+            # default can be a CHILD once the parent deletes their own
+            # profile, which would publish a dependant's name as the
+            # expert's.
+            lp          = tp.user.self_learner_profile() if tp else None
             expert_name = (
                 (lp.display_name or lp.full_name or "") if lp
                 else (tp.user.username if tp else "Expert")
@@ -381,7 +385,13 @@ class StudentSkillExpertsView(APIView):
     def get(self, request):
         qs = ExpertProfile.objects.filter(is_listed=True).select_related(
             "category", "teacher_profile__user"
-        ).prefetch_related("categories")
+        ).prefetch_related(
+            "categories",
+            # Each row resolves the expert's own display name via
+            # self_learner_profile(); without this that is one extra query per
+            # expert on a public, unauthenticated page.
+            "teacher_profile__user__learner_profiles",
+        )
         cat = request.query_params.get("cat")
         if cat:
             from django.db.models import Q as _Q
@@ -406,13 +416,25 @@ class StudentSkillExpertsView(APIView):
         if loc:
             qs = qs.filter(loc)
 
-        # Advertised first, then reach / rating.
+        # Advertised first, then reach / rating. The billing mode is a single
+        # platform-wide flag, so resolve it ONCE rather than reloading the
+        # GlobalSettings singleton twice per expert through is_advertised().
+        from django.db.models import Count
+        qs = qs.annotate(
+            public_reviews=Count("reviews", filter=Q(reviews__is_public=True),
+                                 distinct=True),
+        )
         rows = list(qs.order_by("-reach_count", "-rating", "-sessions_count")[:80])
-        rows = [e for e in rows if e.is_advertised()] + [e for e in rows if not e.is_advertised()]
+        free_phase = ExpertProfile.billing_is_free()
+        advertised, regular = [], []
+        for e in rows:
+            (advertised if e.is_advertised(free_phase) else regular).append(e)
+        rows = advertised + regular
 
         result = []
         for ep in rows[:40]:
-            lp = ep.user.default_learner_profile()
+            # The account holder's own profile — never a dependant's.
+            lp = ep.user.self_learner_profile()
             name = ""
             if lp:
                 name = f"{lp.first_name} {lp.last_name}".strip() or lp.display_name or ""
@@ -441,13 +463,14 @@ class StudentSkillExpertsView(APIView):
                     if (ep.city or ep.district or ep.state or ep.pincode) else None
                 ),
                 "languages":  ep.languages or [],
-                "advertised": ep.is_advertised(),
+                "advertised": ep.is_advertised(free_phase),
                 "intro_video_embed_url": ep.intro_video_embed_url(),
                 "bio":                ep.bio,
                 "subject_description": ep.subject_description,
                 "mastery_target":      ep.mastery_target,
                 "sessions":            ep.sessions_count,
-                "reviews_count":       ExpertReview.objects.filter(expert=ep, is_public=True).count(),
+                # Annotated above — this was one COUNT query per expert.
+                "reviews_count":       ep.public_reviews,
             })
         return Response(result)
 
@@ -508,7 +531,10 @@ class SkillSessionDetailView(APIView):
         if expert.photo:
             img = request.build_absolute_uri(expert.photo.url)
         else:
-            lp = expert.user.default_learner_profile()
+            # Worst case of the lot: this falls through to the profile's
+            # PHOTO, so a dependant's face could become the expert's
+            # public avatar on the marketplace.
+            lp = expert.user.self_learner_profile()
             if lp and lp.profile_photo:
                 img = request.build_absolute_uri(lp.profile_photo.url)
 

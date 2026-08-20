@@ -62,7 +62,7 @@ class SubjectSerializer(serializers.ModelSerializer):
             profile = getattr(teacher, "teacher_profile", None)
             data.append({
                 "id": teacher.id,
-                "name": (lambda p: p.full_name if p and p.full_name else teacher.username)(teacher.default_learner_profile()),
+                "name": (lambda p: p.full_name if p and p.full_name else teacher.username)(teacher.self_learner_profile()),
                 "display_role": ta.role,
                 "qualification": profile.qualification if profile else "",
                 "bio": profile.bio if profile else "",

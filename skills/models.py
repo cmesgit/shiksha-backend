@@ -235,15 +235,24 @@ class ExpertProfile(models.Model):
             # Fail open to FREE so a missing settings row never hides experts.
             return True
 
-    def is_advertised(self):
+    def is_advertised(self, free_phase=None):
         """Whether this expert is promoted on the homepage right now.
 
         Free phase  → every listed expert is advertised (no subscription needed).
         Paid phase  → only experts with an active ad-subscription (is_featured).
+
+        `free_phase` lets a caller resolve the platform-wide billing mode ONCE
+        and pass it in. Without it this reloads the GlobalSettings singleton on
+        every call, and callers that partition a list — `[e for e in rows if
+        e.is_advertised()] + [e for e in rows if not e.is_advertised()]` —
+        call it twice per row, so the public expert directory was issuing
+        three settings queries per expert to answer one global yes/no.
         """
         if not self.is_listed:
             return False
-        if self.billing_is_free():
+        if free_phase is None:
+            free_phase = self.billing_is_free()
+        if free_phase:
             return True
         return self.is_featured
 

@@ -352,7 +352,7 @@ class AdminSessionListView(APIView):
         from .attendance_models import SkillSessionAttendance
 
         def _display_name(user):
-            lp = user.default_learner_profile()
+            lp = user.self_learner_profile()
             if lp:
                 return lp.display_name or lp.full_name or user.email
             return user.email

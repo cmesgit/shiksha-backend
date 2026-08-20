@@ -95,6 +95,17 @@ class User(AbstractUser):
         Returns None rather than guessing when the account holds no SELF
         profile; callers fall back to the account's own username/email.
         """
+        # Honour a prefetch when the caller has one. The public expert
+        # directory calls this once per row, so on a 40-expert page the
+        # queryset form is 40 extra queries on a page anyone can load without
+        # logging in. `.filter()` always hits the DB even when
+        # learner_profiles is already prefetched, so branch explicitly.
+        if "learner_profiles" in getattr(self, "_prefetched_objects_cache", {}):
+            rows = [p for p in self.learner_profiles.all()
+                    if p.is_active and p.relationship == "SELF"]
+            return (next((p for p in rows if p.is_default), None)
+                    or (rows[0] if rows else None))
+
         qs = self.learner_profiles.filter(is_active=True, relationship="SELF")
         return qs.filter(is_default=True).first() or qs.first()
 
