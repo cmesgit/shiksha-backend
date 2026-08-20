@@ -147,11 +147,21 @@ def generate_livekit_token(
         )
     else:
         # 👀 VIEWER (students + other teachers)
-        # can_publish=True so mic works, but frontend starts muted by default
+        #
+        # can_publish=True is for the MICROPHONE only — can_publish_sources
+        # below means a student cannot publish video at all, whatever the
+        # frontend asks for. Camera-off for students is enforced HERE, not
+        # left to the client.
+        #
+        # Muting, by contrast, is a frontend concern and the comment here used
+        # to overstate it ("starts muted by default"). The class rooms request
+        # audio=false at connect AND force-mute on mount; the 1-on-1 private
+        # and skill rooms deliberately join unmuted, since those are
+        # conversations. Do not rely on this grant to keep anyone quiet.
         grants = VideoGrants(
             room_join=True,
             room=room_name,
-            can_publish=True,         # ✅ mic allowed (starts muted via frontend)
+            can_publish=True,         # ✅ mic allowed (see above)
             can_publish_data=True,    # ✅ allows raise hand + chat
             can_subscribe=True,
             can_publish_sources=["microphone"],  # 🎤 mic only, no camera/screen
