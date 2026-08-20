@@ -53,6 +53,7 @@ from .agreement_views import (
     AdminAgreementListView, AdminAgreementDetailView, AdminAgreementSaveView,
     AdminAgreementVersionsView, AdminAgreementVersionDetailView,
     AdminAgreementRestoreView, PublicAgreementView, ReapplyAcademyView,
+    FacultyChoicesView,
 )
 from .views import (
     SignupView,
@@ -153,6 +154,9 @@ urlpatterns = [
     path("admin/agreements/<slug:key>/versions/",      AdminAgreementVersionsView.as_view()),
     # Public: current agreement text for the signup screen
     path("agreements/<slug:key>/",                     PublicAgreementView.as_view()),
+    # Public: the faculty signup form's option lists, served so the four
+    # hardcoded JS copies can't drift from what validation accepts again.
+    path("faculty-choices/",                           FacultyChoicesView.as_view()),
     path("teacher/reapply-academy/",                   ReapplyAcademyView.as_view()),
 
     # RBAC — roles, permissions, assignment, moderator action history

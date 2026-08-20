@@ -184,17 +184,28 @@ def _toggle_follow(user, target_type, target_key):
 
 def _save_attachments(request, post):
     """Persist any multipart `files` uploaded with a thread. Silently caps each
-    file at FORUM_MAX_ATTACHMENT_MB and ignores oversize files."""
+    file at FORUM_MAX_ATTACHMENT_MB and ignores oversize files — invalid file
+    types are now dropped the same way (no per-file error channel exists back
+    to the caller here, so this matches the existing size-limit convention
+    rather than hard-failing the whole thread create)."""
     from django.conf import settings as dj_settings
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    from config.upload_validation import validate_upload, IMAGE_EXTS, DOCUMENT_EXTS
+
     max_mb = int(getattr(dj_settings, "FORUM_MAX_ATTACHMENT_MB", 15))
     limit = max_mb * 1024 * 1024
     files = request.FILES.getlist("files") if hasattr(request, "FILES") else []
-    image_exts = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
+    # .svg deliberately excluded from the image allowlist — unlike PNG/JPEG/
+    # GIF/WEBP it can carry an embedded <script> and still be a "valid" image.
+    allowed_exts = IMAGE_EXTS | DOCUMENT_EXTS
     for f in files[:10]:
         if f.size > limit:
             continue
-        name = (f.name or "").lower()
-        kind = Attachment.KIND_IMAGE if name.endswith(image_exts) else Attachment.KIND_FILE
+        try:
+            ext = validate_upload(f, allowed_exts, max_mb=max_mb)
+        except DjangoValidationError:
+            continue
+        kind = Attachment.KIND_IMAGE if ext in IMAGE_EXTS else Attachment.KIND_FILE
         Attachment.objects.create(
             post=post, file=f, kind=kind,
             original_name=f.name or "", uploaded_by=request.user,

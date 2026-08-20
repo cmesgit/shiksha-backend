@@ -576,6 +576,12 @@ class TeacherProfileView(APIView):
     }
     TEACHER_FILE_FIELDS = {
         "qualification_certificate", "id_proof_front", "id_proof_back",
+        # Was missing here: the loop below never wrote the uploaded file onto
+        # `tp`, so a faculty member uploading their signed agreement from this
+        # dashboard screen got `signed_agreement_version` set (by the block
+        # further down) but the FILE itself silently discarded — a version
+        # binding with no actual signed document behind it.
+        "signed_agreement",
     }
 
     def patch(self, request):
@@ -629,15 +635,10 @@ class TeacherProfileView(APIView):
 
         # Bind the teacher to the CURRENT faculty-agreement version at the moment
         # they upload their signed copy, so later edits to the letter never
-        # change what they agreed to.
-        if "signed_agreement" in request.FILES and tp.signed_agreement_version_id is None:
-            try:
-                from .models import AgreementLetter
-                letter = AgreementLetter.objects.filter(key="faculty").first()
-                if letter and letter.current_version_id:
-                    tp.signed_agreement_version_id = letter.current_version_id
-            except Exception:
-                pass
+        # change what they agreed to. Also stamps the signature audit trail.
+        if "signed_agreement" in request.FILES:
+            signer_name = f"{profile.first_name} {profile.last_name}".strip()
+            tp.record_agreement_signature(request=request, signer_name=signer_name)
 
         tp.save()
 
@@ -1188,6 +1189,20 @@ class ChangePasswordView(APIView):
         user.set_password(new_password)
         user.save()
 
+        # A password change must end every OTHER session immediately — a
+        # stolen access/refresh token pair shouldn't keep working just because
+        # its access cookie hasn't expired yet. Keeps the caller's own current
+        # session alive (they just proved they know the new password).
+        from .auth_flow import session_id_for
+        from .revocation import revoke_sessions
+        current_sid = session_id_for(request)
+        others = (
+            user.sessions.filter(revoked_at__isnull=True).exclude(id=current_sid)
+            if current_sid else
+            user.sessions.filter(revoked_at__isnull=True)
+        )
+        revoke_sessions(user, list(others))
+
         return Response({"detail": "Password changed successfully."})
 
 
@@ -1296,6 +1311,13 @@ class PasswordResetConfirmView(APIView):
         user.save()
         rec.used = True
         rec.save(update_fields=["used"])
+
+        # This flow is the account-recovery path — there is no "current
+        # session" to spare, and if the reset was triggered because a device
+        # was stolen/compromised, every existing session must die right now.
+        from .revocation import revoke_sessions
+        revoke_sessions(user, list(user.sessions.filter(revoked_at__isnull=True)))
+
         return Response({"detail": "Password changed successfully. Please log in."})
 
 

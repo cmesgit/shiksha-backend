@@ -759,3 +759,80 @@ class RecordingAccessControlTest(TestCase):
         c.force_authenticate(user=self.teacher, token={"context": "teacher"})
         r = c.get(f"/api/courses/recordings/{self.morning_only.id}/")
         self.assertEqual(r.status_code, 200, r.content)
+
+
+class SignedUploadUrlOwnershipTest(TestCase):
+    """SignedUploadUrlView previously signed a valid Bunny TUS upload ticket
+    for ANY client-supplied video_id with no ownership check at all — any
+    teacher-context account could get a ticket to overwrite another
+    teacher's recording, since bunny_video_id is serialized back to
+    teachers elsewhere in this app."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models_recordings import SessionRecording, PendingVideoUpload
+        cls.PendingVideoUpload = PendingVideoUpload
+
+        Role.objects.get_or_create(name="TEACHER")
+        cls.teacher_a = User.objects.create_user(
+            username="up_a", email="up_a@test.com", password="x")
+        cls.teacher_b = User.objects.create_user(
+            username="up_b", email="up_b@test.com", password="x")
+        for t in (cls.teacher_a, cls.teacher_b):
+            UserRole.objects.create(
+                user=t, role=Role.objects.get(name="TEACHER"), is_active=True, is_primary=True)
+
+        cls.course = Course.objects.create(title="Class 9")
+        cls.subject_a = Subject.objects.create(course=cls.course, name="Chem")
+        TeachingAssignment.objects.create(
+            subject=cls.subject_a, teacher=cls.teacher_a, batch=None, is_active=True)
+
+        cls.existing_recording = SessionRecording.objects.create(
+            subject=cls.subject_a, title="Existing", batch=None,
+            bunny_video_id="vid-existing", uploaded_by=cls.teacher_a,
+        )
+
+    def _client(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user, token={"context": "teacher"})
+        return c
+
+    def test_cannot_sign_an_unowned_arbitrary_video_id(self):
+        r = self._client(self.teacher_b).post(
+            "/api/courses/recordings/signed-upload-url/", {"video_id": "vid-not-mine"}, format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def test_cannot_sign_another_teachers_existing_recording(self):
+        r = self._client(self.teacher_b).post(
+            "/api/courses/recordings/signed-upload-url/", {"video_id": "vid-existing"}, format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def test_owner_can_sign_their_own_existing_recording(self):
+        r = self._client(self.teacher_a).post(
+            "/api/courses/recordings/signed-upload-url/", {"video_id": "vid-existing"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+
+    def test_creator_can_sign_their_own_pending_slot(self):
+        self.PendingVideoUpload.objects.create(video_id="vid-fresh", created_by=self.teacher_b)
+        r = self._client(self.teacher_b).post(
+            "/api/courses/recordings/signed-upload-url/", {"video_id": "vid-fresh"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+
+    def test_other_teacher_cannot_sign_someone_elses_pending_slot(self):
+        self.PendingVideoUpload.objects.create(video_id="vid-fresh2", created_by=self.teacher_a)
+        r = self._client(self.teacher_b).post(
+            "/api/courses/recordings/signed-upload-url/", {"video_id": "vid-fresh2"}, format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def test_create_video_slot_records_ownership(self):
+        # Confirms CreateVideoSlotView actually writes the row the
+        # ownership check above depends on — belt and suspenders against a
+        # future change to that view silently dropping it again.
+        from unittest.mock import patch, Mock
+        with patch("courses.views_recordings.requests.post") as mock_post:
+            mock_post.return_value = Mock(status_code=201, json=lambda: {"guid": "vid-new"})
+            r = self._client(self.teacher_a).post("/api/courses/recordings/create-video/", {}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(
+            self.PendingVideoUpload.objects.filter(video_id="vid-new", created_by=self.teacher_a).exists()
+        )

@@ -737,23 +737,77 @@ class TeacherProfile(models.Model):
         ("general", "General"),
     ]
 
-    SUBJECT_CHOICES = [
-        ("mathematics", "Mathematics"),
-        ("physics", "Physics"),
-        ("chemistry", "Chemistry"),
-        ("biology", "Biology"),
-        ("english", "English"),
-        ("hindi", "Hindi"),
-        ("social_science", "Social Science"),
-        ("history", "History"),
-        ("geography", "Geography"),
-        ("economics", "Economics"),
-        ("computer_science", "Computer Science"),
-        ("accountancy", "Accountancy"),
-        ("business_studies", "Business Studies"),
-        ("political_science", "Political Science"),
-        ("other", "Other"),
+    # Subjects a faculty applicant can teach, grouped for the UI. The groups
+    # are presentation only — SUBJECT_CHOICES below is flattened from this and
+    # remains the single source of truth for validation.
+    #
+    # Was 15 flat entries covering CBSE/ICSE core school subjects only, which
+    # left a platform that now also sells COMPETITIVE-EXAM courses
+    # (Board.TYPE_COMPETITIVE — MPSC/UPSC/NEET/JEE/SSC/banking) with no way for
+    # an applicant to say what they actually teach. Languages were English and
+    # Hindi only, on a Maharashtra-focused product.
+    #
+    # ⚠️ Values are STABLE IDENTIFIERS stored in the DB — never rename or
+    # reorder an existing one (TeacherProfile.subject,
+    # TeacherCourseApplication.subject and TeacherSkillApplication
+    # .skill_related_subject all point here). Only append.
+    SUBJECT_GROUPS = [
+        ("Science & Mathematics", [
+            ("mathematics", "Mathematics"),
+            ("science", "Science (general)"),
+            ("physics", "Physics"),
+            ("chemistry", "Chemistry"),
+            ("biology", "Biology"),
+            ("environmental_science", "Environmental Science"),
+        ]),
+        ("Languages", [
+            ("english", "English"),
+            ("hindi", "Hindi"),
+            ("marathi", "Marathi"),
+            ("sanskrit", "Sanskrit"),
+            ("urdu", "Urdu"),
+            ("other_language", "Other language"),
+        ]),
+        ("Social Studies", [
+            ("social_science", "Social Science"),
+            ("history", "History"),
+            ("geography", "Geography"),
+            ("civics", "Civics"),
+            ("political_science", "Political Science"),
+            ("economics", "Economics"),
+            ("sociology", "Sociology"),
+            ("psychology", "Psychology"),
+            ("philosophy", "Philosophy"),
+        ]),
+        ("Commerce", [
+            ("accountancy", "Accountancy"),
+            ("business_studies", "Business Studies"),
+            ("commerce", "Commerce"),
+            ("statistics", "Statistics"),
+        ]),
+        ("Technology", [
+            ("computer_science", "Computer Science"),
+            ("information_technology", "Information Technology"),
+        ]),
+        ("Competitive exam prep", [
+            ("general_studies", "General Studies"),
+            ("general_knowledge", "General Knowledge"),
+            ("current_affairs", "Current Affairs"),
+            ("quantitative_aptitude", "Quantitative Aptitude"),
+            ("logical_reasoning", "Logical Reasoning"),
+            ("public_administration", "Public Administration"),
+            ("ethics", "Ethics & Integrity"),
+            ("law", "Law"),
+        ]),
+        ("Other", [
+            ("physical_education", "Physical Education"),
+            ("art", "Art & Craft"),
+            ("music", "Music"),
+            ("other", "Other"),
+        ]),
     ]
+
+    SUBJECT_CHOICES = [pair for _group, pairs in SUBJECT_GROUPS for pair in pairs]
 
     # Which track the teacher applied through. A teacher may ultimately do
     # both (course_applications AND skill_applications already coexist on
@@ -884,6 +938,13 @@ class TeacherProfile(models.Model):
         on_delete=models.SET_NULL, null=True, blank=True,
         related_name="signed_by",
     )
+    # Audit trail for the signature itself — previously there was no record
+    # of WHEN it was signed, FROM WHERE, or what name was attested, only a
+    # file and a nullable FK. Written once, by record_agreement_signature()
+    # below, at the same moment signed_agreement_version is bound.
+    signed_agreement_at = models.DateTimeField(null=True, blank=True)
+    signed_agreement_ip = models.GenericIPAddressField(null=True, blank=True)
+    agreement_signer_name = models.CharField(max_length=200, blank=True, default="")
 
     # --- Course Application fields ---
     subject = models.CharField(max_length=50, choices=SUBJECT_CHOICES, blank=True)
@@ -1058,6 +1119,30 @@ class TeacherProfile(models.Model):
             return f"You're already set up for {nice} on this account. Log in instead."
         return "That track can't be added to this account."
 
+    def record_agreement_signature(self, request=None, signer_name="", key="faculty"):
+        """Bind to the currently-published agreement version + stamp the
+        audit trail, the FIRST time a signed copy is uploaded.
+
+        Both upload paths (TeacherProfileView.patch and
+        TeacherFormFillupSerializer.update) must call this instead of each
+        reimplementing the binding — they previously diverged into exactly
+        opposite bugs (one saved the file and dropped the version, the other
+        saved the version and dropped the file). Never overwrites an
+        existing binding: the whole point of `signed_agreement_version` is to
+        record what was true at the moment of signing, not the latest state.
+        """
+        if self.signed_agreement_version_id is not None:
+            return
+        letter = AgreementLetter.objects.filter(key=key).first()
+        if letter and letter.current_version_id:
+            self.signed_agreement_version_id = letter.current_version_id
+        self.signed_agreement_at = timezone.now()
+        if request is not None:
+            from .audit import get_client_ip
+            self.signed_agreement_ip = get_client_ip(request)
+        if signer_name:
+            self.agreement_signer_name = signer_name
+
     def save(self, *args, **kwargs):
         if self.same_as_current:
             self.permanent_address = self.current_address
@@ -1187,6 +1272,18 @@ class AgreementLetterVersion(models.Model):
     version_number = models.PositiveIntegerField()
     title = models.CharField(max_length=200)
     body = models.TextField()
+    # An OPTIONAL admin-uploaded copy of this exact version (a lawyer-drafted
+    # PDF/DOCX). Two authoring routes, one version history:
+    #   - author in the CMS  → `body` holds the text, nothing here
+    #   - import a file      → this holds it, `body` holds a plain-text summary
+    # When present this is what the applicant downloads and signs, so the
+    # signed artifact is still pinned to a specific version — unlike the old
+    # hardcoded /faculty-agreement.pdf in the frontend's public/ directory,
+    # which was one frozen file shared by every version and every applicant,
+    # completely disconnected from whatever the CMS said.
+    document = models.FileField(
+        upload_to="agreements/letters/", null=True, blank=True
+    )
     change_note = models.CharField(max_length=500, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,

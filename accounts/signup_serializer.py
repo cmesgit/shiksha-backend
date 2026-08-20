@@ -606,30 +606,95 @@ class SignupSerializer(serializers.Serializer):
             # applicant could upload three files, be told it "speeds up
             # review", and have the bytes silently discarded — while the admin
             # was asked to approve them on the strength of those documents.
-            for key in ("qualification_certificate", "id_proof_front", "id_proof_back"):
+            # `signed_agreement` is included here deliberately: before this,
+            # the signup screen told applicants to upload the signed copy
+            # "from your dashboard after verifying your email", but that path
+            # was unreachable — /form-fillup serves the LEARNER form to a
+            # pending applicant (FormFillupView keys off get_active_roles()
+            # and a pending faculty's TEACHER role is is_active=False), and
+            # the teacher-app editor that does handle signed_agreement sits
+            # behind teacher context, which 403s not_approved until the track
+            # is live. So there was no way to supply it before approval at
+            # all. It rides the same base64 path as the other three.
+            for key in ("qualification_certificate", "id_proof_front",
+                        "id_proof_back", "signed_agreement"):
                 if self._save_signup_document(tp, key, payload.get(key)):
                     changed.append(key)
+
+            # Bind the applicant to the agreement version in force right now,
+            # with the same audit stamp both dashboard upload paths use, so a
+            # signature captured at signup is recorded identically to one
+            # captured later. Only fires when a file actually landed.
+            if "signed_agreement" in changed:
+                # Personal names are collected later (from /form-fillup), so at
+                # signup the account's own name/email is the best attestation
+                # available — better than recording nothing.
+                signer = ""
+                acct = getattr(tp, "user", None)
+                if acct is not None:
+                    signer = (acct.get_full_name() or "").strip() or (acct.email or "")
+                tp.record_agreement_signature(
+                    request=self.context.get("request"), signer_name=signer[:200],
+                )
+                changed += ["signed_agreement_version", "signed_agreement_at",
+                            "signed_agreement_ip", "agreement_signer_name"]
 
             if changed:
                 tp.save(update_fields=sorted(set(changed)))
 
-            # One subject application so the review queue shows what they intend
-            # to teach. The dashboard form lets them add more subjects later.
-            ca = payload.get("course_application")
-            if isinstance(ca, dict):
+            # Subject applications, so the review queue shows what they intend
+            # to teach. `course_applications` (a LIST) is the current shape —
+            # a faculty member commonly teaches more than one
+            # subject, and until this accepted a list the signup form could
+            # only ever record one, forcing everyone to add the rest from
+            # /form-fillup after approval. The legacy singular
+            # `course_application` dict is still honoured so an older cached
+            # bundle keeps working through a deploy.
+            raw_apps = payload.get("course_applications")
+            if not isinstance(raw_apps, list):
+                legacy = payload.get("course_application")
+                raw_apps = [legacy] if isinstance(legacy, dict) else []
+
+            valid_subjects = _valid_choices(TeacherCourseApplication, "subject")
+            valid_boards  = {"cbse", "icse", "mbse", "nios", "other"}
+            valid_classes = {"1_5", "6_8", "9_10", "11_12", "ug", "pg"}
+            valid_streams = {"science", "commerce", "arts", "vocational", "general"}
+
+            seen_subjects = set()
+            created_apps = []
+            for ca in raw_apps[:20]:            # bounded: this is unauth input
+                if not isinstance(ca, dict):
+                    continue
                 subj = ca.get("subject")
                 subj = subj.strip() if isinstance(subj, str) else ""
-                if subj and subj in _valid_choices(TeacherCourseApplication, "subject"):
-                    valid_boards  = {"cbse", "icse", "mbse", "nios", "other"}
-                    valid_classes = {"1_5", "6_8", "9_10", "11_12", "ug", "pg"}
-                    valid_streams = {"science", "commerce", "arts", "vocational", "general"}
-                    boards  = [b for b in (ca.get("boards") or []) if b in valid_boards]
-                    classes = [str(c) for c in (ca.get("classes") or []) if str(c) in valid_classes]
-                    streams = [str(x) for x in (ca.get("streams") or []) if str(x) in valid_streams]
-                    TeacherCourseApplication.objects.create(
-                        teacher_profile=tp, subject=subj, boards=boards,
-                        classes=classes, streams=streams,
-                    )
+                # Skip unknown subjects and duplicates — TeacherCourseApplication
+                # has no uniqueness constraint, so two identical rows would
+                # otherwise show up twice in the admin review queue.
+                if not subj or subj not in valid_subjects or subj in seen_subjects:
+                    continue
+                seen_subjects.add(subj)
+                created_apps.append(TeacherCourseApplication.objects.create(
+                    teacher_profile=tp,
+                    subject=subj,
+                    boards=[b for b in (ca.get("boards") or []) if b in valid_boards],
+                    classes=[str(c) for c in (ca.get("classes") or []) if str(c) in valid_classes],
+                    streams=[str(x) for x in (ca.get("streams") or []) if str(x) in valid_streams],
+                ))
+
+            # Mirror the FIRST application onto the denormalized headline
+            # fields. These were never populated at signup at all, so the
+            # admin approval card and the teacher directory — which read
+            # `tp.subject` for their one-line summary (accounts/views.py:1056,
+            # :1145) — showed a blank subject for every applicant who came
+            # through this form.
+            if created_apps:
+                primary = created_apps[0]
+                tp.subject = primary.subject
+                tp.classes = primary.classes
+                tp.streams = primary.streams
+                # Its own save: `changed` was already flushed above, so
+                # appending to it here would be dead.
+                tp.save(update_fields=["subject", "classes", "streams"])
         except Exception:
             # Best-effort only — never block signup on optional profile data.
             return

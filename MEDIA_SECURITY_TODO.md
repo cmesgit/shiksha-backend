@@ -66,12 +66,20 @@ nothing is exposed — but nothing works for a real non-staff user either
 until someone adds a proper rule. Each needs its own investigation, not a
 copy-paste of an existing rule:
 
-- **`forum/` attachments** (`forum/models.py`'s `Attachment` /
-  `_forum_attachment_path`). Needs `ForumCategory`-level visibility rules
-  threaded through — some categories may be staff-only or role-gated,
-  some may be open to every authenticated user. Check `forum/views.py`'s
-  existing post-read permission logic and mirror it exactly; don't
-  approximate.
+- ~~**`forum/` attachments**~~ — **DONE.** Checked: no `ForumCategory`- or
+  `Space`-level visibility field exists anywhere in `forum/models.py`
+  (grepped); `ListThreadsView`/`ThreadDetailView` are plain `AllowAny`,
+  gated only by the post's own `is_removed` soft-hide. `_check_forum_attachment`
+  mirrors that exactly (`Attachment.objects.filter(file=name,
+  post__is_removed=False)`). This had regressed from "silently open" to
+  "silently BROKEN" since the initial pass — with no rule at all, every
+  attachment 404'd for every non-staff user, including the uploader.
+- ~~**`session_files/`**~~ — **DONE**, and was never on this list despite
+  having no rule either (same "404s for everyone but staff" break, on both
+  `SessionFile` and `PrivateSessionFile`, which share this upload path).
+  `_check_session_file` calls the exact same `_in_room` /
+  `_is_private_session_participant` helpers `sessions_app/live_files_views.py`
+  itself uses, so the two can't drift apart.
 - **`avatar/`, `profiles/photos/`** — 4 and 3 files respectively exist on
   the dev droplet's disk, but **no model in the current codebase
   references either `upload_to` string**. Likely orphaned from a renamed

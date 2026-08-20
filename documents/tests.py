@@ -79,6 +79,38 @@ class ExplorePublicTests(TestCase):
         self.assertEqual(r.status_code, 201)
         self.assertTrue(Document.objects.filter(title="My paper", owner=self.reader).exists())
 
+    def test_upload_rejects_html_disguised_as_pdf(self):
+        # Previously accepted ANY file with no server-side type check at all
+        # — a stored-XSS risk once served back with a guessed Content-Type
+        # from the /media/ origin that shares the auth cookie's domain.
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        c = auth_client(self.reader)
+        payload = SimpleUploadedFile(
+            "notes.pdf", b"<html><script>alert(1)</script></html>",
+            content_type="application/pdf",
+        )
+        r = c.post("/api/explore/documents/",
+                   data={"title": "Fake PDF", "file": payload})
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(Document.objects.filter(title="Fake PDF").exists())
+
+    def test_upload_rejects_disallowed_extension(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        c = auth_client(self.reader)
+        payload = SimpleUploadedFile("evil.svg", b"<svg onload=alert(1)></svg>", content_type="image/svg+xml")
+        r = c.post("/api/explore/documents/",
+                   data={"title": "SVG upload", "file": payload})
+        self.assertEqual(r.status_code, 400)
+
+    def test_upload_accepts_real_pdf(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        c = auth_client(self.reader)
+        payload = SimpleUploadedFile("real.pdf", b"%PDF-1.4\n...", content_type="application/pdf")
+        r = c.post("/api/explore/documents/",
+                   data={"title": "Real PDF", "file": payload})
+        self.assertEqual(r.status_code, 201)
+        self.assertTrue(Document.objects.filter(title="Real PDF").exists())
+
     def test_toggle_save(self):
         c = auth_client(self.reader)
         r = c.post(f"/api/explore/documents/{self.doc.id}/save/")

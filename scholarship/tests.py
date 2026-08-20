@@ -417,6 +417,23 @@ class AadhaarOfflineModuleTest(TestCase):
         with self.assertRaises(aadhaar_offline.AadhaarOfflineVerificationError):
             aadhaar_offline.verify_offline_ekyc(b"not a zip file", "TEST")
 
+    def test_rejects_oversized_decompressed_member_without_oom(self):
+        # A real decompression-bomb shape: highly-compressible content makes
+        # the ZIP CONTAINER itself tiny (well under any outer file-size
+        # check) while decompressing to far more than a genuine e-KYC XML
+        # ever would. Proves _extract_xml_from_zip aborts mid-stream on
+        # actual output size rather than decompressing everything first and
+        # only noticing afterwards (or not at all).
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("offline_ekyc.xml", b"A" * (aadhaar_offline.MAX_UNCOMPRESSED_XML_BYTES + 1024))
+        zip_bytes = buf.getvalue()
+        self.assertLess(len(zip_bytes), 100 * 1024)  # compressed container stays tiny
+
+        with self.assertRaises(aadhaar_offline.AadhaarOfflineVerificationError) as ctx:
+            aadhaar_offline.verify_offline_ekyc(zip_bytes, "TEST")
+        self.assertIn("larger", str(ctx.exception).lower())
+
     def test_rejects_non_ekyc_xml_root(self):
         xml = b"<SomethingElse/>"
         zip_bytes = _zip_bytes(xml)
@@ -511,3 +528,53 @@ class AadhaarOfflineViewTest(TestCase):
         settings_obj.save()
         res = self.client_as_parent().post("/api/scholarship/verification/", {"method": "aadhaar_offline"})
         self.assertEqual(res.status_code, 400)
+
+
+class ManualDocumentValidationTest(TestCase):
+    """manual_document previously accepted ANY file with no type/size check
+    at all — this is a sensitive KYC-document review queue an admin opens
+    directly by URL, so an .html/.svg payload there is stored XSS against
+    that admin's own session."""
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="STUDENT")
+        cls.parent = User.objects.create_user(
+            username="manualparent", email="manualparent@test.com", password="x", is_verified=True,
+        )
+
+    def client_as_parent(self):
+        c = APIClient()
+        c.force_authenticate(user=self.parent, token={"context": "account"})
+        return c
+
+    def test_html_disguised_as_pdf_rejected(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        res = self.client_as_parent().post(
+            "/api/scholarship/verification/",
+            {
+                "method": "manual",
+                "manual_document": SimpleUploadedFile(
+                    "id.pdf", b"<html><script>alert(1)</script></html>",
+                    content_type="application/pdf",
+                ),
+            },
+            format="multipart",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(GuardianVerification.objects.filter(account=self.parent).exists())
+
+    def test_real_pdf_accepted(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        res = self.client_as_parent().post(
+            "/api/scholarship/verification/",
+            {
+                "method": "manual",
+                "manual_document": SimpleUploadedFile(
+                    "id.pdf", b"%PDF-1.4\n...", content_type="application/pdf",
+                ),
+            },
+            format="multipart",
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(GuardianVerification.objects.filter(account=self.parent).exists())

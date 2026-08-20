@@ -138,6 +138,33 @@ class ForumHardeningTests(TestCase):
         self.assertEqual(c.post("/api/forum/report/", data=payload, content_type="application/json").status_code, 200)
         self.assertEqual(Report.objects.filter(resolved=False).count(), 1)
 
+    def test_thread_create_rejects_svg_attachment(self):
+        # _save_attachments previously accepted any file with no type check
+        # at all (and .svg was explicitly treated as a valid "image" even
+        # though it can carry a <script>) — svg is now excluded outright.
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from forum.models import Attachment
+        c = auth_client(self.author)
+        payload = SimpleUploadedFile("evil.svg", b"<svg onload=alert(1)></svg>", content_type="image/svg+xml")
+        r = c.post("/api/forum/threads/create/",
+                   data={"title": "A new question", "body": "body text", "files": payload})
+        self.assertEqual(r.status_code, 201)
+        post_id = r.json()["id"]
+        self.assertEqual(Attachment.objects.filter(post_id=post_id).count(), 0)
+
+    def test_thread_create_accepts_real_png_attachment(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from forum.models import Attachment
+        c = auth_client(self.author)
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        payload = SimpleUploadedFile("photo.png", png_bytes, content_type="image/png")
+        r = c.post("/api/forum/threads/create/",
+                   data={"title": "Another question", "body": "body text", "files": payload})
+        self.assertEqual(r.status_code, 201)
+        post_id = r.json()["id"]
+        att = Attachment.objects.get(post_id=post_id)
+        self.assertEqual(att.kind, Attachment.KIND_IMAGE)
+
     def test_dashboard_shape(self):
         r = auth_client(self.author).get("/api/forum/dashboard/")
         self.assertEqual(r.status_code, 200)

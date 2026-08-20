@@ -1232,3 +1232,74 @@ class ExpertIdentityNeverLeaksADependantTest(TestCase):
             self.skipTest(f"profile delete unavailable in this config: {r.status_code}")
         holder.refresh_from_db()
         self.assertTrue(holder.is_default)
+
+
+class IntroVideoSignedUploadUrlOwnershipTest(TestCase):
+    """IntroVideoSignedUploadUrlView previously signed a valid Bunny TUS
+    upload ticket for ANY client-supplied video_id with no ownership check
+    at all — the same bug as courses.views_recordings.SignedUploadUrlView,
+    fixed the same way."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from .models import PendingIntroVideoUpload
+        cls.PendingIntroVideoUpload = PendingIntroVideoUpload
+
+        teacher_role = Role.objects.create(name="TEACHER")
+
+        cls.expert_a_user = User.objects.create_user(
+            username="iv_a", email="iv_a@test.com", password="x")
+        UserRole.objects.create(
+            user=cls.expert_a_user, role=teacher_role, is_active=True, is_primary=True)
+        tp_a = TeacherProfile.objects.create(
+            user=cls.expert_a_user, teacher_type=TeacherProfile.TYPE_GUEST)
+        cls.expert_a = ExpertProfile.objects.create(
+            teacher_profile=tp_a, headline="A", is_listed=True,
+            intro_video_bunny_id="vid-existing",
+        )
+
+        cls.expert_b_user = User.objects.create_user(
+            username="iv_b", email="iv_b@test.com", password="x")
+        UserRole.objects.create(
+            user=cls.expert_b_user, role=teacher_role, is_active=True, is_primary=True)
+        tp_b = TeacherProfile.objects.create(
+            user=cls.expert_b_user, teacher_type=TeacherProfile.TYPE_GUEST)
+        ExpertProfile.objects.create(teacher_profile=tp_b, headline="B", is_listed=True)
+
+    def _client(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user, token={"context": "teacher"})
+        return c
+
+    def test_cannot_sign_an_unowned_arbitrary_video_id(self):
+        r = self._client(self.expert_b_user).post(
+            "/api/skill/teacher/intro-video/upload-url/", {"video_id": "vid-not-mine"}, format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def test_cannot_sign_another_experts_existing_video(self):
+        r = self._client(self.expert_b_user).post(
+            "/api/skill/teacher/intro-video/upload-url/", {"video_id": "vid-existing"}, format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def test_owner_can_sign_their_own_existing_video(self):
+        r = self._client(self.expert_a_user).post(
+            "/api/skill/teacher/intro-video/upload-url/", {"video_id": "vid-existing"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+
+    def test_creator_can_sign_their_own_pending_slot(self):
+        self.PendingIntroVideoUpload.objects.create(video_id="vid-fresh", created_by=self.expert_b_user)
+        r = self._client(self.expert_b_user).post(
+            "/api/skill/teacher/intro-video/upload-url/", {"video_id": "vid-fresh"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+
+    def test_create_slot_records_ownership(self):
+        from unittest.mock import patch, Mock
+        with patch("skills.views_intro_video.requests.post") as mock_post:
+            mock_post.return_value = Mock(status_code=201, json=lambda: {"guid": "vid-new"})
+            r = self._client(self.expert_a_user).post(
+                "/api/skill/teacher/intro-video/create/", {}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(
+            self.PendingIntroVideoUpload.objects.filter(
+                video_id="vid-new", created_by=self.expert_a_user).exists()
+        )

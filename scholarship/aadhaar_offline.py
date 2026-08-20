@@ -57,6 +57,13 @@ CERT_PATH = os.path.join(os.path.dirname(__file__), "certs", "uidai_offline_publ
 # for a *new* scholarship attempt rather than accepting it indefinitely.
 MAX_DOCUMENT_AGE_DAYS = 30
 
+# A real UIDAI Offline e-KYC XML is a few KB. This is generous headroom, not
+# a realistic size — it exists purely to cap the decompression bomb below:
+# zf.read() previously decompressed the single member fully into memory with
+# NO size check at all, so a crafted ~50MB DEFLATE zip (max ratio ~1032:1)
+# could balloon to tens of GB in one request and OOM-kill the worker.
+MAX_UNCOMPRESSED_XML_BYTES = 10 * 1024 * 1024  # 10 MB
+
 
 class AadhaarOfflineVerificationError(Exception):
     """Raised with a message safe to show directly to the end user."""
@@ -76,7 +83,30 @@ def _extract_xml_from_zip(zip_bytes, share_code):
                     "Unexpected contents — the Offline e-KYC ZIP should contain exactly one file."
                 )
             zf.setpassword(share_code.encode("utf-8"))
-            return zf.read(names[0])
+            # zf.read(name) decompresses the WHOLE member into memory in one
+            # call — and the member's declared uncompressed-size header is
+            # attacker-controlled and only checked against the real output
+            # via a CRC comparison at the very end, after decompression
+            # already happened. So checking that header first (info.file_size)
+            # is not a real defense: a crafted entry can declare a small size
+            # while its compressed bytes still inflate to gigabytes before
+            # the mismatch is ever noticed. Read in bounded chunks instead and
+            # abort mid-stream the moment actual output exceeds the cap —
+            # this bounds real memory use regardless of what any header claims.
+            with zf.open(names[0]) as member:
+                chunks = []
+                total = 0
+                while True:
+                    chunk = member.read(65536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_UNCOMPRESSED_XML_BYTES:
+                        raise AadhaarOfflineVerificationError(
+                            "This file is far larger than a real Offline e-KYC document — rejected."
+                        )
+                    chunks.append(chunk)
+                return b"".join(chunks)
     except RuntimeError as exc:
         # zipfile raises a plain RuntimeError("Bad password for file ...")
         # on a wrong password — there is no dedicated exception for it.
@@ -84,6 +114,13 @@ def _extract_xml_from_zip(zip_bytes, share_code):
             "Incorrect share code, or this isn't a valid Offline e-KYC ZIP."
         ) from exc
     except zipfile.BadZipFile as exc:
+        raise AadhaarOfflineVerificationError("That doesn't look like a valid ZIP file.") from exc
+    except (MemoryError, zipfile.LargeZipFile, NotImplementedError) as exc:
+        # Previously uncaught here — a corrupt/hostile archive (unsupported
+        # compression method, a size lie the size check above didn't catch
+        # because it targets the declared header, not actual decompression)
+        # 500'd instead of returning the same clean 400 every other bad-input
+        # path in this function does.
         raise AadhaarOfflineVerificationError("That doesn't look like a valid ZIP file.") from exc
 
 

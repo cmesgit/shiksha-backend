@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend-local",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-lc", "source .venv/bin/activate && TEST_DB_PATH=/tmp/claude-1000/shiksha_verify.sqlite3 python manage.py runserver 127.0.0.1:8001 --settings=config.settings_test --noreload"],
+      "port": 8001
+    }
+  ]
+}

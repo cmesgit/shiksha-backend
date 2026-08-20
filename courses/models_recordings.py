@@ -3,6 +3,28 @@ from django.db import models
 from django.conf import settings
 
 
+class PendingVideoUpload(models.Model):
+    """Tracks who asked Bunny to create a video slot, so the signed-upload
+    step can verify the caller actually owns that video_id before handing
+    out a valid TUS upload ticket for it.
+
+    CreateVideoSlotView creates the Bunny video and returns a bare video_id
+    with NOTHING persisted about who asked for it — SignedUploadUrlView then
+    had no record to check the caller against, so it would sign a ticket for
+    ANY client-supplied video_id, letting any teacher-context account
+    (including an unreviewed skill expert) overwrite another teacher's
+    recording, since bunny_video_id is already serialized back to teachers
+    elsewhere in this same app. Consumed (deleted) once the recording is
+    actually saved; a stray row surviving an abandoned upload costs nothing
+    beyond one small DB row.
+    """
+    video_id = models.CharField(max_length=64, unique=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class SessionRecording(models.Model):
 
     id = models.UUIDField(

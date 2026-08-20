@@ -138,6 +138,16 @@ class GuardianVerificationCreateView(APIView):
                     {"manual_document": "A document is required for manual review."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            # Previously accepted literally any file with no type/size check —
+            # this is a sensitive-document review queue an admin opens
+            # directly by URL, so an .html/.svg here is stored XSS against
+            # that admin's session. See config/upload_validation.py.
+            from django.core.exceptions import ValidationError as DjangoValidationError
+            from config.upload_validation import validate_upload, IMAGE_EXTS
+            try:
+                validate_upload(document, IMAGE_EXTS | {".pdf"}, max_mb=10)
+            except DjangoValidationError as e:
+                return Response({"manual_document": str(e.message)}, status=status.HTTP_400_BAD_REQUEST)
             kwargs["manual_document"] = document
 
         elif method == GuardianVerification.METHOD_AADHAAR_OFFLINE:
@@ -146,6 +156,16 @@ class GuardianVerificationCreateView(APIView):
             if not zip_file or not share_code:
                 return Response(
                     {"detail": "Both the e-KYC ZIP file and its share code are required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # A real UIDAI Offline e-KYC ZIP is tiny (a few hundred KB at
+            # most) — reject anything wildly larger before it's even opened.
+            # aadhaar_offline._extract_xml_from_zip separately bounds the
+            # DECOMPRESSED size mid-stream, which is the actual zip-bomb
+            # defense; this is just an early, cheap outer-file check.
+            if zip_file.size > 10 * 1024 * 1024:
+                return Response(
+                    {"detail": "That file is far larger than a real Offline e-KYC ZIP."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             try:

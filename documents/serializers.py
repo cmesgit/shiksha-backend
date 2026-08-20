@@ -152,6 +152,15 @@ class UploadDocumentSerializer(serializers.Serializer):
     tags = serializers.CharField(required=False, allow_blank=True, default="")  # comma-joined
     file = serializers.FileField(required=False)
 
+    def validate_file(self, value):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from config.upload_validation import validate_upload, DOCUMENT_EXTS
+        try:
+            validate_upload(value, DOCUMENT_EXTS, max_mb=50)
+        except DjangoValidationError as e:
+            raise serializers.ValidationError(e.message)
+        return value
+
 
 # =====================================================
 # Collection

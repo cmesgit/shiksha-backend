@@ -14,6 +14,7 @@ from rest_framework.permissions import IsAuthenticated
 from accounts.permissions import IsTeacher
 from .teacher_views import _get_expert
 from . import profile_ops
+from .models import PendingIntroVideoUpload
 from config.bunny_signing import bunny_tus_ticket
 
 
@@ -30,7 +31,9 @@ class CreateIntroVideoSlotView(APIView):
         r = requests.post(url, json={"title": title}, headers=headers, timeout=(5, 30))
         if r.status_code not in [200, 201]:
             return Response({"error": r.text}, status=500)
-        return Response({"video_id": r.json()["guid"]})
+        video_id = r.json()["guid"]
+        PendingIntroVideoUpload.objects.create(video_id=video_id, created_by=request.user)
+        return Response({"video_id": video_id})
 
 
 class IntroVideoSignedUploadUrlView(APIView):
@@ -40,6 +43,18 @@ class IntroVideoSignedUploadUrlView(APIView):
         video_id = request.data.get("video_id")
         if not video_id:
             return Response({"error": "video_id required"}, status=400)
+
+        # Previously signed a valid TUS upload ticket for ANY client-supplied
+        # video_id with no ownership check at all. Must be either a slot THIS
+        # caller just created, or the video_id already attached to their own
+        # ExpertProfile (re-upload/replace).
+        owns_pending = PendingIntroVideoUpload.objects.filter(
+            video_id=video_id, created_by=request.user
+        ).exists()
+        ep = _get_expert(request.user)
+        owns_current = bool(ep and ep.intro_video_bunny_id == video_id)
+        if not (owns_pending or owns_current):
+            return Response({"error": "Not allowed."}, status=403)
 
         return Response(bunny_tus_ticket(video_id))
 
@@ -56,6 +71,7 @@ class SaveIntroVideoView(APIView):
         ep.intro_video_bunny_id = video_id
         ep.intro_video_status = 1  # Uploaded
         ep.save(update_fields=["intro_video_bunny_id", "intro_video_status", "updated_at"])
+        PendingIntroVideoUpload.objects.filter(video_id=video_id).delete()
         return Response(profile_ops.serialize_expert(ep))
 
 

@@ -6,7 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 
-from .models_recordings import SessionRecording, RecordingNote
+from .models_recordings import SessionRecording, RecordingNote, PendingVideoUpload
 from .serializers_recordings import SessionRecordingSerializer, RecordingNoteSerializer
 from .models import Subject, Batch
 from .services import teaches_subject
@@ -134,7 +134,9 @@ class CreateVideoSlotView(APIView):
         r = requests.post(url, json={"title": title}, headers=headers, timeout=(5, 30))
         if r.status_code not in [200, 201]:
             return Response({"error": r.text}, status=500)
-        return Response({"video_id": r.json()["guid"]})
+        video_id = r.json()["guid"]
+        PendingVideoUpload.objects.create(video_id=video_id, created_by=request.user)
+        return Response({"video_id": video_id})
 
 
 class SignedUploadUrlView(APIView):
@@ -144,6 +146,22 @@ class SignedUploadUrlView(APIView):
         video_id = request.data.get("video_id")
         if not video_id:
             return Response({"error": "video_id required"}, status=400)
+
+        # Previously signed a valid TUS upload ticket for ANY client-supplied
+        # video_id with no ownership check at all — any teacher-context
+        # account could overwrite another teacher's recording, since
+        # bunny_video_id is already serialized back out elsewhere in this
+        # app. Must be either a slot THIS caller just created, or a video_id
+        # already attached to a recording they teach (re-upload/replace).
+        owns_pending = PendingVideoUpload.objects.filter(
+            video_id=video_id, created_by=request.user
+        ).exists()
+        owns_recording = SessionRecording.objects.filter(
+            bunny_video_id=video_id,
+        ).filter(subject__teaching_assignments__teacher=request.user,
+                  subject__teaching_assignments__is_active=True).exists()
+        if not (owns_pending or owns_recording):
+            return Response({"error": "Not allowed."}, status=403)
 
         return Response(bunny_tus_ticket(video_id))
 
@@ -207,6 +225,10 @@ class SaveRecordingView(APIView):
             uploaded_by=request.user,
             status=1,
         )
+        # The recording itself is now the ownership record for this video_id
+        # (checked via teaches_subject above) — the pending-slot bookkeeping
+        # row has done its job.
+        PendingVideoUpload.objects.filter(video_id=video_id).delete()
         return Response(SessionRecordingSerializer(recording).data)
 
 

@@ -228,6 +228,11 @@ REST_FRAMEWORK = {
         # Anonymous "notify me when {board} launches" lead capture — the
         # only unauthenticated write endpoint in the app, so throttled hard.
         "board_notify": "5/hour",
+        # Public agreement-letter GET (signup screen) — was the only AllowAny
+        # endpoint in accounts/ with no throttle at all.
+        "agreement_public": "60/hour",
+        # Public faculty-signup option lists (static taxonomy, no user data).
+        "faculty_choices": "120/hour",
     },
 }
 

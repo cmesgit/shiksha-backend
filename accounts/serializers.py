@@ -464,6 +464,13 @@ class TeacherFormFillupSerializer(serializers.Serializer):
             if value:
                 setattr(tp, field, value)
 
+        # This is the OTHER write path for the signed agreement (the one the
+        # signup flow actually points faculty at — see FacultySignup.jsx) —
+        # it used to save the file here and never bind a version at all.
+        if validated_data.get("signed_agreement"):
+            signer_name = f"{profile.first_name} {profile.last_name}".strip()
+            tp.record_agreement_signature(request=self.context.get("request"), signer_name=signer_name)
+
         tp.save()
 
         # --- Replace Course Applications ---
@@ -702,12 +709,29 @@ class TeacherTrackApprovalSerializer(serializers.ModelSerializer):
         return getattr(obj, "experience_range", "") or ""
 
     def get_subjects(self, obj):
-        # Best-effort: pull subjects from the latest course application if present.
+        """Every subject this applicant asked to teach, human-labelled.
+
+        Was the LATEST single course application's raw value — so an applicant
+        who applied for three subjects showed exactly one in the review queue
+        (and the last one, not even the primary), spelled as the stored
+        identifier ("quantitative_aptitude"). Signup can now submit several,
+        which made that actively misleading to whoever is approving.
+
+        Comma-joined because both render sites treat this as a plain string
+        (Admin-dashboard Approvals.jsx's detail row and table cell).
+        """
+        from .models import TeacherProfile
+
         app = getattr(obj, "course_applications", None)
-        if app is not None:
-            latest = app.order_by("-created_at").first() if hasattr(app, "order_by") else None
-            if latest:
-                return getattr(latest, "subject", "") or ""
+        if app is not None and hasattr(app, "all"):
+            labels = dict(TeacherProfile.SUBJECT_CHOICES)
+            names = [
+                labels.get(a.subject, a.subject)
+                for a in app.all().order_by("created_at")
+                if a.subject
+            ]
+            if names:
+                return ", ".join(names)
         return getattr(obj, "field_of_study", "") or ""
 
     def _url(self, request, filefield):

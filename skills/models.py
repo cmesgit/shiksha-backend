@@ -43,6 +43,28 @@ class SkillCategory(models.Model):
         return self.label
 
 
+class PendingIntroVideoUpload(models.Model):
+    """Tracks who asked Bunny to create an intro-video slot, so the
+    signed-upload step can verify the caller actually owns that video_id
+    before handing out a valid TUS upload ticket for it.
+
+    CreateIntroVideoSlotView created the Bunny video and returned a bare
+    video_id with nothing persisted about who asked for it —
+    IntroVideoSignedUploadUrlView then had no record to check the caller
+    against, so it would sign a ticket for ANY client-supplied video_id.
+    Mirrors courses.models_recordings.PendingVideoUpload (same bug, same
+    fix) for the Academy recording-upload flow, kept separate rather than
+    a cross-app import since these are two unrelated small bookkeeping
+    tables. Consumed (deleted) once SaveIntroVideoView actually attaches it
+    to an ExpertProfile.
+    """
+    video_id = models.CharField(max_length=64, unique=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 # =====================================================
 # EXPERT PROFILE  (one per approved guest-expert teacher)
 # =====================================================

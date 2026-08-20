@@ -260,6 +260,58 @@ def _check_explore_document(request, name):
     return Document.objects.filter(file=name, is_removed=False).exists()
 
 
+def _check_forum_attachment(request, name):
+    """forum/attachments/ — had NO rule at all, so every forum attachment
+    404'd for every non-staff user, including whoever just uploaded it
+    (ListThreadsView/ThreadDetailView are AllowAny, so the URLs were handed
+    out to everyone; nobody but staff could actually fetch the bytes).
+    Mirrors the thread's own visibility for everyone else: forum reads are
+    AllowAny, gated only by the post's own is_removed soft-hide — there's
+    no separate attachment-level or space-level restriction to apply.
+    Staff additionally see removed posts' attachments (moderation review),
+    matching _check_chat_attachment / _check_guardian_doc etc. above.
+    NOT using _staff_or() here — it ANDs in is_authenticated even for the
+    "ok" branch, which would wrongly deny the anonymous readers this AllowAny
+    surface must keep serving."""
+    from forum.models import Attachment
+
+    user = request.user
+    if user.is_authenticated and user.is_staff:
+        return True
+    return Attachment.objects.filter(file=name, post__is_removed=False).exists()
+
+
+def _check_session_file(request, name):
+    """session_files/ — shared by SessionFile (group sessions) and
+    PrivateSessionFile (1:1 sessions); same upload_to, two different models,
+    so both have to be checked. Had NO rule at all, so every file shared in
+    a live class or private session 404'd for every non-staff user —
+    including the teacher/student who just uploaded or was in the room.
+    Mirrors the exact authorization the live views themselves use
+    (sessions_app/live_files_views.py's _in_room / _is_private_session_participant)
+    rather than reinventing it, so the two can't silently drift apart."""
+    from sessions_app.models import SessionFile, PrivateSessionFile
+    from sessions_app.live_files_views import _in_room
+    from sessions_app.views import _is_private_session_participant
+
+    user = request.user
+    if not user.is_authenticated:
+        return False
+    if user.is_staff:
+        return True
+
+    group_file = SessionFile.objects.select_related("session").filter(file=name).first()
+    if group_file:
+        session = group_file.session
+        return _in_room(user, session) or user.id == session.host_id
+
+    private_file = PrivateSessionFile.objects.select_related("session").filter(file=name).first()
+    if private_file:
+        return _is_private_session_participant(private_file.session, user)
+
+    return False
+
+
 # A single sentinel, not a check function — matching this prefix means
 # "genuinely public, no auth needed" and short-circuits before any DB work.
 PUBLIC = object()
@@ -312,6 +364,15 @@ _RULES = (
     ("skills/ad_subscriptions/receipts/", _check_skill_payment_doc),
     ("skills/payments/receipts/", _check_skill_payment_doc),
     ("explore/documents/", _check_explore_document),
+    ("forum/attachments/", _check_forum_attachment),
+    ("session_files/", _check_session_file),
+    # The BLANK agreement letter an admin imported for a version. Genuinely
+    # public: a prospective faculty member has to read and download it during
+    # signup, BEFORE their account exists, so this cannot require auth. It is
+    # a template containing nobody's data. NOT to be confused with
+    # "teachers/agreements/" above — that is the SIGNED copy an individual
+    # faculty member uploaded, and stays owner-or-staff only.
+    ("agreements/letters/", PUBLIC),
 )
 
 # Sorted longest-prefix-first once at import time, so correctness never
