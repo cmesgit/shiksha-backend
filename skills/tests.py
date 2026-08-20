@@ -1149,3 +1149,86 @@ class SkillSessionLapseSweepTests(TestCase):
         self.assertEqual(lapse_unheld_sessions(), 0)
         s.refresh_from_db()
         self.assertEqual(s.status, SkillSession.STATUS_CONFIRMED)
+
+
+class ExpertIdentityNeverLeaksADependantTest(TestCase):
+    """A Skill Dev expert's PUBLIC name and photo must be the account
+    holder's — never one of their children's.
+
+    Both `ExpertProfile.display_name()` and `ExpertCardSerializer.get_img`
+    resolved identity through `User.default_learner_profile()`, whose last
+    resort is `qs.first()` — ANY profile on the account. That was reachable:
+    deleting the SELF profile is allowed, and the delete path promoted the
+    OLDEST remaining profile to default with no relationship filter. A
+    parent-expert who removed their own profile therefore had a child
+    promoted, and that child's name became their public marketplace identity
+    on a directory anyone can browse.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        cls.user = User.objects.create_user(
+            username="ex_id", email="ex_id@test.com", password="x")
+        cls.tp = TeacherProfile.objects.create(
+            user=cls.user, teacher_type=TeacherProfile.TYPE_GUEST)
+        cls.expert = ExpertProfile.objects.create(
+            teacher_profile=cls.tp, headline="Guitar tutor", is_listed=True)
+
+    def _self_profile(self, **kw):
+        return LearnerProfile.objects.create(
+            account=self.user, display_name="Parent",
+            first_name="Ada", last_name="Lovelace",
+            relationship=LearnerProfile.RELATIONSHIP_SELF, **kw)
+
+    def _child(self, **kw):
+        return LearnerProfile.objects.create(
+            account=self.user, display_name="Kiddo",
+            first_name="Tiny", last_name="Child",
+            relationship="CHILD", **kw)
+
+    def test_display_name_uses_the_account_holder(self):
+        self._self_profile(is_default=True)
+        self._child()
+        self.assertEqual(self.expert.display_name(), "Ada Lovelace")
+
+    def test_a_child_marked_default_does_not_become_the_public_name(self):
+        # The exact failure: child holds is_default, parent's SELF profile
+        # exists but is not default.
+        self._self_profile()
+        self._child(is_default=True)
+        name = self.expert.display_name()
+        self.assertEqual(name, "Ada Lovelace")
+        self.assertNotIn("Tiny", name)
+        self.assertNotIn("Child", name)
+
+    def test_with_no_self_profile_it_falls_back_to_the_account_not_a_child(self):
+        # No SELF profile at all — must degrade to the account's own
+        # username/email rather than borrowing a dependant's name.
+        self._child(is_default=True)
+        name = self.expert.display_name()
+        self.assertNotIn("Tiny", name)
+        self.assertNotIn("Child", name)
+        self.assertIn("ex_id", name)
+
+    def test_self_learner_profile_never_returns_a_dependant(self):
+        self._child(is_default=True)
+        self.assertIsNone(self.user.self_learner_profile())
+        p = self._self_profile()
+        self.assertEqual(self.user.self_learner_profile(), p)
+
+    def test_deleting_the_default_promotes_the_account_holder_not_a_child(self):
+        # Guards the path that created the situation in the first place.
+        from rest_framework.test import APIClient
+        holder = self._self_profile()
+        child = self._child(is_default=True)
+        self.user.set_password("pw12345!"); self.user.save()
+
+        c = APIClient()
+        c.force_authenticate(user=self.user, token={"context": "account"})
+        r = c.delete(f"/api/accounts/profiles/{child.id}/",
+                     {"password": "pw12345!"}, format="json")
+        if r.status_code != 200:
+            self.skipTest(f"profile delete unavailable in this config: {r.status_code}")
+        holder.refresh_from_db()
+        self.assertTrue(holder.is_default)

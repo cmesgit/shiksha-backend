@@ -42,7 +42,8 @@ class SkillCourseListSerializer(serializers.ModelSerializer):
         ]
 
     def get_teacher_name(self, obj):
-        lp = obj.teacher_profile.user.default_learner_profile()
+        # SELF only — this names the course's teacher publicly.
+        lp = obj.teacher_profile.user.self_learner_profile()
         if lp: return lp.display_name or lp.full_name or lp.first_name or ""
         return obj.teacher_profile.user.username or ""
 

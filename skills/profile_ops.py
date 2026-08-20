@@ -354,7 +354,8 @@ def apply_personal_fields(learner, data, *, files=None):
 def serialize_expert(ep):
     """The editable profile + live completeness, for GET responses and the
     dashboard gate. Personal fields are read from the SELF learner."""
-    lp = ep.teacher_profile.user.default_learner_profile()
+    # SELF only — writing/reading the expert's own personal fields.
+    lp = ep.teacher_profile.user.self_learner_profile()
     comp = ep.completeness()
     return {
         # subject / teaching

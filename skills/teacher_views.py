@@ -603,7 +603,8 @@ class TeacherProfileUpdateView(APIView):
             ep.save(update_fields=list(dict.fromkeys(ep_fields)) + ["updated_at"])
 
         # Personal fields live on the SELF learner profile.
-        learner = request.user.default_learner_profile()
+        # SELF only — personal fields belong to the account holder.
+        learner = request.user.self_learner_profile()
         if learner:
             p_fields = profile_ops.apply_personal_fields(learner, data, files=files)
             if p_fields:

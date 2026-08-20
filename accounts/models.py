@@ -58,10 +58,15 @@ class User(AbstractUser):
         ).exists()
 
     def default_learner_profile(self):
-        """The account's default LearnerProfile (SELF holder), or None.
+        """The account's default LearnerProfile, or None.
 
         Personal/academic data lives on LearnerProfile now; this replaces the
         old one-to-one ``user.profile`` accessor.
+
+        ⚠️ The final `or qs.first()` can return a CHILD profile. That is fine
+        for "which profile should this account land on", but it is NOT safe for
+        anything that publishes the ACCOUNT HOLDER'S identity — use
+        ``self_learner_profile()`` for that. See its docstring.
         """
         qs = self.learner_profiles.filter(is_active=True)
         return (
@@ -69,6 +74,29 @@ class User(AbstractUser):
             or qs.filter(relationship="SELF").first()
             or qs.first()
         )
+
+    def self_learner_profile(self):
+        """The ACCOUNT HOLDER'S own profile — never a dependant's.
+
+        Use this wherever a name or photo is published as *this adult's*
+        identity: a Skill Dev expert card, a teacher application, the name on
+        a course. `default_learner_profile()` must not be used there, because
+        its last resort is `qs.first()` — any profile on the account.
+
+        That was reachable, not theoretical: deleting the SELF profile is
+        allowed (accounts/auth_flow.py's ProfileDetailView.delete only blocks
+        the last profile and ones holding a live subscription), and when the
+        DEFAULT profile is deleted the code promotes the oldest remaining
+        active profile with no relationship filter. A parent-expert who
+        removed their own profile therefore had a CHILD promoted to default —
+        and that child's name and photo became their public marketplace
+        identity on a directory anyone can browse.
+
+        Returns None rather than guessing when the account holds no SELF
+        profile; callers fall back to the account's own username/email.
+        """
+        qs = self.learner_profiles.filter(is_active=True, relationship="SELF")
+        return qs.filter(is_default=True).first() or qs.first()
 
     def get_active_roles(self):
         return list(

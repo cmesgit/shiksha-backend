@@ -212,7 +212,8 @@ class ExpertProfile(models.Model):
         u = self.user
         # `user.profile` (old Profile model) was removed in 0011.
         # Use the SELF LearnerProfile instead.
-        lp = u.default_learner_profile()
+        # SELF only — this is the expert's PUBLIC display name.
+        lp = u.self_learner_profile()
         if lp:
             name = f"{lp.first_name} {lp.last_name}".strip()
             if name:
@@ -267,7 +268,8 @@ class ExpertProfile(models.Model):
         Field keys are stable identifiers the frontend maps to labels. Personal
         fields (name/dob/phone/photo) are read from the SELF learner profile."""
         from . import profile_ops as ops
-        lp = self.teacher_profile.user.default_learner_profile()
+        # SELF only — these are the expert's own personal fields.
+        lp = self.teacher_profile.user.self_learner_profile()
 
         has_subjects = bool(self.category_id) or (
             self.pk and self.categories.exists()

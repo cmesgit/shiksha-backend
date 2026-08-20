@@ -927,12 +927,22 @@ class ProfileDetailView(APIView):
         # is_default (and is_active) FIRST, then promote the sibling.
         next_profile = None
         if profile.is_default:
-            next_profile = (
+            siblings = (
                 request.user.learner_profiles
                 .filter(is_active=True)
                 .exclude(id=profile.id)
                 .order_by("created_at")
-                .first()
+            )
+            # Prefer the account holder's OWN profile when promoting. Picking
+            # merely the oldest could hand "default" to a CHILD, and anything
+            # that publishes the account holder's identity from the default
+            # profile would then publish the child's name and photo — which is
+            # exactly how a dependant's face could end up as a Skill Dev
+            # expert's public avatar. (self_learner_profile() is the real
+            # guard for that; this just avoids creating the situation.)
+            next_profile = (
+                siblings.filter(relationship=LearnerProfile.RELATIONSHIP_SELF).first()
+                or siblings.first()
             )
 
         from django.db import transaction

@@ -248,7 +248,9 @@ class ExpertCardSerializer(serializers.ModelSerializer):
         if obj.photo:
             url = obj.photo.url
         else:
-            lp = obj.user.default_learner_profile()
+            # SELF only — a dependant's photo must never become the
+            # expert's public avatar.
+            lp = obj.user.self_learner_profile()
             if lp and lp.profile_photo:
                 url = lp.profile_photo.url
         if url and request is not None:
@@ -292,7 +294,9 @@ class ReviewQueueSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "skill", "cat", "exp", "img", "time", "status", "stage"]
 
     def get_name(self, obj):
-        lp = obj.user.default_learner_profile()
+        # SELF only — this names the APPLICANT. Falling back to any profile
+        # could label an application with a dependant's name.
+        lp = obj.user.self_learner_profile()
         if lp:
             name = f"{lp.first_name} {lp.last_name}".strip() or lp.full_name or lp.display_name
             if name:
@@ -304,7 +308,8 @@ class ReviewQueueSerializer(serializers.ModelSerializer):
 
     def get_img(self, obj):
         request = self.context.get("request")
-        lp = obj.user.default_learner_profile()
+        # SELF only — same reason as get_name above.
+        lp = obj.user.self_learner_profile()
         if lp and lp.profile_photo:
             url = lp.profile_photo.url
             return request.build_absolute_uri(url) if request else url

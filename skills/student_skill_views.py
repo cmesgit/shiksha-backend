@@ -107,7 +107,8 @@ class StudentSkillDashboardView(APIView):
             if s.expert.photo:
                 img = request.build_absolute_uri(s.expert.photo.url)
             else:
-                lp = s.expert.user.default_learner_profile()
+                # SELF only — the expert's avatar in a session row.
+                lp = s.expert.user.self_learner_profile()
                 if lp and lp.profile_photo:
                     img = request.build_absolute_uri(lp.profile_photo.url)
 
