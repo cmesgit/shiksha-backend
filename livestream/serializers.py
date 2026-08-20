@@ -374,6 +374,11 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
     teacher = serializers.SerializerMethodField()
     can_join = serializers.SerializerMethodField()
     computed_status = serializers.SerializerMethodField()
+    # Separate from computed_status ON PURPOSE: the frontends drive
+    # join buttons and countdowns off computed_status, so widening it
+    # with a value they have never seen would change behaviour, not
+    # just wording. This is display-only.
+    display_status = serializers.SerializerMethodField()
     subject_id = serializers.UUIDField(source="subject.id", read_only=True)
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_name = serializers.CharField(source="course.title", read_only=True)
@@ -392,6 +397,7 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
             "start_time",
             "end_time",
             "computed_status",
+            "display_status",
             "teacher",
             "can_join",
             "subject_id",
@@ -431,6 +437,10 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
         return Enrollment.objects.filter(
             batch_id=obj.batch_id, status=Enrollment.STATUS_ACTIVE
         ).count()
+
+    def get_display_status(self, obj):
+        """MISSED when the class ended and nobody ever joined."""
+        return obj.display_status()
 
     def get_computed_status(self, obj):
         now = timezone.now()

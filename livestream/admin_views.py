@@ -11,6 +11,7 @@ import logging
 import redis
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.conf import settings
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -368,3 +369,48 @@ def admin_webhook_events(request):
     }
 
     return Response({"data": [_webhook_event_row(w) for w in qs], "counts": counts})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsAdmin])
+def admin_stream_spectate(request, session_id):
+    """POST /livestream/admin/streams/<id>/spectate/ — watch a class live.
+
+    Returns a SUBSCRIBE-ONLY token. Every other grant in this codebase can
+    publish at least a microphone, so reusing one would have let an admin
+    speak into a live class; this one sets can_publish=False and hidden=True.
+
+    Hidden means the room is not told. That is the product decision, and it
+    is why the spectate is logged: silent monitoring is one thing, untraceable
+    monitoring is another. The row records who, which class, and when.
+    """
+    from .models import LiveSessionSpectate
+    from .services.token import generate_livekit_token
+
+    s = get_object_or_404(LiveSession, id=session_id)
+
+    if s.status in (LiveSession.STATUS_COMPLETED, LiveSession.STATUS_CANCELLED):
+        return Response({"detail": "That class is not running."}, status=400)
+    if not s.room_name:
+        return Response({"detail": "That class has no room yet."}, status=400)
+
+    LiveSessionSpectate.objects.create(
+        session=s,
+        admin=request.user,
+        admin_email=(request.user.email or request.user.username or "")[:254],
+        reason=(request.data.get("reason") or "")[:255],
+    )
+    logger.info("admin spectate: %s -> session %s", request.user.email, s.id)
+
+    token = generate_livekit_token(
+        user=request.user, session=s, spectator=True,
+        display_name="Observer",
+    )
+    return Response({
+        "livekit_url": settings.LIVEKIT_URL,
+        "token": token,
+        "room": s.room_name,
+        "title": s.title,
+        "subject_name": s.subject.name if s.subject_id else "",
+        "batch_name": s.batch.name if s.batch_id else "",
+    })

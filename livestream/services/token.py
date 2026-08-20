@@ -77,6 +77,7 @@ def generate_livekit_token(
     is_teacher=False,
     display_name=None,
     learner_profile=None,
+    spectator=False,
 ):
     token = AccessToken(
         settings.LIVEKIT_API_KEY,
@@ -100,7 +101,8 @@ def generate_livekit_token(
 
     # ✅ metadata (role info)
     token.with_metadata(json.dumps({
-        "role": "presenter" if is_teacher else "viewer",
+        "role": ("spectator" if spectator
+                 else "presenter" if is_teacher else "viewer"),
         "user_type": "teacher" if user.has_role("TEACHER") else "student",
         "user_id": str(user.id),
     }, default=str))
@@ -113,7 +115,28 @@ def generate_livekit_token(
     if not room_name:
         raise ValueError("Session has no room_name")
 
-    if is_teacher:
+    if spectator:
+        # 👁 SPECTATOR (admin quality monitoring) — subscribe only.
+        #
+        # The first grant in this codebase with can_publish=False. Every other
+        # shape can publish at least a microphone, so an admin dropped into a
+        # room with a viewer token could have spoken into a live class.
+        #
+        # `hidden=True` keeps them out of the participant list, per the
+        # product decision that classes are not told an admin is watching.
+        # That decision is the reason SpectateLog exists: monitoring that
+        # leaves no trace at all is not something this codebase should make
+        # possible, so the room stays unaware but the ACTION is recorded and
+        # auditable by name, session and timestamp.
+        grants = VideoGrants(
+            room_join=True,
+            room=room_name,
+            can_publish=False,
+            can_publish_data=False,
+            can_subscribe=True,
+            hidden=True,
+        )
+    elif is_teacher:
         # 🎤 PRESENTER (creator only)
         grants = VideoGrants(
             room_join=True,

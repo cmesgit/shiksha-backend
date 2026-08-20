@@ -140,6 +140,34 @@ class LiveSession(models.Model):
     MAX_EXTENSION = timedelta(hours=3)
 
     @property
+    def was_missed(self):
+        """A class that is over and never actually happened.
+
+        DERIVED, deliberately — not a STATUS_MISSED value. Sixteen separate
+        places treat COMPLETED as terminal (the join gate, cancel, extend,
+        pause, end, the two Celery sweeps…). A new terminal status would have
+        to be added to every one of them, and missing a single guard would let
+        someone join a dead session — a far worse bug than the reporting gap
+        this fixes. The information is already in the data: the class reached
+        its end and `actual_started_at` was never stamped, meaning nobody ever
+        joined the room.
+
+        Cancelled is excluded: someone called that class off on purpose, which
+        is a different fact from a teacher who simply never appeared.
+        """
+        if self.status == self.STATUS_CANCELLED:
+            return False
+        return (self.actual_started_at is None
+                and self.computed_status() == self.STATUS_COMPLETED)
+
+    def display_status(self):
+        """What a human should be shown. Reports and rosters read this;
+        lifecycle code must keep reading computed_status()."""
+        if self.was_missed:
+            return "MISSED"
+        return self.computed_status()
+
+    @property
     def hard_end_time(self):
         """The moment this session is genuinely over.
 
@@ -230,6 +258,45 @@ class LiveSession(models.Model):
             self.save(update_fields=["status"])
         return (True, new_status)
 
+
+
+class LiveSessionSpectate(models.Model):
+    """An admin watched a live class.
+
+    Spectating is silent by design — the grant sets hidden=True, so neither
+    the teacher nor the students are told. That is a deliberate product
+    decision, and it is exactly why this table exists: monitoring that leaves
+    no trace anywhere is not a capability this codebase should offer. The room
+    stays unaware; the action does not go unrecorded.
+
+    Kept even when the admin or session is deleted is NOT attempted — the FK
+    cascades — but `admin_email` is denormalised so the trail survives the
+    account being renamed or the profile changing.
+    """
+    session = models.ForeignKey(
+        LiveSession,
+        on_delete=models.CASCADE,
+        related_name="spectate_events",
+    )
+    admin = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="live_spectate_events",
+    )
+    admin_email = models.CharField(max_length=254, blank=True)
+    reason = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["session", "created_at"]),
+            models.Index(fields=["admin", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.admin_email} spectated {self.session_id}"
 
 
 class LiveSessionRemoval(models.Model):
