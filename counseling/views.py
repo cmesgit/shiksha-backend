@@ -487,7 +487,9 @@ class CancelAppointmentView(APIView):
             Appointment.objects.select_related("counselor", "learner_profile"),
             pk=appointment_id,
         )
-        is_booker = appt.booked_by_id == request.user.id
+        # Profile-scoped, not just account-scoped — a sibling must not be able
+        # to cancel another child's counselling session.
+        is_booker = _owns_appointment(request, appt)
         is_counselor = appt.counselor.user_id == request.user.id
         if not (is_booker or is_counselor):
             return Response(
@@ -543,9 +545,37 @@ class CancelAppointmentView(APIView):
 # STUDENT — assessment & reports
 # =====================================================
 
-def _assessment_for_student(request, appointment_id):
-    appt = get_object_or_404(Appointment, pk=appointment_id)
+def _owns_appointment(request, appt):
+    """May this REQUEST act on this appointment?
+
+    Account ownership alone is not enough. On a one-email/many-children
+    account, `appt.learner_profile.account_id == request.user.id` is true for
+    EVERY sibling, so child A in learner context could read, overwrite and
+    submit child B's career assessment, and cancel B's session — the most
+    sensitive data in this app.
+
+    When a learner profile is in context, the appointment must belong to THAT
+    profile. With no learner profile in context (a parent managing from the
+    account level, or a counsellor-side call), fall back to account ownership,
+    which is the pre-existing behaviour and is correct there.
+
+    Mirrors sessions_app/views.py's _get_owned_session, which fixed exactly
+    this "a sibling could cancel another child's session" bug.
+    """
+    from accounts.auth_flow import get_active_profile
+
     if appt.booked_by_id != request.user.id and appt.learner_profile.account_id != request.user.id:
+        return False
+    active = get_active_profile(request)
+    if active is not None and appt.learner_profile_id != active.id:
+        return False
+    return True
+
+
+def _assessment_for_student(request, appointment_id):
+    appt = get_object_or_404(
+        Appointment.objects.select_related("learner_profile"), pk=appointment_id)
+    if not _owns_appointment(request, appt):
         return None, Response({"detail": "Not your appointment."},
                               status=status.HTTP_403_FORBIDDEN)
     assessment = getattr(appt, "assessment", None)

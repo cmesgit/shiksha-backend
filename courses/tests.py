@@ -12,7 +12,9 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from accounts.models import LearnerProfile, Role, User, UserRole
 from enrollments.models import Enrollment
 
-from .models import Chapter, Course, Subject, TeachingAssignment
+from rest_framework.test import APIClient
+
+from .models import Batch, Chapter, Course, Subject, TeachingAssignment
 
 ALL_STUDENTS_URL = "/api/courses/teacher/all-students/"
 
@@ -214,8 +216,19 @@ class RecordingNoteTest(TestCase):
         self.course = Course.objects.create(title="C10", class_level=10)
         self.subject = Subject.objects.create(course=self.course, name="Physics")
         TeachingAssignment.objects.create(subject=self.subject, teacher=self.teacher, batch=None, is_active=True)
+        # A REAL learner: profile + profile-scoped enrolment. The recording
+        # guard is profile-and-batch scoped (a sibling's enrolment must not
+        # authorise another child, and a batch-scoped recording must not leak
+        # across batches), so an account-only enrolment is not a valid fixture
+        # any more — and never matched production, where a learner always has
+        # an active profile in context.
+        from accounts.models import LearnerProfile
+        self.student_profile = LearnerProfile.objects.create(
+            account=self.student, display_name="Stu", is_default=True,
+        )
         Enrollment.objects.create(
-            user=self.student, course=self.course, status=Enrollment.STATUS_ACTIVE
+            user=self.student, learner_profile=self.student_profile,
+            course=self.course, status=Enrollment.STATUS_ACTIVE,
         )
 
         self.recording = SessionRecording.objects.create(
@@ -226,7 +239,12 @@ class RecordingNoteTest(TestCase):
 
     def _client(self, user, context="teacher"):
         client = self.APIClient()
-        client.force_authenticate(user=user, token={"context": context})
+        token = {"context": context}
+        if context == "learner":
+            profile = getattr(self, "student_profile", None)
+            if profile is not None and user == self.student:
+                token["active_profile"] = str(profile.id)
+        client.force_authenticate(user=user, token=token)
         return client
 
     def test_teacher_can_save_and_read_own_note(self):
@@ -639,3 +657,105 @@ class TeachingAssignmentRevocationTests(TestCase):
             teaches_subject(self.teacher, self.subject),
             "the teacher still teaches this subject in the other batch",
         )
+
+
+class RecordingAccessControlTest(TestCase):
+    """Per-id recording endpoints must not be a side door around the list.
+
+    RecordingDetailView and CheckVideoStatusView fetched by pk with NO
+    entitlement check at all, while SubjectRecordingsView right beside them
+    did teacher/batch scoping properly. The serializer emits bunny_video_id,
+    and playback URLs in this codebase are built unsigned — so a leaked id is
+    a directly playable class recording, including unpublished drafts.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from accounts.models import LearnerProfile
+        from courses.models_recordings import SessionRecording
+
+        Role.objects.get_or_create(name="STUDENT")
+        Role.objects.get_or_create(name="TEACHER")
+
+        cls.teacher = User.objects.create_user(
+            username="rec_t", email="rec_t@test.com", password="x")
+        # The guard's teacher branch needs BOTH teacher context and the role.
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+        cls.course = Course.objects.create(title="Class 9")
+        cls.subject = Subject.objects.create(course=cls.course, name="Chem")
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, batch=None, is_active=True)
+
+        cls.morning = Batch.objects.create(course=cls.course, name="Morning", code="RM")
+        cls.evening = Batch.objects.create(course=cls.course, name="Evening", code="RE")
+
+        def learner(username, batch):
+            u = User.objects.create_user(
+                username=username, email=f"{username}@t.com", password="x")
+            p = LearnerProfile.objects.create(
+                account=u, display_name=username, is_default=True)
+            Enrollment.objects.create(
+                user=u, learner_profile=p, course=cls.course,
+                batch=batch, status=Enrollment.STATUS_ACTIVE)
+            return u, p
+
+        cls.mine_user, cls.mine_profile = learner("rec_morning", cls.morning)
+        cls.other_user, cls.other_profile = learner("rec_evening", cls.evening)
+
+        # Enrolled in nothing at all.
+        cls.outsider = User.objects.create_user(
+            username="rec_out", email="rec_out@t.com", password="x")
+        LearnerProfile.objects.create(
+            account=cls.outsider, display_name="Out", is_default=True)
+
+        cls.shared = SessionRecording.objects.create(
+            subject=cls.subject, title="Course-wide", batch=None,
+            bunny_video_id="vid-shared", uploaded_by=cls.teacher)
+        cls.morning_only = SessionRecording.objects.create(
+            subject=cls.subject, title="Morning only", batch=cls.morning,
+            bunny_video_id="vid-morning", uploaded_by=cls.teacher)
+
+    def _client(self, user, profile=None):
+        c = APIClient()
+        token = {"context": "learner"}
+        if profile is not None:
+            token["active_profile"] = str(profile.id)
+        c.force_authenticate(user=user, token=token)
+        return c
+
+    def test_outsider_cannot_read_a_recording_by_id(self):
+        c = self._client(self.outsider,
+                         self.outsider.learner_profiles.first())
+        r = c.get(f"/api/courses/recordings/{self.shared.id}/")
+        self.assertEqual(r.status_code, 403, r.content)
+        self.assertNotIn("bunny_video_id", str(r.content))
+
+    def test_outsider_cannot_reach_the_status_endpoint_either(self):
+        # Second door to the same payload — and it burns a Bunny API call.
+        c = self._client(self.outsider,
+                         self.outsider.learner_profiles.first())
+        r = c.get(f"/api/courses/recordings/{self.shared.id}/status/")
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def test_wrong_batch_learner_cannot_read_a_batch_scoped_recording(self):
+        c = self._client(self.other_user, self.other_profile)
+        r = c.get(f"/api/courses/recordings/{self.morning_only.id}/")
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def test_the_right_learner_still_gets_their_own_recordings(self):
+        c = self._client(self.mine_user, self.mine_profile)
+        for rec in (self.shared, self.morning_only):
+            r = c.get(f"/api/courses/recordings/{rec.id}/")
+            self.assertEqual(r.status_code, 200, r.content)
+        # Course-wide stays visible to the other batch too.
+        c2 = self._client(self.other_user, self.other_profile)
+        self.assertEqual(
+            c2.get(f"/api/courses/recordings/{self.shared.id}/").status_code, 200)
+
+    def test_teacher_of_the_subject_sees_every_batch(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = c.get(f"/api/courses/recordings/{self.morning_only.id}/")
+        self.assertEqual(r.status_code, 200, r.content)

@@ -31,7 +31,11 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from .device import open_session, touch_session
 from .models import LearnerProfile, Role
-from .throttles import PinVerifyRateThrottle
+from .throttles import (
+    PinVerifyRateThrottle,
+    LoginRateThrottle,
+    LoginAccountRateThrottle,
+)
 
 ACCESS_MAX_AGE  = 60 * 60            # 1 hour
 REFRESH_MAX_AGE = 60 * 60 * 24 * 7  # 1 week
@@ -400,6 +404,14 @@ def _ensure_default_profile(user):
 
 class LoginView(APIView):
     permission_classes = [AllowAny]
+    # Brute-force protection. This endpoint had NONE: LoginRateThrottle was
+    # defined in accounts/throttles.py, imported in accounts/views.py, and had
+    # a rate configured in settings — but was never attached to a view, so
+    # password guessing against the real login route was unlimited and free.
+    # Two throttles on purpose: per-IP (bounds a single noisy source) and
+    # per-EMAIL (bounds credential stuffing spread across many IPs, without
+    # punishing a school behind one NAT address).
+    throttle_classes = [LoginRateThrottle, LoginAccountRateThrottle]
 
     def post(self, request):
         email    = (request.data.get("email")    or "").strip().lower()

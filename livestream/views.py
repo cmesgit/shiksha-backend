@@ -133,8 +133,18 @@ class StudentLiveSessionListView(generics.ListAPIView):
         course_id = self.request.query_params.get("course_id")
         subject_id = self.request.query_params.get("subject_id")
 
+        # PROFILE-scoped, not account-scoped. Keyed on `user=` this collected
+        # every sibling's enrolments, so their batch ids landed in
+        # active_batch_ids below and child A saw child B's batch timetable —
+        # the comment right underneath claimed a correctness the code did not
+        # implement.
+        from accounts.auth_flow import get_active_profile
+
+        learner = get_active_profile(self.request)
+        if learner is None:
+            return LiveSession.objects.none()
         active_enrollments = Enrollment.objects.filter(
-            user=user,
+            learner_profile=learner,
             status=Enrollment.STATUS_ACTIVE
         )
         active_courses = active_enrollments.values_list("course_id", flat=True)
@@ -298,6 +308,16 @@ def join_live_session(request, session_id):
 
         if not has_active_subscription(user=user, course=session.course, learner_profile=learner):
             return Response(lock_payload(user=user, course=session.course, learner_profile=learner), status=402)
+
+        # BATCH GATE. Subscription proves they paid for the COURSE; it says
+        # nothing about which cohort's class this is. Without this a
+        # morning-batch learner who knew (or guessed) a session id was minted
+        # a real LiveKit token for the evening batch's live class.
+        if not _learner_may_access_session(learner, session):
+            return Response(
+                {"detail": "This session is not available to your batch."},
+                status=403,
+            )
 
         # Recheck subscription hasn't expired or been revoked mid-session
         if session.status in [LiveSession.STATUS_LIVE, LiveSession.STATUS_PAUSED]:
@@ -578,15 +598,43 @@ def live_session_status(request, session_id):
         learner = get_active_profile(request)
         if learner is None:
             return Response({"detail": "Select a learner profile."}, status=403)
-        if not Enrollment.objects.filter(
-            user=user, course=session.course, status=Enrollment.STATUS_ACTIVE
-        ).exists():
+        if not _learner_may_access_session(learner, session):
             return Response({"detail": "Not enrolled in this course."}, status=403)
 
     return Response({
         "status": session.status,
         "computed_status": session.computed_status(),
     })
+
+
+def _learner_may_access_session(learner, session):
+    """Is this LEARNER PROFILE entitled to this live session?
+
+    Two things every caller here used to get wrong:
+
+    · ENROLMENT WAS ACCOUNT-KEYED (`Enrollment.filter(user=user)`), so on a
+      one-email/many-children account any sibling's enrolment authorised any
+      other child.
+    · BATCH WAS NEVER CHECKED on the per-session paths, even though
+      LiveSession.batch exists and the LIST view filters on it. That made the
+      per-id endpoints a side door around the list's own rule — and in
+      join_live_session it meant a morning-batch learner who knew a session id
+      was issued a real LiveKit token for the evening class.
+
+    NULL batch = course-wide. Mirrors the assignments/materials rule.
+    """
+    from enrollments.services import active_batch_id
+
+    if not Enrollment.objects.filter(
+        learner_profile=learner, course=session.course,
+        status=Enrollment.STATUS_ACTIVE,
+    ).exists():
+        return False
+    if session.batch_id is None:
+        return True
+    return session.batch_id == active_batch_id(
+        learner_profile=learner, course_id=session.course_id,
+    )
 
 
 def _require_session_participant(request, session):
@@ -605,9 +653,12 @@ def _require_session_participant(request, session):
         if not teaches_subject(user, session.subject):
             raise PermissionDenied("Not assigned to this subject.")
     else:
-        if not Enrollment.objects.filter(
-            user=user, course=session.course, status=Enrollment.STATUS_ACTIVE
-        ).exists():
+        from accounts.auth_flow import get_active_profile
+
+        learner = get_active_profile(request)
+        if learner is None:
+            raise PermissionDenied("Select a learner profile.")
+        if not _learner_may_access_session(learner, session):
             raise PermissionDenied("Not enrolled in this course.")
 
 
@@ -825,10 +876,14 @@ def _handle_participant_join(event):
     # Notify enrolled students when teacher goes live
     if str(session.created_by_id) == user_id:
         from livestream.services.notifications import push_ws_notification
-        students = Enrollment.objects.filter(
-            course=session.course,
-            status=Enrollment.STATUS_ACTIVE
-        ).select_related("user")
+        # Tell the people who can actually JOIN. Filtering on course alone
+        # notified every batch, so the evening cohort got a "class is LIVE"
+        # push for the morning class — which the join gate then 403s. Same
+        # bug that was fixed for study-material uploads; _enrollments_for
+        # applies the exact visibility rule the reader applies, and is the
+        # only correct basis for a notification.
+        from activity.signals import _enrollments_for
+        students = _enrollments_for(session.course, session.batch_id).select_related("user")
         from notifications.services import notify as _notify
         title = f"🔴 {session.title} is now LIVE!"
         for enrollment in students:
@@ -845,6 +900,11 @@ def _handle_participant_join(event):
                 actor=session.created_by,
                 verb="livestream.started",
                 title=title,
+                # Per-PROFILE, not per-account: without these two a sibling's
+                # bell shows the other child's class going live.
+                audience_identity=(f"L:{enrollment.learner_profile_id}"
+                                   if enrollment.learner_profile_id else ""),
+                learner_profile=enrollment.learner_profile,
                 link_url=f"/live/{session.id}",
                 payload={"session_id": str(session.id),
                          "course_id": str(session.course_id)},

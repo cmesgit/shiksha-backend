@@ -19,6 +19,28 @@ ALLOWED_HOSTS = ["testserver", "localhost", "127.0.0.1"]
 # Avoid channels/redis layer + celery brokers during isolated tests.
 CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+
+# Throttling OFF by default in tests.
+#
+# Throttle state lives in the cache, which is NOT reset between test methods,
+# so a real rate limit makes the suite order-dependent: any test that logs in
+# a few times exhausts the budget and every later test in that class fails
+# with 429 while passing in isolation. That is exactly what happened when the
+# login throttle was first attached.
+#
+# Tests that exercise throttling re-enable it explicitly with
+# @override_settings(REST_FRAMEWORK={...}) — see
+# accounts.tests_lookup.LoginThrottleTest.
+# Keys must remain PRESENT with a value of None — DRF looks the scope up in
+# THROTTLE_RATES and raises KeyError if it is missing, so an empty dict breaks
+# every throttled view instead of disabling it.
+REST_FRAMEWORK = {
+    **REST_FRAMEWORK,  # noqa: F405
+    "DEFAULT_THROTTLE_RATES": {
+        scope: None
+        for scope in REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]  # noqa: F405
+    },
+}
 # No Redis in this sandbox — run tasks inline instead of trying (and failing) to
 # reach a broker. Without this, anything that calls .delay() (e.g. seed_demo_data's
 # LiveSession creation, which notifies enrollments) hangs for minutes retrying.

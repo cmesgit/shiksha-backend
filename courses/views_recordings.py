@@ -214,7 +214,14 @@ class CheckVideoStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, recording_id):
-        recording = get_object_or_404(SessionRecording, id=recording_id)
+        # Same missing guard as RecordingDetailView — and worse, an unguarded
+        # call here also spends a Bunny API request on an id the caller has no
+        # right to, and returns the same full serializer payload.
+        recording = get_object_or_404(
+            SessionRecording.objects.select_related("subject__course"),
+            id=recording_id,
+        )
+        _require_recording_viewer(request, recording)
 
         if recording.status == 4:
             return Response(SessionRecordingSerializer(recording).data)
@@ -254,18 +261,40 @@ class RecordingDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, recording_id):
-        recording = get_object_or_404(SessionRecording, id=recording_id)
+        # Guarded. This used to fetch by pk with NO entitlement check of any
+        # kind, so any authenticated account could read any recording row —
+        # including bunny_video_id, which is the playback handle. The guard
+        # it needed was already defined a few lines up and used by
+        # RecordingNotesView; this view just never called it.
+        recording = get_object_or_404(
+            SessionRecording.objects.select_related("subject__course"),
+            id=recording_id,
+        )
+        _require_recording_viewer(request, recording)
         return Response(SessionRecordingSerializer(recording).data)
 
 
 def _require_recording_viewer(request, recording):
-    """Same shape as livestream's _require_session_participant: teacher
-    context needs to teach the recording's subject; otherwise the user needs
-    an active enrollment in its course. Raises PermissionDenied (403) rather
-    than returning a Response, so call sites can use it as a one-line guard.
+    """Teacher context must teach the recording's subject; a learner must be
+    enrolled in its course AND entitled to its batch. Raises PermissionDenied
+    (403) rather than returning a Response, so call sites can use it as a
+    one-line guard.
+
+    Two fixes here, both audit findings:
+
+    · ENROLLMENT WAS ACCOUNT-KEYED (`user=user`). On a one-email/many-children
+      account that let sibling A's enrolment authorise sibling B. Now keyed on
+      the ACTIVE learner profile, like every other correct read path.
+    · BATCH WAS NEVER CHECKED, even though SessionRecording.batch exists
+      precisely so "the batch that attended the class sees its recording;
+      other batches don't" (see the field's own comment). SubjectRecordingsView
+      filters on it; this guard didn't, so the per-id endpoints were a side
+      door around the list's own rule.
     """
     from rest_framework.exceptions import PermissionDenied
+    from accounts.auth_flow import get_active_profile
     from enrollments.models import Enrollment
+    from enrollments.services import active_batch_id
 
     user = request.user
     token = getattr(request, "auth", None)
@@ -276,12 +305,25 @@ def _require_recording_viewer(request, recording):
     if in_teacher_context:
         if not teaches_subject(user, recording.subject):
             raise PermissionDenied("Not assigned to this subject.")
-    else:
-        if not Enrollment.objects.filter(
-            user=user, course=recording.subject.course,
-            status=Enrollment.STATUS_ACTIVE,
-        ).exists():
-            raise PermissionDenied("Not enrolled in this course.")
+        return
+
+    learner = get_active_profile(request)
+    if learner is None:
+        raise PermissionDenied("Select a learner profile.")
+
+    course = recording.subject.course
+    if not Enrollment.objects.filter(
+        learner_profile=learner, course=course,
+        status=Enrollment.STATUS_ACTIVE,
+    ).exists():
+        raise PermissionDenied("Not enrolled in this course.")
+
+    # NULL batch = shared course-wide; otherwise it must be this learner's.
+    if recording.batch_id is not None:
+        if recording.batch_id != active_batch_id(
+            learner_profile=learner, course_id=course.id,
+        ):
+            raise PermissionDenied("This recording is not available to your batch.")
 
 
 class RecordingNotesView(APIView):

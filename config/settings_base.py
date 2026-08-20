@@ -196,7 +196,12 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ),
     "DEFAULT_THROTTLE_RATES": {
+        # Per-IP. Deliberately generous: schools and families share one NAT
+        # address, so a tight per-IP cap locks out a whole class at 9am while
+        # an attacker with a few IPs barely notices. The per-ACCOUNT limit
+        # below is what actually makes guessing one password expensive.
         "login": "20/min",
+        "login_account": "10/min",
         "signup": "10/hour",
         "resend_verification": "3/hour",
         "password_reset_request": "5/hour",

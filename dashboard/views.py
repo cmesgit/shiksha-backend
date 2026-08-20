@@ -113,10 +113,17 @@ def _chapters_for(subject_ids):
     )
 
 
-def _live_sessions_for_subjects(subject_ids, today_start, excluded, week_only):
+def _live_sessions_for_subjects(subject_ids, today_start, excluded, week_only,
+                                batch_q=None):
+    # batch_q: the same Q the assignment and quiz slices already use. The
+    # earlier batch fix built _batch_visibility_q and applied it to those two
+    # but skipped this slice, so the dashboard kept showing another batch's
+    # timetable. LiveSession.batch exists for exactly this reason.
     qs = LiveSession.objects.filter(
         subject_id__in=subject_ids, start_time__gte=today_start
     )
+    if batch_q is not None:
+        qs = qs.filter(batch_q)
     if week_only:
         qs = qs.filter(start_time__lte=today_start + timedelta(days=7))
     return list(
@@ -507,18 +514,27 @@ class DashboardView(APIView):
             chapter_ids = _guard(
                 "learner.chapters", lambda: _chapters_for(subject_ids), [])
 
-            sessions = _guard(
-                "learner.sessions",
-                lambda: _live_sessions_for_subjects(subject_ids, today_start, excluded, True), [])
-            all_sessions = _guard(
-                "learner.all_sessions",
-                lambda: _live_sessions_for_subjects(subject_ids, today_start, excluded, False), [])
-            # Batch scoping + "already done" exclusion for the coursework
-            # widgets. Both default to permissive on failure (_guard's
-            # fallbacks) so a hiccup here can never blank the dashboard.
+            # Batch scoping is resolved here rather than below, because the
+            # session slices need it too — see _live_sessions_for_subjects.
             batch_ids_by_course = _guard(
                 "learner.batches",
                 lambda: _batch_ids_for(profile, course_ids), {})
+            session_batch_q = _batch_visibility_q(
+                batch_ids_by_course, "course_id")
+
+            sessions = _guard(
+                "learner.sessions",
+                lambda: _live_sessions_for_subjects(
+                    subject_ids, today_start, excluded, True, session_batch_q), [])
+            all_sessions = _guard(
+                "learner.all_sessions",
+                lambda: _live_sessions_for_subjects(
+                    subject_ids, today_start, excluded, False, session_batch_q), [])
+            # "Already done" exclusion for the coursework widgets, plus the
+            # per-model batch Qs. batch_ids_by_course is resolved above (the
+            # session slices need it first). Both default to permissive on
+            # failure (_guard's fallbacks) so a hiccup can never blank the
+            # dashboard.
             assignment_batch_q = _batch_visibility_q(
                 batch_ids_by_course, "chapter__subject__course_id")
             quiz_batch_q = _batch_visibility_q(

@@ -24,6 +24,10 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
         self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
         self.group_name = f"session_{self.session_id}"
         self.user = self.scope["user"]
+        # The JWT's learner-profile claim, already put on the scope by the
+        # auth middleware (see accounts/consumers.py, which reads the same
+        # key). This consumer never read it, so its gate was account-wide.
+        self.active_profile_id = self.scope.get("active_profile_id")
 
         # Auth gate — reject anonymous and anyone not entitled to this session
         # (mirrors CourseSessionConsumer; the previous version accepted anyone,
@@ -119,8 +123,16 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
         )
 
     def _is_authorized(self):
-        """Teacher of the session's subject, or a user with an active enrollment
-        in the course. Admins/staff are always allowed."""
+        """Teacher of the session's subject, or the ACTIVE LEARNER PROFILE with
+        an active enrolment in the course AND entitlement to the session's
+        batch. Admins/staff are always allowed.
+
+        This gate used to be account-keyed with no batch check at all, so a
+        morning-batch learner (or any sibling on the account) could open the
+        socket for the evening batch's room and both READ the live chat
+        history and POST into it. The REST join path enforces batch; this did
+        not, which made the socket the softer way in.
+        """
         try:
             session = LiveSession.objects.select_related("subject", "course").get(
                 id=self.session_id
@@ -142,10 +154,26 @@ class LiveSessionConsumer(AsyncWebsocketConsumer):
         except Exception:
             pass
 
-        # Active enrollment in the course
-        return Enrollment.objects.filter(
-            user=user, course_id=session.course_id, status=Enrollment.STATUS_ACTIVE
-        ).exists()
+        # Learner: profile-scoped enrolment + batch entitlement.
+        profile_id = getattr(self, "active_profile_id", None)
+        if not profile_id:
+            return False
+        if not Enrollment.objects.filter(
+            learner_profile_id=profile_id, course_id=session.course_id,
+            status=Enrollment.STATUS_ACTIVE,
+        ).exists():
+            return False
+        if session.batch_id is None:
+            return True   # course-wide session
+        from enrollments.services import active_batch_id
+        from accounts.models import LearnerProfile
+
+        profile = LearnerProfile.objects.filter(pk=profile_id).first()
+        if profile is None:
+            return False
+        return session.batch_id == active_batch_id(
+            learner_profile=profile, course_id=session.course_id,
+        )
 
     def get_chat_history(self):
         # Redis fast-path (last 100, 24h TTL).

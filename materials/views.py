@@ -277,18 +277,26 @@ class StudentSubjectMaterials(APIView):
     def get(self, request, subject_id):
         subject = get_object_or_404(
             Subject.objects.select_related("course"), id=subject_id)
-        # Batch isolation: course-wide materials (batch IS NULL) + this
-        # student's own batch's materials. Materials default to course-wide,
-        # so this only ever hides genuinely batch-specific handouts.
-        # Scoped to the ACTIVE PROFILE, not the account — see active_batch_id.
-        batch_id = active_batch_id(
-            learner_profile=get_active_profile(request),
-            course_id=subject.course_id,
-        )
+        # ENTITLEMENT FIRST. This view previously went straight to
+        # active_batch_id with no subscription/enrolment check at all — and
+        # active_batch_id returns None for someone with no enrolment, which
+        # then degraded to "show all course-wide material" instead of
+        # denying. Any authenticated account could read any course's handouts
+        # by passing its subject id. _authorize_subject_materials is the same
+        # gate every other read path in this file already uses.
+        allowed, batch_id = _authorize_subject_materials(request, subject)
+        if not allowed:
+            raise PermissionDenied("You do not have access to this subject.")
+        if batch_id is TEACHER_UNRESTRICTED:
+            batch_q = Q()
+        else:
+            # Batch isolation: course-wide materials (batch IS NULL) + this
+            # student's own batch's. Scoped to the ACTIVE PROFILE.
+            batch_q = Q(batch__isnull=True) | Q(batch_id=batch_id)
         materials = (
             StudyMaterial.objects
             .filter(chapter__subject=subject)
-            .filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
+            .filter(batch_q)
             .select_related("chapter__subject", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
@@ -356,17 +364,37 @@ class StudentCourseMaterials(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, course_id):
+        # ENTITLEMENT FIRST — same hole StudentSubjectMaterials had: this went
+        # straight to batch scoping with no subscription check, and
+        # active_batch_id returns None for a non-enrolled caller, degrading to
+        # "all course-wide material" rather than denying. Any authenticated
+        # account could read any course's handouts by passing its course id.
+        from courses.models import Course
+        course = get_object_or_404(Course, id=course_id)
+        profile = get_active_profile(request)
+        is_teacher = Subject.objects.filter(
+            course_id=course_id,
+            teaching_assignments__teacher=request.user,
+            teaching_assignments__is_active=True,
+        ).exists()
+        if not is_teacher and not has_active_subscription(
+            user=request.user, course=course, learner_profile=profile,
+        ):
+            raise PermissionDenied("No active subscription for this course.")
+
         # Scope the batch to the ACTIVE PROFILE, not just the account — two
         # children on one account can sit in different batches of one course.
-        batch_id = active_batch_id(
-            learner_profile=get_active_profile(request),
-            course_id=course_id,
+        # A teacher of the course sees every batch's material, matching
+        # _authorize_subject_materials' TEACHER_UNRESTRICTED branch.
+        batch_id = active_batch_id(learner_profile=profile, course_id=course_id)
+        batch_q = Q() if is_teacher else (
+            Q(batch__isnull=True) | Q(batch_id=batch_id)
         )
 
         materials = (
             StudyMaterial.objects
             .filter(chapter__subject__course_id=course_id)
-            .filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
+            .filter(batch_q)
             # subject_id/subject_name are read off chapter.subject per row.
             .select_related("chapter__subject", "batch")
             .prefetch_related("files")

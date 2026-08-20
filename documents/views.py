@@ -15,6 +15,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework import status
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, Q, Exists, OuterRef, Sum
 from django.utils import timezone
@@ -488,6 +489,20 @@ class CollectionDetailView(APIView):
 
     def get(self, request, slug):
         col = get_object_or_404(Collection, slug=slug)
+        # A PRIVATE collection is only for its curator (and staff).
+        #
+        # This checked nothing, while CollectionsView.get right above it
+        # deliberately lists only VIS_PUBLIC — so private was a real, intended
+        # state that this endpoint ignored. Slugs are derived from the title
+        # and therefore guessable, and the view is AllowAny, so a private
+        # collection's title, description and full document list were readable
+        # with no login at all. patch/delete on this same class already go
+        # through _owned_collection; only get was open.
+        if col.visibility != Collection.VIS_PUBLIC:
+            user = request.user
+            is_owner = user.is_authenticated and col.curator_id == user.id
+            if not (is_owner or (user.is_authenticated and user.is_staff)):
+                raise Http404()
         ctx = {"request": request}
         docs = col.documents.filter(is_removed=False).select_related(
             "owner", "owner__document_profile", "category")

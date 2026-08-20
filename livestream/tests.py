@@ -8,6 +8,7 @@ actual start/end stamps, and the rollup. Run:
     python manage.py test livestream
 """
 import uuid
+from unittest.mock import patch
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -18,7 +19,9 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from courses.models import Board, Course, Subject
+from courses.models import Batch, Board, Course, Subject
+from accounts.models import LearnerProfile, Role, UserRole
+from enrollments.models import Enrollment, Subscription
 from livestream.consumers import CourseSessionConsumer
 from livestream.models import (
     LiveSession,
@@ -627,3 +630,105 @@ class BroadcastCourseSessionsPayloadTests(TestCase):
             self.assertIn(key, data)
         self.assertEqual(data["computed_status"], "SCHEDULED")
         self.assertIsInstance(data, dict)
+
+
+class LiveSessionBatchIsolationTest(TestCase):
+    """A learner must not reach another batch's live class.
+
+    join_live_session checked the COURSE subscription and never
+    session.batch_id, so a morning-batch learner who knew a session id was
+    minted a real LiveKit token for the evening batch's class. The list view
+    filtered on batch; the per-id paths did not.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="STUDENT")
+        Role.objects.get_or_create(name="TEACHER")
+
+        cls.teacher = User.objects.create_user(
+            username="ls_t", email="ls_t@t.com", password="x")
+        cls.course = Course.objects.create(title="Class 11")
+        cls.subject = Subject.objects.create(course=cls.course, name="Maths")
+        cls.morning = Batch.objects.create(course=cls.course, name="M", code="LSM")
+        cls.evening = Batch.objects.create(course=cls.course, name="E", code="LSE")
+
+        now = timezone.now()
+
+        def learner(username, batch):
+            u = User.objects.create_user(
+                username=username, email=f"{username}@t.com", password="x",
+                is_verified=True)
+            UserRole.objects.create(
+                user=u, role=Role.objects.get(name="STUDENT"),
+                is_active=True, is_primary=True)
+            p = LearnerProfile.objects.create(
+                account=u, display_name=username, is_default=True)
+            Enrollment.objects.create(
+                user=u, learner_profile=p, course=cls.course, batch=batch,
+                status=Enrollment.STATUS_ACTIVE)
+            Subscription.objects.create(
+                user=u, learner_profile=p, course=cls.course,
+                status=Subscription.STATUS_ACTIVE,
+                starts_at=now, expires_at=now + timedelta(days=30))
+            return u, p
+
+        cls.mine_u, cls.mine_p = learner("ls_morning", cls.morning)
+        cls.other_u, cls.other_p = learner("ls_evening", cls.evening)
+
+        cls.evening_session = LiveSession.objects.create(
+            course=cls.course, subject=cls.subject, batch=cls.evening,
+            title="Evening class", created_by=cls.teacher,
+            room_name=f"room-{uuid.uuid4()}",
+            start_time=now, end_time=now + timedelta(hours=1),
+        )
+        cls.shared_session = LiveSession.objects.create(
+            course=cls.course, subject=cls.subject, batch=None,
+            title="Everyone", created_by=cls.teacher,
+            room_name=f"room-{uuid.uuid4()}",
+            start_time=now, end_time=now + timedelta(hours=1),
+        )
+
+    def _client(self, user, profile):
+        c = APIClient()
+        c.force_authenticate(
+            user=user,
+            token={"context": "learner", "active_profile": str(profile.id)})
+        return c
+
+    def test_wrong_batch_is_refused_a_livekit_token(self):
+        c = self._client(self.mine_u, self.mine_p)   # morning learner
+        r = c.post(f"/api/livestream/sessions/{self.evening_session.id}/join/")
+        self.assertEqual(r.status_code, 403, r.content)
+        self.assertNotIn("token", (r.data or {}))
+
+    # LiveKit credentials are absent in the test settings (documented in
+    # CLAUDE.md), so the real token call raises. Patch it out: these tests are
+    # about the GATE, not about LiveKit. Note the un-patched runs proved the
+    # gate had already allowed the request — it died further down, inside
+    # token minting.
+    @patch("livestream.views.generate_livekit_token", return_value="fake-token")
+    def test_course_wide_session_is_joinable_by_any_batch(self, _tok):
+        c = self._client(self.mine_u, self.mine_p)
+        r = c.post(f"/api/livestream/sessions/{self.shared_session.id}/join/")
+        self.assertNotEqual(r.status_code, 403, r.content)
+
+    @patch("livestream.views.generate_livekit_token", return_value="fake-token")
+    def test_own_batch_session_is_joinable(self, _tok):
+        c = self._client(self.other_u, self.other_p)   # evening learner
+        r = c.post(f"/api/livestream/sessions/{self.evening_session.id}/join/")
+        self.assertNotEqual(r.status_code, 403, r.content)
+
+    def test_list_does_not_show_another_batchs_session(self):
+        c = self._client(self.mine_u, self.mine_p)
+        r = c.get("/api/livestream/student/sessions/")
+        self.assertEqual(r.status_code, 200, r.content)
+        rows = r.data["results"] if isinstance(r.data, dict) else r.data
+        titles = {s["title"] for s in rows}
+        self.assertIn("Everyone", titles)
+        self.assertNotIn("Evening class", titles)
+
+    def test_status_endpoint_is_batch_scoped_too(self):
+        c = self._client(self.mine_u, self.mine_p)
+        r = c.get(f"/api/livestream/sessions/{self.evening_session.id}/status/")
+        self.assertEqual(r.status_code, 403, r.content)

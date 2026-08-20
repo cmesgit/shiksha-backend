@@ -294,10 +294,25 @@ class CourseLectureProgressView(APIView):
     """GET → progress list. POST { lecture_id } → mark lecture complete."""
     permission_classes = [IsAuthenticated]
 
-    def _enrollment(self, user, course_id):
-        learner = get_active_profile(user)  # re-use pattern but pass user
+    def _enrollment(self, request, course_id):
+        """This PROFILE's enrolment — never a sibling's.
+
+        This used to filter `learner_profile__account=user` and take
+        `.first()`, i.e. any enrolment on the account. Since POST below marks
+        a lecture complete and can flip the enrolment to STATUS_COMPLETED,
+        child A pressing "complete" could write into child B's enrolment and
+        finish a course B was halfway through.
+
+        The old line `learner = get_active_profile(user)` passed a User where
+        the helper expects a REQUEST, so it silently returned nothing and the
+        result was discarded — the intended scoping was started and never
+        wired up.
+        """
+        learner = get_active_profile(request)
+        if learner is None:
+            raise NotFound("Select a learner profile.")
         enroll = SkillCourseEnrollment.objects.filter(
-            learner_profile__account=user,
+            learner_profile=learner,
             course_id=course_id,
             status=SkillCourseEnrollment.STATUS_ACTIVE,
         ).first()
@@ -306,7 +321,7 @@ class CourseLectureProgressView(APIView):
         return enroll
 
     def get(self, request, course_id):
-        enroll = self._enrollment(request.user, course_id)
+        enroll = self._enrollment(request, course_id)
         prog   = SkillLectureProgress.objects.filter(enrollment=enroll)
         total  = SkillCourseLecture.objects.filter(section__course=enroll.course).count()
         done   = prog.count()
@@ -319,7 +334,7 @@ class CourseLectureProgressView(APIView):
         })
 
     def post(self, request, course_id):
-        enroll = self._enrollment(request.user, course_id)
+        enroll = self._enrollment(request, course_id)
         lid    = request.data.get("lecture_id")
         if not lid:
             raise ValidationError("lecture_id required.")

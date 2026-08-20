@@ -31,6 +31,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from accounts.permissions import _in_teacher_context
+
 from . import live_rules
 from .models import GroupSession, RemoteControlGrant
 
@@ -53,9 +55,30 @@ def request_remote_control(request, session_id):
     session = get_object_or_404(GroupSession, id=session_id)
     if not live_rules.features()["remote_access"]:
         return Response({"detail": "Disabled by the admin."}, status=403)
-    if not request.user.has_role("TEACHER"):
+
+    # has_role alone is NOT enough — accounts/permissions.py says so
+    # explicitly: on a teacher's account a learner-context token (a child on a
+    # shared device) also passes the role check. Require real teacher context.
+    if not _in_teacher_context(request):
         return Response(
             {"detail": "Only teachers may control a screen.", "code": "role"},
+            status=403,
+        )
+
+    # AND the caller must actually be running this room. Previously the only
+    # gates were "logged in" + "has TEACHER role", with no check that the
+    # requester was the host or even present — so any teacher-role account
+    # could target any screen-sharing participant of ANY session, push a
+    # remote-control prompt into that room, and (if the victim tapped Allow)
+    # take control of a stranger's shared screen. It could also burn the
+    # room's single active-grant slot, locking out the real teacher.
+    is_host = session.host_id == request.user.id
+    in_room = session.participants.filter(
+        user_id=request.user.id, left_at__isnull=True
+    ).exists()
+    if not (is_host or in_room):
+        return Response(
+            {"detail": "You are not in this session.", "code": "not_in_room"},
             status=403,
         )
 
