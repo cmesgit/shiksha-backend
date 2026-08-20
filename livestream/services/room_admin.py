@@ -36,3 +36,66 @@ def close_room(room_name):
         async_to_sync(_delete)()
     except Exception as e:
         logger.warning("LiveKit delete_room failed for %s: %s", room_name, e)
+
+
+def _with_api(fn):
+    """Run one LiveKit admin call, always closing the client.
+
+    These moderation calls must NOT be best-effort in the way close_room is:
+    the caller has to know whether the participant was really removed, so it
+    can decide whether to tell the teacher it worked. Raises on failure.
+    """
+    from asgiref.sync import async_to_sync
+    from livekit import api as lk_api
+
+    async def _run():
+        client = lk_api.LiveKitAPI(
+            settings.LIVEKIT_URL,
+            settings.LIVEKIT_API_KEY,
+            settings.LIVEKIT_API_SECRET,
+        )
+        try:
+            return await fn(client, lk_api)
+        finally:
+            await client.aclose()
+
+    return async_to_sync(_run)()
+
+
+def remove_participant(room_name, identity):
+    """Disconnect one participant from a room.
+
+    Note this alone is NOT enough to keep them out: a LiveKit token is a
+    bearer credential with no server-side blocklist, and the livestream token
+    TTL is 2 hours, so a removed student can simply rejoin with the token
+    they already hold. The caller must also record the removal so the join
+    endpoint refuses to mint them a new one -- see LiveSessionRemoval.
+    """
+    return _with_api(lambda c, api: c.room.remove_participant(
+        api.RoomParticipantIdentity(room=room_name, identity=str(identity))
+    ))
+
+
+def mute_participant(room_name, identity, *, muted=True):
+    """Force-mute (or unmute) every published track of one participant.
+
+    LiveKit mutes a single track per call, so this fetches the participant's
+    current publications and applies the change to each. A participant who is
+    not in the room is not an error -- they may have just left.
+    """
+    async def _mute(client, api):
+        info = await client.room.get_participant(
+            api.RoomParticipantIdentity(room=room_name, identity=str(identity))
+        )
+        changed = 0
+        for pub in getattr(info, "tracks", []) or []:
+            await client.room.mute_published_track(
+                api.MuteRoomTrackRequest(
+                    room=room_name, identity=str(identity),
+                    track_sid=pub.sid, muted=muted,
+                )
+            )
+            changed += 1
+        return changed
+
+    return _with_api(_mute)

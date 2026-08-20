@@ -1,4 +1,6 @@
 import uuid
+from datetime import timedelta
+
 from django.db import models
 from django.conf import settings
 
@@ -63,6 +65,16 @@ class LiveSession(models.Model):
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
 
+    # Teacher-granted extension. end_time is the PLANNED end; this is the
+    # agreed one when a class runs long, set via the extend endpoint.
+    extended_until = models.DateTimeField(null=True, blank=True)
+
+    # Shared by every class generated from one recurring pattern, so a
+    # 6-month timetable stays addressable as a unit instead of 50 unrelated
+    # rows. NULL for one-off sessions, including every session created before
+    # recurring scheduling existed.
+    series_id = models.UUIDField(null=True, blank=True, db_index=True)
+
     room_name = models.CharField(max_length=255, unique=True)
 
     status = models.CharField(
@@ -113,6 +125,33 @@ class LiveSession(models.Model):
     def duration(self):
         return self.end_time - self.start_time
 
+    # How long a class may overrun its planned end_time before the system
+    # treats it as genuinely over. Real teaching overruns — a 10:00-11:00
+    # class finishing at 11:10 is routine — and end_time was being enforced
+    # as a hard kill in three places at once (the join gate, computed_status
+    # and the 5-min sweep). The visible failure: at 11:00 the class flipped
+    # to COMPLETED while the LiveKit room was still open, so the lesson
+    # carried on for everyone already connected, but any student whose wifi
+    # blipped got "Session has ended." and could not get back in.
+    LIVE_GRACE = timedelta(minutes=30)
+
+    # Cap on a single extension, so a forgotten class cannot hold a room (and
+    # bill LiveKit minutes) indefinitely.
+    MAX_EXTENSION = timedelta(hours=3)
+
+    @property
+    def hard_end_time(self):
+        """The moment this session is genuinely over.
+
+        Every terminal check should use this, never end_time — end_time is
+        the PLANNED end and is a scheduling value, not a lifecycle one.
+        """
+        return (self.extended_until or self.end_time) + self.LIVE_GRACE
+
+    @property
+    def max_extension_time(self):
+        return self.end_time + self.MAX_EXTENSION
+
     # 🔥 CORE STATE LOGIC (VERY IMPORTANT)
     def computed_status(self):
         from django.utils import timezone
@@ -127,8 +166,9 @@ class LiveSession(models.Model):
         if self.status == self.STATUS_COMPLETED:
             return self.STATUS_COMPLETED
 
-        # Session end time has passed → completed
-        if now >= self.end_time:
+        # Past the planned end AND past the overrun grace → completed.
+        # Deliberately hard_end_time, not end_time: see LIVE_GRACE.
+        if now >= self.hard_end_time:
             return self.STATUS_COMPLETED
 
         # Manual pause takes priority over teacher_left_at timer
@@ -190,6 +230,58 @@ class LiveSession(models.Model):
             self.save(update_fields=["status"])
         return (True, new_status)
 
+
+
+class LiveSessionRemoval(models.Model):
+    """A participant the teacher removed from a live class.
+
+    This table is the ONLY thing that makes an ejection stick. A LiveKit
+    token is a bearer credential — there is no server-side blocklist and no
+    revocation API — and the livestream token TTL is 2 hours. So calling
+    LiveKit's RemoveParticipant merely disconnects someone; they can rejoin
+    seconds later using the token already in their browser, and before this
+    existed there was nothing anywhere in the codebase to stop them (the only
+    LiveKit admin call was close_room, which is all-or-nothing and ends the
+    class for everybody).
+
+    The join endpoint checks this table before minting a token, so removal
+    survives a rejoin, a refresh and a new tab. Scoped to one session: being
+    removed from Tuesday's class must not bar the student from Thursday's.
+    """
+    session = models.ForeignKey(
+        LiveSession,
+        on_delete=models.CASCADE,
+        related_name="removals",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="live_session_removals",
+    )
+    removed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="live_session_removals_made",
+    )
+    reason = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Set when a teacher readmits someone removed by mistake. Kept as a row
+    # rather than deleted so the moderation history stays auditable.
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["session", "user", "revoked_at"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["session", "user"],
+                condition=models.Q(revoked_at__isnull=True),
+                name="uniq_active_removal_per_session_user",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.user_id} removed from {self.session_id}"
 
 
 class LiveSessionChatMessage(models.Model):

@@ -2,6 +2,7 @@ import json
 from django.conf import settings
 from .serializers import (
     LiveSessionCreateSerializer,
+    RecurringLiveSessionSerializer,
     LiveSessionUpdateSerializer,
     LiveSessionListSerializer,
     SessionReviewSerializer,
@@ -13,6 +14,7 @@ from .services import attendance as attendance_svc
 from .models import (
     LiveSession,
     LiveSessionAttendance,
+    LiveSessionRemoval,
     LiveKitWebhookEvent,
     SessionReview,
     SessionNote,
@@ -245,10 +247,30 @@ def join_live_session(request, session_id):
     if session.status == LiveSession.STATUS_COMPLETED:
         return Response({"detail": "Session has ended."}, status=400)
 
-    if now >= session.end_time:
+    # hard_end_time, not end_time — a class routinely runs a few minutes past
+    # its planned end, and this gate rejecting at end_time meant a student who
+    # briefly dropped could not rejoin a lesson that was visibly still running
+    # for everyone else. The teacher can push this out further via /extend/.
+    if now >= session.hard_end_time:
         session.status = LiveSession.STATUS_COMPLETED
         session.save(update_fields=["status"])
         return Response({"detail": "Session has ended."}, status=400)
+
+    # A removed participant must not be handed a fresh token. LiveKit tokens
+    # are bearer credentials with no revocation, so without this check the
+    # teacher's "Remove" only disconnected them for as long as it took to hit
+    # refresh. Teachers are exempt so a mis-click cannot lock a substitute out
+    # of the class they are meant to be teaching.
+    if not (bool(getattr(request, "auth", None))
+            and request.auth.get("context") == CTX_TEACHER
+            and user.has_role("TEACHER")):
+        if LiveSessionRemoval.objects.filter(
+            session=session, user=user, revoked_at__isnull=True,
+        ).exists():
+            return Response(
+                {"detail": "You were removed from this class by the teacher."},
+                status=403,
+            )
 
     if session.teacher_left_at:
         diff = now - session.teacher_left_at
@@ -277,7 +299,12 @@ def join_live_session(request, session_id):
             return Response({"detail": "Not assigned"}, status=403)
 
         is_creator = str(session.created_by_id) == str(user.id)
-        is_teacher = is_creator
+        # Presenter rights follow the teaching assignment, not authorship —
+        # we are already inside the teaches_subject() guard above. Previously
+        # this was `is_teacher = is_creator`, so a substitute covering the
+        # class was handed the viewer grant and could talk but not show their
+        # camera or share slides. See _teacher_may_control().
+        is_teacher = True
 
         # Revive session if teacher reconnects within 60 min — matches the
         # session-completed cutoff a few lines up (line 241), the student
@@ -385,6 +412,72 @@ def create_live_session(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def create_recurring_live_sessions(request):
+    """Create a whole term's classes from one repeating pattern.
+
+    Returns what was created AND what was skipped, with reasons — a bulk
+    tool that silently drops dates is worse than no bulk tool, because the
+    teacher believes the timetable is complete.
+    """
+    require_teacher_context(request)
+
+    serializer = RecurringLiveSessionSerializer(
+        data=request.data, context={"request": request})
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    result = serializer.save()
+    created = result["created"]
+
+    if created:
+        # One broadcast for the batch, not one per session — 50 identical
+        # refresh nudges would be its own denial of service on the client.
+        broadcast_course_sessions_update(created[0])
+
+    return Response({
+        "series_id": str(result["series_id"]),
+        "created_count": len(created),
+        "skipped_count": len(result["skipped"]),
+        "sessions": [{"id": str(s.id), "start_time": s.start_time,
+                      "end_time": s.end_time} for s in created],
+        "skipped": [{"start_time": s["start_time"], "reason": s["reason"]}
+                    for s in result["skipped"]],
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def cancel_live_session_series(request, series_id):
+    """Cancel the remaining classes in a series.
+
+    The counterpart to bulk creation: a teacher who generated 50 classes and
+    then had the batch rescheduled must not have to cancel them one by one.
+    Only FUTURE, still-open sessions are touched — past and in-progress
+    classes keep their record.
+    """
+    user = request.user
+    require_teacher_context(request)
+
+    qs = LiveSession.objects.filter(series_id=series_id)
+    first = qs.first()
+    if first is None:
+        return Response({"detail": "No such series."}, status=404)
+    if not _teacher_may_control(user, first):
+        return Response({"detail": "Not assigned to this subject."}, status=403)
+
+    cancelled = qs.filter(
+        start_time__gt=timezone.now(),
+    ).exclude(
+        status__in=[LiveSession.STATUS_CANCELLED, LiveSession.STATUS_COMPLETED],
+    ).update(status=LiveSession.STATUS_CANCELLED)
+
+    broadcast_course_sessions_update(first)
+    return Response({"detail": f"Cancelled {cancelled} upcoming classes.",
+                     "cancelled_count": cancelled})
+
+
 # =========================
 # CANCEL SESSION
 # =========================
@@ -456,6 +549,199 @@ def reschedule_live_session(request, session_id):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+def _teacher_may_control(user, session):
+    """Who may present, extend, moderate and end this class.
+
+    This was `session.created_by == user` at every call site, which produced
+    a teacher who could enter the room but not teach in it: entry is gated on
+    teaches_subject(), so a substitute got in fine, then received the VIEWER
+    grant — can_publish_sources=["microphone"], i.e. mic only, no camera and
+    no screen share — and a 403 from End. Over a 6-12 month course, cover for
+    illness and staff changes is a certainty, so control follows the same
+    teaching assignment that already governs entry.
+
+    Note this is deliberately NOT used for the reconnect-revive logic, which
+    stays creator-only: reviving is about the person whose disconnect paused
+    the class, not about who is allowed to run it.
+    """
+    return teaches_subject(user, session.subject)
+
+
+# =========================
+# EXTEND SESSION
+# =========================
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def extend_live_session(request, session_id):
+    """Push back the end of a class that is running long.
+
+    Livestream had no such endpoint (group sessions did), so end_time was an
+    immovable wall: a class overrunning by ten minutes was marked COMPLETED
+    underneath everyone, and any student who reconnected was told the session
+    had ended while the lesson was visibly still going.
+    """
+    user = request.user
+    require_teacher_context(request)
+    session = get_object_or_404(LiveSession, id=session_id)
+
+    if not _teacher_may_control(user, session):
+        return Response({"detail": "Not assigned to this subject."}, status=403)
+    if session.status == LiveSession.STATUS_CANCELLED:
+        return Response({"detail": "Session was cancelled."}, status=400)
+    if session.status == LiveSession.STATUS_COMPLETED:
+        return Response({"detail": "Session has ended."}, status=400)
+
+    try:
+        minutes = int(request.data.get("minutes", 15))
+    except (TypeError, ValueError):
+        return Response({"detail": "minutes must be a whole number."}, status=400)
+    if minutes <= 0:
+        return Response({"detail": "minutes must be positive."}, status=400)
+
+    # Extend from now when the planned end has already slipped past, so a
+    # teacher who notices at 11:05 that an 11:00 class is overrunning gets the
+    # full extra time they asked for instead of five minutes less.
+    base = max(session.extended_until or session.end_time, timezone.now())
+    new_end = base + timedelta(minutes=minutes)
+
+    if new_end > session.max_extension_time:
+        hours = int(LiveSession.MAX_EXTENSION.total_seconds() // 3600)
+        return Response(
+            {"detail": f"A class cannot run more than {hours} hours past its "
+                       f"scheduled end time."},
+            status=400,
+        )
+
+    session.extended_until = new_end
+    session.save(update_fields=["extended_until"])
+    broadcast_session_update(session)
+    return Response({
+        "detail": f"Class extended by {minutes} minutes.",
+        "extended_until": new_end,
+        "hard_end_time": session.hard_end_time,
+    })
+
+
+# =========================
+# IN-CLASS MODERATION
+# =========================
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def mute_live_participant(request, session_id):
+    """Force-mute or unmute a participant. POST {user_id, muted?}"""
+    user = request.user
+    require_teacher_context(request)
+    session = get_object_or_404(LiveSession, id=session_id)
+
+    if not _teacher_may_control(user, session):
+        return Response({"detail": "Not assigned to this subject."}, status=403)
+
+    target_id = request.data.get("user_id")
+    if not target_id:
+        return Response({"detail": "user_id is required."}, status=400)
+    if str(target_id) == str(user.id):
+        return Response({"detail": "You cannot mute yourself here."}, status=400)
+
+    muted = request.data.get("muted", True)
+    from livestream.services.room_admin import mute_participant
+    try:
+        mute_participant(session.room_name, target_id, muted=bool(muted))
+    except Exception:
+        logger.exception("mute failed (session=%s target=%s)", session.pk, target_id)
+        # Do NOT claim success: the teacher needs to know the student can
+        # still be heard, so they can fall back to removing them.
+        return Response({"detail": "Could not mute — the participant may have "
+                                   "already left."}, status=502)
+
+    return Response({"detail": "Muted." if muted else "Unmuted.",
+                     "user_id": str(target_id), "muted": bool(muted)})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def remove_live_participant(request, session_id):
+    """Eject a participant for the rest of this class. POST {user_id, reason?}
+
+    Records the removal FIRST, then disconnects. That order matters: if the
+    LiveKit call fails we still have the bar in place, so the student cannot
+    quietly rejoin — whereas disconnecting first and failing to record would
+    look successful and wear off the moment they refresh.
+    """
+    user = request.user
+    require_teacher_context(request)
+    session = get_object_or_404(LiveSession, id=session_id)
+
+    if not _teacher_may_control(user, session):
+        return Response({"detail": "Not assigned to this subject."}, status=403)
+
+    target_id = request.data.get("user_id")
+    if not target_id:
+        return Response({"detail": "user_id is required."}, status=400)
+    if str(target_id) == str(user.id):
+        return Response({"detail": "You cannot remove yourself from your own "
+                                   "class — use End instead."}, status=400)
+    if str(target_id) == str(session.created_by_id):
+        return Response({"detail": "The session's teacher cannot be removed."},
+                        status=400)
+
+    LiveSessionRemoval.objects.update_or_create(
+        session=session, user_id=target_id,
+        defaults={"removed_by": user,
+                  "reason": (request.data.get("reason") or "")[:255],
+                  "revoked_at": None},
+    )
+    attendance_svc.close_intervals(session, _user_or_none(target_id),
+                                   when=timezone.now())
+
+    from livestream.services.room_admin import remove_participant
+    disconnected = True
+    try:
+        remove_participant(session.room_name, target_id)
+    except Exception:
+        # The bar is already recorded, so they cannot rejoin — but they may
+        # still be connected right now. Say so rather than implying silence.
+        logger.exception("remove failed (session=%s target=%s)", session.pk, target_id)
+        disconnected = False
+
+    return Response({
+        "detail": ("Removed from the class." if disconnected else
+                   "Blocked from rejoining, but they may still be connected — "
+                   "try again in a moment."),
+        "user_id": str(target_id),
+        "disconnected": disconnected,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def readmit_live_participant(request, session_id):
+    """Undo a removal so the student can rejoin. POST {user_id}"""
+    user = request.user
+    require_teacher_context(request)
+    session = get_object_or_404(LiveSession, id=session_id)
+
+    if not _teacher_may_control(user, session):
+        return Response({"detail": "Not assigned to this subject."}, status=403)
+
+    target_id = request.data.get("user_id")
+    if not target_id:
+        return Response({"detail": "user_id is required."}, status=400)
+
+    updated = LiveSessionRemoval.objects.filter(
+        session=session, user_id=target_id, revoked_at__isnull=True,
+    ).update(revoked_at=timezone.now())
+    if not updated:
+        return Response({"detail": "That participant is not removed."}, status=400)
+    return Response({"detail": "Readmitted.", "user_id": str(target_id)})
+
+
+def _user_or_none(user_id):
+    from django.contrib.auth import get_user_model
+    return get_user_model().objects.filter(id=user_id).first()
+
+
 # =========================
 # END SESSION
 # =========================
@@ -467,8 +753,8 @@ def end_live_session(request, session_id):
     require_teacher_context(request)
     session = get_object_or_404(LiveSession, id=session_id)
 
-    if str(session.created_by_id) != str(user.id):
-        return Response({"detail": "Only the session creator can end it."}, status=403)
+    if not _teacher_may_control(user, session):
+        return Response({"detail": "Not assigned to this subject."}, status=403)
 
     if session.status == LiveSession.STATUS_COMPLETED:
         return Response({"detail": "Session already completed."}, status=400)
@@ -485,6 +771,20 @@ def end_live_session(request, session_id):
     if session.actual_ended_at is None:
         session.actual_ended_at = timezone.now()
     session.save(update_fields=["status", "teacher_left_at", "actual_ended_at"])
+
+    # Close attendance locally instead of trusting LiveKit to round-trip a
+    # participant_left/room_finished webhook back to us. This is the most
+    # common way a class ends, and it was the only end path that did not do
+    # this (admin_stream_end and the room_finished handler both do). If that
+    # webhook is ever lost — retry exhaustion, a deploy window, a signature
+    # rejection after a key rotation — the intervals stay left_at=NULL
+    # forever, and nothing repairs them: the reconcile sweep only looks at
+    # sessions that are still open (tasks.py `sample_live_viewers` filters on
+    # non-terminal statuses), so a COMPLETED session is never revisited.
+    # duration_seconds() reports 0 for an open interval, so a student who sat
+    # through the whole class shows up on the teacher's roster as 0 minutes.
+    # close_all_open is idempotent, so a later webhook doing it again is fine.
+    attendance_svc.close_all_open(session, when=session.actual_ended_at)
 
     # Ending a session previously only flipped this DB flag — the LiveKit
     # room stayed open and every already-connected participant kept
@@ -1112,10 +1412,38 @@ def _handle_room_finished(event):
         # Reconcile attendance: close every dangling interval so a missed
         # participant_left never orphans left_at forever.
         attendance_svc.close_all_open(session, when=now)
-        # Complete the session regardless of pause state
-        if session.status != LiveSession.STATUS_CANCELLED:
-            session.status = LiveSession.STATUS_COMPLETED
-            session.teacher_left_at = None
+
+        # An EMPTY room is not a finished class.
+        #
+        # This used to complete the session on any room_finished, guarded only
+        # by `!= CANCELLED`. But nothing in this codebase creates rooms
+        # explicitly (no CreateRoom call, no empty_timeout anywhere), so
+        # LiveKit auto-creates them and applies its own empty-room timeout —
+        # a few minutes. A teacher who joined at 09:50 to check their mic for
+        # a 10:00 class, then left, had the room go empty and this webhook
+        # permanently mark the class COMPLETED. At 10:00 the teacher's own
+        # join was rejected with "Session has ended." (that check runs before
+        # the teacher branch), and nothing can undo it: reschedule and cancel
+        # both refuse on a terminal status, and there is no reopen endpoint.
+        # It also silently overrode the 60-minute reconnect grace the status
+        # ladder exists to provide.
+        #
+        # So: always reconcile attendance above — a closed room really does
+        # mean nobody is connected — but only treat the room closing as the
+        # END of the class when the clock agrees. Genuine endings are already
+        # covered without this: end_live_session sets COMPLETED itself before
+        # closing the room, and an abandoned class still resolves through
+        # teacher_left_at → RECONNECTING → PAUSED → COMPLETED.
+        if session.status == LiveSession.STATUS_CANCELLED:
+            continue
+        if now < session.hard_end_time:
+            # Mid-class (or pre-class) empty room. Leave the status ladder
+            # alone so the teacher can still start or resume.
+            continue
+
+        session.status = LiveSession.STATUS_COMPLETED
+        session.teacher_left_at = None
+        if session.actual_ended_at is None:
             session.actual_ended_at = now
-            session.save(update_fields=["status", "teacher_left_at", "actual_ended_at"])
-            broadcast_session_update(session)
+        session.save(update_fields=["status", "teacher_left_at", "actual_ended_at"])
+        broadcast_session_update(session)

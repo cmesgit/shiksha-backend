@@ -84,17 +84,35 @@ class WebhookHardeningTests(TestCase):
         self.assertGreaterEqual(rollup.total_seconds, 0)
         self.assertIsNotNone(rollup.left_at)
 
-    def test_room_finished_reconciles_open_intervals_and_stamps_end(self):
+    def test_room_finished_reconciles_open_intervals(self):
         lv._handle_participant_join(_evt("participant_joined", "room_test", self.student.id))
         # student never sends participant_left — room_finished must close it
         lv._handle_room_finished(_evt("room_finished", "room_test"))
-        self.session.refresh_from_db()
-        self.assertEqual(self.session.status, LiveSession.STATUS_COMPLETED)
-        self.assertIsNotNone(self.session.actual_ended_at)
         self.assertEqual(
             LiveSessionAttendanceInterval.objects.filter(session=self.session, left_at__isnull=True).count(),
             0,
         )
+
+    def test_room_finished_mid_class_does_not_end_the_session(self):
+        """This case used to assert the opposite, and that assertion was the
+        bug: this fixture's session ends an hour from now, so room_finished
+        here is an EMPTY room, not a finished class. LiveKit closes an
+        auto-created room after a few idle minutes, so a teacher who joined
+        early to test their mic and stepped away had the class permanently
+        marked COMPLETED — and was then refused entry to their own lesson,
+        with no reopen path anywhere. Reconciling attendance (above) is right;
+        ending the class is not."""
+        lv._handle_room_finished(_evt("room_finished", "room_test"))
+        self.session.refresh_from_db()
+        self.assertNotEqual(self.session.status, LiveSession.STATUS_COMPLETED)
+
+    def test_room_finished_after_the_end_does_stamp_the_session(self):
+        LiveSession.objects.filter(pk=self.session.pk).update(
+            end_time=timezone.now() - timedelta(hours=2))
+        lv._handle_room_finished(_evt("room_finished", "room_test"))
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, LiveSession.STATUS_COMPLETED)
+        self.assertIsNotNone(self.session.actual_ended_at)
 
     def test_webhook_event_log_is_idempotent(self):
         LiveKitWebhookEvent.objects.get_or_create(

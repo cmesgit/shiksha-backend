@@ -14,9 +14,13 @@
 # but now delegates the actual flip to sync_status() so the two never disagree
 # on HOW a session becomes COMPLETED.
 
+import logging
+
 from config.celery import app
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+
+logger = logging.getLogger(__name__)
 
 
 @app.task(bind=True, max_retries=3, default_retry_delay=5)
@@ -177,8 +181,19 @@ def auto_complete_expired_sessions():
     now = timezone.now()
     completed_count = 0
 
-    candidates = LiveSession.objects.filter(
-        end_time__lte=now,
+    # Respect the overrun grace and any teacher-granted extension, so this
+    # sweep cannot force-end a class that is legitimately still running.
+    # computed_status() already refuses to complete inside the grace, so
+    # filtering here is really about not churning through live sessions every
+    # five minutes — but keeping the two in agreement is the point: they
+    # disagreeing about what "over" means is how end_time became a hard kill
+    # in three places at once.
+    from django.db.models.functions import Coalesce
+
+    candidates = LiveSession.objects.annotate(
+        effective_end=Coalesce("extended_until", "end_time"),
+    ).filter(
+        effective_end__lte=now - LiveSession.LIVE_GRACE,
     ).exclude(
         status__in=[LiveSession.STATUS_COMPLETED, LiveSession.STATUS_CANCELLED]
     )
@@ -205,6 +220,43 @@ def auto_complete_expired_sessions():
                 session.teacher_left_at = None
                 session.save(update_fields=["status", "teacher_left_at"])
                 did_change = True
+        if session.status == LiveSession.STATUS_COMPLETED:
+            # A session that ends on the clock used to flip this column and
+            # nothing else — unlike every other end path. Two consequences,
+            # both invisible until someone complained:
+            #
+            #   * the LiveKit room stayed open, so everyone still connected
+            #     kept publishing media for up to their 2h token TTL. The UI
+            #     said the class was over while the call carried on, and the
+            #     minutes were still being billed.
+            #   * attendance intervals stayed open, and because this task is
+            #     the last thing to touch the session, no sweep ever repaired
+            #     them (sample_live_viewers only scans non-terminal statuses).
+            #     duration_seconds() reads an open interval as 0, so students
+            #     silently lost the entire class from their attendance.
+            #
+            # Both calls are idempotent and must not be able to stop the loop:
+            # one unreachable LiveKit room should not leave the rest of the
+            # batch un-swept.
+            try:
+                from livestream.services import attendance as attendance_svc
+                attendance_svc.close_all_open(session, when=now)
+            except Exception:
+                logger.exception("auto_complete: attendance close failed (session=%s)",
+                                 session.pk)
+            try:
+                from livestream.services.room_admin import close_room
+                if session.room_name:
+                    close_room(session.room_name)
+            except Exception:
+                logger.exception("auto_complete: close_room failed (session=%s)",
+                                 session.pk)
+            if session.actual_ended_at is None:
+                # Left NULL forever on this path, which defeated the
+                # true-live-duration analytics the field exists for.
+                session.actual_ended_at = now
+                session.save(update_fields=["actual_ended_at"])
+
         if did_change:
             completed_count += 1
             try:

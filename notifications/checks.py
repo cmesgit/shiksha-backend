@@ -56,6 +56,13 @@ def check_time_critical_verbs_deliverable(app_configs, **kwargs):
     from . import policy as P
 
     live = configured_channels()
+    # A box with NO channel wired at all is a laptop or a test runner, not a
+    # deployment — every verb would trip and the wall of warnings would just
+    # train people to scroll past it. (DEBUG alone is not enough of a signal:
+    # config/settings_test.py runs with DEBUG=False.) On a real box email is
+    # configured, so the check keeps its teeth exactly where it matters.
+    if not any(live.values()):
+        return []
     sending_levels = {P.OPT_OUT, P.REQUIRED, getattr(P, "OPT_IN", "opt_in")}
     errors = []
 
