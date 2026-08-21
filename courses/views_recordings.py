@@ -26,7 +26,7 @@ class SubjectRecordingsView(APIView):
         recordings = SessionRecording.objects.filter(
             subject=subject,
             is_published=True
-        )
+        ).select_related("subject__course__board")
         # Teachers/staff see every batch's recordings; a student sees only
         # course-wide (batch IS NULL) recordings plus their own batch's.
         # Scoped to the ACTIVE PROFILE, not the account — see active_batch_id.
@@ -62,7 +62,7 @@ class TeacherAllRecordingsView(APIView):
                 subject__teaching_assignments__teacher=request.user,
                 subject__teaching_assignments__is_active=True,
             )
-            .select_related("subject")
+            .select_related("subject__course__board")
             # distinct(): a teacher listed twice on one subject would otherwise
             # duplicate every recording on it.
             .distinct()
@@ -240,7 +240,7 @@ class CheckVideoStatusView(APIView):
         # call here also spends a Bunny API request on an id the caller has no
         # right to, and returns the same full serializer payload.
         recording = get_object_or_404(
-            SessionRecording.objects.select_related("subject__course"),
+            SessionRecording.objects.select_related("subject__course__board"),
             id=recording_id,
         )
         _require_recording_viewer(request, recording)
@@ -289,7 +289,7 @@ class RecordingDetailView(APIView):
         # it needed was already defined a few lines up and used by
         # RecordingNotesView; this view just never called it.
         recording = get_object_or_404(
-            SessionRecording.objects.select_related("subject__course"),
+            SessionRecording.objects.select_related("subject__course__board"),
             id=recording_id,
         )
         _require_recording_viewer(request, recording)

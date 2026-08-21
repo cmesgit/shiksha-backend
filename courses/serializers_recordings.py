@@ -1,4 +1,6 @@
 from rest_framework import serializers
+
+from .board_display import board_name_via
 from .models_recordings import SessionRecording, RecordingNote
 
 
@@ -8,6 +10,8 @@ class SessionRecordingSerializer(serializers.ModelSerializer):
     # The flat faculty Recordings grid spans subjects, so a card has to
     # name its own. `subject` above is the raw FK id.
     subject_name = serializers.CharField(source="subject.name", read_only=True)
+    course_title = serializers.SerializerMethodField()
+    board_name = serializers.SerializerMethodField()
 
     class Meta:
         model = SessionRecording
@@ -15,6 +19,8 @@ class SessionRecordingSerializer(serializers.ModelSerializer):
             "id",
             "subject",
             "subject_name",
+            "course_title",
+            "board_name",
             "chapter",
             "batch",
             "live_session",
@@ -29,6 +35,13 @@ class SessionRecordingSerializer(serializers.ModelSerializer):
             "is_published",
             "uploaded_by_name",
         ]
+
+    def get_course_title(self, obj):
+        course = getattr(obj.subject, "course", None) if obj.subject_id else None
+        return course.title if course else None
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "subject", "course")
 
     def get_uploaded_by_name(self, obj):
         user = obj.uploaded_by

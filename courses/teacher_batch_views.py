@@ -17,6 +17,7 @@ from rest_framework.views import APIView
 
 from quizzes.models import QuizAttempt
 
+from .board_display import board_name_for
 from .models import Batch, Chapter, Course, Subject, TeachingAssignment
 from .models_batch_progress import BatchChapterProgress
 from .services import teaches_subject
@@ -156,7 +157,7 @@ class TeacherSubjectBatchesView(APIView):
 
     def get(self, request, subject_id):
         subject = get_object_or_404(
-            Subject.objects.select_related("course"), id=subject_id)
+            Subject.objects.select_related("course__board"), id=subject_id)
 
         if not (request.user.is_staff or teaches_subject(request.user, subject)):
             return Response(
@@ -168,12 +169,20 @@ class TeacherSubjectBatchesView(APIView):
             Batch.objects.filter(course_id=subject.course_id, is_active=True)
             .order_by("-year", "code")
         )
+        # Every batch here belongs to subject.course, so these two are constant
+        # across the response — repeated per row because this feeds <select>
+        # options that are rendered one at a time, and "Batch A" under an
+        # unnamed course tells a teacher nothing about which board they picked.
+        course_title = subject.course.title if subject.course_id else None
+        board = board_name_for(subject.course if subject.course_id else None)
         return Response([
             {
                 "id": str(b.id),
                 "name": b.name,
                 "code": b.code,
                 "year": b.year,
+                "course_title": course_title,
+                "board_name": board,
             }
             for b in batches
         ])

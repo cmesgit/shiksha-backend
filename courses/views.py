@@ -15,6 +15,7 @@ from accounts.auth_flow import get_active_profile
 from quizzes.models import Quiz, QuizAttempt
 from assignments.models import Assignment
 from courses.progress_stats import average_quiz_score_pct
+from .board_display import board_name_for
 from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream, BoardNotifyRequest, CourseNotifyRequest
 from content.models import ShowcaseCourse
 from .serializers import (
@@ -493,6 +494,7 @@ class SubjectDashboardView(APIView):
             # already in place above, so this costs no extra query.
             "course_id": str(subject.course_id),
             "course_title": subject.course.title,
+            "board_name": board_name_for(subject.course),
             "teachers": serializer.data["teachers"],
             "assignments": {
                 "pending": pending_assignments,
@@ -718,7 +720,8 @@ class SubjectStudentsView(APIView):
         # be gated on active teacher context.
         require_teacher_context(request)
 
-        subject = get_object_or_404(Subject, id=subject_id)
+        subject = get_object_or_404(
+            Subject.objects.select_related("course__board"), id=subject_id)
 
         if not teaches_subject(user, subject):
             return Response(
@@ -758,6 +761,7 @@ class SubjectStudentsView(APIView):
         return Response({
             "subject_name": subject.name,
             "course_title": subject.course.title,
+            "board_name": board_name_for(subject.course),
             "total_students": len(students),
             "students": students,
         })
@@ -771,28 +775,75 @@ class SubjectsByCourseTitleView(APIView):
     """
     Return subjects filtered by course title (class+stream).
     GET /courses/subjects-by-course/?course_title=Class 12 Science
+    GET /courses/subjects-by-course/?course_title=Class 9&board=MBSE
+
+    Titling is NOT an identity here. MBSE and CBSE each run a course titled
+    "Class 9" with genuinely different syllabi (MBSE carries Hindi MIL papers
+    CBSE does not), so both branches below used to conflate them:
+
+    - the no-arg branch keyed its dict on `course.title`, so the second board's
+      course silently OVERWROTE the first's subject list and one board's
+      syllabus simply vanished from the response;
+    - the filtered branch matched `title__icontains` across boards and then
+      deduped by subject NAME, returning a union of two different syllabi
+      presented as one course's.
+
+    Keys are board-qualified now, and `board` is an optional exact filter.
+    `subjects` is retained as the flat union for the documented shape, but
+    `courses` is the one to read — it keeps each board's syllabus separate.
+
+    NOTE: grepped for consumers across all four frontends, the Flutter app and
+    the test suite on 2026-08-21 and found NONE — this endpoint appears to be
+    dead surface. Fixed rather than deleted because an endpoint is outward
+    facing and something unversioned (a script, an old mobile build) could
+    still call it; worth confirming and removing.
     """
     permission_classes = [IsAuthenticated]
 
+    @staticmethod
+    def _label(course):
+        """Board-qualified label, so two boards' "Class 9" cannot collide.
+        Falls back to the bare title for a course with no board (coaching
+        courses legitimately have none) — those titles are already unique."""
+        name = board_name_for(course)
+        return f"{course.title} · {name}" if name else course.title
+
     def get(self, request):
         course_title = request.query_params.get("course_title", "").strip()
-        if not course_title:
-            courses = Course.objects.prefetch_related("subjects").all()
-            data = {}
-            for course in courses:
-                subjects = list(course.subjects.values_list(
-                    "name", flat=True).order_by("order"))
-                data[course.title] = subjects
-            return Response(data)
+        board = request.query_params.get("board", "").strip()
 
-        courses = Course.objects.filter(
-            title__icontains=course_title).prefetch_related("subjects")
-        subjects = []
-        for course in courses:
-            for subj in course.subjects.all().order_by("order"):
-                if subj.name not in subjects:
-                    subjects.append(subj.name)
-        return Response({"course_title": course_title, "subjects": subjects})
+        qs = Course.objects.select_related("board").prefetch_related("subjects")
+        if course_title:
+            qs = qs.filter(title__icontains=course_title)
+        if board:
+            qs = qs.filter(board__name__iexact=board)
+
+        courses = []
+        union = []
+        for course in qs:
+            names = list(course.subjects.order_by("order").values_list("name", flat=True))
+            courses.append({
+                "course_id": str(course.id),
+                "course_title": course.title,
+                "board_name": board_name_for(course),
+                "label": self._label(course),
+                "subjects": names,
+            })
+            for n in names:
+                if n not in union:
+                    union.append(n)
+
+        if not course_title:
+            # Preserved shape: a mapping of label -> subject names. The key is
+            # board-qualified now, which is the whole point.
+            return Response({c["label"]: c["subjects"] for c in courses})
+
+        return Response({
+            "course_title": course_title,
+            "board": board or None,
+            "subjects": union,
+            "courses": courses,
+        })
 
 
 # =========================
@@ -824,7 +875,7 @@ class TeacherAllStudentsView(APIView):
                 course_id__in=course_ids,
                 status=Enrollment.STATUS_ACTIVE,
             )
-            .select_related("user", "learner_profile", "course")
+            .select_related("user", "learner_profile", "course__board")
         )
         profiles = _resolve_enrollment_profiles(enrollments)
 
@@ -838,12 +889,17 @@ class TeacherAllStudentsView(APIView):
             profile = profiles.get(enrollment.id)
             key = _roster_row_key(enrollment, profile)
             course_title = enrollment.course.title
+            board = board_name_for(enrollment.course)
 
             existing = rows_by_key.get(key)
             if existing is not None:
-                # Same student, another of this teacher's courses.
-                if course_title not in existing["course_titles"]:
+                # Same student, another of this teacher's courses. Keyed on the
+                # (title, board) pair, not the title alone — a student enrolled
+                # in "Class 9" under both boards is in two different courses.
+                if (course_title, board) not in list(zip(
+                        existing["course_titles"], existing["board_names"])):
                     existing["course_titles"].append(course_title)
+                    existing["board_names"].append(board)
                 continue
 
             row = _roster_row(enrollment, profile)
@@ -851,8 +907,11 @@ class TeacherAllStudentsView(APIView):
             # dedupe keeps a single row — so list every course rather than
             # letting whichever enrollment happened to come first decide.
             # `course_title` stays for the existing frontend column.
+            # `board_names` runs parallel to `course_titles` by index.
             row["course_title"] = course_title
+            row["board_name"] = board
             row["course_titles"] = [course_title]
+            row["board_names"] = [board]
             rows_by_key[key] = row
             students.append(row)
 

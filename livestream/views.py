@@ -21,6 +21,7 @@ from .models import (
     SessionReview,
     SessionNote,
 )
+from courses.board_display import board_name_via
 from courses.services import teaches_subject
 from accounts.permissions import require_teacher_context, IsTeacherContext, CTX_TEACHER
 from enrollments.models import Enrollment
@@ -165,7 +166,7 @@ class StudentLiveSessionListView(generics.ListAPIView):
             LiveSession.objects
             .filter(course_id__in=active_courses)
             .filter(Q(batch__isnull=True) | Q(batch_id__in=active_batch_ids))
-            .select_related("course", "subject", "created_by")
+            .select_related("course__board", "subject", "created_by")
         )
 
         if course_id:
@@ -206,7 +207,7 @@ class TeacherLiveSessionListView(generics.ListAPIView):
                 LiveSession.objects
                 .filter(subject_id=subject_id)
                 .filter(end_time__gte=cutoff)
-                .select_related("course", "subject", "created_by")
+                .select_related("course__board", "subject", "created_by")
                 .order_by("start_time")
             )
 
@@ -219,7 +220,7 @@ class TeacherLiveSessionListView(generics.ListAPIView):
             LiveSession.objects
             .filter(subject_id__in=assigned_subject_ids)
             .filter(end_time__gte=cutoff)
-            .select_related("course", "subject", "created_by")
+            .select_related("course__board", "subject", "created_by")
             .order_by("start_time")
         )
 
@@ -242,7 +243,7 @@ def join_live_session(request, session_id):
     user = request.user
     # select_related: the response below reads course/subject/batch names.
     session = get_object_or_404(
-        LiveSession.objects.select_related("course", "subject", "batch"),
+        LiveSession.objects.select_related("course__board", "subject", "batch"),
         id=session_id,
     )
     now = timezone.now()
@@ -394,6 +395,7 @@ def join_live_session(request, session_id):
         "title": session.title,
         "subject_name": session.subject.name,
         "course_name": session.course.title,
+        "board_name": board_name_via(session, "course"),
         "batch_name": session.batch.name if session.batch_id else None,
     })
 

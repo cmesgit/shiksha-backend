@@ -5,6 +5,9 @@ from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
+
+from courses.board_display import board_name_for
+
 from .signup_serializer import SignupSerializer
 from .models import User, LearnerProfile, Role, UserRole, TeacherProfile, TeacherCourseApplication, TeacherSkillApplication
 
@@ -157,13 +160,14 @@ class UserMeSerializer(serializers.ModelSerializer):
         enrollments = (
             obj.enrollments
             .filter(status="ACTIVE")
-            .select_related("course")
+            .select_related("course__board")
         )
 
         return [
             {
                 "id": e.id,
                 "course_title": e.course.title,
+                "board_name": board_name_for(e.course),
                 "batch_code": e.batch_code,
             }
             for e in enrollments

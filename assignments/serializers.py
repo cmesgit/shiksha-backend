@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.utils import timezone
 from .models import Assignment, AssignmentFile, AssignmentSubmission
+from courses.board_display import board_name_via
 from courses.models import Chapter, Batch
 from courses.services import is_teacher_of
 import os
@@ -78,6 +79,7 @@ class AssignmentListSerializer(serializers.ModelSerializer):
         source="chapter.subject.course.id",
         read_only=True,
     )
+    board_name = serializers.SerializerMethodField()
     # Legacy single attachment kept for backwards compat
     attachment = serializers.FileField(read_only=True)
     marks_obtained = serializers.SerializerMethodField()
@@ -92,10 +94,14 @@ class AssignmentListSerializer(serializers.ModelSerializer):
             "subject_name",
             "subject_id",
             "course_id",
+            "board_name",
             "attachment",
             "max_marks",
             "marks_obtained",
         )
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "chapter", "subject", "course")
 
     def get_status(self, obj):
         submission = getattr(obj, "user_submission", None)
@@ -123,6 +129,7 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
         source="chapter.subject.name",         read_only=True)
     course_name = serializers.CharField(
         source="chapter.subject.course.title",  read_only=True)
+    board_name = serializers.SerializerMethodField()
     chapter_name = serializers.CharField(
         source="chapter.title",                 read_only=True)
     teacher_name = serializers.SerializerMethodField()
@@ -145,6 +152,7 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
             "chapter_name",
             "subject_name",
             "course_name",
+            "board_name",
             "teacher_name",
             "submission_status",
             "submitted_file",
@@ -155,6 +163,9 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
             "feedback",
             "graded_at",
         )
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "chapter", "subject", "course")
 
     def get_submission(self, obj):
         return getattr(obj, "user_submission", None)
@@ -379,6 +390,10 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
     # course-wide (legacy rows), which the UI shows as "All batches".
     batch_id = serializers.UUIDField(source="batch.id", read_only=True, allow_null=True)
     batch_name = serializers.CharField(source="batch.name", read_only=True, allow_null=True)
+    # A teacher who teaches the same subject under two boards saw two identical
+    # rows; batch_name is NULL on course-wide assignments so it can't stand in.
+    course_title = serializers.SerializerMethodField()
+    board_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Assignment
@@ -388,6 +403,8 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
             "chapter_name",
             "subject_id",
             "subject_name",
+            "course_title",
+            "board_name",
             "batch_id",
             "batch_name",
             "due_date",
@@ -403,6 +420,14 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
 
     def _subject(self, obj):
         return getattr(obj.chapter, "subject", None) if obj.chapter else None
+
+    def get_course_title(self, obj):
+        s = self._subject(obj)
+        course = getattr(s, "course", None) if s else None
+        return course.title if course else None
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "chapter", "subject", "course")
 
     def get_subject_id(self, obj):
         s = self._subject(obj)

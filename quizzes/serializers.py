@@ -8,6 +8,7 @@ from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError, PermissionDenied
 
+from courses.board_display import board_name_via
 from courses.services import teaches_subject
 from enrollments.models import Enrollment
 
@@ -117,6 +118,7 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
+    board_name = serializers.SerializerMethodField()
     teacher_name = serializers.CharField(
         source="created_by.email", read_only=True, default=None)
     questions_count = serializers.IntegerField(read_only=True)
@@ -128,10 +130,14 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quiz
         fields = [
-            "id", "title", "subject_id", "subject_name", "course_title", "teacher_name",
+            "id", "title", "subject_id", "subject_name", "course_title",
+            "board_name", "teacher_name",
             "created_at", "total_marks", "questions_count", "time_limit_minutes",
             "status", "score", "best_score", "is_published", "attempts_count", "quiz_type",
         ]
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "subject", "course")
 
     def get_status(self, obj):
         # Primary: use prefetched data
@@ -305,6 +311,7 @@ class QuizDetailSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
+    board_name = serializers.SerializerMethodField()
     teacher_name = serializers.CharField(
         source="created_by.email", read_only=True, default=None)
     questions = serializers.SerializerMethodField()
@@ -313,9 +320,13 @@ class QuizDetailSerializer(serializers.ModelSerializer):
         model = Quiz
         fields = [
             "id", "title", "description", "subject_name", "course_title",
+            "board_name",
             "teacher_name", "created_at", "time_limit_minutes", "questions",
             "quiz_type",
         ]
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "subject", "course")
 
     def get_questions(self, obj):
         questions = obj.questions.all().order_by("order")
@@ -331,6 +342,7 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
+    board_name = serializers.SerializerMethodField()
     teacher_name = serializers.CharField(
         source="created_by.email", read_only=True, default=None)
     questions = serializers.SerializerMethodField()
@@ -340,11 +352,15 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
         model = Quiz
         fields = [
             "id", "title", "description", "subject_id", "subject_name",
-            "course_title", "teacher_name", "created_at", "time_limit_minutes",
+            "course_title", "board_name", "teacher_name", "created_at",
+            "time_limit_minutes",
             "is_published", "questions", "quiz_type", "review_status",
             "review_note", "reviewed_at", "submitted_for_review_at",
             "is_editable",
         ]
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "subject", "course")
 
     def get_questions(self, obj):
         questions = obj.questions.all().order_by("order")
@@ -391,6 +407,9 @@ class QuizResultSerializer(serializers.Serializer):
     quiz_id = serializers.UUIDField()
     title = serializers.CharField()
     subject_name = serializers.CharField()
+    course_title = serializers.CharField(allow_blank=True, default="")
+    board_name = serializers.CharField(
+        allow_blank=True, allow_null=True, required=False, default=None)
     teacher_name = serializers.CharField()
     quiz_type = serializers.CharField(default="mock")
     total_marks = serializers.IntegerField()
@@ -451,6 +470,7 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
     subject_id = serializers.UUIDField(source="subject.id", read_only=True)
     course_title = serializers.CharField(
         source="subject.course.title", read_only=True)
+    board_name = serializers.SerializerMethodField()
     questions_count = serializers.IntegerField(read_only=True)
     total_attempts = serializers.IntegerField(read_only=True)
     average_score = serializers.FloatField(read_only=True)
@@ -462,12 +482,15 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
         model = Quiz
         fields = [
             "id", "title", "created_at", "subject_name", "subject_id",
-            "course_title",
+            "course_title", "board_name",
             "is_published", "questions_count",
             "total_attempts", "submission_rate", "average_score",
             "highest_score", "lowest_score", "quiz_type", "review_status",
             "review_note",
         ]
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "subject", "course")
 
 
 class TeacherQuizStudentSummarySerializer(serializers.Serializer):

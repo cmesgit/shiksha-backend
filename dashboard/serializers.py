@@ -12,6 +12,7 @@ from activity.models import Activity
 from quizzes.models import Quiz
 from assignments.models import Assignment
 from rest_framework import serializers
+from courses.board_display import board_name_for, board_name_via
 from livestream.models import LiveSession
 from sessions_app.models import PrivateSession
 from django.utils import timezone
@@ -34,6 +35,9 @@ class DashboardSessionSerializer(serializers.ModelSerializer):
     batch_name           = serializers.SerializerMethodField()
     batch_student_count  = serializers.SerializerMethodField()
 
+    course_title         = serializers.SerializerMethodField()
+    board_name           = serializers.SerializerMethodField()
+
     # ── Fields mobile index.tsx needs for live.tsx + calEvents ──────────────
     live          = serializers.SerializerMethodField()
     start_time    = serializers.DateTimeField()
@@ -46,6 +50,7 @@ class DashboardSessionSerializer(serializers.ModelSerializer):
         fields = [
             "id", "subject", "subject_id", "topic", "teacher",
             "batch_name", "batch_student_count",
+            "course_title", "board_name",
             "dateTime",           # web dashboard compat
             "start_time",         # mobile live.tsx compat
             "end_time",
@@ -89,9 +94,25 @@ class DashboardSessionSerializer(serializers.ModelSerializer):
         try:
             if obj.batch_id:
                 return obj.batch.name
+            if not obj.course_id:
+                return ""
+            # Course-wide session: the bare title is the ambiguous string
+            # ("Class 9" exists under two boards), and this is rendered as the
+            # card's only context line, so the board goes inline here.
+            title = obj.course.title
+            board = board_name_for(obj.course)
+            return f"{title} · {board}" if board else title
+        except Exception:
+            return ""
+
+    def get_course_title(self, obj):
+        try:
             return obj.course.title if obj.course_id else ""
         except Exception:
             return ""
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "course")
 
     def get_batch_student_count(self, obj):
         if not obj.batch_id:
@@ -127,6 +148,8 @@ class DashboardAssignmentSerializer(serializers.ModelSerializer):
     due          = serializers.DateTimeField(source="due_date")
     subject_id   = serializers.SerializerMethodField()
     subject_name = serializers.SerializerMethodField()
+    course_title = serializers.SerializerMethodField()
+    board_name   = serializers.SerializerMethodField()
 
     # ── Fields mobile index.tsx needs ───────────────────────────────────────
     # `status` is a CONSTANT, and that is now correct rather than accidental.
@@ -153,8 +176,19 @@ class DashboardAssignmentSerializer(serializers.ModelSerializer):
         fields = [
             "id", "title", "teacher", "due",
             "subject_id", "subject_name",
+            "course_title", "board_name",
             "status", "priority",          # ← added
         ]
+
+    def get_course_title(self, obj):
+        try:
+            course = obj.chapter.subject.course if obj.chapter_id else None
+            return course.title if course else ""
+        except Exception:
+            return ""
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "chapter", "subject", "course")
 
     def get_subject_id(self, obj):
         try:
@@ -200,10 +234,25 @@ class DashboardQuizSerializer(serializers.ModelSerializer):
     teacher      = serializers.SerializerMethodField()
     subject_id   = serializers.SerializerMethodField()
     subject_name = serializers.SerializerMethodField()
+    course_title = serializers.SerializerMethodField()
+    board_name   = serializers.SerializerMethodField()
 
     class Meta:
         model  = Quiz
-        fields = ["id", "title", "teacher", "subject_id", "subject_name"]
+        fields = [
+            "id", "title", "teacher", "subject_id", "subject_name",
+            "course_title", "board_name",
+        ]
+
+    def get_course_title(self, obj):
+        try:
+            course = obj.subject.course if obj.subject_id else None
+            return course.title if course else ""
+        except Exception:
+            return ""
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "subject", "course")
 
     def get_subject_id(self, obj):
         try:
@@ -289,6 +338,10 @@ class DashboardActivitySerializer(serializers.ModelSerializer):
     # app needs zero changes.
     raw_type = serializers.CharField(source="type", read_only=True)
 
+    # ── Board disambiguation ────────────────────────────────────────────────
+    course_title = serializers.SerializerMethodField()
+    board_name   = serializers.SerializerMethodField()
+
     class Meta:
         model  = Activity
         fields = [
@@ -296,6 +349,7 @@ class DashboardActivitySerializer(serializers.ModelSerializer):
             "due_date", "created_at",
             "subject_id", "subject_name",
             "subject",                              # plain string for inbox
+            "course_title", "board_name",
             "object_id", "is_read", "unread",       # both forms
         ]
 
@@ -317,6 +371,52 @@ class DashboardActivitySerializer(serializers.ModelSerializer):
         # Plain string for inbox subtitle line
         return obj.subject_name or ""
 
+    def _course_map(self):
+        """{subject_id: (course_title, board_name)} for the whole page, 1 query.
+
+        `Activity.subject_id` is a bare UUIDField with no FK (see
+        activity/models.py) so there is no relation for select_related to
+        follow. Resolving per row would be one query per notification, so the
+        page's distinct subject ids are looked up once and cached here.
+        """
+        cached = getattr(self, "_course_map_cache", None)
+        if cached is not None:
+            return cached
+
+        root = self
+        while root.parent is not None:
+            root = root.parent
+        rows = root.instance
+        if rows is None:
+            rows = []
+        elif not hasattr(rows, "__iter__"):
+            rows = [rows]
+
+        ids = {r.subject_id for r in rows if getattr(r, "subject_id", None)}
+        mapping = {}
+        if ids:
+            from courses.models import Subject
+            for s in Subject.objects.filter(id__in=ids).select_related(
+                "course__board"
+            ):
+                course = s.course if s.course_id else None
+                mapping[s.id] = (
+                    course.title if course else "",
+                    board_name_for(course),
+                )
+        self._course_map_cache = mapping
+        return mapping
+
+    def get_course_title(self, obj):
+        if not obj.subject_id:
+            return ""
+        return self._course_map().get(obj.subject_id, ("", None))[0]
+
+    def get_board_name(self, obj):
+        if not obj.subject_id:
+            return None
+        return self._course_map().get(obj.subject_id, ("", None))[1]
+
 
 class DashboardGradingItemSerializer(serializers.Serializer):
     """
@@ -330,8 +430,19 @@ class DashboardGradingItemSerializer(serializers.Serializer):
     title         = serializers.SerializerMethodField()
     subject       = serializers.SerializerMethodField()
     subject_id    = serializers.SerializerMethodField()
+    course_title  = serializers.SerializerMethodField()
+    board_name    = serializers.SerializerMethodField()
     assignment_id = serializers.SerializerMethodField()
     submitted_at  = serializers.DateTimeField()
+
+    def get_course_title(self, obj):
+        try:
+            return obj.assignment.chapter.subject.course.title
+        except Exception:
+            return ""
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "assignment", "chapter", "subject", "course")
 
     def get_id(self, obj):
         return str(obj.id)

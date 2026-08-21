@@ -128,7 +128,7 @@ def _live_sessions_for_subjects(subject_ids, today_start, excluded, week_only,
         qs = qs.filter(start_time__lte=today_start + timedelta(days=7))
     return list(
         qs.exclude(status__in=excluded)
-        .select_related("subject", "created_by")
+        .select_related("subject", "created_by", "course__board")
         .order_by("start_time")
     )
 
@@ -188,7 +188,7 @@ def _learner_assignments(chapter_ids, teacher_prefetch, batch_q, submitted_ids):
         Assignment.objects.filter(chapter_id__in=chapter_ids, is_published=True)
         .filter(batch_q)
         .exclude(id__in=submitted_ids)
-        .select_related("chapter__subject")
+        .select_related("chapter__subject__course__board")
         .prefetch_related(teacher_prefetch)
         .order_by("due_date")[:20]
     )
@@ -216,7 +216,7 @@ def _learner_quizzes(subject_ids, batch_q):
     return list(
         Quiz.objects.filter(subject_id__in=subject_ids, is_published=True)
         .filter(batch_q)
-        .select_related("created_by")
+        .select_related("created_by", "subject__course__board")
         .order_by("-created_at")[:20]
     )
 
@@ -275,7 +275,7 @@ def _teacher_live_sessions(user, today_start, excluded, week_only):
         qs = qs.filter(start_time__lte=today_start + timedelta(days=7))
     return list(
         qs.exclude(status__in=excluded)
-        .select_related("subject", "created_by", "batch", "course")
+        .select_related("subject", "created_by", "batch", "course__board")
         .order_by("start_time")
     )
 
@@ -286,7 +286,7 @@ def _teacher_assignments(user, teacher_prefetch):
             chapter__subject__teaching_assignments__teacher=user,
             chapter__subject__teaching_assignments__is_active=True,
         )
-        .select_related("chapter__subject")
+        .select_related("chapter__subject__course__board")
         .prefetch_related(teacher_prefetch)
         .distinct()
         .order_by("due_date")
@@ -296,7 +296,7 @@ def _teacher_assignments(user, teacher_prefetch):
 def _teacher_quizzes(user):
     return list(
         Quiz.objects.filter(created_by=user, is_published=True)
-        .select_related("created_by", "subject")
+        .select_related("created_by", "subject__course__board")
         .order_by("-created_at")
     )
 
@@ -327,7 +327,7 @@ def _teacher_grading_queue(user, limit=15):
             assignment__chapter__subject__teaching_assignments__teacher=user,
             assignment__chapter__subject__teaching_assignments__is_active=True,
         )
-        .select_related("student", "assignment__chapter__subject")
+        .select_related("student", "assignment__chapter__subject__course__board")
         .distinct()
         .order_by("-submitted_at")[:limit]
     )

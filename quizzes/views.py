@@ -31,6 +31,7 @@ from django.db.models import (
 )
 from django.db.models.functions import Coalesce
 
+from courses.board_display import board_name_via
 from courses.models import Subject, TeachingAssignment
 from courses.services import teaches_subject
 
@@ -471,7 +472,7 @@ class TeacherAllQuizListView(generics.ListAPIView):
                 subject__teaching_assignments__teacher=self.request.user,
                 subject__teaching_assignments__is_active=True,
             )
-            .select_related("subject", "subject__course")
+            .select_related("subject", "subject__course__board")
             .annotate(
                 enrolled_count=Coalesce(
                     Subquery(enrolled_per_course, output_field=IntegerField()),
@@ -523,7 +524,7 @@ class TeacherSubjectQuizListView(generics.ListAPIView):
         return (
             Quiz.objects
             .filter(subject=subject)
-            .select_related("subject", "subject__course")
+            .select_related("subject", "subject__course__board")
             .annotate(
                 total_attempts=Count("attempts", distinct=True),
                 average_score=Avg("attempts__score"),
@@ -572,7 +573,7 @@ class StudentDashboardView(APIView):
                 is_published=True,
             )
             .distinct()
-            .select_related("subject", "subject__course", "created_by")
+            .select_related("subject", "subject__course__board", "created_by")
             .annotate(questions_count=Count("questions", distinct=True))
             .prefetch_related(
                 Prefetch(
@@ -791,7 +792,7 @@ class StartQuizView(APIView):
 
     def post(self, request, pk):
         quiz = get_object_or_404(
-            Quiz.objects.select_related("subject__course"),
+            Quiz.objects.select_related("subject__course__board"),
             pk=pk,
             is_published=True,
         )
@@ -941,7 +942,7 @@ class SubmitQuizView(APIView):
 
     def post(self, request, pk):
         quiz = get_object_or_404(
-            Quiz.objects.select_related("subject__course"),
+            Quiz.objects.select_related("subject__course__board"),
             pk=pk,
             is_published=True,
         )
@@ -1060,7 +1061,7 @@ class QuizDetailView(APIView):
     def get(self, request, pk):
         quiz = get_object_or_404(
             Quiz.objects
-            .select_related("subject", "subject__course", "created_by")
+            .select_related("subject", "subject__course__board", "created_by")
             .prefetch_related("questions__choices"),
             pk=pk,
             is_published=True,
@@ -1108,7 +1109,7 @@ class QuizDetailDraftView(APIView):
         # Allow fetching whether published or not
         quiz = get_object_or_404(
             Quiz.objects
-            .select_related("subject", "subject__course", "created_by")
+            .select_related("subject", "subject__course__board", "created_by")
             .prefetch_related("questions__choices"),
             pk=pk,
         )
@@ -1132,7 +1133,7 @@ class QuizResultView(APIView):
     def get(self, request, pk):
         quiz = get_object_or_404(
             Quiz.objects.select_related(
-                "subject", "subject__course", "created_by"),
+                "subject", "subject__course__board", "created_by"),
             pk=pk,
         )
 
@@ -1304,6 +1305,8 @@ class QuizResultView(APIView):
             "quiz_id": quiz.id,
             "title": quiz.title,
             "subject_name": quiz.subject.name,
+            "course_title": quiz.subject.course.title if quiz.subject.course_id else "",
+            "board_name": board_name_via(quiz, "subject", "course"),
             "teacher_name": quiz.created_by.email if quiz.created_by else "",
             "quiz_type": quiz.quiz_type,
             "total_marks": quiz.total_marks,
@@ -1352,7 +1355,7 @@ class StudentQuizSubjectsView(APIView):
                 course__subscriptions__status=_Sub.STATUS_ACTIVE,
                 course__subscriptions__expires_at__gt=_tz.now(),
             )
-            .select_related("course")
+            .select_related("course__board")
             .prefetch_related("teaching_assignments__teacher")
             .distinct()
         )
@@ -1370,6 +1373,11 @@ class StudentQuizSubjectsView(APIView):
             data.append({
                 "id": subject.id,
                 "subject": subject.name,
+                # This picker spans every enrolled course, so "Mathematics"
+                # legitimately appears more than once — the course+board pair
+                # is the only thing that tells the two rows apart.
+                "course_title": subject.course.title if subject.course_id else "",
+                "board_name": board_name_via(subject, "course"),
                 "teacher": teacher_name,
             })
 
@@ -1586,7 +1594,7 @@ class TeacherQuizAnalyticsView(APIView):
         require_teacher_context(request)
 
         quiz = get_object_or_404(
-            Quiz.objects.select_related("subject", "subject__course"), pk=pk
+            Quiz.objects.select_related("subject", "subject__course__board"), pk=pk
         )
 
         if not teaches_subject(request.user, quiz.subject):
@@ -1682,7 +1690,7 @@ class TeacherQuizRemindView(APIView):
         require_teacher_context(request)
 
         quiz = get_object_or_404(
-            Quiz.objects.select_related("subject", "subject__course"), pk=pk
+            Quiz.objects.select_related("subject", "subject__course__board"), pk=pk
         )
 
         if not teaches_subject(request.user, quiz.subject):
@@ -1929,13 +1937,22 @@ class TeacherBankFiltersView(APIView):
         subjects = (
             Subject.objects
             .filter(id__in=assigned_subject_ids)
-            .values("id", "name")
+            .select_related("course__board")
             .order_by("name")
         )
+        subjects = [
+            {
+                "id": s.id,
+                "name": s.name,
+                "course_title": s.course.title if s.course_id else "",
+                "board_name": board_name_via(s, "course"),
+            }
+            for s in subjects
+        ]
 
         return Response({
             "topics": list(topics),
-            "subjects": list(subjects),
+            "subjects": subjects,
             "difficulties": [c[0] for c in Question.DIFFICULTY_CHOICES],
         })
 
@@ -1962,7 +1979,7 @@ class AdminQuizListView(generics.ListAPIView):
 
         qs = (
             Quiz.objects
-            .select_related("subject", "subject__course", "created_by")
+            .select_related("subject", "subject__course__board", "created_by")
             .annotate(
                 questions_count=Count("questions", distinct=True),
                 attempts_count=Count("attempts", distinct=True),
@@ -1998,7 +2015,7 @@ class AdminQuizDetailView(APIView):
     def get(self, request, pk):
         quiz = get_object_or_404(
             Quiz.objects
-            .select_related("subject", "subject__course", "created_by", "reviewed_by")
+            .select_related("subject", "subject__course__board", "created_by", "reviewed_by")
             .prefetch_related("questions__choices"),
             pk=pk,
         )

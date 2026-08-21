@@ -8,6 +8,8 @@ the original serializers module where useful.
 
 from rest_framework import serializers
 
+from courses.board_display import board_name_via
+
 from .models import GroupSession, GroupSessionInvite, GroupSessionNote, GroupSessionReview
 from .serializers import get_user_name, get_student_id
 
@@ -62,6 +64,7 @@ class GroupSessionListSerializer(serializers.ModelSerializer):
     host_id = serializers.SerializerMethodField()
     subject_id = serializers.SerializerMethodField()
     course_id = serializers.SerializerMethodField()
+    board_name = serializers.SerializerMethodField()
     invited_teacher_name = serializers.SerializerMethodField()
     invited_teacher_id = serializers.SerializerMethodField()
     accepted_count = serializers.SerializerMethodField()
@@ -79,6 +82,7 @@ class GroupSessionListSerializer(serializers.ModelSerializer):
             "subject_name",
             "course_id",
             "course_title",
+            "board_name",
             "topic",
             "status",
             "scheduled_date",
@@ -114,6 +118,12 @@ class GroupSessionListSerializer(serializers.ModelSerializer):
             return str(obj.subject.course_id) if obj.subject_id else None
         except Exception:
             return None
+
+    def get_board_name(self, obj):
+        # Derived live from the subject FK, unlike `course_title`, which is a
+        # denormalised string frozen at create time — so this stays correct on
+        # rows whose label predates the board being added to it.
+        return board_name_via(obj, "subject", "course")
 
     def get_invited_teacher_name(self, obj):
         if obj.invited_teacher_id:

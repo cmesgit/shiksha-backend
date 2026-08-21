@@ -69,7 +69,7 @@ class AssignmentDetailView(generics.RetrieveAPIView):
         )
         return (
             Assignment.objects
-            .select_related("chapter__subject__course")
+            .select_related("chapter__subject__course__board")
             .prefetch_related(submission_prefetch, "files")
         )
 
@@ -115,7 +115,7 @@ class SubmitAssignmentView(APIView):
 
     def post(self, request, assignment_id):
         assignment = get_object_or_404(
-            Assignment.objects.select_related("chapter__subject__course"),
+            Assignment.objects.select_related("chapter__subject__course__board"),
             id=assignment_id,
         )
 
@@ -214,7 +214,7 @@ class CourseAssignmentsView(generics.ListAPIView):
 
         return (
             queryset
-            .select_related("chapter__subject__course")
+            .select_related("chapter__subject__course__board")
             .prefetch_related(submission_prefetch)
             .distinct()
         )
@@ -312,7 +312,7 @@ class TeacherUpdateAssignmentView(APIView):
 
         assignment = get_object_or_404(
             Assignment.objects.select_related(
-                "chapter__subject").prefetch_related("files"),
+                "chapter__subject__course__board").prefetch_related("files"),
             id=assignment_id,
         )
 
@@ -427,7 +427,7 @@ class TeacherSubjectAssignmentsView(generics.ListAPIView):
         return (
             Assignment.objects
             .filter(chapter__subject=subject)
-            .select_related("chapter__subject", "batch")
+            .select_related("chapter__subject__course__board", "batch")
             .prefetch_related("files")
             .annotate(total_submissions=Count("submissions", distinct=True))
             .order_by("-created_at")
@@ -462,7 +462,7 @@ class TeacherAllAssignmentsView(generics.ListAPIView):
             )
             # chapter__subject + batch: the serializer reports subject_id/
             # subject_name and batch_id/batch_name off these.
-            .select_related("chapter__subject", "batch")
+            .select_related("chapter__subject__course__board", "batch")
             .prefetch_related("files")
             .annotate(total_submissions=Count("submissions", distinct=True))
             # distinct(): a teacher listed twice on one subject would otherwise
@@ -661,7 +661,7 @@ class SubjectAssignmentsView(APIView):
             Assignment.objects
             # Student-facing view — drafts stay hidden until published.
             .filter(chapter__subject_id=subject_id, is_published=True)
-            .select_related("chapter__subject")
+            .select_related("chapter__subject__course__board")
             .prefetch_related(submission_prefetch, teacher_prefetch, "files")
         )
 

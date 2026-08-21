@@ -1,4 +1,7 @@
 from rest_framework import serializers
+
+from courses.board_display import board_name_via
+
 from .models import StudyMaterial, MaterialFile
 
 
@@ -50,10 +53,13 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
     # a row has to say which subject it belongs to. Method fields rather than a
     # dotted source because `chapter` is nullable (get_chapter_title below falls
     # back to custom_chapter) — a dotted source would raise on those rows.
-    # Callers listing across subjects should select_related("chapter__subject")
-    # so this doesn't cost a query per row.
+    # Callers listing across subjects should
+    # select_related("chapter__subject__course__board") so this doesn't cost a
+    # query per row.
     subject_id = serializers.SerializerMethodField()
     subject_name = serializers.SerializerMethodField()
+    course_title = serializers.SerializerMethodField()
+    board_name = serializers.SerializerMethodField()
     # NULL = course-wide (the model's own default — see materials/models.py).
     # Method field, not a dotted source, since `batch` is nullable.
     batch_name = serializers.SerializerMethodField()
@@ -68,6 +74,8 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
             "chapter_title",
             "subject_id",
             "subject_name",
+            "course_title",
+            "board_name",
             "batch_name",
             "files",
         ]
@@ -92,6 +100,14 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
     def get_subject_name(self, obj):
         subject = getattr(obj.chapter, "subject", None) if obj.chapter else None
         return subject.name if subject else None
+
+    def get_course_title(self, obj):
+        subject = getattr(obj.chapter, "subject", None) if obj.chapter else None
+        course = getattr(subject, "course", None) if subject else None
+        return course.title if course else None
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "chapter", "subject", "course")
 
     def get_batch_name(self, obj):
         return obj.batch.name if obj.batch_id else None

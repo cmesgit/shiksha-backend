@@ -29,6 +29,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from courses.board_display import board_name_for
+
 from .device import open_session, touch_session
 from .models import LearnerProfile, Role
 from .throttles import (
@@ -842,12 +844,16 @@ class ProfileEnrollmentsSummaryView(APIView):
             enrollments = (
                 Enrollment.objects
                 .filter(q, status="ACTIVE")
-                .select_related("course")
+                .select_related("course__board")
             )
             out.append({
                 "profile": serialize_profile_card(profile),
                 "courses": [
-                    {"id": e.course.id, "title": e.course.title}
+                    {
+                        "id": e.course.id,
+                        "title": e.course.title,
+                        "board_name": board_name_for(e.course),
+                    }
                     for e in enrollments
                 ],
             })

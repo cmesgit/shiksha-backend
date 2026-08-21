@@ -6,6 +6,7 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from .models import LiveSession, SessionReview, SessionNote
+from courses.board_display import board_name_via
 from courses.models import Subject, Batch
 from courses.services import is_teacher_of
 
@@ -382,6 +383,7 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
     subject_id = serializers.UUIDField(source="subject.id", read_only=True)
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_name = serializers.CharField(source="course.title", read_only=True)
+    board_name = serializers.SerializerMethodField()
     teacher_left_at = serializers.DateTimeField(read_only=True)
     status = serializers.CharField(read_only=True)
     description = serializers.CharField(read_only=True)
@@ -403,11 +405,15 @@ class LiveSessionListSerializer(serializers.ModelSerializer):
             "subject_id",
             "subject_name",
             "course_name",
+            "board_name",
             "teacher_left_at",
             "status",
             "batch_name",
             "batch_student_count",
         ]
+
+    def get_board_name(self, obj):
+        return board_name_via(obj, "course")
 
     def get_teacher(self, obj):
         # Show the host's real name (e.g. "Kavita Iyer"), not the raw login

@@ -75,7 +75,7 @@ class ChapterMaterials(APIView):
         materials = (
             materials
             # chapter__subject: the serializer reports subject_id/subject_name.
-            .select_related("chapter__subject", "batch")
+            .select_related("chapter__subject__course__board", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -257,7 +257,7 @@ class SubjectMaterials(APIView):
         materials = (
             materials
             # chapter__subject: the serializer reports subject_id/subject_name.
-            .select_related("chapter__subject", "batch")
+            .select_related("chapter__subject__course__board", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -297,7 +297,7 @@ class StudentSubjectMaterials(APIView):
             StudyMaterial.objects
             .filter(chapter__subject=subject)
             .filter(batch_q)
-            .select_related("chapter__subject", "batch")
+            .select_related("chapter__subject__course__board", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -332,7 +332,7 @@ class TeacherAllMaterials(APIView):
                 chapter__subject__teaching_assignments__is_active=True,
             )
             # chapter__subject: the serializer reports subject_id/subject_name.
-            .select_related("chapter__subject", "batch")
+            .select_related("chapter__subject__course__board", "batch")
             .prefetch_related("files")
             # distinct(): a teacher listed twice on one subject would otherwise
             # duplicate every material on it.
@@ -396,7 +396,7 @@ class StudentCourseMaterials(APIView):
             .filter(chapter__subject__course_id=course_id)
             .filter(batch_q)
             # subject_id/subject_name are read off chapter.subject per row.
-            .select_related("chapter__subject", "batch")
+            .select_related("chapter__subject__course__board", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -416,7 +416,7 @@ class StudyMaterialDetail(APIView):
     def get(self, request, material_id):
         material = get_object_or_404(
             StudyMaterial.objects
-            .select_related("chapter__subject__course", "batch")
+            .select_related("chapter__subject__course__board", "batch")
             .prefetch_related("files"),
             id=material_id
         )

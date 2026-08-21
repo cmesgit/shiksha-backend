@@ -27,6 +27,7 @@ from .models import (
     GroupSessionGuestSession, GroupSessionJoinRequest, GroupSessionAttendance,
     GroupSessionParticipant, GroupSessionReview, RemoteControlGrant, SessionFile,
 )
+from courses.board_display import board_name_for
 from enrollments.models import Enrollment
 from global_settings.models import GlobalSettings
 from . import live_rules
@@ -53,13 +54,33 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _course_label(course):
+    """Human label for a course: "Class 11 — Science · CBSE".
+
+    The ONE builder for both the create-modal picker (`my_course_subjects`) and
+    the label denormalised onto `GroupSession.course_title` at create time, so
+    the two can't drift. The board suffix matters because titles were
+    normalised to drop it — two courses can now be titled "Class 9" and differ
+    only by board. Requires select_related("course__stream", "course__board").
+    """
+    if course is None:
+        return ""
+    label = course.title
+    if course.stream:
+        label = f"{label} — {course.stream.name.title()}"
+    board = board_name_for(course)
+    if board:
+        label = f"{label} · {board}"
+    return label
+
+
 def _gs_qs():
     """Base queryset with everything needed by the list serializer."""
     return (
         GroupSession.objects.select_related(
             "host",
             "invited_teacher",
-            "subject", "subject__course",
+            "subject", "subject__course__board",
         )
         .prefetch_related(
             Prefetch(
@@ -372,14 +393,12 @@ def my_course_subjects(request):
 
     enrollments = Enrollment.objects.filter(
         user=request.user, status=Enrollment.STATUS_ACTIVE
-    ).select_related("course", "course__stream")
+    ).select_related("course", "course__stream", "course__board")
 
     out = []
     for enr in enrollments:
         course = enr.course
-        course_label = course.title
-        if course.stream:
-            course_label = f"{course.title} — {course.stream.name.title()}"
+        course_label = _course_label(course)
         subjects = Subject.objects.filter(course=course).order_by("order", "name")
         out.append({
             "course_id": str(course.id),
@@ -408,7 +427,8 @@ def create_group_session(request):
 
     # ── Validate subject + enrollment ────────────────────────────────
     try:
-        subject = Subject.objects.select_related("course", "course__stream").get(
+        subject = Subject.objects.select_related(
+        "course", "course__stream", "course__board").get(
             pk=d["subject_id"]
         )
     except Subject.DoesNotExist:
@@ -465,9 +485,7 @@ def create_group_session(request):
         )
 
     # ── Build the course label ───────────────────────────────────────
-    course_label = subject.course.title
-    if subject.course.stream:
-        course_label = f"{subject.course.title} — {subject.course.stream.name.title()}"
+    course_label = _course_label(subject.course)
 
     # ── Create everything atomically ─────────────────────────────────
     with transaction.atomic():
@@ -515,7 +533,7 @@ def invite_more(request, session_id):
     """Add more invitees after the fact (host only, while status=scheduled)."""
     try:
         session = GroupSession.objects.select_related(
-            "subject", "subject__course"
+            "subject", "subject__course__board"
         ).get(pk=session_id, host=request.user)
     except GroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
@@ -958,7 +976,7 @@ def _update_group_session(request, session_id):
     """
     try:
         session = GroupSession.objects.select_related(
-            "subject", "subject__course"
+            "subject", "subject__course__board"
         ).get(pk=session_id, host=request.user)
     except GroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)
@@ -2141,7 +2159,7 @@ def group_session_summary(request, session_id):
     """
     try:
         session = GroupSession.objects.select_related(
-            "host", "subject", "subject__course"
+            "host", "subject", "subject__course__board"
         ).get(pk=session_id)
     except GroupSession.DoesNotExist:
         return Response({"error": "Session not found."}, status=404)

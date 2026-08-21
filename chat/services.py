@@ -1254,24 +1254,41 @@ def course_assignments_summary(course_id):
 
 
 def _course_badge(course_id):
-    """Best-effort {id, title} for a ROOM/BROADCAST's course context —
-    checks both the academy `courses` app and the `skills` marketplace,
+    """Best-effort {id, title, board_name} for a ROOM/BROADCAST's course context
+    — checks both the academy `courses` app and the `skills` marketplace,
     since a course room's context_id can come from either (course_room_track()
-    above does the identical double-check for the same reason)."""
+    above does the identical double-check for the same reason).
+
+    `board_name` is here because this one dict is the ONLY class indicator on a
+    chat row: it feeds the conversation-list badge, the thread subtitle, the
+    Course Hub header and the announcements course picker, on both dashboards.
+    Course titles no longer carry the board, so without it a teacher picking a
+    course to announce to sees two identical "Class 9" chips. Always None for
+    SkillCourse — the marketplace has no boards — so consumers must treat it as
+    optional rather than assuming an academy course. See
+    courses/board_display.py for why the field is a flat nullable string."""
     if not course_id:
         return None
     try:
         from courses.models import Course
-        c = Course.objects.filter(id=course_id).only("id", "title").first()
+        from courses.board_display import board_name_for
+        c = (
+            Course.objects
+            .filter(id=course_id)
+            .select_related("board")          # else one extra query per row
+            .only("id", "title", "board__name")
+            .first()
+        )
         if c:
-            return {"id": str(c.id), "title": c.title}
+            return {"id": str(c.id), "title": c.title, "board_name": board_name_for(c)}
     except Exception:
         pass
     try:
         from skills.course_models import SkillCourse
         c = SkillCourse.objects.filter(id=course_id).first()
         if c:
-            return {"id": str(c.id), "title": getattr(c, "title", "") or "Course"}
+            return {"id": str(c.id), "title": getattr(c, "title", "") or "Course",
+                    "board_name": None}
     except Exception:
         pass
     return None
@@ -1430,12 +1447,22 @@ def build_profile(kind, obj_id):
         courses = []
         try:
             from courses.models import TeachingAssignment
-            courses = list(
+            # Title + board, joined for display. Two boards run a course titled
+            # "Class 9" each, so a bare title list showed this teacher teaching
+            # "Class 9, Class 9". Kept as flat strings because the only consumer
+            # (ProfileView's course chips) renders them verbatim.
+            rows = (
                 TeachingAssignment.objects.filter(teacher=tp.user, is_active=True)
-                .select_related("subject", "subject__course")
-                .values_list("subject__course__title", flat=True)
+                .select_related("subject", "subject__course", "subject__course__board")
+                .values_list("subject__course__title", "subject__course__board__name")
                 .distinct()
             )
+            seen = set()
+            for title, board in rows:
+                label = f"{title} · {board}" if board else (title or "")
+                if label and label not in seen:
+                    seen.add(label)
+                    courses.append(label)
         except Exception:
             pass
         return {
