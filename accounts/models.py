@@ -741,16 +741,35 @@ class TeacherProfile(models.Model):
     # are presentation only — SUBJECT_CHOICES below is flattened from this and
     # remains the single source of truth for validation.
     #
-    # Was 15 flat entries covering CBSE/ICSE core school subjects only, which
-    # left a platform that now also sells COMPETITIVE-EXAM courses
-    # (Board.TYPE_COMPETITIVE — MPSC/UPSC/NEET/JEE/SSC/banking) with no way for
-    # an applicant to say what they actually teach. Languages were English and
-    # Hindi only, on a Maharashtra-focused product.
+    # This list is DERIVED FROM THE CATALOG, not invented. Normalising all 172
+    # `courses.Subject` rows on production to their base name yields exactly 15
+    # distinct subjects, and those are the 15 here (plus `civics`, which the
+    # catalog carries as "Social Science (Civics)", and `other` as an escape
+    # hatch so an applicant is never hard-blocked by an unlisted subject).
+    #
+    # It briefly grew to 39 across 7 groups, adding a "Competitive exam prep"
+    # group, four extra languages, Technology, Psychology/Philosophy and so on.
+    # That was inferred from `Board.TYPE_COMPETITIVE` existing rather than from
+    # the catalog or a spec, and it made the signup subject picker a wall of
+    # chips an applicant had to read through. None of the added values was ever
+    # selected: on production only `mathematics` (3) and `physics` (1) appear,
+    # across all FOUR fields that point at these choices. So the 22 unused ones
+    # are removed rather than kept forever for symmetry.
+    #
+    # Removing a choice does not touch stored data — it only narrows validation
+    # and what the picker offers. That is safe here BECAUSE the two values in
+    # use both survive; check all four fields again before removing more:
+    #   TeacherProfile.subject, TeacherProfile.skill_related_subject,
+    #   TeacherCourseApplication.subject,
+    #   TeacherSkillApplication.skill_related_subject
     #
     # ⚠️ Values are STABLE IDENTIFIERS stored in the DB — never rename or
-    # reorder an existing one (TeacherProfile.subject,
-    # TeacherCourseApplication.subject and TeacherSkillApplication
-    # .skill_related_subject all point here). Only append.
+    # reorder an existing one. Append freely; before REMOVING one, prove it is
+    # unused across all four fields above.
+    #
+    # If the platform genuinely starts teaching competitive-exam prep or
+    # Computer Science, add the value back — it is one line, and the picker is
+    # grouped so a new group costs nothing structurally.
     SUBJECT_GROUPS = [
         ("Science & Mathematics", [
             ("mathematics", "Mathematics"),
@@ -758,15 +777,10 @@ class TeacherProfile(models.Model):
             ("physics", "Physics"),
             ("chemistry", "Chemistry"),
             ("biology", "Biology"),
-            ("environmental_science", "Environmental Science"),
         ]),
         ("Languages", [
             ("english", "English"),
             ("hindi", "Hindi"),
-            ("marathi", "Marathi"),
-            ("sanskrit", "Sanskrit"),
-            ("urdu", "Urdu"),
-            ("other_language", "Other language"),
         ]),
         ("Social Studies", [
             ("social_science", "Social Science"),
@@ -776,33 +790,15 @@ class TeacherProfile(models.Model):
             ("political_science", "Political Science"),
             ("economics", "Economics"),
             ("sociology", "Sociology"),
-            ("psychology", "Psychology"),
-            ("philosophy", "Philosophy"),
         ]),
         ("Commerce", [
             ("accountancy", "Accountancy"),
             ("business_studies", "Business Studies"),
-            ("commerce", "Commerce"),
-            ("statistics", "Statistics"),
         ]),
-        ("Technology", [
-            ("computer_science", "Computer Science"),
-            ("information_technology", "Information Technology"),
-        ]),
-        ("Competitive exam prep", [
-            ("general_studies", "General Studies"),
-            ("general_knowledge", "General Knowledge"),
-            ("current_affairs", "Current Affairs"),
-            ("quantitative_aptitude", "Quantitative Aptitude"),
-            ("logical_reasoning", "Logical Reasoning"),
-            ("public_administration", "Public Administration"),
-            ("ethics", "Ethics & Integrity"),
-            ("law", "Law"),
-        ]),
+        # Deliberately last and deliberately tiny: an applicant who teaches
+        # something the catalog does not yet carry says so here and explains it
+        # in their application, rather than being unable to submit at all.
         ("Other", [
-            ("physical_education", "Physical Education"),
-            ("art", "Art & Craft"),
-            ("music", "Music"),
             ("other", "Other"),
         ]),
     ]

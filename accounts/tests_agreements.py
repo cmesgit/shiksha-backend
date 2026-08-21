@@ -399,7 +399,7 @@ class AgreementSignatureBindingTest(TestCase):
                 "course_applications": [
                     {"subject": "physics", "classes": ["11_12"], "streams": ["science"]},
                     {"subject": "mathematics", "classes": ["9_10", "11_12"], "streams": ["science"]},
-                    {"subject": "quantitative_aptitude", "classes": ["ug"], "streams": ["general"]},
+                    {"subject": "sociology", "classes": ["11_12"], "streams": ["arts"]},
                 ],
             },
         }, format="json")
@@ -410,7 +410,7 @@ class AgreementSignatureBindingTest(TestCase):
         self.assertEqual(len(apps), 3)
         self.assertEqual(
             {a.subject for a in apps},
-            {"physics", "mathematics", "quantitative_aptitude"},
+            {"physics", "mathematics", "sociology"},
         )
         maths = next(a for a in apps if a.subject == "mathematics")
         self.assertEqual(sorted(maths.classes), ["11_12", "9_10"])
@@ -450,14 +450,14 @@ class AgreementSignatureBindingTest(TestCase):
             "faculty_profile": {
                 "course_applications": [
                     {"subject": "physics", "classes": ["11_12"], "streams": ["science"]},
-                    {"subject": "quantitative_aptitude", "classes": ["ug"], "streams": ["general"]},
+                    {"subject": "sociology", "classes": ["11_12"], "streams": ["arts"]},
                 ],
             },
         }, format="json")
         tp = TeacherProfile.objects.get(user__email="queue@test.com")
         subjects = TeacherTrackApprovalSerializer(tp).data["subjects"]
         # Human labels, every subject, in the order applied.
-        self.assertEqual(subjects, "Physics, Quantitative Aptitude")
+        self.assertEqual(subjects, "Physics, Sociology")
 
     def test_signup_still_accepts_the_legacy_single_course_application(self):
         """An older cached JS bundle keeps sending the singular dict; it must
