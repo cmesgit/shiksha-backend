@@ -14,7 +14,7 @@ from enrollments.models import Enrollment
 
 from rest_framework.test import APIClient
 
-from .models import Batch, Chapter, Course, Subject, TeachingAssignment
+from .models import Batch, Board, Chapter, Course, Subject, TeachingAssignment
 
 ALL_STUDENTS_URL = "/api/courses/teacher/all-students/"
 
@@ -836,3 +836,93 @@ class SignedUploadUrlOwnershipTest(TestCase):
         self.assertTrue(
             self.PendingVideoUpload.objects.filter(video_id="vid-new", created_by=self.teacher_a).exists()
         )
+
+
+class CourseCatalogVisibilityTest(TestCase):
+    """Browse Courses (GET /courses/catalog/) — which courses are listed, and
+    whose enrolment marks one as owned.
+
+    The catalog required `batches__is_active=True` for every PUBLISHED course.
+    Batches arrived with the catalog-vs-delivery refactor but were never
+    populated, so on production that hid all 13 real classes and left only the
+    non-purchasable COMING_SOON placeholders — the Browse screen showed a
+    learner nothing they could actually enrol in.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from accounts.models import LearnerProfile
+        Role.objects.get_or_create(name="STUDENT")
+
+        cls.board = Board.objects.create(name="CBSE", board_type=Board.TYPE_CENTRAL)
+
+        # No batches at all → course-wide, must be listed.
+        cls.no_batch = Course.objects.create(
+            title="Class 9", board=cls.board, status=Course.STATUS_PUBLISHED)
+        # Has a live cohort → listed.
+        cls.active_batch = Course.objects.create(
+            title="Class 10", board=cls.board, status=Course.STATUS_PUBLISHED)
+        Batch.objects.create(course=cls.active_batch, name="Morning", code="M1", is_active=True)
+        # Had cohorts, none running → deliberately withheld.
+        cls.stale_batch = Course.objects.create(
+            title="Class 11", board=cls.board, status=Course.STATUS_PUBLISHED)
+        Batch.objects.create(course=cls.stale_batch, name="Finished", code="F1", is_active=False)
+        # Not ready → never listed.
+        cls.draft = Course.objects.create(
+            title="Class 12 draft", board=cls.board, status=Course.STATUS_DRAFT)
+        # Shown but not purchasable.
+        cls.soon = Course.objects.create(
+            title="NEET", board=cls.board, status=Course.STATUS_COMING_SOON)
+
+        cls.parent = User.objects.create_user(
+            username="cat_parent", email="cat_parent@t.com", password="x")
+        cls.child_a = LearnerProfile.objects.create(
+            account=cls.parent, display_name="A", is_default=True)
+        cls.child_b = LearnerProfile.objects.create(
+            account=cls.parent, display_name="B", is_default=False)
+
+    def _client(self, profile):
+        c = APIClient()
+        c.force_authenticate(user=self.parent,
+                             token={"context": "learner", "active_profile": str(profile.id)})
+        return c
+
+    def _titles(self, profile):
+        res = self._client(profile).get("/api/courses/catalog/")
+        self.assertEqual(res.status_code, 200, res.content)
+        return {row["title"]: row for row in res.data}
+
+    def test_published_course_with_no_batches_is_listed(self):
+        rows = self._titles(self.child_a)
+        self.assertIn("Class 9", rows, "a published course with no batch must not be hidden")
+        self.assertIn("Class 10", rows)
+
+    def test_course_whose_only_batch_ended_is_withheld(self):
+        # Distinct from "no batches": this one genuinely has no running cohort.
+        self.assertNotIn("Class 11", self._titles(self.child_a))
+
+    def test_draft_is_never_listed_and_coming_soon_is_not_purchasable(self):
+        rows = self._titles(self.child_a)
+        self.assertNotIn("Class 12 draft", rows)
+        self.assertIs(rows["NEET"]["is_coming_soon"], True)
+
+    def test_one_childs_enrolment_does_not_mark_the_course_owned_for_a_sibling(self):
+        Enrollment.objects.create(
+            user=self.parent, learner_profile=self.child_a,
+            course=self.no_batch, status=Enrollment.STATUS_ACTIVE)
+        self.assertIs(self._titles(self.child_a)["Class 9"]["is_enrolled"], True)
+        # Was True for B as well — keyed on the account, so a sibling's course
+        # showed as Enrolled and B could not enrol in it at all.
+        self.assertIs(self._titles(self.child_b)["Class 9"]["is_enrolled"], False)
+
+    def test_teacher_preview_shows_a_batch_scoped_assignment(self):
+        # Previewing required batch__isnull=True, so once staffing moved to
+        # per-batch rows no teacher rendered on any card.
+        teacher = User.objects.create_user(
+            username="cat_teacher", email="cat_teacher@t.com", password="x")
+        subject = Subject.objects.create(course=self.active_batch, name="Maths")
+        batch = self.active_batch.batches.first()
+        TeachingAssignment.objects.create(
+            subject=subject, teacher=teacher, batch=batch, is_active=True)
+        self.assertEqual(
+            self._titles(self.child_a)["Class 10"]["lead_teacher"], teacher.username)

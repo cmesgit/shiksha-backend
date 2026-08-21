@@ -1,6 +1,6 @@
 from .serializers import ChapterSerializer
 from .models import Chapter
-from django.db.models import Count, Prefetch, Q
+from django.db.models import Case, Count, IntegerField, Prefetch, Q, When
 from .models import TeachingAssignment
 from .services import teaches_subject
 from accounts.models import LearnerProfile
@@ -1518,15 +1518,40 @@ class CourseCatalogView(APIView):
         # the buy flow. Coming-soon courses need no batch (not purchasable
         # yet); owned courses still appear via /courses/my/ regardless of
         # status.
+        # A course is listed when it is COMING_SOON (shown, not purchasable),
+        # or PUBLISHED and either has a running cohort OR has no batches at
+        # all.
+        #
+        # That last clause matters: requiring `batches__is_active=True`
+        # unconditionally meant a PUBLISHED course with no Batch rows was
+        # invisible here — and since batches were introduced by the
+        # catalog-vs-delivery refactor but never populated, that silently hid
+        # EVERY real course on production (13 of them) while leaving only the
+        # non-purchasable coming-soon placeholders visible. It also contradicted
+        # the rest of the codebase, which treats "no batch" / batch IS NULL as
+        # course-wide (see the batch-scoped reads in views_recordings.py,
+        # materials, assignments) — the whole reason batch scoping was safe to
+        # roll out was that existing content is batch=NULL.
+        #
+        # Courses that DO have batches but none active are still withheld: that
+        # is a real "cohort finished, nothing running" signal, not missing data.
+        # Counting with distinct=True so the two annotations don't inflate each
+        # other across the subjects/batches joins.
         qs = (
             Course.objects
-            .filter(
-                Q(status=Course.STATUS_PUBLISHED, batches__is_active=True)
-                | Q(status=Course.STATUS_COMING_SOON)
-            )
             .select_related("board", "stream")
             .prefetch_related("categories")
-            .annotate(subject_count=Count("subjects", distinct=True))
+            .annotate(
+                subject_count=Count("subjects", distinct=True),
+                _active_batches=Count(
+                    "batches", filter=Q(batches__is_active=True), distinct=True),
+                _total_batches=Count("batches", distinct=True),
+            )
+            .filter(
+                Q(status=Course.STATUS_COMING_SOON)
+                | Q(status=Course.STATUS_PUBLISHED, _active_batches__gt=0)
+                | Q(status=Course.STATUS_PUBLISHED, _total_batches=0)
+            )
             .order_by("board__name", "title")
             .distinct()
         )
@@ -1543,22 +1568,46 @@ class CourseCatalogView(APIView):
         if stream_id:
             qs = qs.filter(stream_id=stream_id)
 
-        enrolled_ids = set(
-            Enrollment.objects
-            .filter(user=request.user, status=Enrollment.STATUS_ACTIVE)
-            .values_list("course_id", flat=True)
-        )
+        # Scope ownership to the ACTIVE LEARNER PROFILE, not the account. Keyed
+        # on `user` this reported one sibling's enrolment as the other's: on a
+        # family account child A's course showed as "Enrolled" for child B, who
+        # then could not enrol in it at all. Enrollment.learner_profile exists
+        # and every other student-facing read already scopes on it.
+        #
+        # With no profile in context (account-level session) fall back to
+        # account-wide: you cannot enrol without a profile anyway, so the worst
+        # case is over-reporting ownership rather than allowing a duplicate.
+        from accounts.auth_flow import get_active_profile
+        active_profile = get_active_profile(request)
+        enrolled_qs = Enrollment.objects.filter(status=Enrollment.STATUS_ACTIVE)
+        enrolled_qs = (enrolled_qs.filter(learner_profile=active_profile)
+                       if active_profile is not None
+                       else enrolled_qs.filter(user=request.user))
+        enrolled_ids = set(enrolled_qs.values_list("course_id", flat=True))
 
         # One preview teacher per course (the primary, else any), fetched in a
         # single pass to avoid an N+1 across the catalog.
         course_ids = [c.id for c in qs]
         teacher_by_course = {}
         if course_ids:
+            # Any active assignment counts. This used to require
+            # batch__isnull=True — i.e. course-wide assignments only — so once
+            # staffing moved to per-batch rows the card showed no teacher at
+            # all. PRIMARY first so the preview names the lead, not a
+            # substitute; `order` then keeps it deterministic.
             links = (
                 TeachingAssignment.objects
-                .filter(subject__course_id__in=course_ids, batch__isnull=True, is_active=True)
+                .filter(subject__course_id__in=course_ids, is_active=True)
                 .select_related("teacher", "subject")
-                .order_by("subject__course_id", "order")
+                .order_by(
+                    "subject__course_id",
+                    Case(
+                        When(role=TeachingAssignment.ROLE_PRIMARY, then=0),
+                        default=1,
+                        output_field=IntegerField(),
+                    ),
+                    "order",
+                )
             )
             for link in links:
                 cid = link.subject.course_id
