@@ -1304,7 +1304,7 @@ def teacher_display_name(tp):
     username/email. Never raises."""
     try:
         u = tp.user
-        lp = u.default_learner_profile()
+        lp = u.self_learner_profile()
         if lp:
             name = f"{(lp.first_name or '').strip()} {(lp.last_name or '').strip()}".strip()
             if name:
