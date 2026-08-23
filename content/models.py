@@ -605,6 +605,17 @@ class HomeSection(models.TextChoices):
     # rather than inventing a second, courses-specific content model. Never
     # appears in HomeSectionOrder — that model is homepage-sequence only.
     COURSES_HERO = "courses_hero", "Courses Hero"
+    # /about page — same reasoning as COURSES_HERO. Its five sections were
+    # 100% hardcoded in About2.jsx (including a stray "DONT HACK US !!" left
+    # in the hero badge), so nothing on that page could be corrected without
+    # a frontend deploy. Prose lives in HomeContentBlock, the repeatable
+    # bullets/pillars/cards in HomeListItem. Not homepage sections, so they
+    # stay out of HOMEPAGE_SECTIONS and HomeSectionOrder.
+    ABOUT_HERO = "about_hero", "About — Hero"
+    ABOUT_VISION = "about_vision", "About — Our Vision"
+    ABOUT_MISSION = "about_mission", "About — Our Mission"
+    ABOUT_VALUES = "about_values", "About — Our Values"
+    ABOUT_WHY = "about_why", "About — Why Choose ShikshaCom"
 
 
 HOMEPAGE_SECTIONS = [
@@ -683,6 +694,12 @@ class HomeListVariant(models.TextChoices):
     DEFAULT = "default", "Default"
     MARQUEE_CHIP = "marquee_chip", "Marquee chip (Collaborate)"
     STAT_CHIP = "stat_chip", "Stat chip (Collaborate)"
+    # /about page shapes. A section can hold more than one list (Values has
+    # both "Our Core Values" and "Digital Mode of Learning"), so the variant
+    # is what separates them rather than inventing extra sections.
+    BULLET = "bullet", "Bullet (About — secondary list)"
+    PILLAR = "pillar", "Pillar (About — Mission icon row)"
+    NUMBERED = "numbered", "Numbered card (About — Why Choose)"
 
 
 class HomeListItem(TimeStampedModel):
