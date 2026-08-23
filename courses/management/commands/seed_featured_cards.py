@@ -162,7 +162,13 @@ class Command(BaseCommand):
                 )
                 if not dry_run:
                     with transaction.atomic():
-                        ShowcaseCourse.objects.create(**fields)
+                        card = ShowcaseCourse(**fields)
+                        # save() alone skips clean(), so this command could
+                        # write categories the model and the admin form both
+                        # reject — notably the reserved "all" sentinel, which
+                        # this seed data carried until it was stripped.
+                        card.full_clean()
+                        card.save()
             else:
                 changed = [
                     k for k, v in fields.items()
@@ -177,6 +183,7 @@ class Command(BaseCommand):
                         with transaction.atomic():
                             for k, v in fields.items():
                                 setattr(existing, k, v)
+                            existing.full_clean()  # same reason as the create path
                             existing.save()
                 else:
                     self.stdout.write(
