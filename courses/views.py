@@ -2057,8 +2057,14 @@ class PublicFeaturedView(APIView):
                 title = card.title
 
             # price_label — course price is in paise; format as "₹X,XXX/month".
+            # A zero price is a real state, not missing data: the platform runs
+            # free at launch (GlobalSettings.live_launch_free_mode), so say
+            # "Free" rather than emitting "₹0/month" for the card to render.
             if course:
-                price_label = f"₹{course.price // 100:,}/month"
+                price_label = (
+                    "Free" if not course.price
+                    else f"₹{course.price // 100:,}/month"
+                )
             elif board:
                 price_label = None
             else:
