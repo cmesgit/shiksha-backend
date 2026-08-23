@@ -65,7 +65,7 @@ import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 
-from .models import Conversation, Participant
+from .models import Conversation, Participant, CommPreference
 from . import services
 from . import redis_utils
 
@@ -219,12 +219,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def chat_read(self, event):
         # Don't echo a reader's own read-receipt back to themselves — only
         # the OTHER side needs to know "they've read up to here".
-        if event["data"].get("identity") == self.me.identity_key():
+        actor_identity = event["data"].get("identity")
+        if actor_identity == self.me.identity_key():
+            return
+        # The REST payload (serialize_conversation) already masks
+        # last_read_at per the ACTOR's own show_read_receipts preference —
+        # this WS path is the actor's own broadcast on read (both from the
+        # "read" WS frame and MarkReadView's REST-triggered push, which
+        # lands here too), so enforcing it per-recipient at receive time is
+        # the one place that covers both without needing to know who else
+        # is in the group at broadcast time.
+        pref = await database_sync_to_async(CommPreference.for_identity)(actor_identity)
+        if not pref.show_read_receipts:
             return
         await self.send(text_data=json.dumps({"type": "read", "data": event["data"]}))
 
     async def chat_presence(self, event):
-        if event["data"].get("identity") == self.me.identity_key():
+        actor_identity = event["data"].get("identity")
+        if actor_identity == self.me.identity_key():
+            return
+        pref = await database_sync_to_async(CommPreference.for_identity)(actor_identity)
+        if not pref.show_online_status:
             return
         await self.send(text_data=json.dumps({"type": "presence", "data": event["data"]}))
 

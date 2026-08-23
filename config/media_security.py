@@ -167,10 +167,22 @@ def _check_assignment_submission(request, name):
 
 def _check_chat_attachment(request, name):
     """chat_attachments/<conversation_id>/... — the conversation id is
-    already embedded in the path; check the requester is a participant
-    (learner, teacher, or staff side of the polymorphic Participant row)."""
+    already embedded in the path; check the requester is the SPECIFIC
+    profile that's a participant, not just any profile on the account.
+
+    Previously scoped on `learner_profile__account=user`, which matched
+    ANY learner profile on the requester's account — since Participant
+    identity is per-profile (two children on one account chat as separate
+    participants), a sibling profile could download another sibling's
+    private attachment as long as they shared an account. Resolving the
+    actual acting identity via active_identity_from_request() and checking
+    participant_for() reuses the exact helper the REST membership checks
+    already use, so this can't drift from the API's own membership logic.
+    """
     import re
-    from chat.models import Conversation
+    from chat import services as chat_services
+    from chat.models import Conversation, MessageAttachment
+    from django.utils import timezone
 
     user = request.user
     if not user.is_authenticated:
@@ -181,10 +193,23 @@ def _check_chat_attachment(request, name):
     m = re.match(r"^chat_attachments/([0-9a-fA-F-]{36})/", name)
     if not m:
         return False
-    return Conversation.objects.filter(id=m.group(1)).filter(
-        Q(participants__learner_profile__account=user) |
-        Q(participants__teacher_profile__user=user) |
-        Q(participants__staff_user=user)
+
+    kind, obj = chat_services.active_identity_from_request(request)
+    if not kind:
+        return False
+    conv = Conversation.objects.filter(id=m.group(1)).first()
+    if conv is None or chat_services.participant_for(conv, kind, obj) is None:
+        return False
+
+    # Defense-in-depth: soft_delete_message() now purges the file itself
+    # on any deletion path (self-delete, moderator removal, expiry sweep),
+    # but this backstop denies access if the row is somehow still there —
+    # a file uploaded/deleted before that fix existed, or a race between
+    # the expiry sweep and an in-flight request. Staff already returned
+    # True above and keep review access to removed content regardless —
+    # that's the existing, intentional behavior, not something this closes.
+    return not MessageAttachment.objects.filter(file=name).filter(
+        Q(message__deleted_at__isnull=False) | Q(expires_at__lte=timezone.now())
     ).exists()
 
 

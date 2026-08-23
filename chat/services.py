@@ -428,16 +428,22 @@ def learner_in_course(lp, course_id):
 
     Falls back to the raw ACTIVE-enrollment check only if the subscription
     helper can't be imported (keeps rooms working during partial deploys).
+
+    `course_id` can come from either the academy `courses.Course` table or
+    the `skills.SkillCourse` marketplace table — same convention already
+    used by course_room_track()/_course_badge() below for display: try
+    Course first, and only fall through to SkillCourse if that lookup finds
+    nothing. Both use random UUID primary keys with no shared ID space, so
+    this is the same negligible-collision assumption already shipped there.
     """
     try:
         from courses.models import Course
         from enrollments.services import has_active_subscription
         course = Course.objects.filter(id=course_id).first()
-        if course is None:
-            return False
-        return has_active_subscription(
-            user=lp.account, course=course, learner_profile=lp
-        )
+        if course is not None:
+            return has_active_subscription(
+                user=lp.account, course=course, learner_profile=lp
+            )
     except Exception:
         try:
             from enrollments.models import Enrollment
@@ -448,12 +454,28 @@ def learner_in_course(lp, course_id):
         except Exception:
             return False
 
+    try:
+        from skills.course_models import SkillCourseEnrollment
+        return SkillCourseEnrollment.objects.filter(
+            learner_profile=lp, course_id=course_id,
+            status=SkillCourseEnrollment.STATUS_ACTIVE,
+        ).exists()
+    except Exception:
+        return False
+
 def teacher_in_course(tp, course_id):
     try:
         from courses.models import TeachingAssignment
-        return TeachingAssignment.objects.filter(
+        if TeachingAssignment.objects.filter(
             subject__course_id=course_id, teacher=tp.user, is_active=True,
-        ).exists()
+        ).exists():
+            return True
+    except Exception:
+        pass
+
+    try:
+        from skills.course_models import SkillCourse
+        return SkillCourse.objects.filter(id=course_id, teacher_profile=tp).exists()
     except Exception:
         return False
 
@@ -705,6 +727,24 @@ def post_message(conversation, sender_participant, body, client_id="", reply_to=
             client_id=client_id, sender=sender_participant,
         ).first()
         if existing:
+            # Re-broadcast rather than silently returning: on the ORIGINAL
+            # send, _finalize_new_message() below is what actually pushes
+            # the "chat.message" frame the sender's own client is waiting
+            # on to clear its ack timer. Skipping straight past that here
+            # (as this used to) meant a resent client_id — the exact retry
+            # path a dropped ack triggers — got no frame and no error,
+            # ever: the bubble stays "failed" forever no matter how many
+            # times the client retries, even though the message was
+            # delivered on the first try. Re-broadcasting is safe (not a
+            # duplicate to anyone): every connected client, including the
+            # original sender, already dedupes an incoming "message" frame
+            # by client_id/id (see ConversationThread.jsx's onMessage).
+            # Deliberately NOT calling _finalize_new_message() again — it
+            # also writes a fresh OutboxEvent and re-bumps unread/inbox_delta
+            # for every other participant, which would double-notify them.
+            realtime.push_conversation_event(
+                conversation.id, "chat.message", serialize_message(existing),
+            )
             return existing
 
     if message_type is None:
@@ -1013,6 +1053,24 @@ def soft_delete_message(msg, participant=None, admin_reason=""):
     msg.deleted_by = participant
     msg.deleted_reason = admin_reason
     msg.save(update_fields=["deleted_at", "deleted_by", "deleted_reason"])
+
+    # Purge the file from storage on every deletion path — self-delete,
+    # moderator removal, and the daily expiry sweep all route through
+    # here. There's no reuse of the bytes elsewhere (MessageAttachment is a
+    # strict OneToOne on Message), so there's no correctness reason to keep
+    # them around once the message is gone; leaving them meant "temporary
+    # file sharing" and moderator removal were both cosmetic — the file
+    # stayed downloadable by anyone who'd kept the URL. Best-effort: a
+    # missing/already-gone blob must not block the tombstone above, which
+    # has already been committed.
+    try:
+        msg.attachment.file.delete(save=False)
+    except MessageAttachment.DoesNotExist:
+        pass
+    except Exception:
+        logger.exception(
+            "chat.services: failed to delete attachment file for message %s", msg.id,
+        )
 
 
 # ---------------------------------------------------------------------------

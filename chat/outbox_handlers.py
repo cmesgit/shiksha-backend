@@ -145,6 +145,14 @@ def _handle_message_created(payload):
 
     others = conversation.participants.exclude(pk=getattr(msg.sender, "pk", None))
     for participant in others.select_related("learner_profile", "teacher_profile", "staff_user"):
+        # Mute scope is deliberately notifications-only: the unread counter
+        # and inbox re-sort (chat/services.py's _fanout_new_message, which
+        # runs earlier in post_message() — not touched here) stay live even
+        # while muted. Muting silences push/email/SMS, it doesn't hide the
+        # thread. `muted_until` is already loaded via the select_related
+        # above — no extra query.
+        if participant.muted_until and participant.muted_until > timezone.now():
+            continue
         recipient = participant.account()
         if recipient is None:
             logger.warning(

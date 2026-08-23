@@ -165,7 +165,8 @@ class CourseRoomView(APIView):
 
 
 class MessageListView(APIView):
-    """GET /chat/conversations/<id>/messages/?before=<iso>&limit=50"""
+    """GET /chat/conversations/<id>/messages/?before=<iso>&limit=50
+    or       ?after=<iso>&limit=50 — reconnect catch-up (see below)."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, conversation_id):
@@ -175,13 +176,27 @@ class MessageListView(APIView):
             "sender", "reply_to", "reply_to__sender", "attachment",
         ).prefetch_related("reactions__participant")
         before = request.query_params.get("before")
-        if before:
-            qs = qs.filter(created_at__lt=before)
+        after = request.query_params.get("after")
         try:
             limit = min(int(request.query_params.get("limit", 50)), 100)
         except ValueError:
             limit = 50
-        msgs = list(qs.order_by("-created_at")[:limit])[::-1]
+
+        if after:
+            # Reconnect catch-up: the WS "history" frame is always just the
+            # last 30 messages with no cursor, which the client correctly
+            # can't rely on to resync after a drop — this is the real
+            # resume path. Oldest-first, capped like the backward-scroll
+            # path below; an outage that produced more than `limit` new
+            # messages won't be fully backfilled by one call. That's an
+            # accepted limit here rather than building full cursor
+            # pagination into the reconnect flow for what should be a
+            # short gap.
+            msgs = list(qs.filter(created_at__gt=after).order_by("created_at")[:limit])
+        else:
+            if before:
+                qs = qs.filter(created_at__lt=before)
+            msgs = list(qs.order_by("-created_at")[:limit])[::-1]
         return Response([services.serialize_message(m) for m in msgs])
 
 
@@ -441,13 +456,15 @@ class ReactToMessageView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, message_id):
-        kind, obj = _require_identity(request)
         msg = Message.objects.select_related("conversation").filter(id=message_id).first()
         if not msg:
             raise ValidationError("Message not found.")
-        me = services.participant_for(msg.conversation, kind, obj)
-        if not me:
-            raise PermissionDenied("You are not a participant in this conversation.")
+        # _get_conv_and_me (not the bare participant_for a Participant row
+        # only proves someone once joined — it's never revoked) also calls
+        # is_course_membership_still_valid, so a learner/teacher whose
+        # course access lapsed can no longer react in that room, matching
+        # every other conversation endpoint.
+        conv, me = _get_conv_and_me(request, msg.conversation_id)
         emoji = request.data.get("emoji")
         if emoji not in services.ALLOWED_REACTIONS:
             raise ValidationError({"emoji": f"Must be one of {sorted(services.ALLOWED_REACTIONS)}."})
@@ -467,13 +484,12 @@ class DeleteMessageView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, message_id):
-        kind, obj = _require_identity(request)
         msg = Message.objects.select_related("conversation", "sender").filter(id=message_id).first()
         if not msg:
             raise ValidationError("Message not found.")
-        me = services.participant_for(msg.conversation, kind, obj)
-        if not me:
-            raise PermissionDenied("You are not a participant in this conversation.")
+        # See ReactToMessageView's comment: _get_conv_and_me re-validates
+        # live course membership, not just that a Participant row exists.
+        conv, me = _get_conv_and_me(request, msg.conversation_id)
         if not services.can_delete_message(me, msg):
             raise PermissionDenied("You can only delete your own messages.")
 

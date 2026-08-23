@@ -147,6 +147,17 @@ def can_start_dm(a_kind, a_obj, b_kind, b_obj):
     Returns (allowed: bool, reason: str). `reason` is user-facing and only
     meaningful when allowed=False.
     """
+    from . import services  # local: see module docstring
+    if services.is_blocked_between(a_kind, a_obj.id, b_kind, b_obj.id):
+        # A blocked pair could otherwise still get an empty DM conversation
+        # shell created (ensure_direct is a get-or-create): no message
+        # content ever leaks — post_message_checked already refuses that —
+        # but the shell itself plus the counterpart's name/avatar shouldn't
+        # be creatable in the first place. Checked before the relationship
+        # matrix on purpose: a block always wins regardless of what the
+        # matrix would otherwise allow.
+        return False, "Messaging with this person is turned off."
+
     letter_a = Identity.kind_for_participant_kind(a_kind)
     letter_b = Identity.kind_for_participant_kind(b_kind)
     rule = _dm_rule(letter_a, letter_b)

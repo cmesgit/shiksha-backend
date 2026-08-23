@@ -78,20 +78,29 @@ def _send_conversation_event_sync(conversation_id, event_type, data):
 
 def push_conversation_event(conversation_id, event_type, data):
     """`event_type` is a Channels event name ("chat.message",
-    "chat.reaction", "chat.message_deleted", ...) — consumers.py has one
-    handler method per type (Channels maps "chat.message" -> chat_message(),
-    dots become underscores). Celery-first with the same synchronous
-    fallback as push_inbox_delta() above, for the same reason."""
+    "chat.reaction", "chat.message_deleted", "chat.read", ...) —
+    consumers.py has one handler method per type (Channels maps
+    "chat.message" -> chat_message(), dots become underscores).
+
+    Calls the channel layer directly (synchronous, local Redis-backed
+    group_send) rather than routing through Celery. This USED to be
+    Celery-first with this same sync call only as the except-branch
+    fallback — but `apply_async(ignore_result=True)` only fails if the
+    *broker* is unreachable; if the broker is fine but no worker is
+    running (or the shared default queue is backlogged by an unrelated
+    app's tasks — this project has no per-queue routing), the task is
+    enqueued "successfully" and then never delivered, with no exception
+    and no retry visible to the caller. The sender's own message/reaction/
+    delete/read-receipt frame would silently never arrive. There's nothing
+    Celery buys on this path — no return value is read, no durability
+    beyond "deliver to whoever's connected right now" is needed — so doing
+    it synchronously removes that whole failure mode instead of only
+    guarding against the narrower "broker is down" case.
+    """
     try:
-        from .tasks import push_conversation_event_task
-        push_conversation_event_task.apply_async(
-            args=(str(conversation_id), event_type, data), ignore_result=True,
-        )
+        _send_conversation_event_sync(conversation_id, event_type, data)
     except Exception:
-        try:
-            _send_conversation_event_sync(conversation_id, event_type, data)
-        except Exception:
-            logger.exception(
-                "chat.realtime: conversation event push failed conv=%s type=%s",
-                conversation_id, event_type,
-            )
+        logger.exception(
+            "chat.realtime: conversation event push failed conv=%s type=%s",
+            conversation_id, event_type,
+        )
