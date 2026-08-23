@@ -493,6 +493,12 @@ class ShowcaseCourse(TimeStampedModel):
     is_explore_card = models.BooleanField(
         default=False, help_text="Render a single 'Explore Programs' button.",
     )
+    # Keys must match shiksha-frontend's homeData.js COURSE_TABS ids. "all" is
+    # deliberately excluded — it's a reserved sentinel FeaturedCourses.jsx
+    # treats as "no filter applied", not a real category a card is tagged
+    # with (see CATEGORY_CHOICES in Admin-dashboard's Showcase.jsx).
+    CATEGORY_CHOICES = ("boards", "class8-12", "competitive")
+
     categories = models.JSONField(
         default=list,
         blank=True,
@@ -554,6 +560,13 @@ class ShowcaseCourse(TimeStampedModel):
             raise ValidationError({"stars": "Maximum is 5."})
         if not isinstance(self.categories, list):
             raise ValidationError({"categories": "Must be a JSON list."})
+        else:
+            invalid = sorted(set(self.categories) - set(self.CATEGORY_CHOICES))
+            if invalid:
+                raise ValidationError({
+                    "categories": f"Unknown categor{'y' if len(invalid) == 1 else 'ies'}: "
+                                  f"{', '.join(invalid)}. Valid: {', '.join(self.CATEGORY_CHOICES)}.",
+                })
         if self.course_id and self.is_explore_card:
             raise ValidationError({
                 "is_explore_card": "A card linked to a real course can't also be a "
