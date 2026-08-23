@@ -88,14 +88,48 @@ def _check_teacher_application_video(request, name):
 
 
 def _check_learner_photo(request, name):
+    """learners/photos/ and learners/avatar/ — a learner's own picture.
+
+    Readable by the owning ACCOUNT (which covers every sibling profile on it),
+    by staff, and by a teacher who actually teaches that learner.
+
+    The teacher arm is not a widening for convenience: the teacher-facing
+    rosters (courses/views.py `_roster_row`, and the four screens that render
+    it — AllStudents, AllStudentDetail, StudentsList, StudentDetail) serve
+    these exact avatars, so without it every student photo on the teacher side
+    404s no matter how correct the URL is. Scoped through TeachingAssignment so
+    it grants only the roster a teacher can already read by name, not the whole
+    learner directory.
+    """
     from accounts.models import LearnerProfile
 
     user = request.user
     if not user.is_authenticated:
         return False
-    return _staff_or(user, LearnerProfile.objects.filter(account=user).filter(
+
+    owned = LearnerProfile.objects.filter(account=user).filter(
         Q(profile_photo=name) | Q(avatar_image=name)
-    ).exists())
+    ).exists()
+    if _staff_or(user, owned):
+        return True
+
+    from enrollments.models import Enrollment
+
+    # Subjects this user actively teaches → the courses behind them → the
+    # learners actively enrolled in those courses.
+    taught_course_ids = user.teaching_assignments.filter(
+        is_active=True,
+    ).values_list("subject__course_id", flat=True)
+    if not taught_course_ids:
+        return False
+
+    return Enrollment.objects.filter(
+        course_id__in=taught_course_ids,
+        status=Enrollment.STATUS_ACTIVE,
+    ).filter(
+        Q(learner_profile__profile_photo=name)
+        | Q(learner_profile__avatar_image=name)
+    ).exists()
 
 
 def _check_enrollment_receipt(request, name):

@@ -1860,6 +1860,29 @@ def end_group_session(request, session_id):
         ])
         if session.session_type == "instant":
             GroupSessionChatMessage.objects.filter(session=session).delete()
+        # Close out still-open participant rows, same as
+        # _end_group_session_internal. Without this the host's own end leaves
+        # left_at=NULL on everyone who was in the room, so duration_seconds()
+        # reports 0 and the attendance record for a host-ended meeting is
+        # indistinguishable from one nobody attended.
+        GroupSessionParticipant.objects.filter(
+            session=session, left_at__isnull=True
+        ).update(left_at=now)
+
+    # End the CALL too, outside the transaction — a network round-trip must
+    # not hold a DB lock open. This mirrors _end_group_session_internal; it
+    # was missing here, on the path the host actually uses. The confirm
+    # dialog promises "Participants will be disconnected immediately", but
+    # only the DB row changed: the LiveKit room stayed open and everyone
+    # carried on talking, bounded only by their token TTL, while the card in
+    # the list read Completed.
+    try:
+        from livestream.services.room_admin import close_room
+        if getattr(session, "room_name", None):
+            close_room(session.room_name)
+    except Exception:
+        logger.warning("GroupSession %s: close_room failed", session.id,
+                       exc_info=True)
 
     _broadcast_session_ended(session, reason="host_ended")
 

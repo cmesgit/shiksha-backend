@@ -8,6 +8,7 @@ from django.db import transaction
 from django.db.models import Prefetch
 from rest_framework.exceptions import PermissionDenied
 from rest_framework import generics
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
@@ -51,6 +52,40 @@ from .serializers import (
     AdminQuizDetailSerializer,
     AdminQuizReviewActionSerializer,
 )
+
+
+# Every teacher-facing "how did the class do" aggregate must count only
+# SUBMITTED attempts. A PENDING row is a student who opened the quiz and
+# closed the tab: it carries score=0 and no answers, so including it dragged
+# `average_score` toward zero and inflated `total_attempts`. The analytics
+# screen (TeacherQuizAnalyticsView) has always filtered on SUBMITTED, so the
+# quiz card and its own analytics page disagreed on the same quiz — the card
+# read "avg 6.8 · 4 attempts" where analytics read "90% over 3".
+_SUBMITTED_ATTEMPTS = Q(attempts__status=QuizAttempt.STATUS_SUBMITTED)
+
+
+def _assert_learner_may_see_quiz(learner, quiz):
+    """Raises Http404 unless `quiz`'s batch (if any) is this learner's own.
+
+    StartQuizView, QuizDetailView and SubmitQuizView resolve a quiz by UUID
+    with only `is_published` + subscription checks — same shape assignments'
+    per-object endpoints had before _assert_learner_may_see_assignment. Now
+    that QuizCreateSerializer actually sets Quiz.batch (see its model-field
+    comment), a batch-scoped quiz needs the same isolation or a Batch-B
+    student who has/guesses the UUID can start, view and submit a
+    Batch-A-only quiz. Course-wide quizzes (batch IS NULL) are unaffected.
+
+    404 rather than 403, matching the assignments precedent: a quiz scoped
+    to a class the learner isn't in shouldn't be confirmed to exist.
+    """
+    if quiz.batch_id is None:
+        return
+    batch_id = active_batch_id(learner_profile=learner, course_id=quiz.subject.course_id)
+    # None = not placed in a batch yet — StudentDashboardView's list filter
+    # degrades to "show everything" in that case too; matching it here means
+    # a quiz the learner can see on the list never 404s on open.
+    if batch_id is not None and batch_id != quiz.batch_id:
+        raise Http404
 
 
 def _attempt_learner_name(attempt):
@@ -478,17 +513,28 @@ class TeacherAllQuizListView(generics.ListAPIView):
                     Subquery(enrolled_per_course, output_field=IntegerField()),
                     Value(0),
                 ),
-                total_attempts=Count("attempts", distinct=True),
-                average_score=Avg("attempts__score"),
-                highest_score=Max("attempts__score"),
-                lowest_score=Min("attempts__score"),
+                total_attempts=Count("attempts", filter=_SUBMITTED_ATTEMPTS, distinct=True),
+                average_score=Avg("attempts__score", filter=_SUBMITTED_ATTEMPTS),
+                highest_score=Max("attempts__score", filter=_SUBMITTED_ATTEMPTS),
+                lowest_score=Min("attempts__score", filter=_SUBMITTED_ATTEMPTS),
                 questions_count=Count("questions", distinct=True),
+                # DISTINCT LEARNERS, not attempts. submission_rate used to
+                # divide the raw attempt count by the enrolment, so one
+                # student retaking 15 times in a class of 10 read "150%
+                # submitted". Counting learner_profile skips legacy
+                # (pre-profile) attempts where it is NULL — those under-count
+                # rather than over-count, which is the safe direction here.
+                submitted_learners=Count(
+                    "attempts__learner_profile",
+                    filter=_SUBMITTED_ATTEMPTS,
+                    distinct=True,
+                ),
             )
             .annotate(
                 submission_rate=Case(
                     When(
                         enrolled_count__gt=0,
-                        then=Count("attempts", distinct=True) * 100.0 / F("enrolled_count"),
+                        then=F("submitted_learners") * 100.0 / F("enrolled_count"),
                     ),
                     default=Value(0.0),
                     output_field=FloatField(),
@@ -525,14 +571,20 @@ class TeacherSubjectQuizListView(generics.ListAPIView):
             Quiz.objects
             .filter(subject=subject)
             .select_related("subject", "subject__course__board")
+            # Same SUBMITTED-only / distinct-learner rules as
+            # TeacherAllQuizListView above — the two endpoints feed the same
+            # card, so they must not disagree.
             .annotate(
-                total_attempts=Count("attempts", distinct=True),
-                average_score=Avg("attempts__score"),
-                highest_score=Max("attempts__score"),
-                lowest_score=Min("attempts__score"),
+                total_attempts=Count("attempts", filter=_SUBMITTED_ATTEMPTS, distinct=True),
+                average_score=Avg("attempts__score", filter=_SUBMITTED_ATTEMPTS),
+                highest_score=Max("attempts__score", filter=_SUBMITTED_ATTEMPTS),
+                lowest_score=Min("attempts__score", filter=_SUBMITTED_ATTEMPTS),
                 questions_count=Count("questions", distinct=True),
                 submission_rate=Count(
-                    "attempts", distinct=True) * 100.0 / (enrolled_count_subquery or 1),
+                    "attempts__learner_profile",
+                    filter=_SUBMITTED_ATTEMPTS,
+                    distinct=True,
+                ) * 100.0 / (enrolled_count_subquery or 1),
             )
             .order_by("-created_at")
         )
@@ -811,6 +863,7 @@ class StartQuizView(APIView):
                 lock_payload(user=request.user, course=quiz.subject.course, learner_profile=learner),
                 status=402,
             )
+        _assert_learner_may_see_quiz(learner, quiz)
 
         # Lock the learner profile for the whole check-then-create critical
         # section below. Without this, a double-click or duplicate tab fires
@@ -947,6 +1000,18 @@ class SubmitQuizView(APIView):
             is_published=True,
         )
 
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response(
+                {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
+                status=403,
+            )
+        # A PENDING attempt can only exist via StartQuizView, which already
+        # gates this — checked again here for the same reason
+        # SubmitAssignmentView re-checks: submit shouldn't trust that create
+        # was the only door.
+        _assert_learner_may_see_quiz(learner, quiz)
+
         serializer = QuizSubmitSerializer(
             data=request.data,
             context={"request": request, "quiz": quiz},
@@ -1067,9 +1132,21 @@ class QuizDetailView(APIView):
             is_published=True,
         )
 
+        # The owning teacher gets the full question set INCLUDING is_correct
+        # and the explanation. This endpoint used to hand the teacher the
+        # student serializer, which deliberately strips both — so the
+        # teacher's own "View quiz" screen could never highlight an answer or
+        # render the "Correct answer" pill, on a quiz they wrote themselves.
+        # Ownership is already enforced immediately below, and the student
+        # branch is untouched.
         if _in_teacher_context(request):
             if quiz.created_by != request.user:
                 raise PermissionDenied("Not authorized for this quiz.")
+
+            from .serializers import QuizDetailTeacherSerializer
+            return Response(
+                QuizDetailTeacherSerializer(quiz, context={"request": request}).data
+            )
         else:
             from enrollments.services import has_active_subscription, lock_payload
             from accounts.auth_flow import get_active_profile
@@ -1085,6 +1162,7 @@ class QuizDetailView(APIView):
                     lock_payload(user=request.user, course=quiz.subject.course, learner_profile=learner),
                     status=402,
                 )
+            _assert_learner_may_see_quiz(learner, quiz)
 
         serializer = QuizDetailSerializer(
             quiz,
@@ -1314,6 +1392,14 @@ class QuizResultView(APIView):
             "submitted_at": attempt.submitted_at,
             "attempt_number": attempt.attempt_number,
             "answers_revealed": answers_revealed,
+            # `questions` below only holds the questions this attempt ANSWERED
+            # (it is built from attempt.answers). The result screen used its
+            # length as the denominator for accuracy, so answering 5 of 20
+            # correctly rendered "100%" directly above "5 / 20 marks", and a
+            # timer expiry with zero answers rendered "NaN%". questions_total
+            # is the paper's real size; `questions` stays answered-only so the
+            # topic/difficulty breakdowns keep measuring what was attempted.
+            "questions_total": quiz.questions.count(),
             "questions": result_questions,
             "class_avg_percent": class_avg_percent,
             "percentile": percentile,
@@ -1446,12 +1532,18 @@ class TeacherQuizAttemptsView(APIView):
         if not teaches_subject(user, quiz.subject):
             raise PermissionDenied("Not assigned to this subject.")
 
-        from django.db.models import Max, FloatField, ExpressionWrapper, F
-
-        student_summaries = list(
+        # Grouped by LEARNER PROFILE, not by account (theme T2). One email can
+        # own several profiles — siblings on a parent account. This used to
+        # group on student_id and name the row from the account's DEFAULT
+        # profile, so Riya (default, 4/10) and her brother Arjun (10/10)
+        # collapsed into a single row reading "Riya · 2 attempts · best 10/10".
+        # Legacy attempts written before QuizAttempt.learner_profile existed
+        # have it NULL; those still group per account (there is nothing finer
+        # to group them by) and are named from the default profile as before.
+        summaries = list(
             QuizAttempt.objects
             .filter(quiz=quiz, status=QuizAttempt.STATUS_SUBMITTED)
-            .values("student_id", "student__email")
+            .values("learner_profile_id", "student_id", "student__email")
             .annotate(
                 latest_submitted_at=Max("submitted_at"),
                 best_score=Max("score"),
@@ -1461,33 +1553,52 @@ class TeacherQuizAttemptsView(APIView):
             .order_by("student__email")
         )
 
-        # Resolve display names from learner profiles in one query (the legacy
-        # one-to-one Profile model was removed; default profile preferred).
         from accounts.models import LearnerProfile
-        _ids = [s["student_id"] for s in student_summaries]
-        _name_map = {}
-        for _lp in (
-            LearnerProfile.objects
-            .filter(account_id__in=_ids, is_active=True)
-            .order_by("account_id", "-is_default", "created_at")
-        ):
-            _name_map.setdefault(
-                _lp.account_id, (_lp.full_name or "").strip() or _lp.display_name
-            )
 
-        data = [
-            {
-                "student_id": s["student_id"],
-                "student_name": _name_map.get(s["student_id"]) or s["student__email"],
+        # Names for the profiles that actually took an attempt…
+        profile_ids = [s["learner_profile_id"] for s in summaries if s["learner_profile_id"]]
+        profile_names = {
+            lp.id: (lp.full_name or "").strip() or lp.display_name
+            for lp in LearnerProfile.objects.filter(id__in=profile_ids)
+        }
+        # …and the default-profile fallback, for legacy NULL rows only.
+        legacy_account_ids = [
+            s["student_id"] for s in summaries if not s["learner_profile_id"]
+        ]
+        default_names = {}
+        if legacy_account_ids:
+            for lp in (
+                LearnerProfile.objects
+                .filter(account_id__in=legacy_account_ids, is_active=True)
+                .order_by("account_id", "-is_default", "created_at")
+            ):
+                default_names.setdefault(
+                    lp.account_id, (lp.full_name or "").strip() or lp.display_name
+                )
+
+        data = []
+        for s in summaries:
+            lp_id = s["learner_profile_id"]
+            name = (
+                profile_names.get(lp_id) if lp_id
+                else default_names.get(s["student_id"])
+            )
+            data.append({
+                # The drill-down key. It is the LEARNER PROFILE id whenever
+                # there is one — TeacherStudentAttemptsView accepts either
+                # (see its queryset), so a legacy row keeps working on the
+                # account id.
+                "student_id": lp_id or s["student_id"],
+                "learner_profile_id": lp_id,
+                "account_id": s["student_id"],
+                "student_name": name or s["student__email"],
                 "student_email": s["student__email"],
                 "latest_submitted_at": s["latest_submitted_at"],
                 "best_score": s["best_score"],
                 "average_score": round(s["average_score"] or 0, 2),
                 "attempts_count": s["attempts_count"],
                 "total_marks": quiz.total_marks,
-            }
-            for s in student_summaries
-        ]
+            })
 
         return Response(data)
 
@@ -1509,25 +1620,40 @@ class TeacherStudentAttemptsView(generics.ListAPIView):
         if not teaches_subject(user, quiz.subject):
             raise PermissionDenied("Not assigned to this subject.")
 
+        # `student_id` in the URL is whatever key TeacherQuizAttemptsView put
+        # on the roster row: a LEARNER PROFILE id for any modern attempt, or
+        # the account id for legacy rows that predate
+        # QuizAttempt.learner_profile. Matching either keeps sibling rows
+        # separate (a profile id can only ever match one child) without
+        # breaking the legacy drill-down. The two ids come from different
+        # tables, so a UUID can't be ambiguous between them.
         return (
             QuizAttempt.objects
             .filter(
+                Q(learner_profile_id=student_id)
+                | Q(learner_profile__isnull=True, student_id=student_id),
                 quiz=quiz,
-                student_id=student_id,
-                status=QuizAttempt.STATUS_SUBMITTED
+                status=QuizAttempt.STATUS_SUBMITTED,
             )
-            .select_related("student")
+            .select_related("student", "learner_profile")
             .order_by("attempt_number")
         )
 
 
 class TeacherQuizAttemptDetailView(APIView):
-    permission_classes = [IsAuthenticated, IsEmailVerified]
+    # IsTeacherContext is NOT optional here even though teaches_subject() is
+    # checked below: this endpoint returns another learner's full name, score
+    # and every answer they gave. Without the context gate, a teacher whose
+    # own child uses the same browser profile could read any classmate's
+    # attempt while switched into LEARNER context — i.e. without ever passing
+    # the teacher-password gate. Every other teacher endpoint in this file
+    # already requires it; this one was the only omission.
+    permission_classes = [IsAuthenticated, IsEmailVerified, IsTeacherContext]
 
     def get(self, request, pk):
         attempt = get_object_or_404(
             QuizAttempt.objects
-            .select_related("student", "quiz")
+            .select_related("student", "learner_profile", "quiz")
             .prefetch_related(
                 "answers__question__choices",
                 "answers__selected_choice",
@@ -1538,18 +1664,34 @@ class TeacherQuizAttemptDetailView(APIView):
         if not teaches_subject(request.user, attempt.quiz.subject):
             raise PermissionDenied("Not authorized.")
 
+        # Keyed by question so SKIPPED questions can be folded back in below.
+        answer_by_question = {a.question_id: a for a in attempt.answers.all()}
+
         result_questions = []
 
-        for answer in attempt.answers.all():
+        # Iterate the QUIZ's questions, not the attempt's answers. Iterating
+        # answers meant an unanswered question simply vanished from the
+        # review, so a 3-of-10 attempt rendered as a 3-question quiz and the
+        # teacher had no way to see what the student skipped.
+        for question in attempt.quiz.questions.all().order_by("order"):
             correct_choice = next(
-                (c for c in answer.question.choices.all() if c.is_correct),
-                None
+                (c for c in question.choices.all() if c.is_correct), None
             )
+            answer = answer_by_question.get(question.id)
             result_questions.append({
-                "question": answer.question.text,
-                "options": [c.text for c in answer.question.choices.all()],
-                "selected": answer.selected_choice.text,
+                "question": question.text,
+                "options": [c.text for c in question.choices.all()],
+                # None (not "") for a skip, so the client can tell "left
+                # blank" apart from "chose an option whose text is empty".
+                "selected": answer.selected_choice.text if answer else None,
                 "correct": correct_choice.text if correct_choice else "",
+                # Authoritative correctness, straight off StudentAnswer. The
+                # review screen used to re-derive this by string-comparing the
+                # selected option's TEXT against the correct option's text, so
+                # two options worded identically made the review contradict
+                # the score that was actually recorded.
+                "is_correct": bool(answer and answer.is_correct),
+                "answered": answer is not None,
             })
 
         return Response({
@@ -1606,18 +1748,41 @@ class TeacherQuizAnalyticsView(APIView):
             ).select_related("student").prefetch_related("answers")
         )
 
+        # One grouped query for the whole item analysis — this used to run two
+        # COUNTs per question (51 queries on a 25-question quiz).
+        answer_stats = {
+            row["question_id"]: row
+            for row in (
+                StudentAnswer.objects
+                .filter(
+                    question__quiz=quiz,
+                    attempt__status=QuizAttempt.STATUS_SUBMITTED,
+                )
+                .values("question_id")
+                .annotate(
+                    total=Count("id"),
+                    correct=Count("id", filter=Q(is_correct=True)),
+                )
+            )
+        }
+
         items = []
         for q in quiz.questions.all().order_by("order"):
-            answers = StudentAnswer.objects.filter(
-                question=q, attempt__status=QuizAttempt.STATUS_SUBMITTED,
-            )
-            total = answers.count()
-            correct = answers.filter(is_correct=True).count()
+            row = answer_stats.get(q.id)
+            total = row["total"] if row else 0
+            correct = row["correct"] if row else 0
             items.append({
                 "id": q.id,
                 "order": q.order + 1,
                 "text": q.text,
                 "pct_correct": round(correct * 100.0 / total, 1) if total else 0,
+                # How many submitted attempts actually answered this question.
+                # The client needs it to tell "0% got this right" apart from
+                # "nobody has answered this yet" — pct_correct is 0 in both
+                # cases, so a brand-new quiz with zero attempts tripped the
+                # "< 40% correct" rule on every single question and reported
+                # "Flagged questions: 25".
+                "answers_count": total,
             })
 
         enrolled_profile_ids = set(
@@ -1648,11 +1813,23 @@ class TeacherQuizAnalyticsView(APIView):
             median = 0
         avg_time_seconds = round(sum(durations) / len(durations)) if durations else None
 
-        buckets = [("0-20", 0, 20), ("21-40", 21, 40), ("41-60", 41, 60), ("61-80", 61, 80), ("81-100", 81, 100)]
+        # Half-open buckets [lo, hi), with the top one closed at 100. The old
+        # inclusive ranges — (0,20), (21,40), (41,60)… — left the open
+        # intervals 20–21, 40–41, 60–61 and 80–81 in NO bucket at all, so a
+        # score of 20.5% (a real value: pct_scores are floats) was silently
+        # dropped and the chart's columns summed to less than the attempt
+        # count.
+        buckets = [("0–19", 0, 20), ("20–39", 20, 40), ("40–59", 40, 60), ("60–79", 60, 80)]
         score_distribution = [
-            {"range": label, "count": sum(1 for p in pct_scores if lo <= p <= hi)}
+            {"range": label, "count": sum(1 for p in pct_scores if lo <= p < hi)}
             for label, lo, hi in buckets
         ]
+        # Top bucket is closed at both ends, and also absorbs any >100%
+        # outlier produced by a total_marks edit made after an attempt was
+        # scored — otherwise that attempt would fall out of the chart too.
+        score_distribution.append(
+            {"range": "80–100", "count": sum(1 for p in pct_scores if p >= 80)}
+        )
 
         not_attempted_ids = enrolled_profile_ids - attempted_profile_ids
         not_attempted = []

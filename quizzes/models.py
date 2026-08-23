@@ -49,16 +49,23 @@ class Quiz(models.Model):
     # (e.g. "Batch A13 weekly test"). SET_NULL: deleting a batch demotes
     # its quizzes to course-wide instead of destroying them.
     #
-    # ⚠️ NOT CURRENTLY ENFORCED. QuizCreateSerializer.Meta.fields omits
-    # `batch`, so no API path ever sets it today — every quiz is batch=NULL
-    # and this is harmless. The moment batch assignment ships on quizzes,
-    # StudentDashboardView/QuizDetailView (quizzes/views.py) MUST filter on
-    # it the same way materials/views.py's StudentSubjectMaterials does
-    # (Q(batch__isnull=True) | Q(batch_id=<learner's batch for this
-    # course>)) — those two views were audited and found to leak nothing
-    # only because this field is always NULL, not because they check it.
+    # QuizCreateSerializer now sets this (batch-aware, same as assignments).
+    # StartQuizView/QuizDetailView/SubmitQuizView (quizzes/views.py) gate on
+    # it via _assert_learner_may_see_quiz(), the same
+    # Q(batch__isnull=True) | Q(batch_id=<learner's batch for this course>)
+    # rule materials/views.py's StudentSubjectMaterials uses.
     batch = models.ForeignKey(
         "courses.Batch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="quizzes",
+    )
+
+    # Curriculum placement, same role Chapter plays for Assignment/StudyMaterial.
+    # Optional: legacy quizzes and evergreen question banks may have none.
+    chapter = models.ForeignKey(
+        "courses.Chapter",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

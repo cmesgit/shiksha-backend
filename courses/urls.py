@@ -45,6 +45,7 @@ from .views_recordings import (
     SaveRecordingView,
     RecordingDetailView,
     RecordingNotesView,
+    RecordingPlaybackView,
     CheckVideoStatusView,
     SignedUploadUrlView,
 )
@@ -188,6 +189,11 @@ urlpatterns = [
          CheckVideoStatusView.as_view()),
     path("recordings/<uuid:recording_id>/notes/",
          RecordingNotesView.as_view()),
+    # Short-lived SIGNED Bunny embed URL. The players used to build the iframe
+    # src themselves from a library id shipped in the bundle, producing a
+    # permanent, unauthenticated URL — see RecordingPlaybackView.
+    path("recordings/<uuid:recording_id>/playback/",
+         RecordingPlaybackView.as_view()),
     path("recordings/<uuid:recording_id>/",
          RecordingDetailView.as_view()),
 ]

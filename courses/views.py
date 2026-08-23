@@ -10,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework import status
 from enrollments.models import Enrollment, EnrollmentRequest, Subscription
+from enrollments.services import legacy_profile_q
 from accounts.permissions import IsTeacherContext, IsAdmin, require_teacher_context
 from accounts.auth_flow import get_active_profile
 from quizzes.models import Quiz, QuizAttempt
@@ -214,20 +215,35 @@ class MyEnrolledCoursesView(APIView):
 
         now = timezone.now()
         latest_sub_by_course = {}
+        # legacy_profile_q: a legacy Subscription carries learner_profile=NULL
+        # alongside its legacy Enrollment. Matching on the profile alone found
+        # no row, and the caller reads "no subscription" as FREE access — so a
+        # genuinely EXPIRED legacy subscription rendered as "Free access" with
+        # no expiry date and no renew button, while every assignment and
+        # material endpoint went on 403ing.
         for sub in (
             Subscription.objects
-            .filter(learner_profile=learner, course_id__in=course_ids)
+            .filter(legacy_profile_q(learner), course_id__in=course_ids)
             .order_by("course_id", "-expires_at")
         ):
             latest_sub_by_course.setdefault(sub.course_id, sub)
 
         history_by_course = {}
+        # The [:50] that used to sit here sliced the GLOBAL, newest-first list
+        # before grouping, so a student with 50+ requests on a recent course saw
+        # "No payments yet" against an older one they had genuinely paid for.
+        # The cap belongs per-course, after grouping — same protection against
+        # an unbounded response, without hiding a course's whole history.
+        PER_COURSE_HISTORY_CAP = 50
         for req in (
             EnrollmentRequest.objects
-            .filter(learner_profile=learner, course_id__in=course_ids)
-            .order_by("-submitted_at")[:50]
+            .filter(legacy_profile_q(learner), course_id__in=course_ids)
+            .order_by("-submitted_at")
         ):
-            history_by_course.setdefault(req.course_id, []).append({
+            bucket = history_by_course.setdefault(req.course_id, [])
+            if len(bucket) >= PER_COURSE_HISTORY_CAP:
+                continue
+            bucket.append({
                 "id": str(req.id),
                 "amount_paid": req.amount_paid,
                 "payment_date": req.payment_date,
@@ -653,7 +669,19 @@ def _roster_row_key(enrollment, profile):
     return ("account", enrollment.user_id)
 
 
-def _roster_row(enrollment, profile):
+def _absolutise(url, request):
+    """Make a root-relative media URL absolute against the API host.
+
+    Same shape as accounts/views.py:1049. A no-op for values that are already
+    absolute (Bunny/CDN URLs) or for the DiceBear-style identifiers
+    avatar_value() returns when the learner has no uploaded image.
+    """
+    if request is not None and isinstance(url, str) and url.startswith("/"):
+        return request.build_absolute_uri(url)
+    return url
+
+
+def _roster_row(enrollment, profile, request=None):
     """One roster row. ``profile`` is the resolved LearnerProfile (see
     ``_resolve_enrollment_profiles``), so ``id`` identifies the student; the
     account is reported separately as ``account_id``/``email``/``username`` so
@@ -661,6 +689,10 @@ def _roster_row(enrollment, profile):
 
     ⚠️ Several rows legitimately share the same ``account_id`` and ``email``
     (siblings), so never treat those as a student identifier.
+
+    ``request`` is needed to absolutise the avatar URL — see the note on the
+    ``avatar`` key below. It is optional only so existing callers without one
+    degrade to the old relative value rather than crashing.
     """
     account = enrollment.user
     row = {
@@ -696,7 +728,21 @@ def _roster_row(enrollment, profile):
         "phone": profile.phone,
         "student_id": profile.student_id or "",
         "avatar_type": profile.avatar_type(),
-        "avatar": profile.avatar_value(),
+        # Absolutise, matching accounts/serializers.py:52 and
+        # accounts/views.py:1049. Returning the raw root-relative value made
+        # EVERY student avatar a broken image: the dashboards run on
+        # teacher./app.shikshacom.com while the API is on api.shikshacom.com,
+        # so the browser resolved it against the SPA host and got the
+        # index.html fallback. The initials fallback never rescued it either,
+        # because that branch keys on avatar_type rather than on load failure.
+        #
+        # avatar_value() already yields the /api/media/secure/… path (private
+        # prefixes are rewritten by SecureLocalStorage.url), so absolutising is
+        # the only transform needed HERE — but see _check_learner_photo in
+        # config/media_security.py, which had to be widened in the same change:
+        # it authorised the owning account and staff only, so a teacher loading
+        # their own roster was denied and the fixed URL would still have 404'd.
+        "avatar": _absolutise(profile.avatar_value(), request),
         "unresolved_profile": False,
     })
     return row
@@ -754,7 +800,7 @@ class SubjectStudentsView(APIView):
             if key in seen:
                 continue
             seen.add(key)
-            students.append(_roster_row(enrollment, profile))
+            students.append(_roster_row(enrollment, profile, request))
 
         students.sort(key=_roster_sort_key)
 
@@ -902,7 +948,7 @@ class TeacherAllStudentsView(APIView):
                     existing["board_names"].append(board)
                 continue
 
-            row = _roster_row(enrollment, profile)
+            row = _roster_row(enrollment, profile, request)
             # One student can sit in several of this teacher's courses, and
             # dedupe keeps a single row — so list every course rather than
             # letting whichever enrollment happened to come first decide.
@@ -1636,10 +1682,18 @@ class CourseCatalogView(APIView):
         # With no profile in context (account-level session) fall back to
         # account-wide: you cannot enrol without a profile anyway, so the worst
         # case is over-reporting ownership rather than allowing a duplicate.
+        #
+        # legacy_profile_q additionally folds in pre-backfill rows
+        # (learner_profile=NULL) for the DEFAULT profile. Omitting that here was
+        # not merely cosmetic: the card rendered an active "Enrol — free" button
+        # over a course the student already held, and since Postgres treats
+        # NULLs as DISTINCT the unique_together did NOT block the second row —
+        # so tapping it double-counted Batch.seats_taken and listed the course
+        # twice in My Courses.
         from accounts.auth_flow import get_active_profile
         active_profile = get_active_profile(request)
         enrolled_qs = Enrollment.objects.filter(status=Enrollment.STATUS_ACTIVE)
-        enrolled_qs = (enrolled_qs.filter(learner_profile=active_profile)
+        enrolled_qs = (enrolled_qs.filter(legacy_profile_q(active_profile))
                        if active_profile is not None
                        else enrolled_qs.filter(user=request.user))
         enrolled_ids = set(enrolled_qs.values_list("course_id", flat=True))

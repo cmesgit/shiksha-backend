@@ -14,6 +14,7 @@ During the migration window some legacy rows still have learner_profile=NULL;
 run `manage.py backfill_profile_links` to populate them, then the strict gate
 is fully correct.
 """
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import Enrollment, Subscription
@@ -22,6 +23,36 @@ from .models import Enrollment, Subscription
 # =====================================================
 # ACCESS CHECKS
 # =====================================================
+
+def legacy_profile_q(learner_profile, *, field="learner_profile", user_field="user"):
+    """Match rows for ``learner_profile``, including its legacy NULL-profile rows.
+
+    Enrollments (and the Subscription/EnrollmentRequest rows hanging off them)
+    created before the profile backfill carry ``learner_profile=NULL`` and are
+    attributed to the account's DEFAULT profile — the same convention
+    ``manage.py backfill_profile_links`` uses.
+
+    This existed as an inline two-liner at six call sites and was MISSING at
+    four others, which is worse than either extreme being applied uniformly:
+    the queries that carried it succeeded and the ones that didn't returned
+    nothing, so a legacy student got a dashboard that rendered but was
+    permanently empty — zero sessions, zero assignments, zero quizzes, four
+    stat cards at 0, forever. Two of the misses were also exploitable rather
+    than merely empty: the catalog's ``is_enrolled`` said False for a course
+    the student already held, and because Postgres treats NULLs as DISTINCT the
+    ``unique_together`` did not stop the resulting second enrollment row.
+
+    Guarding on ``is_default`` matters: without it a second child on the same
+    account would inherit the parent account's legacy enrollments.
+
+    ``field``/``user_field`` are for models that name these columns
+    differently; the defaults suit Enrollment, Subscription and Assignment.
+    """
+    q = Q(**{field: learner_profile})
+    if learner_profile is not None and getattr(learner_profile, "is_default", False):
+        q |= Q(**{f"{field}__isnull": True, user_field: learner_profile.account})
+    return q
+
 
 def active_batch_id(*, learner_profile, course_id):
     """The batch this learner sits in for ``course_id``, or None.

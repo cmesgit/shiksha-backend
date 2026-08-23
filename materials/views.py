@@ -15,7 +15,7 @@ from django.db.models import Q
 from django.core.exceptions import PermissionDenied
 
 from courses.models import Chapter, Batch
-from courses.services import teaches_subject
+from courses.services import resolve_or_create_chapter, teaches_subject
 from accounts.auth_flow import get_active_profile
 from enrollments.services import active_batch_id, has_active_subscription
 
@@ -117,10 +117,9 @@ class UploadStudyMaterial(APIView):
                 raise PermissionDenied(
                     "You are not assigned to teach this subject."
                 )
-            chapter = Chapter.objects.create(
-                subject=subject,
-                title=custom_chapter
-            )
+            # A repeat (or case-varied) chapter name reuses the existing row
+            # instead of hitting unique_chapter_per_subject with a 500.
+            chapter = resolve_or_create_chapter(subject, custom_title=custom_chapter)
         else:
             return Response(
                 {"detail": "Chapter or custom chapter required"},
@@ -141,7 +140,16 @@ class UploadStudyMaterial(APIView):
         batch = None
         batch_id = request.data.get("batch_id")
         if batch_id:
-            batch = get_object_or_404(Batch, id=batch_id)
+            # course_id in the lookup, not just the pk. Without it a batch
+            # from a DIFFERENT course was accepted silently, and every read
+            # path filters `batch__isnull=True | batch_id=<their batch>`,
+            # which can never match a foreign course's batch — so the
+            # material was invisible to every student while the teacher's
+            # list showed it uploaded. _enrollments_for below would also have
+            # notified nobody, for the same reason.
+            batch = get_object_or_404(
+                Batch, id=batch_id, course_id=chapter.subject.course_id,
+            )
 
         material = StudyMaterial.objects.create(
             chapter=chapter,
@@ -222,12 +230,32 @@ class DeleteStudyMaterial(APIView):
     permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def delete(self, request, material_id):
-        material = get_object_or_404(StudyMaterial, id=material_id)
-        # Only the uploading teacher (or staff) may delete — a teacher shouldn't
-        # be able to delete a colleague's material.
-        if material.uploaded_by_id != request.user.id and not request.user.is_staff:
+        material = get_object_or_404(
+            StudyMaterial.objects.select_related("chapter__subject"),
+            id=material_id,
+        )
+        # Subject teaching staff (or an admin) may delete, not just the
+        # uploader.
+        #
+        # This used to be `uploaded_by` only, which contradicted the list it
+        # is reached from: /materials/teacher/materials/all/ returns every
+        # material on the teacher's subjects INCLUDING colleagues', each row
+        # with a Delete action that could only ever 403. The frontend
+        # swallowed that 403 into console.error, so the dialog just sat there
+        # and the teacher clicked again, forever. Recordings already used the
+        # teaches_subject rule (DeleteRecordingView) — one of the two had to
+        # move, and widening this one is what makes the offered action match
+        # the offered list.
+        #
+        # It is not a widening of *reach*: teaches_subject is the same gate
+        # that decides whether the material is visible to this teacher at all.
+        if not (
+            request.user.is_staff
+            or material.uploaded_by_id == request.user.id
+            or teaches_subject(request.user, material.chapter.subject)
+        ):
             return Response(
-                {"detail": "You can only delete your own material."},
+                {"detail": "You are not assigned to teach this subject."},
                 status=status.HTTP_403_FORBIDDEN,
             )
         material.delete()

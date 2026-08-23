@@ -283,3 +283,220 @@ class SecureMediaViewTest(TestCase):
         req = rf.get("/")
         req.user = self.other_teacher
         self.assertFalse(is_authorized(req, "teachers/certificates/cert1.pdf"))
+
+
+class MaterialsDeleteAuthorityTest(TestCase):
+    """Deletion authority used to be INCOHERENT between the two content
+    types, and it contradicted the list the button is rendered from.
+
+    /materials/teacher/materials/all/ returns every material on the
+    teacher's subjects, colleagues' included, each with a Delete action —
+    but DeleteStudyMaterial required `uploaded_by`, so on a colleague's row
+    it could only ever 403. Recordings meanwhile let ANY co-teacher delete
+    (and destroy the Bunny asset). One rule now: subject teaching staff, or
+    an admin. Cover for both the widening and the boundary that did NOT
+    move — a teacher with no assignment on the subject still cannot touch it.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import TeachingAssignment
+
+        teacher_role = Role.objects.create(name="TEACHER")
+        student_role = Role.objects.create(name="STUDENT")
+
+        cls.course = Course.objects.create(title="Chemistry")
+        cls.subject = Subject.objects.create(course=cls.course, name="Organic")
+        cls.chapter = Chapter.objects.create(subject=cls.subject, title="Alkanes")
+
+        cls.uploader = User.objects.create_user(username="da_up", email="da_up@t.com", password="x")
+        UserRole.objects.create(user=cls.uploader, role=teacher_role, is_active=True, is_primary=True)
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.uploader, batch=None, is_active=True,
+        )
+
+        # A COLLEAGUE on the same subject — the case the frontend showed a
+        # dead Delete button for. role=ASSISTANT: two active PRIMARY rows on
+        # the same course-wide subject would trip
+        # courses.models.TeachingAssignment's "one active PRIMARY per
+        # subject" constraint.
+        cls.colleague = User.objects.create_user(username="da_col", email="da_col@t.com", password="x")
+        UserRole.objects.create(user=cls.colleague, role=teacher_role, is_active=True, is_primary=True)
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.colleague, batch=None, is_active=True,
+            role=TeachingAssignment.ROLE_ASSISTANT,
+        )
+
+        # A teacher with no assignment on this subject at all.
+        cls.stranger = User.objects.create_user(username="da_str", email="da_str@t.com", password="x")
+        UserRole.objects.create(user=cls.stranger, role=teacher_role, is_active=True, is_primary=True)
+
+        cls.learner_account = User.objects.create_user(username="da_kid", email="da_kid@t.com", password="x")
+        UserRole.objects.create(user=cls.learner_account, role=student_role, is_active=True, is_primary=True)
+        cls.learner = LearnerProfile.objects.create(
+            account=cls.learner_account, display_name="Kid", is_default=True,
+        )
+
+    def setUp(self):
+        self.material = StudyMaterial.objects.create(
+            chapter=self.chapter, title="Notes", uploaded_by=self.uploader,
+        )
+
+    def client_with(self, user, context, profile=None):
+        c = APIClient()
+        token = {"context": context}
+        if profile is not None:
+            token["active_profile"] = str(profile.id)
+        c.force_authenticate(user=user, token=token)
+        return c
+
+    def url(self):
+        return f"/api/materials/materials/{self.material.id}/delete/"
+
+    def test_colleague_on_the_same_subject_can_delete(self):
+        res = self.client_with(self.colleague, "teacher").delete(self.url())
+        self.assertIn(res.status_code, (status.HTTP_200_OK, status.HTTP_204_NO_CONTENT))
+        self.assertFalse(StudyMaterial.objects.filter(id=self.material.id).exists())
+
+    def test_teacher_not_assigned_to_the_subject_still_cannot_delete(self):
+        res = self.client_with(self.stranger, "teacher").delete(self.url())
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(StudyMaterial.objects.filter(id=self.material.id).exists())
+
+    def test_learner_context_still_cannot_delete(self):
+        res = self.client_with(self.learner_account, "learner", self.learner).delete(self.url())
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(StudyMaterial.objects.filter(id=self.material.id).exists())
+
+
+class MaterialsBatchValidationTest(TestCase):
+    """MEDIUM — UploadStudyMaterial did get_object_or_404(Batch, id=batch_id)
+    with no course check, so a batch from ANOTHER course was accepted. Every
+    read path filters `batch__isnull=True | batch_id=<their batch>`, which
+    can never match it, so the handout was invisible to every student while
+    the teacher's list showed it uploaded — and _enrollments_for notified
+    nobody."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Batch, TeachingAssignment
+
+        teacher_role = Role.objects.create(name="TEACHER")
+        cls.teacher = User.objects.create_user(username="bv_t", email="bv_t@t.com", password="x")
+        UserRole.objects.create(user=cls.teacher, role=teacher_role, is_active=True, is_primary=True)
+
+        cls.course = Course.objects.create(title="Biology")
+        cls.subject = Subject.objects.create(course=cls.course, name="Genetics")
+        cls.chapter = Chapter.objects.create(subject=cls.subject, title="Mendel")
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, batch=None, is_active=True,
+        )
+        cls.own_batch = Batch.objects.create(course=cls.course, name="Bio A", code="BA")
+
+        cls.other_course = Course.objects.create(title="History")
+        cls.foreign_batch = Batch.objects.create(
+            course=cls.other_course, name="Hist A", code="HA",
+        )
+
+    def _file_id(self):
+        from materials.models import MaterialFile
+        return str(
+            MaterialFile.objects.create(
+                file="study_materials/x.txt", material=None, uploaded_by=self.teacher,
+            ).id
+        )
+
+    def client_with(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user, token={"context": "teacher"})
+        return c
+
+    def test_foreign_course_batch_is_rejected(self):
+        res = self.client_with(self.teacher).post(
+            "/api/materials/materials/upload/",
+            {
+                "chapter_id": str(self.chapter.id),
+                "title": "Orphan handout",
+                "batch_id": str(self.foreign_batch.id),
+                "file_ids": [self._file_id()],
+            },
+        )
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(StudyMaterial.objects.filter(title="Orphan handout").exists())
+
+    def test_own_course_batch_is_accepted(self):
+        res = self.client_with(self.teacher).post(
+            "/api/materials/materials/upload/",
+            {
+                "chapter_id": str(self.chapter.id),
+                "title": "Real handout",
+                "batch_id": str(self.own_batch.id),
+                "file_ids": [self._file_id()],
+            },
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            StudyMaterial.objects.get(title="Real handout").batch_id, self.own_batch.id,
+        )
+
+
+class MaterialsCustomChapterTest(TestCase):
+    """UploadStudyMaterial's custom_chapter branch used to do a bare
+    Chapter.objects.create(subject=subject, title=custom_chapter) — a second
+    upload with a repeat (or case-varied) chapter name hit
+    unique_chapter_per_subject and 500'd instead of reusing the existing
+    chapter. Now routed through courses.services.resolve_or_create_chapter()."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import TeachingAssignment
+
+        teacher_role = Role.objects.create(name="TEACHER")
+        cls.teacher = User.objects.create_user(username="cc_t", email="cc_t@t.com", password="x")
+        UserRole.objects.create(user=cls.teacher, role=teacher_role, is_active=True, is_primary=True)
+
+        cls.course = Course.objects.create(title="Biology")
+        cls.subject = Subject.objects.create(course=cls.course, name="Genetics")
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, batch=None, is_active=True,
+        )
+
+    def _file_id(self):
+        from materials.models import MaterialFile
+        return str(
+            MaterialFile.objects.create(
+                file="study_materials/x.txt", material=None, uploaded_by=self.teacher,
+            ).id
+        )
+
+    def client_with(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user, token={"context": "teacher"})
+        return c
+
+    def _upload(self, title, custom_chapter):
+        return self.client_with(self.teacher).post(
+            "/api/materials/materials/upload/",
+            {
+                "custom_chapter": custom_chapter,
+                "subject_id": str(self.subject.id),
+                "title": title,
+                "file_ids": [self._file_id()],
+            },
+        )
+
+    def test_repeat_custom_chapter_name_reuses_the_existing_row(self):
+        first = self._upload("Notes 1", "Mendelian Genetics")
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED, first.content)
+
+        second = self._upload("Notes 2", "MENDELIAN GENETICS")
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED, second.content)
+
+        self.assertEqual(
+            Chapter.objects.filter(subject=self.subject, title__iexact="Mendelian Genetics").count(),
+            1,
+        )
+        self.assertEqual(
+            StudyMaterial.objects.get(title="Notes 1").chapter_id,
+            StudyMaterial.objects.get(title="Notes 2").chapter_id,
+        )

@@ -49,6 +49,34 @@ def _batch_subject_teacher_name(batch, subject):
 # --------------------------------------------------------------------------- #
 # Permissions
 # --------------------------------------------------------------------------- #
+def visible_batches_q(user):
+    """Q over Batch matching exactly the batches ``can_view_batch_progress``
+    would allow — batch-scoped assignments, plus every batch of a course the
+    teacher holds a course-wide assignment in.
+
+    This exists so LIST endpoints and the per-batch GATE cannot drift apart.
+    They had: the lists filtered on ``course_id__in=<courses I teach>``, which
+    is strictly wider, so a teacher assigned only to 10-B saw every other batch
+    of Class 10 on their Classes screen and every "Open batch" dead-ended in
+    "You may not teach any subject in its course". The same over-scope also
+    inflated the dashboard's headline numbers — four batches of forty with an
+    assignment on one read "4 Active batches / 160 Students taught".
+    (Audit theme T4: subject/course-level read vs batch-level write.)
+
+    Staff see everything; callers that support staff should skip this filter.
+    """
+    course_wide_course_ids = TeachingAssignment.objects.filter(
+        teacher=user, is_active=True, batch__isnull=True,
+    ).values_list("subject__course_id", flat=True)
+    scoped_batch_ids = TeachingAssignment.objects.filter(
+        teacher=user, is_active=True, batch__isnull=False,
+    ).values_list("batch_id", flat=True)
+    return (
+        models.Q(course_id__in=course_wide_course_ids)
+        | models.Q(id__in=scoped_batch_ids)
+    )
+
+
 def can_view_batch_progress(user, batch):
     """Admin/staff, or a teacher with an active assignment in this batch —
     either scoped to the batch, or course-wide for any subject of it."""

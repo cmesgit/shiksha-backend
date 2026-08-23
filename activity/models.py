@@ -39,6 +39,13 @@ class Activity(models.Model):
     # would have shown a handout under an assignment icon and sent the click
     # to the assignments screen.
     TYPE_MATERIAL = "MATERIAL"
+    # Class recording published. Same story as TYPE_MATERIAL above, one
+    # lifecycle later: SaveRecordingView sent nothing at all while the upload
+    # form's rail promised "Students notified". Its own type rather than
+    # SESSION (a recording is not a scheduled class — it has no start time and
+    # nothing to join) or MATERIAL (which routes clicks to the handouts
+    # screen, not the video).
+    TYPE_RECORDING = "RECORDING"
 
     TYPE_CHOICES = [
         (TYPE_ASSIGNMENT, "Assignment"),
@@ -46,6 +53,7 @@ class Activity(models.Model):
         (TYPE_SESSION, "Live Session"),
         (TYPE_SUBMISSION, "Submission"),
         (TYPE_MATERIAL, "Study Material"),
+        (TYPE_RECORDING, "Recording"),
     ]
 
     # Which dashboard identity this row belongs to.

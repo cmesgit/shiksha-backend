@@ -135,6 +135,10 @@ POLICY = {
     # published quiz yet (Quiz Analytics "Send reminder" action).
     "quiz.reminder":       {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": REQUIRED},
     "materials.uploaded":  {"category": "learning", "email": OFF,     "sms": OFF, "push": OPT_OUT},
+    # A class recording going up. Same shape as materials.uploaded: useful,
+    # frequent enough that email/SMS would be noise, worth a push a student
+    # can turn off.
+    "recording.uploaded":  {"category": "learning", "email": OFF,     "sms": OFF, "push": OPT_OUT},
 
     # ── Social (high volume — NEVER email/SMS these) ───────────────────
     "chat.message":    {"category": "social", "email": OFF, "sms": OFF, "push": OPT_OUT},

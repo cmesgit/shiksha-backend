@@ -22,7 +22,7 @@ from courses.models import Course, Batch
 
 from .models import Enrollment, Subscription
 from .payments import get_payment_provider
-from .services import get_active_subscription
+from .services import get_active_subscription, legacy_profile_q
 
 
 def _validate_batch_choice(course, batch_id):
@@ -176,6 +176,19 @@ class FreeEnrollView(APIView):
             enrollment, created = Enrollment.objects.get_or_create(
                 learner_profile=learner, course=course, defaults=enroll_defaults
             )
+            # get_or_create matches on (learner_profile, course) REGARDLESS of
+            # status, so a REVOKED row came back with created=False and its
+            # `defaults` — including status=ACTIVE — were silently discarded.
+            # The view then returned 201 "You're enrolled." and created a
+            # Subscription, while /courses/my/ (which filters on ACTIVE) omitted
+            # the course: the dashboard stayed on its empty state and every
+            # retry returned 201 again. Restoring the status here is what makes
+            # the 201 true. Re-enrolment after revocation is the intended
+            # product behaviour — a revoked student who pays again gets access —
+            # so this restores rather than refuses.
+            if not created and enrollment.status != Enrollment.STATUS_ACTIVE:
+                enrollment.status = Enrollment.STATUS_ACTIVE
+                enrollment.save(update_fields=["status"])
             # Re-calling this endpoint (e.g. the student skipped batch choice
             # the first time and comes back to pick one) sets the batch on an
             # already-existing enrollment — but only while it's still unset.
@@ -250,8 +263,14 @@ class SelectEnrollmentBatchView(APIView):
                             status=status.HTTP_404_NOT_FOUND)
 
         with transaction.atomic():
+            # legacy_profile_q, not learner_profile=learner: ChooseBatchBanner
+            # renders precisely FOR legacy NULL-profile enrollments, but the
+            # exact-match filter here could never find one, so every pick 404'd
+            # with "You are not enrolled in this course" and the banner was
+            # unremovable — the one path the banner exists to complete was the
+            # one path that could not complete.
             enrollment = Enrollment.objects.select_for_update().filter(
-                learner_profile=learner, course=course,
+                legacy_profile_q(learner), course=course,
                 status=Enrollment.STATUS_ACTIVE,
             ).first()
             if enrollment is None:

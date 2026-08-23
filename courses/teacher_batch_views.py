@@ -17,6 +17,7 @@ from rest_framework.views import APIView
 
 from quizzes.models import QuizAttempt
 
+from .batch_progress import visible_batches_q
 from .board_display import board_name_for
 from .models import Batch, Chapter, Course, Subject, TeachingAssignment
 from .models_batch_progress import BatchChapterProgress
@@ -92,8 +93,14 @@ class TeacherMyBatchesView(APIView):
         ):
             covered_by_batch[row["batch_id"]] = row["n"]
 
+        # visible_batches_q, not course_id__in=course_ids: the latter is the
+        # SUPERSET of what can_view_batch_progress will actually let this
+        # teacher open, so every batch of a course they teach one batch of was
+        # listed, and clicking any of them 403'd. See that helper's docstring.
+        # Staff aren't special-cased here because this is the teacher's own
+        # "my batches" view — an admin uses the admin batch screens.
         batches = (
-            Batch.objects.filter(course_id__in=course_ids)
+            Batch.objects.filter(visible_batches_q(user))
             .annotate(_seats=Count("enrollments", filter=Q(enrollments__status="ACTIVE")))
             .order_by("-year", "code")
         )
@@ -132,9 +139,14 @@ class TeacherMyBatchesView(APIView):
         ]
         stats = {
             "active_batches": len(active_batches),
+            # None, not 0, when there is nothing to average. The frontend has a
+            # "—" no-data branch for exactly this case which was unreachable,
+            # so a teacher with no active batches was shown "0%" — read as
+            # "you have covered none of your syllabus" rather than "there is
+            # nothing here yet".
             "avg_syllabus_completion": (
                 round(sum(b["percent"] for b in active_batches) / len(active_batches))
-                if active_batches else 0
+                if active_batches else None
             ),
             "students": sum(b["seats_taken"] for b in active_batches),
             "avg_quiz_score": _avg_quiz_score(user),

@@ -6,9 +6,11 @@
 # SubjectTeacher-based lookups to is_teacher_of(); student-facing content
 # querysets wrap themselves in scope_to_enrollment().
 
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.shortcuts import get_object_or_404
 
-from .models import TeachingAssignment
+from .models import Chapter, TeachingAssignment
 
 
 def is_teacher_of(user, batch, subject):
@@ -73,6 +75,27 @@ def may_view_subject_directory(request, subject):
         user=user,
         status=Enrollment.STATUS_ACTIVE,
     ).exists()
+
+
+def resolve_or_create_chapter(subject, chapter_id=None, custom_title=None):
+    """Resolve a chapter for `subject`, either by id or by name.
+
+    A `custom_title` that already exists for this subject (case-insensitive)
+    reuses the existing row rather than hitting the `unique_chapter_per_subject`
+    constraint — repeat teacher input shouldn't 500, and near-duplicate titles
+    that differ only by case shouldn't fork into two chapters.
+    """
+    if chapter_id:
+        return get_object_or_404(Chapter, id=chapter_id, subject=subject)
+
+    title = (custom_title or "").strip()
+    if not title:
+        raise ValidationError({"chapter": "Select a chapter or enter a new chapter name."})
+
+    existing = Chapter.objects.filter(subject=subject, title__iexact=title).first()
+    if existing:
+        return existing
+    return Chapter.objects.create(subject=subject, title=title)
 
 
 def scope_to_enrollment(qs, enrollment):

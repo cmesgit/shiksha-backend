@@ -56,6 +56,8 @@ from assignments.models import Assignment, AssignmentSubmission
 from courses.models import Subject, Chapter, TeachingAssignment
 from courses.progress_stats import average_quiz_score_pct
 from enrollments.models import Enrollment
+from enrollments.services import legacy_profile_q
+from config.timezone_utils import local_day_start
 from livestream.models import LiveSession
 from quizzes.models import Quiz, QuizAttempt
 from sessions_app.models import PrivateSession
@@ -88,9 +90,16 @@ def _learner_course_ids(profile, course_id=None):
     """ACTIVE enrollments for THIS profile only.  If the frontend sent
     ?course_id=, narrow to it — but only when it belongs to this profile,
     otherwise fall back to all of the profile's courses (never 404 the
-    whole dashboard over a stale localStorage course id)."""
+    whole dashboard over a stale localStorage course id).
+
+    Uses legacy_profile_q so pre-backfill enrollments (learner_profile=NULL)
+    still resolve for the account's default profile. Without it this query
+    returned [] for a legacy student while /courses/my/ — which DOES carry the
+    fallback — returned their course, so the dashboard rendered fully and was
+    permanently empty: every section below hangs off these ids.
+    """
     qs = Enrollment.objects.filter(
-        learner_profile=profile,
+        legacy_profile_q(profile),
         status=Enrollment.STATUS_ACTIVE,
     ).values_list("course_id", flat=True)
     ids = list(qs)
@@ -210,12 +219,36 @@ def _submitted_assignment_ids(profile, chapter_ids):
     )
 
 
-def _learner_quizzes(subject_ids, batch_q):
+def _submitted_quiz_ids(profile, subject_ids):
+    """Quizzes this PROFILE has already submitted an attempt for.
+
+    Profile-keyed for the same reason as _submitted_assignment_ids: two
+    siblings share one account, so an account-keyed lookup would clear one
+    child's dashboard when the other sat the quiz.
+    """
+    return set(
+        QuizAttempt.objects.filter(
+            learner_profile=profile,
+            quiz__subject_id__in=subject_ids,
+            status=QuizAttempt.STATUS_SUBMITTED,
+        ).values_list("quiz_id", flat=True)
+    )
+
+
+def _learner_quizzes(subject_ids, batch_q, submitted_ids):
     # Same batch leak as assignments had — Quiz.batch was equally unfiltered
     # here. Not user-reported yet only because this widget shows no due date.
+    #
+    # COMPLETED QUIZZES NEVER DROPPED OFF. This filtered on is_published +
+    # batch and never consulted QuizAttempt, so a student who had submitted
+    # all six quizzes still saw "Quizzes available: 6" and six fresh cards,
+    # permanently. _learner_assignments' docstring above claimed quizzes
+    # "behave correctly", which is exactly backwards — assignments were fixed
+    # and quizzes were not, and the stale comment is why nobody re-checked.
     return list(
         Quiz.objects.filter(subject_id__in=subject_ids, is_published=True)
         .filter(batch_q)
+        .exclude(id__in=submitted_ids)
         .select_related("created_by", "subject__course__board")
         .order_by("-created_at")[:20]
     )
@@ -270,7 +303,21 @@ def _learner_private_sessions(user, now):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _teacher_live_sessions(user, today_start, excluded, week_only):
-    qs = LiveSession.objects.filter(created_by=user, start_time__gte=today_start)
+    # Scope by the teacher's ACTIVE TEACHING ASSIGNMENTS, not created_by.
+    # /teacher/live-sessions (livestream/views.py:214) has always scoped this
+    # way, so the two screens disagreed about which classes exist: a class
+    # scheduled by an admin or a co-teacher appeared in the Live Sessions list
+    # but was absent from "Today's Sessions", the "Sessions today" stat, the
+    # greeting, the calendar dot and the Schedule rail — i.e. the teacher got
+    # no indication anywhere on their home screen that a class was due. Since
+    # admin-scheduled classes are normal here, created_by was never the right
+    # key; it silently meant "classes I personally created".
+    assigned_subject_ids = user.teaching_assignments.filter(
+        is_active=True,
+    ).values_list("subject_id", flat=True)
+    qs = LiveSession.objects.filter(
+        subject_id__in=assigned_subject_ids, start_time__gte=today_start,
+    )
     if week_only:
         qs = qs.filter(start_time__lte=today_start + timedelta(days=7))
     return list(
@@ -314,19 +361,38 @@ def _teacher_private_sessions(user, now):
     )
 
 
-def _teacher_grading_queue(user, limit=15):
+def _ungraded_submissions_q(user):
+    """UNGRADED submissions on assignments for subjects this teacher teaches.
+
+    Both callers below used to omit ``graded_at__isnull=True``, each carrying a
+    docstring asserting that "assignments carry no graded flag" / "there is
+    currently no way to distinguish the two". That was simply false:
+    ``marks_obtained``, ``graded_at`` and ``graded_by`` have been on
+    AssignmentSubmission all along (assignments/models.py:207) and are written
+    on every grade at assignments/views.py:546.
+
+    The consequence was a queue that could never empty. A teacher who graded
+    all 12 submissions still read "You have 12 submissions waiting for review",
+    the stat card stayed at 12, and the "All caught up" empty state was
+    unreachable for the life of the account — so the card stopped meaning
+    anything and got ignored, which is the failure mode a work queue can least
+    afford.
     """
-    Assignment submissions on this teacher's assignments awaiting review,
-    newest first. Assignments carry no graded flag, so the queue surfaces
-    real submissions rather than a synthetic 'ungraded' subset — the
-    "Grade" button opens the submissions view where the teacher reviews
-    them. Capped so the dashboard card stays light.
+    return AssignmentSubmission.objects.filter(
+        assignment__chapter__subject__teaching_assignments__teacher=user,
+        assignment__chapter__subject__teaching_assignments__is_active=True,
+        graded_at__isnull=True,
+    )
+
+
+def _teacher_grading_queue(user, limit=15):
+    """Ungraded submissions on this teacher's assignments, newest first.
+
+    Capped so the dashboard card stays light; _teacher_grading_count reports
+    the true total behind it.
     """
     return list(
-        AssignmentSubmission.objects.filter(
-            assignment__chapter__subject__teaching_assignments__teacher=user,
-            assignment__chapter__subject__teaching_assignments__is_active=True,
-        )
+        _ungraded_submissions_q(user)
         .select_related("student", "assignment__chapter__subject__course__board")
         .distinct()
         .order_by("-submitted_at")[:limit]
@@ -334,21 +400,10 @@ def _teacher_grading_queue(user, limit=15):
 
 
 def _teacher_grading_count(user):
-    """Uncapped count for the SAME filter _teacher_grading_queue uses, so
-    the '{n} pending' badge doesn't silently cap at that function's
-    display-list limit (15) once a teacher has more submissions than fit
-    on the card. AssignmentSubmission has no graded/ungraded status field
-    (see the docstring above), so — same as the display list — 'pending'
-    here means 'submission exists on one of my assignments', not
-    'ungraded'; there is currently no way to distinguish the two."""
-    return (
-        AssignmentSubmission.objects.filter(
-            assignment__chapter__subject__teaching_assignments__teacher=user,
-            assignment__chapter__subject__teaching_assignments__is_active=True,
-        )
-        .distinct()
-        .count()
-    )
+    """Uncapped count for the SAME filter _teacher_grading_queue uses, so the
+    '{n} pending' badge doesn't silently cap at that function's display limit
+    (15) once a teacher has more ungraded submissions than fit on the card."""
+    return _ungraded_submissions_q(user).distinct().count()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -414,7 +469,9 @@ class DashboardView(APIView):
         active_track = token.get("active_track") if token else None
 
         now = timezone.now()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # local_day_start: TIME_ZONE is Asia/Kolkata but now() is UTC, so the
+        # old .replace(hour=0) here meant 05:30 IST. See config/timezone_utils.
+        today_start = local_day_start(now)
         excluded = [LiveSession.STATUS_COMPLETED, LiveSession.STATUS_CANCELLED]
 
         teacher_prefetch = Prefetch(
@@ -549,7 +606,9 @@ class DashboardView(APIView):
                     chapter_ids, teacher_prefetch, assignment_batch_q, submitted_ids), [])
             quizzes = _guard(
                 "learner.quizzes",
-                lambda: _learner_quizzes(subject_ids, quiz_batch_q), [])
+                lambda: _learner_quizzes(
+                    subject_ids, quiz_batch_q,
+                    _submitted_quiz_ids(profile, subject_ids)), [])
             quiz_avg_pct = _guard(
                 "learner.quiz_avg_pct",
                 lambda: _learner_quiz_avg_pct(profile, subject_ids), None)

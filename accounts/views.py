@@ -1,3 +1,4 @@
+import json
 import os
 import logging
 import uuid
@@ -584,6 +585,62 @@ class TeacherProfileView(APIView):
         "signed_agreement",
     }
 
+    # The "Verification documents" section of FacultyProfile.jsx, which that
+    # screen renders read-only once `teacherInfo.tracks.academy === "approved"`
+    # (its `docsLocked`). That rule was UI-ONLY: this endpoint's sole gate was
+    # `has_role("TEACHER")`, so an approved faculty member could PATCH new
+    # credentials straight over the ones an admin had already vetted — with a
+    # curl, or simply by keeping a tab open from before their approval landed.
+    # The whole point of the control is that approved credentials cannot be
+    # silently swapped, so it has to be enforced here as well as drawn there.
+    #
+    # Gate is `academy_status`, NOT `is_approved`: the latter means "approved
+    # on ANY track" and the Skill track auto-approves at signup, which would
+    # lock an unvetted guest expert out of ever completing a faculty
+    # application. Same reasoning as FacultyProfile.jsx's own comment.
+    LOCKED_ONCE_APPROVED = TEACHER_FILE_FIELDS | {"govt_id_type", "id_number"}
+
+    # Model `choices` and `max_length` are NOT enforced by .save() — only by
+    # full_clean() or a serializer, neither of which this view uses. Its
+    # StudentProfileView sibling validates; this one used to `setattr` raw, so
+    # {"gender": "xyz"} was written straight through and
+    # {"date_of_birth": "31/12/1990"} reached save() and 500'd.
+    PROFILE_CHOICE_FIELDS = {"gender": "GENDER_CHOICES"}
+    TEACHER_CHOICE_FIELDS = {
+        "highest_degree":    "HIGHEST_DEGREE_CHOICES",
+        "experience_range":  "EXPERIENCE_CHOICES",
+        "employment_status": "EMPLOYMENT_STATUS_CHOICES",
+        "govt_id_type":      "GOVT_ID_TYPE_CHOICES",
+    }
+
+    @staticmethod
+    def _validated(model, field, value, choice_map, errors):
+        """Choice / length / date check for one field. Returns (ok, value)."""
+        if field == "date_of_birth":
+            from datetime import date
+            try:
+                y, m, d = (int(x) for x in str(value).split("-"))
+                return True, date(y, m, d)
+            except Exception:
+                errors[field] = "Use YYYY-MM-DD."
+                return False, None
+
+        if field in choice_map:
+            value = value.strip() if isinstance(value, str) else value
+            allowed = {c[0] for c in getattr(model, choice_map[field])}
+            if value and value not in allowed:
+                errors[field] = "Invalid choice."
+                return False, None
+            return True, value
+
+        if isinstance(value, str):
+            max_len = model._meta.get_field(field).max_length
+            if max_len and len(value) > max_len:
+                errors[field] = f"Max {max_len} characters."
+                return False, None
+
+        return True, value
+
     def patch(self, request):
         user = request.user
 
@@ -605,10 +662,32 @@ class TeacherProfileView(APIView):
 
         data = request.data
 
+        # Compliance lock — see LOCKED_ONCE_APPROVED above. Rejected outright
+        # rather than silently ignored: a save that reports success while
+        # dropping the file the teacher just picked is how you end up with a
+        # profile everyone believes was updated.
+        if tp.academy_status == TeacherProfile.TRACK_APPROVED:
+            attempted = sorted(
+                (self.LOCKED_ONCE_APPROVED & set(data.keys()))
+                | (self.LOCKED_ONCE_APPROVED & set(request.FILES.keys()))
+            )
+            if attempted:
+                raise PermissionDenied(
+                    "Your verification documents are locked because your Academy "
+                    "application is approved. Contact the admin team to change "
+                    f"them ({', '.join(attempted)})."
+                )
+
+        errors = {}
+
         for field in self.PROFILE_FIELDS:
             if field in data:
                 value = data[field]
                 if field == "date_of_birth" and value in ("", None):
+                    continue
+                ok, value = self._validated(
+                    LearnerProfile, field, value, self.PROFILE_CHOICE_FIELDS, errors)
+                if not ok:
                     continue
                 setattr(profile, field, value)
 
@@ -616,18 +695,56 @@ class TeacherProfileView(APIView):
         if photo_file:
             profile.profile_photo = photo_file
             profile.avatar_image = photo_file
-            profile.avatar_emoji = None
-
-        profile.save()
+            # "" not None: avatar_emoji is CharField(blank=True) with no
+            # null=True, so None is a NOT NULL violation on save() — i.e. every
+            # photo upload from this screen was one IntegrityError away. Every
+            # other write site (auth_flow.apply_profile_edits) already uses "".
+            profile.avatar_emoji = ""
 
         for field in self.TEACHER_FIELDS:
             if field in data:
                 value = data[field]
-                if field == "year_of_completion" and value in ("", None):
-                    continue
-                if field == "currently_employed":
+                if field == "year_of_completion":
+                    if value in ("", None):
+                        continue
+                    try:
+                        value = int(value)
+                    except (TypeError, ValueError):
+                        errors[field] = "Enter a year, e.g. 2018."
+                        continue
+                    if not (1900 <= value <= timezone.now().year + 10):
+                        errors[field] = "Enter a realistic year."
+                        continue
+                elif field == "currently_employed":
                     value = str(value).lower() in ("true", "1", "yes")
+                elif field == "teaching_certifications":
+                    # JSONField: multipart sends it as a JSON string (see
+                    # FacultyProfile.jsx's FormData branch), JSON bodies send a
+                    # real list. Anything else would persist and then break
+                    # every reader that iterates it.
+                    if isinstance(value, str):
+                        try:
+                            value = json.loads(value or "[]")
+                        except ValueError:
+                            errors[field] = "Expected a list of certifications."
+                            continue
+                    if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+                        errors[field] = "Expected a list of certifications."
+                        continue
+                else:
+                    ok, value = self._validated(
+                        TeacherProfile, field, value, self.TEACHER_CHOICE_FIELDS, errors)
+                    if not ok:
+                        continue
                 setattr(tp, field, value)
+
+        # One 400 carrying every field's message, raised BEFORE either object
+        # is written — a partial save across two models is much harder to
+        # reason about than a rejected request.
+        if errors:
+            raise ValidationError(errors)
+
+        profile.save()
 
         for field in self.TEACHER_FILE_FIELDS:
             if field in request.FILES:

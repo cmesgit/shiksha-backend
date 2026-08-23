@@ -292,6 +292,15 @@ BUNNY_API_KEY = os.getenv("BUNNY_API_KEY")
 BUNNY_CDN_HOST = os.getenv("BUNNY_CDN_HOST", "")
 BUNNY_STREAM_URL = os.getenv("BUNNY_STREAM_URL", "https://video.bunnycdn.com")
 BUNNY_EMBED = os.getenv("BUNNY_EMBED", "https://iframe.mediadelivery.net/embed")
+# Bunny Stream "Embed View Token Authentication" key — a THIRD Bunny secret,
+# distinct from BUNNY_API_KEY (uploads) and BUNNY_STORAGE_API_KEY (files).
+# Found in the Stream dashboard under Library → Security → Embed View Token
+# Authentication. config/bunny_signing.py uses it to sign short-lived iframe
+# playback URLs so a copied embed link stops working; without it every
+# recording URL is permanent and unauthenticated (see that module's docstring).
+# Signing alone is not enforcement: the same library setting must also be
+# switched ON in Bunny, or unsigned URLs keep working.
+BUNNY_STREAM_TOKEN_KEY = os.getenv("BUNNY_STREAM_TOKEN_KEY", "")
 
 # Razorpay — referenced by payments/services.py (order creation, at module
 # import time) and payments/webhooks.py (signature verification) but never
