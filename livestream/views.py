@@ -644,6 +644,55 @@ def extend_live_session(request, session_id):
 # IN-CLASS MODERATION
 # =========================
 
+def _moderation_identities(session, target_id):
+    """Every LiveKit identity ``target_id`` could be connected to this room under.
+
+    Both moderation calls below used to address ``build_identity(target_id,
+    session.id)`` with no profile argument, which produces the *teacher*-shaped
+    ``"<uid>_x_<sid>"`` (``NO_PROFILE`` is the "not a learner" placeholder —
+    see services/token.py). A student's token is minted with their learner
+    profile, so they are in the room as ``"<uid>_<profile>_<sid>"`` and LiveKit
+    was being asked to mute or disconnect an identity that does not exist. The
+    call "succeeded" against nobody and the disruptive student stayed
+    connected, camera and mic and all, for the rest of the class.
+
+    A moderation request only carries a user id — the teacher clicked a name on
+    the roster, and the roster is per account — so the profile has to be
+    recovered here. Three sources, in confidence order:
+
+      1. Open attendance intervals. Written from the participant_joined
+         webhook, which sees the real identity, so this IS who is in the room.
+      2. Every learner profile on the account, in case the webhook has not
+         landed yet (a student removed seconds after joining).
+      3. The no-profile shape, which is genuinely correct for teachers and for
+         tokens minted before identities carried a profile.
+
+    Order matters only cosmetically; the callers try all of them and treat one
+    success as success.
+    """
+    from accounts.models import LearnerProfile
+    from livestream.models import LiveSessionAttendanceInterval
+
+    profile_ids = list(
+        LiveSessionAttendanceInterval.objects
+        .filter(session=session, user_id=target_id, left_at__isnull=True)
+        .values_list("learner_profile_id", flat=True)
+    )
+    profile_ids += list(
+        LearnerProfile.objects
+        .filter(account_id=target_id)
+        .values_list("id", flat=True)
+    )
+    profile_ids.append(None)   # the NO_PROFILE shape
+
+    identities = []
+    for pid in profile_ids:
+        identity = build_identity(target_id, session.id, pid)
+        if identity not in identities:
+            identities.append(identity)
+    return identities
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def mute_live_participant(request, session_id):
@@ -663,14 +712,20 @@ def mute_live_participant(request, session_id):
 
     muted = request.data.get("muted", True)
     from livestream.services.room_admin import mute_participant
-    try:
-        # Composite identity — the token now carries "{user}_{session}",
-        # so addressing a bare user id would silently match nobody.
-        mute_participant(session.room_name,
-                         build_identity(target_id, session.id),
-                         muted=bool(muted))
-    except Exception:
-        logger.exception("mute failed (session=%s target=%s)", session.pk, target_id)
+    # Composite identity, and one attempt per shape the target could be in the
+    # room under — see _moderation_identities. mute_participant raises for an
+    # identity that is not in the room, so "not every attempt worked" is the
+    # normal case; only "none of them worked" is a failure.
+    muted_any = False
+    for identity in _moderation_identities(session, target_id):
+        try:
+            mute_participant(session.room_name, identity, muted=bool(muted))
+            muted_any = True
+        except Exception:
+            logger.debug("mute: %s is not in room %s", identity, session.room_name)
+    if not muted_any:
+        logger.warning("mute matched no participant (session=%s target=%s)",
+                       session.pk, target_id)
         # Do NOT claim success: the teacher needs to know the student can
         # still be heard, so they can fall back to removing them.
         return Response({"detail": "Could not mute — the participant may have "
@@ -720,14 +775,21 @@ def remove_live_participant(request, session_id):
                               when=timezone.now())
 
     from livestream.services.room_admin import remove_participant
-    disconnected = True
-    try:
-        remove_participant(session.room_name, build_identity(target_id, session.id))
-    except Exception:
+    # One attempt per identity shape the target could be connected under —
+    # see _moderation_identities for why a bare build_identity(target, session)
+    # never matched a student at all.
+    disconnected = False
+    for identity in _moderation_identities(session, target_id):
+        try:
+            remove_participant(session.room_name, identity)
+            disconnected = True
+        except Exception:
+            logger.debug("remove: %s is not in room %s", identity, session.room_name)
+    if not disconnected:
         # The bar is already recorded, so they cannot rejoin — but they may
         # still be connected right now. Say so rather than implying silence.
-        logger.exception("remove failed (session=%s target=%s)", session.pk, target_id)
-        disconnected = False
+        logger.warning("remove matched no participant (session=%s target=%s)",
+                       session.pk, target_id)
 
     return Response({
         "detail": ("Removed from the class." if disconnected else

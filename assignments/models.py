@@ -198,7 +198,15 @@ class AssignmentSubmission(models.Model):
 
     submitted_file = models.FileField(upload_to="assignments/submissions/")
 
-    submitted_at = models.DateTimeField(auto_now=True, db_index=True)
+    # NOT auto_now. This field decides the On-time/Late chip the student sees
+    # and the teacher grades against, and auto_now rewrites it on ANY save
+    # that doesn't pass update_fields — a management command, an admin edit,
+    # a future field added to the grading save — silently converting an
+    # on-time submission into a late one long after the fact. It is a fact
+    # about an event, so it's stamped at the event: SubmitAssignmentView sets
+    # it explicitly, including on a resubmission, where re-stamping IS
+    # correct. default (not auto_now_add) so that explicit set is honoured.
+    submitted_at = models.DateTimeField(default=timezone.now, db_index=True)
 
     # ── Grading ──────────────────────────────────────────────────────
     # Nullable/blank: an ungraded submission has none of these set. Marks are

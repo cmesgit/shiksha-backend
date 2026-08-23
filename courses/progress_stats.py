@@ -123,11 +123,18 @@ def build_progress_stats(course, student_user, subjects_qs, learner=None):
     ).aggregate(total=Sum("total_seconds"))["total"] or 0
 
     total_seconds = live_seconds + private_seconds + group_seconds
-    live_hours = round(total_seconds / 3600)
+    # round() to whole hours reported "0h" for anything under 30 minutes, so a
+    # student who had genuinely sat through 25 minutes of class was told they
+    # had attended none — the single most discouraging way to render a
+    # non-zero number. One decimal keeps the card compact while never
+    # collapsing real attendance to zero; live_minutes is exposed alongside so
+    # the frontend can say "25m" rather than "0.4h" for short totals.
+    live_minutes = total_seconds // 60
 
     return {
         "quiz_avg_pct": quiz_avg_pct,
         "quizzes_completed": quizzes_completed,
-        "live_hours": live_hours,
+        "live_hours": round(total_seconds / 3600, 1),
+        "live_minutes": live_minutes,
         "assignments_done": assignments_done,
     }

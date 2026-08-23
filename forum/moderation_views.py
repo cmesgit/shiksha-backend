@@ -25,6 +25,7 @@ from .serializers import ForumCategorySerializer, CategoryWriteSerializer
 from .utils import author_badge
 from .views import _int_param, _annotated_threads
 from notifications.services import notify
+from config.timezone_utils import local_day_start
 
 User = get_user_model()
 
@@ -826,7 +827,9 @@ class ModAnalyticsView(APIView):
         }
 
         # Header stat cards, shown above the tab bar regardless of active tab.
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # local_day_start: TIME_ZONE is Asia/Kolkata but now() is UTC, so the
+        # old .replace(hour=0) here meant 05:30 IST. See config/timezone_utils.
+        today_start = local_day_start(now)
         pending_reports = Report.objects.filter(resolved=False)
         header_stats = {
             "open_reports": pending_reports.count(),

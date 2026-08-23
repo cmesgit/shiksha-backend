@@ -4,6 +4,7 @@ import logging
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.core.exceptions import ValidationError
 from django.db.models import F
 from django.utils import timezone
 
@@ -28,6 +29,28 @@ class PrivateSessionChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
         self.group_name = f"private_session_chat_{self.session_id}"
+        self.user = self.scope.get("user")
+        # Only a socket that actually got counted may decrement on the way
+        # out. Channels still calls disconnect() for a connection rejected in
+        # connect(), and without this a stream of rejected sockets would drive
+        # active_connections negative and auto-end a room full of people.
+        self.counted = False
+
+        # ── Auth gate ──────────────────────────────────────────────
+        # Same hole, and the same fix, as GroupSessionChatConsumer below:
+        # this accepted every socket unconditionally, so anyone holding a
+        # session UUID could read the tutor's and student's live chat and
+        # inflate ``active_connections`` (which is what keeps the room from
+        # auto-expiring). See that consumer's connect() for the full
+        # reasoning; the membership rule here mirrors views.session_chat_
+        # messages — teacher, requester, or an accepted participant.
+        if self.user is None or getattr(self.user, "is_anonymous", True):
+            await self.close()
+            return
+
+        if not await self._is_participant():
+            await self.close()
+            return
 
         # Join the channel-layer group
         await self.channel_layer.group_add(self.group_name, self.channel_name)
@@ -35,6 +58,7 @@ class PrivateSessionChatConsumer(AsyncWebsocketConsumer):
 
         # ── Track this connection ──────────────────────────────────
         await self._increment_connections()
+        self.counted = True
 
         # If an auto-expire timer is pending for this room, cancel it
         task = _expire_tasks.pop(self.session_id, None)
@@ -46,6 +70,10 @@ class PrivateSessionChatConsumer(AsyncWebsocketConsumer):
             )
 
     async def disconnect(self, close_code):
+        if not getattr(self, "counted", False):
+            # Rejected in connect() — never joined the group, never counted.
+            return
+
         # Leave the channel-layer group
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
@@ -84,6 +112,34 @@ class PrivateSessionChatConsumer(AsyncWebsocketConsumer):
             "type": "session_file_removed",
             "file_id": event["file_id"],
         }))
+
+    # ──────────────────────────────────────────────────────────────
+    # Auth
+    # ──────────────────────────────────────────────────────────────
+
+    @database_sync_to_async
+    def _is_participant(self) -> bool:
+        """The session's teacher, its requester, or an accepted participant.
+
+        Deliberately the same rule as ``views.session_chat_messages`` /
+        ``views.send_chat_message``, so the socket cannot be the softer way
+        into a conversation the REST endpoints already refuse.
+        """
+        from .models import PrivateSession
+
+        try:
+            session = PrivateSession.objects.get(pk=self.session_id)
+        except (PrivateSession.DoesNotExist, ValueError, ValidationError):
+            # ValueError/ValidationError: session_id comes straight off the
+            # URL, so a non-UUID must be a rejection and not a 500.
+            return False
+
+        user = self.user
+        return (
+            session.teacher_id == user.id
+            or session.requested_by_id == user.id
+            or session.participants.filter(user=user, status="accepted").exists()
+        )
 
     # ──────────────────────────────────────────────────────────────
     # Connection-count helpers (DB operations via sync_to_async)
@@ -226,15 +282,40 @@ class GroupSessionChatConsumer(AsyncWebsocketConsumer):
         self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
         self.group_name = f"group_session_chat_{self.session_id}"
         # Needed to target remote_control_requested at the intended student
-        # only (see that handler below) — JWTAuthMiddleware (config/asgi.py)
-        # already populates scope["user"] for every consumer; this consumer
-        # simply hadn't read it before.
+        # only (see that handler below), and to gate the connection at all —
+        # JWTAuthMiddleware (config/asgi.py) already populates scope["user"]
+        # for every consumer; this consumer simply hadn't read it before.
         self.user = self.scope.get("user")
+        # See PrivateSessionChatConsumer.connect for why a rejected socket
+        # must not be allowed to decrement on the way out.
+        self.counted = False
+
+        # ── Auth gate ──────────────────────────────────────────────
+        # This used to be a bare group_add + accept: no anonymous rejection,
+        # no membership check. Two consequences, both live:
+        #   * anyone who learned a session UUID could open
+        #     wss://…/ws/group-session/<uuid>/chat/ with no credentials at all
+        #     and read every message broadcast into the room; and
+        #   * this connection is what increments ``active_connections``, which
+        #     group_session_views uses as the room-capacity gate
+        #     (INSTANT_MAX_PARTICIPANTS and GlobalSettings.live_max_participants),
+        #     so opening a few dozen anonymous sockets pushed a room past its
+        #     cap and genuine invitees got 409 room_full.
+        # Modelled on livestream.consumers.LiveSessionConsumer, which already
+        # rejects anonymous users and enforces entitlement before accepting.
+        if self.user is None or getattr(self.user, "is_anonymous", True):
+            await self.close()
+            return
+
+        if not await self._is_participant():
+            await self.close()
+            return
 
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
         await self._increment_connections()
+        self.counted = True
 
         task = _gs_expire_tasks.pop(self.session_id, None)
         if task and not task.done():
@@ -245,6 +326,10 @@ class GroupSessionChatConsumer(AsyncWebsocketConsumer):
             )
 
     async def disconnect(self, close_code):
+        if not getattr(self, "counted", False):
+            # Rejected in connect() — never joined the group, never counted.
+            return
+
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
         remaining = await self._decrement_connections()
@@ -273,6 +358,17 @@ class GroupSessionChatConsumer(AsyncWebsocketConsumer):
     # to the socket, following this consumer's existing
     # ``self.send(text_data=json.dumps({"type": ..., ...}))`` shape (this
     # codebase doesn't use a ``send_json``/``"kind"`` convention anywhere).
+
+    async def session_ended(self, event):
+        # _broadcast_session_ended (group_session_views.py) has always sent
+        # this frame, but no handler existed for it, so Channels raised
+        # "No handler for message type session_ended" and killed every
+        # participant's socket with a server error — whereupon the client's
+        # onclose reconnected 3s later, to a room that had just ended.
+        await self.send(text_data=json.dumps({
+            "type": "session_ended",
+            "data": event.get("data", {}),
+        }))
 
     async def session_extended(self, event):
         await self.send(text_data=json.dumps({
@@ -325,6 +421,29 @@ class GroupSessionChatConsumer(AsyncWebsocketConsumer):
             "type": "remote_control_revoked",
             "grant_id": event["grant_id"],
         }))
+
+    # ── Auth ─────────────────────────────────────────────────────────
+    @database_sync_to_async
+    def _is_participant(self) -> bool:
+        """Host, accepted invitee, or anyone at all on an instant meeting.
+
+        Delegates to ``group_session_views._chat_participant_check`` rather
+        than restating the rule, so the socket and the REST chat endpoints
+        (``group_session_chat_messages`` / ``send_group_session_chat_message``,
+        which already use it) can never drift apart. Instant meetings are
+        deliberately open to any authenticated caller with the link — that is
+        the same call ``join_group_session`` makes.
+        """
+        from .models import GroupSession
+        from .group_session_views import _chat_participant_check
+
+        try:
+            session = GroupSession.objects.get(pk=self.session_id)
+        except (GroupSession.DoesNotExist, ValueError, ValidationError):
+            return False
+
+        allowed, _err = _chat_participant_check(session, self.user)
+        return bool(allowed)
 
     # ── DB helpers ───────────────────────────────────────────────────
     @database_sync_to_async

@@ -265,10 +265,41 @@ def assignment_created(sender, instance, created, **kwargs):
 # ASSIGNMENT SUBMITTED → notify subject teachers
 # =====================================================
 
+@receiver(pre_save, sender=AssignmentSubmission)
+def cache_submission_file(sender, instance, **kwargs):
+    """Snapshot the stored file so post_save can tell a RE-upload from any
+    other save. Same shape as cache_assignment_published_state, and for the
+    same reason: post_save only ever sees the row as it now is."""
+    if instance.pk:
+        instance._previous_file = (
+            AssignmentSubmission.objects
+            .filter(pk=instance.pk)
+            .values_list("submitted_file", flat=True)
+            .first()
+        )
+    else:
+        instance._previous_file = None
+
+
 @receiver(post_save, sender=AssignmentSubmission)
 def assignment_submitted(sender, instance, created, **kwargs):
+    # RESUBMISSIONS notify too. This used to be a bare `if not created:
+    # return`, but SubmitAssignmentView uses update_or_create — so a student
+    # who re-uploaded a corrected PDF produced no teacher notification at all,
+    # while submitted_at DID move and silently flipped the On-time/Late chip
+    # on a submission the teacher may already have graded.
+    #
+    # Gated on the FILE actually changing, not merely on a save: grading saves
+    # the same row (assignments/views.py) and must stay silent here — the
+    # student gets the grading notification, the teacher doesn't need one for
+    # their own click.
+    resubmitted = False
     if not created:
-        return
+        previous = getattr(instance, "_previous_file", None)
+        current = instance.submitted_file.name if instance.submitted_file else None
+        if previous == current:
+            return
+        resubmitted = True
 
     assignment = instance.assignment
     subject = assignment.chapter.subject
@@ -306,7 +337,14 @@ def assignment_submitted(sender, instance, created, **kwargs):
             teacher=ta.teacher,
             obj=assignment,
             activity_type=Activity.TYPE_SUBMISSION,
-            title=f"{student_name} submitted: {assignment.title}",
+            # Named differently on a re-upload: if the teacher already graded
+            # the first file, "submitted" would read as a duplicate they can
+            # ignore, when in fact the work they marked no longer exists.
+            title=(
+                f"{student_name} re-submitted: {assignment.title}"
+                if resubmitted else
+                f"{student_name} submitted: {assignment.title}"
+            ),
             due_date=assignment.due_date,
             subject_id=subject.id,
             subject_name=subject.name,

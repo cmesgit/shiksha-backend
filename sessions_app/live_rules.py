@@ -31,6 +31,7 @@ from datetime import timedelta
 from django.db.models import Q
 from django.utils import timezone
 
+from config.timezone_utils import local_day_start
 from global_settings.models import GlobalSettings
 
 
@@ -71,7 +72,13 @@ def minutes_used_today(user):
     """Sum of today's attendance for the daily budget."""
     from .models import GroupSessionAttendance
 
-    start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    # local_day_start, not now().replace(hour=0): TIME_ZONE is Asia/Kolkata but
+    # now() is UTC, so the old boundary was 05:30 IST. A daily MINUTE BUDGET
+    # reset at 05:30 rather than midnight, and every minute a student spent in
+    # a room between 00:00 and 05:29 IST was still billed to the previous day's
+    # allowance — the one window where a budget being wrong actually locks
+    # someone out of a class.
+    start = local_day_start()
     rows = GroupSessionAttendance.objects.filter(user=user, joined_at__gte=start)
     total = 0
     for r in rows:

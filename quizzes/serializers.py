@@ -9,7 +9,8 @@ from rest_framework import serializers
 from rest_framework.exceptions import ValidationError, PermissionDenied
 
 from courses.board_display import board_name_via
-from courses.services import teaches_subject
+from courses.models import Batch, Chapter
+from courses.services import is_teacher_of, resolve_or_create_chapter, teaches_subject
 from enrollments.models import Enrollment
 
 from .models import (
@@ -92,10 +93,29 @@ class BulkQuestionCreateSerializer(serializers.Serializer):
 
 
 class QuizCreateSerializer(serializers.ModelSerializer):
+    # Also used (with partial=True) by TeacherUpdateQuizView to edit a draft's
+    # title/quiz_type/time_limit_minutes — batch/chapter are create-only
+    # (see validate()), matching how Assignment editing leaves batch alone.
+
+    # Cohort-relative, like assignments: a batch is required on create.
+    batch_id = serializers.PrimaryKeyRelatedField(
+        queryset=Batch.objects.all(), source="batch", write_only=True,
+    )
+    # Existing chapter, or type a new one via custom_chapter — resolved in
+    # validate() via resolve_or_create_chapter(), same as assignments/materials.
+    chapter_id = serializers.PrimaryKeyRelatedField(
+        queryset=Chapter.objects.all(), source="chapter",
+        write_only=True, required=False,
+    )
+    custom_chapter = serializers.CharField(
+        write_only=True, required=False, allow_blank=True,
+    )
+
     class Meta:
         model = Quiz
-        fields = ["id", "subject", "title", "description",
-                  "time_limit_minutes", "quiz_type", "reveal_answers_after"]
+        fields = ["id", "subject", "batch_id", "chapter_id", "custom_chapter",
+                  "title", "description", "time_limit_minutes", "quiz_type",
+                  "reveal_answers_after"]
         read_only_fields = ["id"]
 
     def validate_subject(self, subject):
@@ -105,6 +125,46 @@ class QuizCreateSerializer(serializers.ModelSerializer):
         if not teaches_subject(user, subject):
             raise PermissionDenied("You are not assigned to this subject.")
         return subject
+
+    def validate(self, attrs):
+        custom_chapter = attrs.pop("custom_chapter", "")
+
+        if self.instance is not None:
+            # A partial edit (TeacherUpdateQuizView) never touches batch or
+            # chapter — nothing to resolve.
+            return attrs
+
+        subject = attrs.get("subject")
+        batch = attrs.get("batch")
+        chapter = attrs.get("chapter")
+        user = self.context["request"].user
+
+        if subject and batch:
+            if batch.course_id != subject.course_id:
+                raise ValidationError(
+                    {"batch_id": "Batch and subject belong to different courses."}
+                )
+            if not is_teacher_of(user, batch, subject):
+                raise ValidationError(
+                    {"non_field_errors": [
+                        f"You are not assigned to teach {subject.name} in "
+                        f"{batch.name}. Pick a batch you teach."
+                    ]}
+                )
+
+        if chapter is None:
+            if not custom_chapter.strip():
+                raise ValidationError(
+                    {"chapter_id": "Select a chapter or enter a new chapter name."}
+                )
+            chapter = resolve_or_create_chapter(subject, custom_title=custom_chapter)
+            attrs["chapter"] = chapter
+        elif subject and chapter.subject_id != subject.id:
+            raise ValidationError(
+                {"chapter_id": "Pick a chapter from this quiz's own subject."}
+            )
+
+        return attrs
 
     def create(self, validated_data):
         return Quiz.objects.create(
@@ -417,6 +477,9 @@ class QuizResultSerializer(serializers.Serializer):
     submitted_at = serializers.DateTimeField()
     attempt_number = serializers.IntegerField(default=1)
     answers_revealed = serializers.BooleanField(default=True)
+    # The paper's full question count. `questions` below is answered-only, so
+    # this is the only honest denominator for "N of M correct" / accuracy.
+    questions_total = serializers.IntegerField(default=0)
     questions = QuestionResultSerializer(many=True)
 
     # ── analytics (results + analytics screen) ──────────────────────────
@@ -484,6 +547,12 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
             "id", "title", "created_at", "subject_name", "subject_id",
             "course_title", "board_name",
             "is_published", "questions_count",
+            # total_marks is the DENOMINATOR for average/highest/lowest, which
+            # are raw marks, not percentages. Without it the Quizzes card had
+            # no way to turn "7.5" into "75%" and rendered the mark itself
+            # through a percent formatter — a 10-mark quiz with a healthy 7.5
+            # class average displayed as "avg 8%".
+            "total_marks",
             "total_attempts", "submission_rate", "average_score",
             "highest_score", "lowest_score", "quiz_type", "review_status",
             "review_note",

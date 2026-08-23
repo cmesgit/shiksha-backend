@@ -8,6 +8,7 @@ from .views import (
     TeacherDeleteAssignmentView,
     TeacherDeleteAssignmentFileView,
     TeacherSubjectAssignmentsView,
+    TeacherAssignableBatchesView,
     TeacherAllAssignmentsView,
     TeacherAssignmentSubmissionsView,
     TeacherGradeSubmissionView,
@@ -65,6 +66,13 @@ urlpatterns = [
     path(
         "teacher/subject/<uuid:subject_id>/",
         TeacherSubjectAssignmentsView.as_view(),
+    ),
+    # Batches this teacher may actually SET WORK for — the create form's
+    # picker. Distinct from courses/subjects/<id>/batches/, which lists every
+    # active batch of the course regardless of staffing.
+    path(
+        "teacher/subject/<uuid:subject_id>/batches/",
+        TeacherAssignableBatchesView.as_view(),
     ),
     path(
         "teacher/<uuid:assignment_id>/submissions/",

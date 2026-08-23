@@ -1,12 +1,12 @@
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from django.db.models import Prefetch, Count, Case, When, Value, CharField, Q
+from django.db.models import Prefetch, Count, Case, When, Value, CharField, Q, F
 from django.db import IntegrityError
 from django.http import HttpResponse
 
-from courses.models import Subject, TeachingAssignment
-from courses.services import teaches_subject
+from courses.models import Subject, TeachingAssignment, Batch
+from courses.services import teaches_subject, is_teacher_of
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -28,6 +28,8 @@ from .serializers import (
     TeacherAssignmentListSerializer,
     TeacherSubmissionListSerializer,
     AssignmentFileSerializer,
+    validate_assignment_file,
+    validate_submission_file,
 )
 
 import zipfile
@@ -39,9 +41,95 @@ from io import BytesIO
 # ==========================================
 
 def _assert_teacher_owns_assignment(user, assignment):
-    """Raises PermissionDenied if the teacher is not assigned to the subject."""
-    if not teaches_subject(user, assignment.chapter.subject):
-        raise PermissionDenied("Not assigned to this subject.")
+    """Raises PermissionDenied unless this teacher may act on `assignment`.
+
+    ── The scope decision, spelled out once ──────────────────────────────
+    This used to gate on `teaches_subject()` (subject-level) while the CREATE
+    path gated on the batch-aware `is_teacher_of()`. The asymmetry was not a
+    design: a teacher staffed on Maths/10-B could list, open, download,
+    re-grade, edit and DELETE every assignment belonging to Maths/10-A, and
+    could not create one — the one operation that happened to be checked
+    properly. Read and write are now both batch-aware, because "may grade
+    another class's students" is not a privilege anyone intended to grant.
+
+    A TeachingAssignment with `batch IS NULL` is course-wide and covers every
+    batch, so a genuinely course-wide teacher loses nothing here — that is
+    exactly what `is_teacher_of()` already encodes.
+
+    Assignments with `batch IS NULL` are the legacy/course-wide rows (the
+    model allows them, the create serializer no longer produces them). There
+    is no batch to scope those to, so subject level is the only check
+    available and they keep the old rule.
+    """
+    subject = assignment.chapter.subject
+
+    if assignment.batch_id is None:
+        if not teaches_subject(user, subject):
+            raise PermissionDenied("Not assigned to this subject.")
+        return
+
+    if not is_teacher_of(user, assignment.batch, subject):
+        raise PermissionDenied(
+            "Not assigned to this subject in this batch."
+        )
+
+
+def _assert_learner_may_see_assignment(learner, assignment):
+    """Raises Http404 unless `assignment` is one this learner is actually set.
+
+    The two list endpoints (`CourseAssignmentsView`, `SubjectAssignmentsView`)
+    have always enforced `is_published` plus batch isolation. The single-object
+    endpoints — detail and submit — enforced neither: they resolved the row by
+    UUID and checked only that the account had a live subscription to the
+    course. Any subscribed learner holding a UUID could therefore read an
+    unpublished DRAFT in full (title, description, every attachment URL) and
+    submit to it, and a Batch-B learner could read and submit to a Batch-A
+    assignment carrying a different due date.
+
+    404 rather than 403 on purpose: a draft the learner has no business
+    knowing about must not be confirmed to exist by the shape of the error.
+    """
+    from django.http import Http404
+    from enrollments.services import active_batch_id
+
+    if not assignment.is_published:
+        raise Http404
+
+    if assignment.batch_id is None:
+        # Course-wide: every batch of the course sees it.
+        return
+
+    batch_id = active_batch_id(
+        learner_profile=learner,
+        course_id=assignment.chapter.subject.course_id,
+    )
+    # batch_id None = not placed in a batch yet. The list endpoints
+    # deliberately degrade to showing EVERYTHING in that case rather than
+    # hiding every batch-scoped assignment from an unplaced student; this
+    # must match them or a row the learner can see would 404 on click.
+    if batch_id is not None and batch_id != assignment.batch_id:
+        raise Http404
+
+
+def teacher_scope_filter(qs, user):
+    """Restrict an Assignment queryset to what `user` may act on.
+
+    The queryset-shaped twin of `_assert_teacher_owns_assignment` — the list
+    endpoints have to agree with the per-object check or the UI goes back to
+    offering Edit/Delete/Review buttons that 403.
+
+    All three conditions ride the SAME `chapter__subject__teaching_assignments`
+    join because they sit in one `filter()` call, so a row qualifies only when
+    ONE teaching assignment satisfies teacher + active + scope together —
+    not when three different rows each satisfy one clause.
+    """
+    return qs.filter(
+        Q(batch__isnull=True)                                            # course-wide assignment
+        | Q(chapter__subject__teaching_assignments__batch__isnull=True)  # course-wide staffing
+        | Q(chapter__subject__teaching_assignments__batch=F("batch")),   # same batch
+        chapter__subject__teaching_assignments__teacher=user,
+        chapter__subject__teaching_assignments__is_active=True,
+    )
 
 
 # ==========================================
@@ -101,6 +189,7 @@ class AssignmentDetailView(generics.RetrieveAPIView):
                     lock_payload(user=user, course=course, learner_profile=learner),
                     status=402,
                 )
+            _assert_learner_may_see_assignment(learner, instance)
 
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
@@ -135,20 +224,44 @@ class SubmitAssignmentView(APIView):
                 status=402,
             )
 
+        # Same gate the detail view applies — a draft or another batch's
+        # assignment must not be submittable just because its UUID leaked.
+        _assert_learner_may_see_assignment(learner, assignment)
+
         file = request.FILES.get("file")
         if not file:
             return Response({"detail": "File required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # This upload used to go onto the model unchecked — see
+        # serializers.validate_submission_file for the whole story. Raises a
+        # DRF ValidationError, which the exception handler renders as a 400.
+        try:
+            validate_submission_file(file)
+        except ValidationError as exc:
+            return Response({"detail": exc.detail[0] if isinstance(exc.detail, list) else exc.detail},
+                            status=status.HTTP_400_BAD_REQUEST)
+
         # Keyed on (assignment, learner_profile): re-submitting replaces only
         # THIS learner's file. Previously the key was (assignment, account),
         # so one child's upload silently overwrote a sibling's.
-        AssignmentSubmission.objects.update_or_create(
+        #
+        # submitted_at is set explicitly now that the field is no longer
+        # auto_now (see models.py) — a resubmission SHOULD re-stamp the clock,
+        # but an unrelated save (grading, a management command) must not.
+        submission, created = AssignmentSubmission.objects.update_or_create(
             assignment=assignment,
             learner_profile=learner,
-            defaults={"submitted_file": file, "student": request.user},
+            defaults={
+                "submitted_file": file,
+                "student": request.user,
+                "submitted_at": timezone.now(),
+            },
         )
 
-        return Response({"detail": "Submission successful."}, status=status.HTTP_200_OK)
+        return Response(
+            {"detail": "Submission successful.", "resubmitted": not created},
+            status=status.HTTP_200_OK,
+        )
 
 
 # ==========================================
@@ -262,6 +375,22 @@ class TeacherCreateAssignmentView(APIView):
                     status=status.HTTP_200_OK,
                 )
 
+        # Extra files, validated BEFORE the assignment row is written.
+        #
+        # Only the first upload (sent as `attachment`) ever reached a
+        # validator: the rest were read straight out of
+        # request.FILES.getlist("files") and handed to
+        # AssignmentFile.objects.create() below, so BLOCKED_EXTENSIONS and the
+        # 100 MB cap simply did not apply to them and a `.exe` was stored and
+        # served to every student in the batch. The edit path (`new_files`)
+        # was always checked; only create had the hole.
+        #
+        # Checked up here rather than in the loop so a bad second file 400s
+        # instead of leaving a half-attached assignment behind.
+        extra_files = request.FILES.getlist("files")
+        for f in extra_files:
+            validate_assignment_file(f)
+
         serializer = TeacherAssignmentCreateSerializer(
             data=request.data, context={"request": request}
         )
@@ -281,8 +410,7 @@ class TeacherCreateAssignmentView(APIView):
                 )
             raise
 
-        # Handle additional uploaded files (multi-file support)
-        extra_files = request.FILES.getlist("files")
+        # Handle additional uploaded files (multi-file support) — validated above
         for f in extra_files:
             AssignmentFile.objects.create(
                 assignment=assignment,
@@ -424,14 +552,80 @@ class TeacherSubjectAssignmentsView(generics.ListAPIView):
         if not teaches_subject(user, subject):
             raise PermissionDenied("Not assigned to this subject.")
 
+        # teacher_scope_filter, not a bare subject filter: a teacher staffed
+        # only on 10-B used to get 10-A's assignments listed here, complete
+        # with working Edit / Delete / Review buttons.
         return (
-            Assignment.objects
-            .filter(chapter__subject=subject)
+            teacher_scope_filter(
+                Assignment.objects.filter(chapter__subject=subject), user)
             .select_related("chapter__subject__course__board", "batch")
             .prefetch_related("files")
             .annotate(total_submissions=Count("submissions", distinct=True))
+            # distinct(): a teacher holding two staffing rows on one subject
+            # would otherwise see every assignment twice.
+            .distinct()
             .order_by("-created_at")
         )
+
+
+# ==========================================
+# TEACHER — BATCHES THEY MAY SET WORK FOR
+# ==========================================
+
+class TeacherAssignableBatchesView(APIView):
+    """The batches this teacher can actually post an assignment to, for one
+    subject.
+
+    The create form's batch picker was fed by
+    `courses.TeacherSubjectBatchesView`, which lists every active batch of the
+    course filtered on `course_id` + `is_active` only, and the form
+    auto-selected `list[0]`. A teacher staffed on 9-B alone got 9-A
+    preselected, filled the whole form, and hit a 400 — for a batch they never
+    chose. This endpoint answers the question the picker is actually asking:
+    which batches may I set work for?
+
+    Deliberately lives here rather than in courses/: the rule it encodes is
+    the assignment CREATE rule (`is_teacher_of`, via
+    TeacherAssignmentCreateSerializer.validate), and it has to move with that
+    rule. The courses endpoint stays as-is for the live-session picker, which
+    has its own scoping rules.
+    """
+    permission_classes = [IsAuthenticated, IsTeacherContext]
+
+    def get(self, request, subject_id):
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"), id=subject_id)
+
+        if not teaches_subject(request.user, subject):
+            raise PermissionDenied("Not assigned to this subject.")
+
+        batches = Batch.objects.filter(
+            course_id=subject.course_id, is_active=True)
+
+        # A course-wide staffing row (batch IS NULL) covers every batch, so
+        # don't narrow in that case — is_teacher_of() encodes the same rule
+        # and this must not disagree with it.
+        course_wide = TeachingAssignment.objects.filter(
+            subject=subject, teacher=request.user,
+            is_active=True, batch__isnull=True,
+        ).exists()
+        if not course_wide:
+            batches = batches.filter(
+                teaching_assignments__subject=subject,
+                teaching_assignments__teacher=request.user,
+                teaching_assignments__is_active=True,
+            ).distinct()
+
+        batches = batches.order_by("-year", "code")
+        return Response([
+            {
+                "id": str(b.id),
+                "name": b.name,
+                "code": b.code,
+                "year": b.year,
+            }
+            for b in batches
+        ])
 
 
 # ==========================================
@@ -446,8 +640,11 @@ class TeacherAllAssignmentsView(generics.ListAPIView):
     TeacherSubjectAssignmentsView once per subject and flattened client-side —
     an N+1 that grew with the teacher's timetable.
 
-    Scope is the same as the per-subject view's permission check, expressed as
-    a filter instead: subjects with an active TeachingAssignment for this user.
+    Scope is the same as the per-object permission check, expressed as a
+    filter instead: an active TeachingAssignment for this user on the
+    assignment's subject AND covering its batch (see teacher_scope_filter).
+    Before that, this filtered on the subject alone, so a teacher staffed on
+    one batch listed every other batch's work as if it were theirs.
     """
 
     serializer_class = TeacherAssignmentListSerializer
@@ -455,11 +652,7 @@ class TeacherAllAssignmentsView(generics.ListAPIView):
 
     def get_queryset(self):
         return (
-            Assignment.objects
-            .filter(
-                chapter__subject__teaching_assignments__teacher=self.request.user,
-                chapter__subject__teaching_assignments__is_active=True,
-            )
+            teacher_scope_filter(Assignment.objects.all(), self.request.user)
             # chapter__subject + batch: the serializer reports subject_id/
             # subject_name and batch_id/batch_name off these.
             .select_related("chapter__subject__course__board", "batch")
@@ -476,22 +669,38 @@ class TeacherAllAssignmentsView(generics.ListAPIView):
 # TEACHER ASSIGNMENT SUBMISSIONS VIEW
 # ==========================================
 
-class TeacherAssignmentSubmissionsView(generics.ListAPIView):
-    serializer_class = TeacherSubmissionListSerializer
+class TeacherAssignmentSubmissionsView(APIView):
+    """Every student the assignment was set for, submitted or not.
+
+    This used to be a plain ListAPIView over AssignmentSubmission, and that
+    made the screen it backs structurally incapable of doing its job. A
+    submission row only exists once a student has submitted, and
+    `submitted_file` is a non-null FileField, so the frontend's
+    `s.submitted_file ? "Submitted" : "Pending"` was a constant: a batch of 32
+    where 18 had submitted rendered "18/18 Submitted · 0 Pending · 100%", and
+    the 14 students who had NOT handed in — the only reason to open this
+    screen — were absent from the response entirely.
+
+    The roster is the assignment's own cohort: active enrollments in its
+    course, narrowed to its batch when it has one. Rows are the same shape
+    either way, with `id: null` and `submitted_file: null` marking a
+    non-submitter (the grade endpoint takes a submission id, so there is
+    nothing to grade on those and the UI disables the control).
+
+    Still returns a BARE ARRAY, not a paginated envelope — the client indexes
+    it directly, and a roster is bounded by class size.
+    """
     permission_classes = [IsAuthenticated, IsTeacherContext]
 
-    def get_queryset(self):
-        user = self.request.user
-        assignment_id = self.kwargs["assignment_id"]
-
+    def get(self, request, assignment_id):
         assignment = get_object_or_404(
-            Assignment.objects.select_related("chapter__subject"),
+            Assignment.objects.select_related("chapter__subject__course"),
             id=assignment_id,
         )
 
-        _assert_teacher_owns_assignment(user, assignment)
+        _assert_teacher_owns_assignment(request.user, assignment)
 
-        return (
+        submissions = (
             AssignmentSubmission.objects
             .filter(assignment=assignment)
             .select_related("student", "learner_profile", "assignment")
@@ -504,6 +713,81 @@ class TeacherAssignmentSubmissionsView(generics.ListAPIView):
             )
             .order_by("-submitted_at")
         )
+        rows = TeacherSubmissionListSerializer(
+            submissions, many=True, context={"request": request}).data
+
+        # Which students the row already covers. Legacy submissions carry
+        # learner_profile=NULL, so an account key has to stand in for those or
+        # their author would be listed twice — once as a submission and once
+        # as a non-submitter.
+        submitted_profiles = {
+            str(s.learner_profile_id) for s in submissions if s.learner_profile_id
+        }
+        submitted_accounts = {
+            str(s.student_id) for s in submissions if not s.learner_profile_id
+        }
+
+        # The roster helpers live in courses.views: legacy enrollments have
+        # learner_profile=NULL and resolve to the account's DEFAULT profile,
+        # and getting that rule subtly different here would put the same
+        # student on the roster under two names. Imported at call time —
+        # courses.views imports from enrollments, which imports from courses.
+        from courses.views import (
+            _resolve_enrollment_profiles, _roster_row, _roster_sort_key,
+        )
+
+        roster_qs = Enrollment.objects.filter(
+            course_id=assignment.chapter.subject.course_id,
+            status=Enrollment.STATUS_ACTIVE,
+        ).select_related("user", "learner_profile")
+        if assignment.batch_id is not None:
+            # A batch-scoped assignment was only ever set for its own cohort;
+            # listing the whole course as "pending" would invent 200 missing
+            # submissions. batch IS NULL on the assignment means course-wide,
+            # which is the whole course — matching the student-facing filter.
+            roster_qs = roster_qs.filter(batch_id=assignment.batch_id)
+
+        enrollments = list(roster_qs)
+        profiles = _resolve_enrollment_profiles(enrollments)
+
+        pending = []
+        seen = set()
+        for enrollment in enrollments:
+            profile = profiles.get(enrollment.id)
+            key = (("profile", str(profile.id)) if profile is not None
+                   else ("account", str(enrollment.user_id)))
+            if key in seen:
+                continue
+            seen.add(key)
+            if key[0] == "profile" and key[1] in submitted_profiles:
+                continue
+            if key[0] == "account" and key[1] in submitted_accounts:
+                continue
+            # A legacy submission by this account is keyed on the account, but
+            # the enrollment may now resolve to a profile — treat the account
+            # match as covering it either way, so one student is one row.
+            if str(enrollment.user_id) in submitted_accounts:
+                continue
+
+            info = _roster_row(enrollment, profile)
+            pending.append((_roster_sort_key(info), {
+                "id": None,
+                "student_id": info["account_id"],
+                "student_email": info["email"],
+                "student_name": (info["full_name"] or info["display_name"]
+                                 or info["username"] or info["email"]),
+                "learner_profile_id": info["id"],
+                "submitted_file": None,
+                "submitted_at": None,
+                "submission_status": "Not submitted",
+                "marks_obtained": None,
+                "max_marks": assignment.max_marks,
+                "feedback": "",
+                "graded_at": None,
+            }))
+
+        pending.sort(key=lambda pair: pair[0])
+        return Response(rows + [row for _, row in pending])
 
 
 class TeacherGradeSubmissionView(APIView):

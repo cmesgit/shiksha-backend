@@ -39,6 +39,7 @@ from .models import (
 from . import services
 from . import policy
 from . import realtime
+from config.timezone_utils import local_day_start
 
 
 def _require_identity(request):
@@ -1059,7 +1060,9 @@ class AdminLogsView(APIView):
 
     def get(self, request):
         now = timezone.now()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # local_day_start: TIME_ZONE is Asia/Kolkata but now() is UTC, so the
+        # old .replace(hour=0) here meant 05:30 IST. See config/timezone_utils.
+        today_start = local_day_start(now)
         week_start = now - timedelta(days=7)
         data = {
             "messages_today": Message.objects.filter(created_at__gte=today_start).count(),

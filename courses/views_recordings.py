@@ -11,7 +11,54 @@ from .serializers_recordings import SessionRecordingSerializer, RecordingNoteSer
 from .models import Subject, Batch
 from .services import teaches_subject
 from accounts.permissions import IsTeacherContext, CTX_TEACHER
-from config.bunny_signing import bunny_tus_ticket
+from config.bunny_signing import (
+    bunny_embed_url,
+    bunny_tus_ticket,
+    upload_expiry_for_size,
+)
+
+
+# Sentinel returned as the "batch_id" for a teacher/staff caller. A student's
+# batch_id may genuinely be None (enrolled but not yet placed in a cohort →
+# course-wide recordings only), so plain None cannot also mean "unrestricted"
+# without one of the two degrading into the other. Same sentinel pattern, for
+# the same reason, as materials/views.py's TEACHER_UNRESTRICTED.
+TEACHER_UNRESTRICTED = object()
+
+
+def _authorize_subject_recordings(request, subject):
+    """Gate a subject's recording LIST. Returns (allowed, batch_id).
+
+    Deliberately the subject-level twin of _require_recording_viewer (below),
+    which gates the per-id endpoints: teacher-or-staff → every batch; a
+    learner → an ACTIVE enrollment on the ACTIVE PROFILE, scoped to their own
+    batch plus course-wide rows.
+
+    Enrollment, not subscription, is the learner test — that is what
+    _require_recording_viewer checks, and the list must not admit anyone the
+    detail endpoint then 403s (nor hide rows it would serve).
+    """
+    from accounts.auth_flow import get_active_profile
+    from enrollments.models import Enrollment
+    from enrollments.services import active_batch_id
+
+    user = request.user
+    if user.is_staff or teaches_subject(user, subject):
+        return True, TEACHER_UNRESTRICTED
+
+    learner = get_active_profile(request)
+    if learner is None:
+        return False, None
+    if not Enrollment.objects.filter(
+        learner_profile=learner,
+        course_id=subject.course_id,
+        status=Enrollment.STATUS_ACTIVE,
+    ).exists():
+        return False, None
+
+    return True, active_batch_id(
+        learner_profile=learner, course_id=subject.course_id,
+    )
 
 
 class SubjectRecordingsView(APIView):
@@ -19,10 +66,30 @@ class SubjectRecordingsView(APIView):
 
     def get(self, request, subject_id):
         from django.db.models import Q
-        from accounts.auth_flow import get_active_profile
-        from enrollments.services import active_batch_id
         subject = get_object_or_404(
             Subject.objects.select_related("course"), id=subject_id)
+
+        # ENTITLEMENT FIRST. This view previously had NO gate of any kind:
+        # permission_classes was IsAuthenticated and the only branch was
+        # "teacher-or-staff sees every batch, everyone else gets batch
+        # filtering". But active_batch_id() returns None for a caller with no
+        # enrolment, so the "everyone else" filter degraded to
+        # Q(batch__isnull=True) — i.e. EVERY course-wide recording, including
+        # each row's bunny_video_id (the playback handle). Any authenticated
+        # account could enumerate subject UUIDs from the public catalog and
+        # read the whole published library of any paid course. Same hole, same
+        # cause, as the one StudentSubjectMaterials already documents.
+        #
+        # The gate is _require_recording_viewer's rule applied at subject
+        # level, deliberately: a list that admitted people the per-id detail
+        # endpoint denies (or vice versa) is exactly how this drifted.
+        allowed, batch_id = _authorize_subject_recordings(request, subject)
+        if not allowed:
+            return Response(
+                {"detail": "You do not have access to this subject."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         recordings = SessionRecording.objects.filter(
             subject=subject,
             is_published=True
@@ -30,11 +97,7 @@ class SubjectRecordingsView(APIView):
         # Teachers/staff see every batch's recordings; a student sees only
         # course-wide (batch IS NULL) recordings plus their own batch's.
         # Scoped to the ACTIVE PROFILE, not the account — see active_batch_id.
-        if not (request.user.is_staff or teaches_subject(request.user, subject)):
-            batch_id = active_batch_id(
-                learner_profile=get_active_profile(request),
-                course_id=subject.course_id,
-            )
+        if batch_id is not TEACHER_UNRESTRICTED:
             recordings = recordings.filter(
                 Q(batch__isnull=True) | Q(batch_id=batch_id))
         serializer = SessionRecordingSerializer(recordings, many=True)
@@ -93,7 +156,16 @@ class DeleteRecordingView(APIView):
 
     def delete(self, request, recording_id):
         recording = get_object_or_404(SessionRecording, id=recording_id)
-        if not teaches_subject(request.user, recording.subject):
+        # Subject teaching staff (or an admin) may delete, not just the
+        # uploader. Deliberately the SAME rule as DeleteStudyMaterial — the
+        # two used to disagree (recordings: any co-teacher; materials:
+        # uploaded_by only) even though both list endpoints return
+        # colleagues' content, so on one screen the delete button worked and
+        # on the other it always 403'd. See that view for the reasoning.
+        if not (
+            request.user.is_staff
+            or teaches_subject(request.user, recording.subject)
+        ):
             return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
 
         # Deleting only the DB row orphans the Bunny Stream video — it keeps
@@ -163,7 +235,15 @@ class SignedUploadUrlView(APIView):
         if not (owns_pending or owns_recording):
             return Response({"error": "Not allowed."}, status=403)
 
-        return Response(bunny_tus_ticket(video_id))
+        # One ticket covers the WHOLE transfer and Bunny rejects every chunk
+        # after it expires, with no resume path on the client. A flat 1 h
+        # ticket therefore lost any upload slower than 4 GB/hour outright —
+        # and the form permits 4 GB. Size the ticket to the declared file
+        # instead (capped in bunny_signing). file_size is a hint, not a
+        # trusted value: it only lengthens an already-authorised ticket for a
+        # video_id this caller was just verified to own.
+        expiry = upload_expiry_for_size(request.data.get("file_size"))
+        return Response(bunny_tus_ticket(video_id, expiry_seconds=expiry))
 
 
 class SaveRecordingView(APIView):
@@ -207,7 +287,16 @@ class SaveRecordingView(APIView):
         batch = None
         batch_id = request.data.get("batch_id")
         if batch_id:
-            batch = get_object_or_404(Batch, id=batch_id)
+            # course_id in the lookup, not just the pk. Without it a batch
+            # belonging to a DIFFERENT course was accepted silently, and the
+            # student read path filters on
+            # `batch__isnull=True | batch_id=<their batch>` — which can never
+            # match a foreign course's batch. The recording then showed as
+            # published on the teacher's grid while being invisible to every
+            # student alive. Fail loudly at write time instead.
+            batch = get_object_or_404(
+                Batch, id=batch_id, course_id=subject.course_id,
+            )
         elif live_session:
             batch = live_session.batch
 
@@ -229,6 +318,47 @@ class SaveRecordingView(APIView):
         # (checked via teaches_subject above) — the pending-slot bookkeeping
         # row has done its job.
         PendingVideoUpload.objects.filter(video_id=video_id).delete()
+
+        # Notify the students who can actually SEE this recording.
+        #
+        # The upload form's rail promises "Students notified — Auto-alert once
+        # live" (UploadRecording.jsx). That was a lie: this view sent nothing,
+        # activity/signals.py had no recording hook, and grepping for one
+        # returned nothing. No bell, no Activity row, no WS frame — recordings
+        # were the only student-facing content lifecycle with no notification
+        # at all.
+        #
+        # Reuses the exact path study materials already take: _enrollments_for
+        # applies the same batch-visibility rule the reader applies (so a
+        # batch-scoped recording never notifies a batch that would 403 on it),
+        # and _bulk_notify_students writes the durable Activity + Notification
+        # rows plus one WS frame per row carrying the SERIALIZED ACTIVITY, so
+        # dedupe and mark-read work against /activity/feed/.
+        #
+        # Best-effort: a notification backend hiccup must not fail an upload
+        # whose 3 GB Bunny transfer already succeeded — the recording row is
+        # the thing the teacher cannot cheaply redo.
+        try:
+            from activity.models import Activity
+            from activity.signals import _bulk_notify_students, _enrollments_for
+
+            _bulk_notify_students(
+                _enrollments_for(subject.course, recording.batch_id),
+                recording,
+                Activity.TYPE_RECORDING,
+                f"New recording: {recording.title}",
+                None,                   # recordings have no due date
+                subject.id,
+                subject.name,
+                verb="recording.uploaded",
+                link_url=f"/subjects/recordings/{subject.id}",
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Recording notification failed for %s: %s", recording.id, e,
+            )
+
         return Response(SessionRecordingSerializer(recording).data)
 
 
@@ -245,7 +375,12 @@ class CheckVideoStatusView(APIView):
         )
         _require_recording_viewer(request, recording)
 
-        if recording.status == 4:
+        # Finished AND we already know how long it is → nothing left to ask
+        # Bunny. The duration half of that condition is load-bearing: this
+        # early return used to fire on status alone, which meant every
+        # recording that reached READY before duration capture existed could
+        # never acquire one, because no other code path fetches it either.
+        if recording.status == 4 and recording.duration_seconds:
             return Response(SessionRecordingSerializer(recording).data)
 
         url = (
@@ -261,6 +396,22 @@ class CheckVideoStatusView(APIView):
                 new_status = data.get("status", 0)
                 recording.status = new_status
 
+                # DURATION. This is the only place the app ever sees Bunny's
+                # `length` (seconds), and it used to throw it away — nothing
+                # in the codebase wrote duration_seconds, so it stayed NULL
+                # forever. Downstream, that made
+                # GetVideoProgressView.percent_complete permanently null (the
+                # student's progress bar pinned at 0% and the card printed no
+                # duration) and made SaveVideoProgressView's auto-complete
+                # branch unreachable, because both are computed from it.
+                length = data.get("length")
+                try:
+                    length = int(length)
+                except (TypeError, ValueError):
+                    length = 0
+                if length > 0:
+                    recording.duration_seconds = length
+
                 if new_status == 4 and not recording.thumbnail_url:
                     thumb_file = data.get("thumbnailFileName", "")
                     cdn_host = getattr(settings, "BUNNY_CDN_HOST", "")
@@ -269,7 +420,9 @@ class CheckVideoStatusView(APIView):
                             f"https://{cdn_host}/{recording.bunny_video_id}/{thumb_file}"
                         )
 
-                recording.save(update_fields=["status", "thumbnail_url"])
+                recording.save(
+                    update_fields=["status", "thumbnail_url", "duration_seconds"]
+                )
 
         except Exception as e:
             import logging
@@ -346,6 +499,73 @@ def _require_recording_viewer(request, recording):
             learner_profile=learner, course_id=course.id,
         ):
             raise PermissionDenied("This recording is not available to your batch.")
+
+
+class RecordingPlaybackView(APIView):
+    """GET recordings/<id>/playback/ → a SHORT-LIVED, SIGNED iframe URL.
+
+    Replaces the client building
+    `https://iframe.mediadelivery.net/embed/{LIBRARY_ID}/{videoId}` itself
+    from a library id shipped in the bundle. That URL was unauthenticated and
+    permanent: copy it out of devtools, cancel the subscription, keep
+    streaming — or post it publicly. Every check in
+    _require_recording_viewer was bypassed by one copied string, forever.
+
+    Now the entitlement check runs on EVERY playback, the URL expires (see
+    bunny_signing.EMBED_EXPIRY_SECONDS), and neither the library id nor any
+    Bunny key reaches the browser.
+
+    `token_auth` in the response is the honest signal, not decoration: it is
+    False when BUNNY_STREAM_TOKEN_KEY is unset, in which case the URL is the
+    old permanent one and the caller should be under no illusion that
+    playback is gated. See bunny_signing's module docstring for the two
+    things ops must configure.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, recording_id):
+        recording = get_object_or_404(
+            SessionRecording.objects.select_related("subject__course"),
+            id=recording_id,
+        )
+        _require_recording_viewer(request, recording)
+
+        if not recording.bunny_video_id:
+            return Response(
+                {"detail": "This recording has no video attached."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Player options the client used to append itself. `start` resumes at
+        # the saved watch position; it is NOT part of the signature, so a
+        # viewer nudging it cannot invalidate (or extend) the token.
+        params = {"autoplay": "false"}
+        try:
+            start = int(float(request.query_params.get("start") or 0))
+        except (TypeError, ValueError):
+            start = 0
+        if start > 0:
+            params["start"] = start
+
+        url, expires, signed = bunny_embed_url(
+            recording.bunny_video_id, params=params,
+        )
+        if not url:
+            return Response(
+                {
+                    "detail": "Playback isn't configured on this server.",
+                    "code": "playback_not_configured",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return Response({
+            "embed_url": url,
+            "expires": expires,
+            "token_auth": signed,
+            "duration_seconds": recording.duration_seconds,
+        })
 
 
 class RecordingNotesView(APIView):

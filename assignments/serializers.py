@@ -2,8 +2,8 @@ from rest_framework import serializers
 from django.utils import timezone
 from .models import Assignment, AssignmentFile, AssignmentSubmission
 from courses.board_display import board_name_via
-from courses.models import Chapter, Batch
-from courses.services import is_teacher_of
+from courses.models import Chapter, Batch, Subject
+from courses.services import is_teacher_of, resolve_or_create_chapter
 import os
 
 
@@ -16,9 +16,37 @@ BLOCKED_EXTENSIONS = [
     ".php", ".py", ".rb", ".pl", ".cgi",
     ".js", ".vbs", ".ps1", ".msi", ".dll",
     ".com", ".scr", ".jar", ".app",
+    # ── Active content served back over HTTP ──────────────────────────────
+    # Everything above is about a file being *executed on a machine*. These
+    # are about a file being *rendered by a browser*: MEDIA_URL serves
+    # uploads with a guessed Content-Type, so an uploaded .html/.svg comes
+    # back as text/html or image/svg+xml and its inline <script> runs on the
+    # media origin. Cookies here are set on the parent domain, so that is a
+    # real session-stealing XSS and not a cosmetic one. Blocked on the
+    # teacher path too — a teacher's attachment is served to every student.
+    ".html", ".htm", ".xhtml", ".shtml", ".mhtml", ".mht",
+    ".svg", ".svgz", ".xml", ".xsl", ".xslt", ".hta", ".swf",
 ]
 
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+
+# What a student may hand in. An ALLOWLIST rather than the teacher path's
+# blocklist, deliberately: submissions arrive from the least-trusted party on
+# the platform, land in a directory the teacher then opens in their own
+# browser, and the UI only ever offers three formats anyway
+# (AssignmentDetail.jsx's `accept=".pdf,.doc,.docx"`). Images are included
+# because photographing handwritten work is the normal path on a phone.
+ALLOWED_SUBMISSION_EXTENSIONS = [
+    ".pdf",
+    ".doc", ".docx", ".odt", ".rtf", ".txt",
+    ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif",
+    ".zip",
+]
+
+# Submissions are a student's own worksheet, not a lecture recording. The
+# 100 MB teacher cap exists for video; nothing a learner hands in needs it,
+# and every one of these uploads is stored forever on a 4 GB box.
+MAX_SUBMISSION_SIZE = 25 * 1024 * 1024  # 25 MB
 
 
 def validate_assignment_file(file):
@@ -34,6 +62,35 @@ def validate_assignment_file(file):
     if file.size > MAX_FILE_SIZE:
         raise serializers.ValidationError(
             "File too large. Maximum allowed size is 100 MB."
+        )
+
+    return file
+
+
+def validate_submission_file(file):
+    """Gate for STUDENT uploads (`AssignmentSubmission.submitted_file`).
+
+    Until this existed, SubmitAssignmentView wrote `request.FILES["file"]`
+    straight onto the model with no check of any kind: the extension blocklist
+    and the size cap above were only ever wired to the teacher-facing
+    serializers, and the model field carries no validators. A student could
+    store `payload.html` and the teacher's own "Review" click executed it.
+    The frontend check is advisory only — it passes when EITHER the MIME type
+    or the extension matches, and it runs on the client regardless.
+    """
+    if file is None:
+        raise serializers.ValidationError("File required.")
+
+    ext = os.path.splitext(file.name)[1].lower()
+    if ext not in ALLOWED_SUBMISSION_EXTENSIONS:
+        raise serializers.ValidationError(
+            "Only PDF, Word, text, image or ZIP files can be submitted "
+            f"(got '{ext or 'no extension'}')."
+        )
+
+    if file.size > MAX_SUBMISSION_SIZE:
+        raise serializers.ValidationError(
+            "File too large. Maximum allowed size is 25 MB."
         )
 
     return file
@@ -221,10 +278,24 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
 # ==========================================
 
 class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
+    # Optional now: a teacher may instead send `custom_chapter` (+ `subject_id`)
+    # to mint a brand-new chapter for a subject that isn't in the curated list.
     chapter_id = serializers.PrimaryKeyRelatedField(
         queryset=Chapter.objects.all(),
         source="chapter",
         write_only=True,
+        required=False,
+    )
+    # Free-text chapter name. Not a model field — resolved (and popped) in
+    # validate() via resolve_or_create_chapter(), which reuses an existing
+    # chapter of the same name (case-insensitive) rather than duplicating it.
+    custom_chapter = serializers.CharField(
+        write_only=True, required=False, allow_blank=True,
+    )
+    # Only needed alongside custom_chapter — without an existing chapter there
+    # is no other way to know which subject the new chapter belongs to.
+    subject_id = serializers.PrimaryKeyRelatedField(
+        queryset=Subject.objects.all(), write_only=True, required=False,
     )
     # Due dates are cohort-relative, so a batch is required for new
     # assignments (legacy batch=NULL rows stay valid — write-side only).
@@ -241,6 +312,8 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
         model = Assignment
         fields = (
             "chapter_id",
+            "custom_chapter",
+            "subject_id",
             "batch_id",
             "title",
             "description",
@@ -271,9 +344,30 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
                 {"due_date": "Due date must be today or in the future."}
             )
 
-        chapter = attrs.get("chapter")
         batch = attrs.get("batch")
         user = self.context["request"].user
+
+        chapter = attrs.get("chapter")
+        custom_chapter = attrs.pop("custom_chapter", "")
+        subject = attrs.pop("subject_id", None)
+
+        if chapter is None:
+            if not subject or not custom_chapter.strip():
+                raise serializers.ValidationError(
+                    {"chapter_id": "Select a chapter or enter a new chapter name."}
+                )
+            # Gate the CREATE itself, not just the identical check below —
+            # an unauthorized custom-chapter attempt must not leave a stray
+            # Chapter row behind under a subject this teacher has no claim to.
+            if batch and not is_teacher_of(user, batch, subject):
+                raise serializers.ValidationError(
+                    {"non_field_errors": [
+                        f"You are not assigned to teach {subject.name} in "
+                        f"{batch.name}. Pick a batch you teach."
+                    ]}
+                )
+            chapter = resolve_or_create_chapter(subject, custom_title=custom_chapter)
+            attrs["chapter"] = chapter
 
         # Triangle guard: the batch and the chapter's subject share a course.
         if chapter and batch and chapter.subject.course_id != batch.course_id:
@@ -284,8 +378,15 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
         # Authz: assigned to this (batch, subject) — either scoped to the
         # batch, or course-wide (is_teacher_of() covers both).
         if chapter and batch and not is_teacher_of(user, batch, chapter.subject):
+            # Names the BATCH, not just the subject. The old wording ("You are
+            # not assigned to this subject") was false and unactionable for the
+            # case that actually produces it: a teacher who does teach the
+            # subject, but only in another batch. They read it as a bug.
             raise serializers.ValidationError(
-                {"non_field_errors": ["You are not assigned to this subject."]}
+                {"non_field_errors": [
+                    f"You are not assigned to teach {chapter.subject.name} "
+                    f"in {batch.name}. Pick a batch you teach."
+                ]}
             )
         return attrs
 
@@ -316,6 +417,19 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
         write_only=True,
     )
 
+    # The edit form has always POSTed chapter_id, and this serializer has
+    # always dropped it on the floor — DRF silently discards unknown keys, so
+    # the teacher got "Assignment updated successfully" and the chapter was
+    # unchanged. Accepting it here is the half that makes the control real;
+    # the list serializer returning `chapter_id` (below) is the half that
+    # stops the select starting blank and forcing a pick in the first place.
+    chapter_id = serializers.PrimaryKeyRelatedField(
+        queryset=Chapter.objects.all(),
+        source="chapter",
+        write_only=True,
+        required=False,
+    )
+
     class Meta:
         model = Assignment
         fields = (
@@ -325,6 +439,7 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
             "attachment",
             "new_files",
             "delete_file_ids",
+            "chapter_id",
             "max_marks",
             # PATCH is_published=true to publish a draft — that transition is
             # what fires the class notification (activity/signals.py's
@@ -348,6 +463,20 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
 
     def validate_new_files(self, files):
         return [validate_assignment_file(f) for f in files]
+
+    def validate(self, attrs):
+        # A chapter move must stay inside the same SUBJECT. The view's
+        # ownership check runs against the assignment as it is on disk, so
+        # allowing a cross-subject move would let a teacher relocate an
+        # assignment into a subject they don't teach — passing the check on
+        # the way in and escaping it forever after.
+        chapter = attrs.get("chapter")
+        if chapter is not None and self.instance is not None:
+            if chapter.subject_id != self.instance.chapter.subject_id:
+                raise serializers.ValidationError(
+                    {"chapter_id": "Pick a chapter from this assignment's own subject."}
+                )
+        return attrs
 
     def update(self, instance, validated_data):
         new_files = validated_data.pop("new_files", [])
@@ -375,6 +504,11 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
 
 class TeacherAssignmentListSerializer(serializers.ModelSerializer):
     chapter_name = serializers.SerializerMethodField()
+    # chapter_id: the Edit form's chapter <select> is seeded from this row, so
+    # without it the select opened blank and forced the teacher to re-pick a
+    # chapter they hadn't asked to change.
+    chapter_id = serializers.UUIDField(
+        source="chapter.id", read_only=True, allow_null=True)
     total_submissions = serializers.IntegerField(read_only=True)
     files = AssignmentFileSerializer(many=True, read_only=True)
     # The teacher's Assignments screen is one flat list across every subject
@@ -400,7 +534,15 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "title",
+            # description: the ONLY payload the teacher Edit form is seeded
+            # from is a row of this serializer. Without this field the form
+            # initialised description to "", its own validation then refused
+            # to submit while empty, and a teacher opening Edit to fix a typo
+            # in the title had to retype the entire brief — silently
+            # overwriting a long one with whatever they could remember.
+            "description",
             "chapter_name",
+            "chapter_id",
             "subject_id",
             "subject_name",
             "course_title",
