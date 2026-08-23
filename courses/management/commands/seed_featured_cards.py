@@ -66,6 +66,29 @@ class Command(BaseCommand):
         mode = "DRY RUN — nothing will be written" if dry_run else "WRITE MODE"
         self.stdout.write(self.style.WARNING(f"=== seed_featured_cards: {mode} ==="))
 
+        # This command dedups by TARGET (course/board FK). seed_homepage_defaults
+        # creates the same 18 cards WITHOUT any FK — transcribed straight from
+        # the frontend's old hardcoded list — so those rows match nothing here
+        # and every card would be created a second time, silently doubling the
+        # homepage grid. Refuse to run rather than quietly produce 36 cards.
+        # Linking the unlinked rows changes what visitors see (a linked card
+        # takes its title and price from the real Course), so it is a content
+        # decision and deliberately not automated here.
+        unlinked = ShowcaseCourse.objects.filter(course__isnull=True, board__isnull=True)
+        if unlinked.exists():
+            self.stderr.write(self.style.ERROR(
+                f"REFUSING TO RUN: {unlinked.count()} ShowcaseCourse row(s) exist "
+                f"with no course/board link:\n"
+                + "\n".join(f"    id={c.id} order={c.order} {c.title!r}"
+                            for c in unlinked.order_by("order")[:20])
+                + "\n\nThese are almost certainly seed_homepage_defaults' rows. "
+                  "This command would not recognise them and would create a "
+                  "duplicate card for every target.\n"
+                  "Either link them to their real Course/Board in the admin "
+                  "(Content → Showcase), or delete them, then re-run."
+            ))
+            return
+
         created = updated = skipped_no_target = 0
 
         for row in FEATURED_CARD_SEED:
