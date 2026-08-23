@@ -2115,10 +2115,40 @@ class PublicFeaturedView(APIView):
 class PublicNavMenuView(APIView):
     """GET /courses/public/nav-menu/ — the navbar Courses mega-menu payload.
     Returns exactly two categories the backend can back with data: "school"
-    (board tabs grouped by board_type) and "competitive" (courses tagged with a
+    (board tabs grouped by board_type, each listing its boards AND the classes
+    each board offers) and "competitive" (courses tagged with a
     CourseCategory whose group == 'competitive'). The frontend merges its static
     "Skill & Career" category client-side; it is deliberately NOT returned here."""
     permission_classes = [AllowAny]
+
+    @staticmethod
+    def _class_links(board, group_key, prefix=False):
+        """One nav link per class this board actually offers.
+
+        Labels come from `class_level`/`stream` rather than the course title,
+        so the menu reads "Class 11 · Science" regardless of how a given course
+        happens to be titled in the catalog. Courses with no class_level (the
+        coaching/competitive rows) are skipped — they belong to the separate
+        "competitive" category below, not under a board."""
+        courses = (
+            Course.objects
+            .filter(board=board, status__in=PUBLIC_COURSE_STATUSES,
+                    class_level__isnull=False)
+            .select_related("stream")
+            .order_by("class_level", "stream__name", "title")
+        )
+        links = []
+        for c in courses:
+            label = f"Class {c.class_level}"
+            if c.stream and c.stream.name:
+                label += f" · {c.stream.name.title()}"
+            if prefix:
+                label = f"{board.name} · {label}"
+            if c.status == Course.STATUS_COMING_SOON:
+                links.append({"label": label, "soon": True})
+            else:
+                links.append({"label": label, "to": f"/courses/{c.slug}"})
+        return links
 
     def get(self, request):
         key = list_cache_key(request)
@@ -2139,18 +2169,28 @@ class PublicNavMenuView(APIView):
             group_key = board_type.lower()
             disp = type_display.get(board_type, board_type.title())
             label = f"{disp} Boards"
+            group_boards = [b for b in boards if b.board_type == board_type]
+            # Prefix class labels with the board name only when the tab holds
+            # more than one active board — otherwise every label would read
+            # "CBSE · Class 9" in a tab that already says "Central Boards".
+            multi = sum(1 for b in group_boards if b.is_active) > 1
+
             links = []
-            for b in boards:
-                if b.board_type != board_type:
-                    continue
-                if b.is_active:
-                    links.append({
-                        "label": b.name,
-                        "to": "/courses",
-                        "state": {"selectedBoardGroup": group_key, "selectedBoard": b.slug},
-                    })
-                else:
+            for b in group_boards:
+                if not b.is_active:
                     links.append({"label": b.name, "soon": True})
+                    continue
+                links.append({
+                    "label": b.name,
+                    "to": "/courses",
+                    "state": {"selectedBoardGroup": group_key, "selectedBoard": b.slug},
+                })
+                # ...then the individual classes offered by that board. Without
+                # these the menu only ever offers a whole board, which is a
+                # regression the frontend can't paper over: mergeLiveNavMenu()
+                # replaces its static tabs wholesale as soon as this endpoint
+                # answers, so anything omitted here simply vanishes from the nav.
+                links.extend(self._class_links(b, group_key, prefix=multi))
             tabs.append({
                 "id": group_key,
                 "label": label,
