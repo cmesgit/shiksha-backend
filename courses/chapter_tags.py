@@ -106,6 +106,13 @@ def validate_tag_payload(tags, no_specific_chapter):
         })
 
 
+# The complete write vocabulary for one `chapter_tags` entry. `is_custom` and
+# `order` are read-side keys, accepted so a payload fetched from the API can be
+# round-tripped straight back without stripping fields. Anything outside this
+# set is a client/server dialect mismatch and is rejected — see resolve_tags().
+_TAG_KEYS = {"chapter_id", "label", "is_custom", "order"}
+
+
 def resolve_tags(subject, tags, teacher=None, save_to_course=False):
     """Turn raw `[{chapter_id, label, is_custom}]` into (chapter, label) pairs.
 
@@ -155,8 +162,24 @@ def resolve_tags(subject, tags, teacher=None, save_to_course=False):
             if chapter is None:
                 label = raw_label
         else:
-            # Neither an id nor a label: nothing to tag. Skipped rather than
-            # rejected, so a UI sending a trailing blank row still saves.
+            # Neither an id nor a label. A genuinely blank row is skipped, so a
+            # UI sending a trailing empty entry still saves. But an entry that
+            # carries keys we do not recognise is NOT blank — it is a client
+            # speaking the wrong dialect, and silently dropping it means the
+            # request 201s having saved nothing. That actually happened: the
+            # picker sent {chapter, custom_label} instead of
+            # {chapter_id, label}, both sides' unit tests passed, and every tag
+            # vanished on save. `chapter_tags` is a bare list of dicts, so DRF
+            # cannot catch this for us — reject it here instead.
+            unknown = set(entry) - _TAG_KEYS
+            if unknown:
+                raise serializers.ValidationError({
+                    "chapter_tags": (
+                        f"Entry {index} has unrecognised key(s) "
+                        f"{sorted(unknown)}. Expected `chapter_id` for a "
+                        f"syllabus chapter or `label` for a free-text tag."
+                    )
+                })
             continue
 
         key = ("chapter", chapter.id) if chapter else ("label", label.lower())

@@ -252,6 +252,10 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
             tags, save_to_course, present,
         )
 
+    # Atomic for the same reason as the assignment serializer: _apply_tags
+    # resolves the payload after the row exists (tags need the pk) and can
+    # still raise there, which otherwise left a committed quiz behind a 400.
+    @transaction.atomic
     def create(self, validated_data):
         # ── Per-quiz-type defaults (Phase 4) ──────────────────────────────
         # The spec wants `reveal_answers=after_submit` + `max_attempts=1` for
@@ -278,6 +282,7 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
             **validated_data
         ))
 
+    @transaction.atomic
     def update(self, instance, validated_data):
         return self._apply_tags(super().update(instance, validated_data))
 

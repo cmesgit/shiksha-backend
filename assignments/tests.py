@@ -713,6 +713,39 @@ class ChapterTagCreationTest(AssignmentScopeFixtureMixin, TestCase):
         # legacy chapter-filtered reads still find this assignment.
         self.assertEqual(assignment.chapter_id, self.chapter.id)
 
+    def test_an_entry_with_unrecognised_keys_is_rejected_not_dropped(self):
+        """The exact bug an end-to-end run caught: the picker sent
+        {chapter, custom_label} instead of {chapter_id, label}. Because
+        `chapter_tags` is validated as a bare list of dicts, DRF accepted it,
+        resolve_tags() recognised neither key, and every tag was silently
+        dropped — a 201 that saved zero chapters. Both sides' unit tests
+        passed, because each used its own spelling. A wrong dialect must be a
+        400, never a silent no-op."""
+        before = Assignment.objects.count()
+        r = self._create(chapter_tags=[
+            {"chapter": str(self.chapter.id), "order": 0},
+        ])
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn("chapter_tags", r.data)
+        self.assertIn("chapter", str(r.data["chapter_tags"]))
+        self.assertEqual(
+            Assignment.objects.count(), before,
+            "the rejected request must not have written an assignment",
+        )
+
+    def test_a_genuinely_blank_entry_is_still_skipped(self):
+        """The flip side: the tolerance for a trailing empty row that the
+        rejection above must not break. An entry carrying no keys at all —
+        or only read-side keys with no value — is a UI artefact, not a
+        dialect mismatch, and still saves."""
+        r = self._create(chapter_tags=[
+            {"chapter_id": str(self.chapter.id)}, {}, {"order": 9},
+        ])
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+        self.assertEqual([t.chapter_id for t in self._tags(assignment)],
+                         [self.chapter.id])
+
     def test_one_custom_label_stays_free_text(self):
         r = self._create(chapter_tags=[{"label": "Mixed revision"}])
         self.assertEqual(r.status_code, 201, r.content)

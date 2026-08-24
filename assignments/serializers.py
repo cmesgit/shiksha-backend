@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.db import transaction
 from django.utils import timezone
 from .models import Assignment, AssignmentFile, AssignmentSubmission
 from courses.board_display import board_name_via
@@ -446,6 +447,13 @@ class TeacherAssignmentCreateSerializer(ChapterTagWriteMixin,
         self._tag_subject = subject
         return attrs
 
+    # Atomic because the tag payload is resolved AFTER the row is written —
+    # tags need the saved pk. resolve_tags() can still reject at that point
+    # (a chapter from another subject, an unrecognised key), and without this
+    # the caller got a 400 while the assignment stayed behind, half
+    # configured and already visible to the batch. Applies to update() too:
+    # a rejected re-tag must not leave the other edited fields committed.
+    @transaction.atomic
     def create(self, validated_data):
         instance = super().create(validated_data)
         tags, save_to_course, present = getattr(
@@ -562,6 +570,7 @@ class TeacherAssignmentUpdateSerializer(ChapterTagWriteMixin,
         self._tag_input = self.pop_chapter_tag_input(attrs)
         return attrs
 
+    @transaction.atomic
     def update(self, instance, validated_data):
         new_files = validated_data.pop("new_files", [])
         delete_ids = validated_data.pop("delete_file_ids", [])
