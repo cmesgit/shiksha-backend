@@ -700,6 +700,10 @@ class HomeListVariant(models.TextChoices):
     BULLET = "bullet", "Bullet (About — secondary list)"
     PILLAR = "pillar", "Pillar (About — Mission icon row)"
     NUMBERED = "numbered", "Numbered card (About — Why Choose)"
+    # The About hero's row of small illustrations. Unlike every variant above
+    # it carries no copy at all — the image *is* the content — so a row of
+    # these is expected to have empty title/body.
+    STICKER = "sticker", "Sticker (About — hero image row)"
 
 
 class HomeListItem(TimeStampedModel):
@@ -731,6 +735,15 @@ class HomeListItem(TimeStampedModel):
         max_length=20, blank=True, default="",
         help_text="Design-token key (e.g. violet/green/gold) — the frontend "
                   "maps this to a CSS variable, never a raw color.",
+    )
+    # Same dual field/URL pair as HomeContentBlock, resolved to a single `img`
+    # by the serializer. Added so per-card artwork (the About hero's sticker
+    # row, optional art on the Why-Choose cards) is editable in the CMS —
+    # before this, those images were hardcoded frontend imports and could only
+    # be changed with a deploy.
+    image = models.ImageField(upload_to="content/home/", blank=True, null=True)
+    image_url = models.URLField(
+        blank=True, default="", help_text="Used if no image file is uploaded.",
     )
     order = models.PositiveSmallIntegerField(default=0)
     is_active = models.BooleanField(default=True, db_index=True)

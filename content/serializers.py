@@ -174,12 +174,20 @@ class HomeContentBlockSerializer(serializers.ModelSerializer):
 
 
 class HomeListItemSerializer(serializers.ModelSerializer):
+    img = serializers.SerializerMethodField()
+
     class Meta:
         model = HomeListItem
         fields = [
             "id", "section", "variant", "icon", "title", "subtitle", "body",
-            "pills", "stat_text", "cta_label", "cta_href", "tint", "order",
+            "pills", "stat_text", "cta_label", "cta_href", "tint", "img",
+            "order",
         ]
+
+    def get_img(self, obj):
+        if obj.image:
+            return _absolute(self.context.get("request"), obj.image.url)
+        return obj.image_url or ""
 
 
 class HomeFloaterSerializer(serializers.ModelSerializer):
