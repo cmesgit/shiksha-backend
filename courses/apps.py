@@ -13,6 +13,7 @@ class CoursesConfig(AppConfig):
             models_recordings,
             models_progress,
             models_batch_progress,
+            models_chapter_tags,
         )
         # Registers post_save/post_delete signals that bump the courses cache
         # version, so the public boards/catalog list endpoints invalidate

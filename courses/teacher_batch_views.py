@@ -25,13 +25,18 @@ from .services import teaches_subject
 
 
 def _avg_quiz_score(user):
-    """Attempt-weighted average score % across this teacher's published
+    """Attempt-weighted average score % across this teacher's assigned
     quizzes' submitted attempts (every attempt counts once — not a
-    per-quiz average of averages). None if there are no such attempts."""
+    per-quiz average of averages). None if there are no such attempts.
+
+    is_assigned, not is_published (Phase 1). This aggregates over ATTEMPTS,
+    not quizzes, and adds no batches join — so there is no row-duplication
+    risk to the Avg() here.
+    """
     avg = (
         QuizAttempt.objects.filter(
             quiz__created_by=user,
-            quiz__is_published=True,
+            quiz__is_assigned=True,
             status=QuizAttempt.STATUS_SUBMITTED,
             quiz__total_marks__gt=0,
         )

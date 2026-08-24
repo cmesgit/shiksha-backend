@@ -1,9 +1,17 @@
 from django.contrib import admin
-from .models import Quiz, Question, Choice, QuizAttempt, StudentAnswer
+from .models import (
+    Quiz, QuizSection, Question, Choice, QuizAttempt, StudentAnswer,
+)
 
 
 class QuestionInline(admin.TabularInline):
     model = Question
+    extra = 0
+    show_change_link = True
+
+
+class QuizSectionInline(admin.TabularInline):
+    model = QuizSection
     extra = 0
     show_change_link = True
 
@@ -40,7 +48,7 @@ class QuizAdmin(admin.ModelAdmin):
         "total_marks",
     )
 
-    inlines = [QuestionInline]
+    inlines = [QuizSectionInline, QuestionInline]
 
 
 class ChoiceInline(admin.TabularInline):

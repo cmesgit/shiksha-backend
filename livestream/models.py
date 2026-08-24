@@ -3,6 +3,10 @@ from datetime import timedelta
 
 from django.db import models
 from django.conf import settings
+from courses.models_chapter_tags import (
+    chapter_note_field,
+    no_specific_chapter_field,
+)
 
 
 class LiveSession(models.Model):
@@ -59,6 +63,14 @@ class LiveSession(models.Model):
     )
 
     title = models.CharField(max_length=255)
+
+    # --- Flexible chapter tagging (courses.models_chapter_tags) ---
+    # The rich multi-chapter placement lives in ContentChapterTag, keyed on
+    # (content_type, object_id). These two are the scalar companions; see
+    # courses/models_chapter_tags.py for what each one means and why
+    # no_specific_chapter is not the same state as "no tags".
+    chapter_note = chapter_note_field()
+    no_specific_chapter = no_specific_chapter_field()
     description = models.TextField(blank=True)
 
     # 🧠 PLANNING LAYER ONLY

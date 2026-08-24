@@ -178,6 +178,38 @@ def _batch_visibility_q(batch_ids_by_course, course_field):
     return q
 
 
+def _quiz_batch_visibility_q(batch_ids_by_course):
+    """Quiz-specific counterpart to _batch_visibility_q above.
+
+    Quizzes carry a multi-batch M2M (`Quiz.batches`) as well as the legacy
+    single-batch FK, so the FK-only helper above would read a quiz assigned to
+    several batches as having no batch at all — i.e. course-wide — and show it
+    to every batch in the course. The per-course rule is delegated to
+    quizzes/visibility.py so there is exactly one definition of "is this quiz
+    in scope for this learner", shared with quizzes/views.py.
+
+    Two behaviours of the original are preserved deliberately:
+
+      · The base term is course-wide-in-ANY-course. _learner_course_ids uses
+        legacy_profile_q (so it includes pre-backfill enrollments with
+        learner_profile=NULL) while _batch_ids_for does not, so a course can
+        appear in subject_ids yet be absent from batch_ids_by_course. Without
+        this term every quiz in such a course would vanish.
+      · A course the learner is enrolled in but unplaced in is not restricted
+        at all — the same deliberate over-share _batch_ids_for documents.
+    """
+    from quizzes.visibility import batch_scope_q
+
+    q = batch_scope_q(None)
+    for course_id, batch_id in batch_ids_by_course.items():
+        in_course = Q(subject__course_id=course_id)
+        if batch_id is None:
+            q |= in_course
+        else:
+            q |= in_course & batch_scope_q(batch_id)
+    return q
+
+
 def _learner_assignments(chapter_ids, teacher_prefetch, batch_q, submitted_ids):
     """Assignments still outstanding for this learner.
 
@@ -197,7 +229,7 @@ def _learner_assignments(chapter_ids, teacher_prefetch, batch_q, submitted_ids):
         Assignment.objects.filter(chapter_id__in=chapter_ids, is_published=True)
         .filter(batch_q)
         .exclude(id__in=submitted_ids)
-        .select_related("chapter__subject__course__board")
+        .select_related("subject__course__board", "chapter")
         .prefetch_related(teacher_prefetch)
         .order_by("due_date")[:20]
     )
@@ -245,8 +277,13 @@ def _learner_quizzes(subject_ids, batch_q, submitted_ids):
     # permanently. _learner_assignments' docstring above claimed quizzes
     # "behave correctly", which is exactly backwards — assignments were fixed
     # and quizzes were not, and the stale comment is why nobody re-checked.
+    # is_assigned, not is_published: Phase 1 moved student visibility onto the
+    # teacher-controlled flag. batch_q now comes from
+    # _quiz_batch_visibility_q, which is M2M-aware; it is built from Exists()
+    # subqueries so it adds no join and cannot duplicate rows into the [:20]
+    # slice below.
     return list(
-        Quiz.objects.filter(subject_id__in=subject_ids, is_published=True)
+        Quiz.objects.filter(subject_id__in=subject_ids, is_assigned=True)
         .filter(batch_q)
         .exclude(id__in=submitted_ids)
         .select_related("created_by", "subject__course__board")
@@ -330,10 +367,10 @@ def _teacher_live_sessions(user, today_start, excluded, week_only):
 def _teacher_assignments(user, teacher_prefetch):
     return list(
         Assignment.objects.filter(
-            chapter__subject__teaching_assignments__teacher=user,
-            chapter__subject__teaching_assignments__is_active=True,
+            subject__teaching_assignments__teacher=user,
+            subject__teaching_assignments__is_active=True,
         )
-        .select_related("chapter__subject__course__board")
+        .select_related("subject__course__board", "chapter")
         .prefetch_related(teacher_prefetch)
         .distinct()
         .order_by("due_date")
@@ -379,8 +416,8 @@ def _ungraded_submissions_q(user):
     afford.
     """
     return AssignmentSubmission.objects.filter(
-        assignment__chapter__subject__teaching_assignments__teacher=user,
-        assignment__chapter__subject__teaching_assignments__is_active=True,
+        assignment__subject__teaching_assignments__teacher=user,
+        assignment__subject__teaching_assignments__is_active=True,
         graded_at__isnull=True,
     )
 
@@ -393,7 +430,7 @@ def _teacher_grading_queue(user, limit=15):
     """
     return list(
         _ungraded_submissions_q(user)
-        .select_related("student", "assignment__chapter__subject__course__board")
+        .select_related("student", "assignment__subject__course__board", "assignment__chapter")
         .distinct()
         .order_by("-submitted_at")[:limit]
     )
@@ -475,7 +512,7 @@ class DashboardView(APIView):
         excluded = [LiveSession.STATUS_COMPLETED, LiveSession.STATUS_CANCELLED]
 
         teacher_prefetch = Prefetch(
-            "chapter__subject__teaching_assignments",
+            "subject__teaching_assignments",
             queryset=TeachingAssignment.objects.filter(
                 batch__isnull=True, is_active=True,
             ).select_related("teacher"),
@@ -593,9 +630,8 @@ class DashboardView(APIView):
             # failure (_guard's fallbacks) so a hiccup can never blank the
             # dashboard.
             assignment_batch_q = _batch_visibility_q(
-                batch_ids_by_course, "chapter__subject__course_id")
-            quiz_batch_q = _batch_visibility_q(
                 batch_ids_by_course, "subject__course_id")
+            quiz_batch_q = _quiz_batch_visibility_q(batch_ids_by_course)
             submitted_ids = _guard(
                 "learner.submitted_assignments",
                 lambda: _submitted_assignment_ids(profile, chapter_ids), set())

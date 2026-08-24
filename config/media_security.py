@@ -38,12 +38,12 @@ def _check_study_material(request, name):
 
     mf = (
         MaterialFile.objects
-        .select_related("material__chapter__subject__course")
+        .select_related("material__subject__course")
         .filter(file=name).first()
     )
     if not mf or not mf.material_id:
         return False
-    allowed, batch_id = _authorize_subject_materials(request, mf.material.chapter.subject)
+    allowed, batch_id = _authorize_subject_materials(request, mf.material.subject)
     if not allowed:
         return False
     if batch_id is TEACHER_UNRESTRICTED:
@@ -157,17 +157,17 @@ def _check_assignment_file(request, name):
 
     af = (
         AssignmentFile.objects
-        .select_related("assignment__chapter__subject")
+        .select_related("assignment__subject", "assignment__chapter")
         .filter(file=name).first()
     )
     assignment = af.assignment if af else (
-        Assignment.objects.select_related("chapter__subject")
+        Assignment.objects.select_related("subject", "chapter")
         .filter(attachment=name).first()
     )
     if not assignment:
         return False
 
-    subject = assignment.chapter.subject
+    subject = assignment.subject
     if teaches_subject(user, subject):
         return True
     return Enrollment.objects.filter(
@@ -189,14 +189,14 @@ def _check_assignment_submission(request, name):
 
     sub = (
         AssignmentSubmission.objects
-        .select_related("assignment__chapter__subject")
+        .select_related("assignment__subject", "assignment__chapter")
         .filter(submitted_file=name).first()
     )
     if not sub:
         return False
     if sub.student_id == user.id:
         return True
-    return teaches_subject(user, sub.assignment.chapter.subject)
+    return teaches_subject(user, sub.assignment.subject)
 
 
 def _check_chat_attachment(request, name):

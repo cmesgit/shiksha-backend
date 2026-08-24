@@ -885,6 +885,13 @@ class TeacherProfile(models.Model):
     )
     # When the academy (faculty) application is rejected, the admin's reason is
     # stored here so the teacher can see why and re-apply.
+    # T4's auto-suggest row (design_handoff_quiz_system §T4). The teacher-level
+    # DEFAULT for Question.suggest_to_bank on newly written questions — not a
+    # retroactive switch. Turning it off must never reach back and un-suggest
+    # work an admin has already accepted or asked for changes on; per-question
+    # control stays in the builder, which is where the spec puts it.
+    auto_suggest_questions = models.BooleanField(default=True)
+
     academy_rejection_reason = models.TextField(blank=True)
     academy_rejected_at = models.DateTimeField(null=True, blank=True)
 

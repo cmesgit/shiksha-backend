@@ -13,7 +13,9 @@ Regression cover for the retake/answer-key and timer fixes:
   by scoping on the account instead of the active learner profile.
 """
 from datetime import timedelta
+from decimal import Decimal
 
+from django.db.models import Q
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
@@ -22,7 +24,9 @@ from rest_framework.test import APIClient
 from accounts.models import User, Role, UserRole, LearnerProfile
 from courses.models import Course, Subject, TeachingAssignment
 from enrollments.models import Subscription
-from quizzes.models import Quiz, Question, Choice, QuizAttempt, StudentAnswer
+from quizzes.models import (
+    Quiz, QuizSection, Question, Choice, QuizAttempt, StudentAnswer,
+)
 
 
 class QuizRetakeAndTimerTest(TestCase):
@@ -50,7 +54,7 @@ class QuizRetakeAndTimerTest(TestCase):
 
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Quick check",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, time_limit_minutes=10,
         )
         cls.question = Question.objects.create(
@@ -289,7 +293,7 @@ class DualRoleStudentQuizAccessTest(TestCase):
 
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.other_teacher, title="Cell structure",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, review_status=Quiz.REVIEW_APPROVED,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True, review_status=Quiz.REVIEW_APPROVED,
         )
 
     def test_quiz_detail_accessible_to_dual_role_student_in_learner_context(self):
@@ -349,11 +353,11 @@ class QuizCourseScopingTest(TestCase):
 
         cls.quiz_a = Quiz.objects.create(
             subject=cls.subject_a, created_by=cls.teacher, title="Ledger basics",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, review_status=Quiz.REVIEW_APPROVED,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True, review_status=Quiz.REVIEW_APPROVED,
         )
         cls.quiz_b = Quiz.objects.create(
             subject=cls.subject_b, created_by=cls.teacher, title="Fundamental rights",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, review_status=Quiz.REVIEW_APPROVED,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True, review_status=Quiz.REVIEW_APPROVED,
         )
 
     def client_as_student(self):
@@ -401,12 +405,12 @@ class QuizCourseScopingTest(TestCase):
         )
         Quiz.objects.create(
             subject=self.subject_a, created_by=self.teacher, title="Evening-only test",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, batch=batch_other,
         )
         mine = Quiz.objects.create(
             subject=self.subject_a, created_by=self.teacher, title="Morning-only test",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, batch=batch_mine,
         )
 
@@ -471,7 +475,7 @@ class QuizAccidentalRetakeTest(TestCase):
         )
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Cells",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, review_status=Quiz.REVIEW_APPROVED,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True, review_status=Quiz.REVIEW_APPROVED,
         )
         cls.question = Question.objects.create(quiz=cls.quiz, text="Powerhouse?", marks=1, order=0)
         cls.right = Choice.objects.create(question=cls.question, text="Mitochondria", is_correct=True)
@@ -639,6 +643,122 @@ class BulkQuestionReplaceSemanticsTest(TestCase):
         self.assertEqual(self.quiz.questions.count(), 2)
         self.assertTrue(Question.objects.filter(id=self.q2.id).exists())
 
+    def test_saving_questions_keeps_total_marks_in_sync(self):
+        """`total_marks` is the denominator of every score percentage.
+
+        It used to be recomputed in exactly one place — SubmitQuizForReviewView.
+        Phase 1 replaced that route with assign/ and Phase 5b pointed the
+        builder at it, so nothing recomputed the field any more and every quiz
+        made through the new flow kept the model default of 0. Six different
+        score calculations divide by it and each guards against zero by
+        bailing out, so the symptom was a silently blank percentage rather than
+        an error — a student's best score just stopped being reported.
+        """
+        self.quiz.total_marks = 0
+        self.quiz.save(update_fields=["total_marks"])
+
+        c = self._client()
+        r = c.put(
+            f"/api/teacher/quizzes/{self.quiz.id}/questions/bulk/",
+            {"questions": [self._payload_for(self.q1), self._payload_for(self.q2)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+
+        self.quiz.refresh_from_db()
+        # q1 is 2 marks, q2 is 3 (see setUp)
+        self.assertEqual(self.quiz.total_marks, 5)
+
+    def test_deleting_a_question_lowers_total_marks(self):
+        # The replace contract deletes omitted questions, so the total has to
+        # come down too — otherwise every percentage is quietly deflated.
+        c = self._client()
+        r = c.put(
+            f"/api/teacher/quizzes/{self.quiz.id}/questions/bulk/",
+            {"questions": [self._payload_for(self.q1)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.quiz.refresh_from_db()
+        self.assertEqual(self.quiz.total_marks, 2)
+
+    def test_assigning_resyncs_total_marks_as_a_backstop(self):
+        # Whatever route a quiz took, it must not go live with a zero
+        # denominator — that is what blanks the student-facing percentages.
+        self.quiz.total_marks = 0
+        self.quiz.save(update_fields=["total_marks"])
+
+        c = self._client()
+        r = c.patch(
+            f"/api/teacher/quizzes/{self.quiz.id}/assign/",
+            {"assign": True}, format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.quiz.refresh_from_db()
+        self.assertEqual(self.quiz.total_marks, 5)
+        self.assertTrue(self.quiz.is_assigned)
+
+    def test_turning_suggest_to_bank_off_makes_the_question_private(self):
+        """The Phase 2 invariant, through the endpoint that used to skip it.
+
+        This PUT updated existing rows with `queryset.update()`, which goes
+        straight to SQL and never runs Question.save() — so the
+        `suggest_to_bank=False ⟹ bank_state="private"` rule was bypassed on
+        every builder save. It stayed harmless only because the endpoint
+        ignored suggest_to_bank entirely. Phase 5d sends it, so without the
+        switch to setattr+save() a teacher marking a question "keep this to
+        my class" would leave it sitting in the admin's curation queue.
+        """
+        self.assertEqual(self.q1.bank_state, Question.BANK_STATE_SUGGESTED)
+
+        payload = self._payload_for(self.q1)
+        payload["suggest_to_bank"] = False
+        c = self._client()
+        r = c.put(
+            f"/api/teacher/quizzes/{self.quiz.id}/questions/bulk/",
+            {"questions": [payload, self._payload_for(self.q2)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+
+        self.q1.refresh_from_db()
+        self.assertFalse(self.q1.suggest_to_bank)
+        self.assertEqual(self.q1.bank_state, Question.BANK_STATE_PRIVATE)
+
+    def test_an_admin_accepted_question_is_not_demoted_by_a_plain_resave(self):
+        # The other half of the invariant: re-saving with suggest_to_bank
+        # still true must not revert an admin's curation to "suggested".
+        self.q1.bank_state = Question.BANK_STATE_ACCEPTED
+        self.q1.save()
+
+        c = self._client()
+        r = c.put(
+            f"/api/teacher/quizzes/{self.quiz.id}/questions/bulk/",
+            {"questions": [self._payload_for(self.q1), self._payload_for(self.q2)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.q1.refresh_from_db()
+        self.assertEqual(self.q1.bank_state, Question.BANK_STATE_ACCEPTED)
+
+    def test_omitting_suggest_to_bank_leaves_it_alone(self):
+        # A client that never sends the key (the pre-5d builder) must not have
+        # its questions re-flagged — same present-vs-absent rule as `section`.
+        self.q1.suggest_to_bank = False
+        self.q1.save()
+        self.assertEqual(self.q1.bank_state, Question.BANK_STATE_PRIVATE)
+
+        c = self._client()
+        r = c.put(
+            f"/api/teacher/quizzes/{self.quiz.id}/questions/bulk/",
+            {"questions": [self._payload_for(self.q1), self._payload_for(self.q2)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.q1.refresh_from_db()
+        self.assertFalse(self.q1.suggest_to_bank)
+        self.assertEqual(self.q1.bank_state, Question.BANK_STATE_PRIVATE)
+
 
 class QuizResultTotalsTest(TestCase):
     """The result screen's denominator is the PAPER, not what was answered.
@@ -672,7 +792,7 @@ class QuizResultTotalsTest(TestCase):
         )
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Mughals",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, total_marks=4,
         )
         cls.questions = []
@@ -769,7 +889,7 @@ class TeacherQuizRosterProfileSplitTest(TestCase):
         )
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Rivers",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, total_marks=2,
         )
         cls.question = Question.objects.create(
@@ -881,7 +1001,7 @@ class TeacherAttemptDetailContextGateTest(TestCase):
         )
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Linear equations",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, total_marks=2,
         )
         cls.q1 = Question.objects.create(
@@ -984,7 +1104,7 @@ class TeacherQuizCardStatsTest(TestCase):
         )
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Poetry",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, total_marks=10,
         )
 
@@ -1056,7 +1176,7 @@ class TeacherQuizDetailAnswerKeyTest(TestCase):
         cls.subject = Subject.objects.create(course=cls.course, name="Polity")
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Parliament",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED,
         )
         cls.question = Question.objects.create(
@@ -1081,6 +1201,833 @@ class TeacherQuizDetailAnswerKeyTest(TestCase):
         c.force_authenticate(user=self.other, token={"context": "teacher"})
         r = c.get(f"/api/quizzes/{self.quiz.id}/")
         self.assertEqual(r.status_code, 403, r.content)
+
+
+class TeacherQuizListT1RowDataTest(TestCase):
+    """T1's rows carry a bank breakdown and a batch count per quiz.
+
+    The trap this pins: `attempts` and `questions` are joined in the same
+    queryset, so a Count on questions without distinct=True is multiplied by
+    that quiz's attempt count. A 3-question quiz that two students had sat
+    would have reported 6 questions in the site bank.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Batch, Chapter
+        from courses.chapter_tags import set_tags
+
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="STUDENT")
+        cls.teacher = User.objects.create_user(
+            username="t1_t", email="t1_t@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        cls.course = Course.objects.create(title="Class 9")
+        cls.subject = Subject.objects.create(course=cls.course, name="Science")
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, is_active=True,
+        )
+        cls.chapter = Chapter.objects.create(
+            subject=cls.subject, title="Optics", order=0)
+        cls.b1 = Batch.objects.create(course=cls.course, name="9-A", code="9A")
+        cls.b2 = Batch.objects.create(course=cls.course, name="9-B", code="9B")
+
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Light",
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True, time_limit_minutes=30,
+        )
+        cls.quiz.batches.set([cls.b1, cls.b2])
+        set_tags(cls.quiz, [(cls.chapter, "", 0)])
+
+        # Three questions in three different bank states.
+        for i, state in enumerate([
+            Question.BANK_STATE_ACCEPTED,
+            Question.BANK_STATE_SUGGESTED,
+            Question.BANK_STATE_PRIVATE,
+        ]):
+            q = Question.objects.create(
+                quiz=cls.quiz, text=f"Q{i}", marks=1, order=i,
+                explanation="e", suggest_to_bank=(state != Question.BANK_STATE_PRIVATE),
+            )
+            Question.objects.filter(id=q.id).update(bank_state=state)
+            Choice.objects.create(question=q, text="a", is_correct=True)
+            Choice.objects.create(question=q, text="b", is_correct=False)
+
+        # Two submitted attempts — the multiplier that used to inflate counts.
+        for name in ("s1", "s2"):
+            acct = User.objects.create_user(
+                username=name, email=f"{name}@test.com", password="x", is_verified=True)
+            prof = LearnerProfile.objects.create(
+                account=acct, display_name=name, is_default=True)
+            QuizAttempt.objects.create(
+                quiz=cls.quiz, student=acct, learner_profile=prof,
+                status=QuizAttempt.STATUS_SUBMITTED,
+                submitted_at=timezone.now(), score=1,
+            )
+
+    def _rows(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = c.get("/api/teacher/quizzes/all/")
+        self.assertEqual(r.status_code, 200, r.content)
+        return r.data
+
+    def test_bank_counts_are_not_multiplied_by_attempts(self):
+        row = self._rows()[0]
+        self.assertEqual(row["bank_accepted"], 1)
+        self.assertEqual(row["bank_suggested"], 1)
+        self.assertEqual(row["bank_private"], 1)
+        self.assertEqual(row["bank_changes_requested"], 0)
+        # the whole point: 3 questions, 2 attempts, still 3
+        self.assertEqual(row["questions_count"], 3)
+
+    def test_batch_count_drives_the_live_for_n_batches_chip(self):
+        self.assertEqual(self._rows()[0]["batch_count"], 2)
+
+    def test_rows_carry_their_chapter_tags_and_timing(self):
+        row = self._rows()[0]
+        self.assertEqual(
+            [t["label"] for t in row["chapter_tags"]], ["Optics"])
+        self.assertIs(row["no_specific_chapter"], False)
+        self.assertEqual(row["time_limit_minutes"], 30)
+
+    def test_stats_endpoint_reports_this_week_against_last(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = c.get("/api/teacher/quizzes/stats/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["attempts_this_week"], 2)
+        self.assertEqual(r.data["attempts_last_week"], 0)
+        self.assertEqual(r.data["attempts_delta"], 2)
+
+    def test_an_attempt_from_last_week_lands_in_the_previous_bucket(self):
+        QuizAttempt.objects.filter(quiz=self.quiz).update(
+            submitted_at=timezone.now() - timedelta(days=9))
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = c.get("/api/teacher/quizzes/stats/")
+        self.assertEqual(r.data["attempts_this_week"], 0)
+        self.assertEqual(r.data["attempts_last_week"], 2)
+        self.assertEqual(r.data["attempts_delta"], -2)
+
+
+class StudentPracticeChaptersTest(TestCase):
+    """S1's "Practise by chapter" list, and the rule that keeps it honest.
+
+    Accuracy is computed from GRADED attempts only. If practice counted, then
+    practising a weak chapter would raise the number that identified it as
+    weak — the weak-area report would measure how much you practised rather
+    than what you know.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Chapter, Batch
+        from enrollments.models import Enrollment, Subscription
+
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="STUDENT")
+
+        cls.teacher = User.objects.create_user(
+            username="pt_t", email="pt_t@test.com", password="x", is_verified=True)
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Maths")
+        cls.chapter = Chapter.objects.create(
+            subject=cls.subject, title="Algebra", order=0)
+        batch = Batch.objects.create(course=cls.course, name="10-A", code="10A")
+
+        cls.account = User.objects.create_user(
+            username="kid", email="kid@test.com", password="x", is_verified=True)
+        UserRole.objects.create(
+            user=cls.account, role=Role.objects.get(name="STUDENT"),
+            is_active=True, is_primary=True)
+        cls.learner = LearnerProfile.objects.create(
+            account=cls.account, display_name="kid", is_default=True)
+        now = timezone.now()
+        Subscription.objects.create(
+            user=cls.account, learner_profile=cls.learner, course=cls.course,
+            status=Subscription.STATUS_ACTIVE, starts_at=now,
+            expires_at=now + timedelta(days=30))
+        Enrollment.objects.create(
+            user=cls.account, learner_profile=cls.learner, course=cls.course,
+            batch=batch, status=Enrollment.STATUS_ACTIVE)
+
+        # A graded mock the learner sat: 1 of 2 right → 50%.
+        cls.mock = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Algebra mock",
+            chapter=cls.chapter, quiz_type=Quiz.TYPE_MOCK, is_assigned=True)
+        cls.attempt = QuizAttempt.objects.create(
+            quiz=cls.mock, student=cls.account, learner_profile=cls.learner,
+            status=QuizAttempt.STATUS_SUBMITTED, submitted_at=now, score=1)
+        for i, correct in enumerate([True, False]):
+            q = Question.objects.create(
+                quiz=cls.mock, text=f"m{i}", marks=1, order=i, explanation="e")
+            Question.objects.filter(id=q.id).update(
+                bank_state=Question.BANK_STATE_ACCEPTED)
+            right = Choice.objects.create(question=q, text="right", is_correct=True)
+            wrong = Choice.objects.create(question=q, text="wrong", is_correct=False)
+            StudentAnswer.objects.create(
+                attempt=cls.attempt, question=q, is_correct=correct,
+                selected_choice=right if correct else wrong)
+
+    def _get(self):
+        c = APIClient()
+        # get_active_profile() reads the JWT's active_profile claim, not a
+        # cookie — see accounts/auth_flow.py:146.
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)},
+        )
+        return c.get("/api/student/practice/chapters/")
+
+    def test_lists_the_chapter_with_its_graded_accuracy_and_bank_supply(self):
+        r = self._get()
+        self.assertEqual(r.status_code, 200, r.content)
+        row = next(x for x in r.data if x["title"] == "Algebra")
+        self.assertEqual(row["accuracy"], 50)
+        self.assertEqual(row["answered"], 2)
+        self.assertEqual(row["available"], 2)
+
+    def test_practice_answers_do_not_move_the_accuracy(self):
+        # The rule this endpoint exists to protect. A practice quiz on the
+        # same chapter, all correct — accuracy must stay at the graded 50%.
+        practice = Quiz.objects.create(
+            subject=self.subject, created_by=self.teacher,
+            title="Algebra practice", chapter=self.chapter,
+            quiz_type=Quiz.TYPE_PRACTICE, is_assigned=True)
+        att = QuizAttempt.objects.create(
+            quiz=practice, student=self.account, learner_profile=self.learner,
+            status=QuizAttempt.STATUS_SUBMITTED,
+            submitted_at=timezone.now(), score=3)
+        for i in range(3):
+            q = Question.objects.create(
+                quiz=practice, text=f"p{i}", marks=1, order=i, explanation="e")
+            right = Choice.objects.create(question=q, text="right", is_correct=True)
+            StudentAnswer.objects.create(
+                attempt=att, question=q, is_correct=True, selected_choice=right)
+
+        row = next(x for x in self._get().data if x["title"] == "Algebra")
+        self.assertEqual(row["accuracy"], 50, "practice leaked into graded accuracy")
+        self.assertEqual(row["answered"], 2)
+
+    def test_an_untried_chapter_reports_null_not_zero(self):
+        from courses.models import Chapter
+        Chapter.objects.create(subject=self.subject, title="Untouched", order=1)
+        row = next(x for x in self._get().data if x["title"] == "Untouched")
+        # "never tried" and "got everything wrong" must not look the same.
+        self.assertIsNone(row["accuracy"])
+        self.assertEqual(row["answered"], 0)
+
+    def test_starting_practice_draws_only_from_the_accepted_bank(self):
+        from quizzes.models import PracticeSession
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)})
+        r = c.post("/api/student/practice/start/",
+                   {"chapter_id": str(self.chapter.id)}, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(len(r.data["questions"]), 2)  # both mock Qs are accepted
+
+        # The answer key must not leave the server on a start call.
+        for q in r.data["questions"]:
+            for choice in q["choices"]:
+                self.assertNotIn("is_correct", choice)
+
+        session = PracticeSession.objects.get(id=r.data["session_id"])
+        self.assertEqual(session.learner_profile_id, self.learner.id)
+
+    def test_practice_writes_no_quiz_attempt_at_all(self):
+        # THE structural guarantee. Practice cannot pollute graded analytics
+        # because it never touches the tables graded analytics reads — not
+        # because six aggregation sites each remember to filter it.
+        from quizzes.models import PracticeSession
+        before = QuizAttempt.objects.count()
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)})
+        c.post("/api/student/practice/start/",
+               {"chapter_id": str(self.chapter.id)}, format="json")
+
+        self.assertEqual(QuizAttempt.objects.count(), before)
+        self.assertEqual(PracticeSession.objects.count(), 1)
+        # and the graded accuracy is untouched
+        row = next(x for x in self._get().data if x["title"] == "Algebra")
+        self.assertEqual(row["accuracy"], 50)
+
+    def test_a_chapter_with_no_bank_supply_says_so_rather_than_serving_nothing(self):
+        from courses.models import Chapter
+        empty = Chapter.objects.create(
+            subject=self.subject, title="Nothing here", order=5)
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)})
+        r = c.post("/api/student/practice/start/",
+                   {"chapter_id": str(empty.id)}, format="json")
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertEqual(r.data["available"], 0)
+
+    def test_practice_on_a_course_the_learner_is_not_in_is_refused(self):
+        from courses.models import Chapter
+        other = Course.objects.create(title="Class 12")
+        other_subject = Subject.objects.create(course=other, name="Bio")
+        foreign = Chapter.objects.create(
+            subject=other_subject, title="Genetics", order=0)
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)})
+        r = c.post("/api/student/practice/start/",
+                   {"chapter_id": str(foreign.id)}, format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def _start(self):
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)})
+        r = c.post("/api/student/practice/start/",
+                   {"chapter_id": str(self.chapter.id)}, format="json")
+        return c, r.data
+
+    def test_answering_returns_the_verdict_immediately(self):
+        # Practice IS instant feedback — a mock withholds the key, practice
+        # would be pointless if it did the same.
+        c, data = self._start()
+        q = data["questions"][0]
+        r = c.post(f"/api/student/practice/{data['session_id']}/answer/",
+                   {"question_id": q["id"], "choice_id": q["choices"][0]["id"]},
+                   format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn("is_correct", r.data)
+        self.assertIsNotNone(r.data["correct_choice_id"])
+        self.assertEqual(r.data["total"], 2)
+
+    def test_answering_the_same_question_twice_is_refused(self):
+        # Overwriting would let a second guess rewrite the first — the same
+        # self-flattering loop that keeping practice out of analytics prevents.
+        c, data = self._start()
+        q = data["questions"][0]
+        body = {"question_id": q["id"], "choice_id": q["choices"][0]["id"]}
+        url = f"/api/student/practice/{data['session_id']}/answer/"
+        self.assertEqual(c.post(url, body, format="json").status_code, 200)
+        self.assertEqual(c.post(url, body, format="json").status_code, 400)
+
+    def test_a_question_outside_the_set_is_refused(self):
+        # Otherwise a learner could answer any bank question and shape their
+        # own weak-area picture.
+        from quizzes.models import Question as Q2
+        c, data = self._start()
+        stray = Q2.objects.create(
+            quiz=self.mock, text="not served", marks=1, order=9, explanation="e")
+        ch = Choice.objects.create(question=stray, text="a", is_correct=True)
+        r = c.post(f"/api/student/practice/{data['session_id']}/answer/",
+                   {"question_id": str(stray.id), "choice_id": str(ch.id)},
+                   format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_completing_every_question_marks_the_session_done(self):
+        from quizzes.models import PracticeSession
+        c, data = self._start()
+        for q in data["questions"]:
+            r = c.post(f"/api/student/practice/{data['session_id']}/answer/",
+                       {"question_id": q["id"], "choice_id": q["choices"][0]["id"]},
+                       format="json")
+        self.assertTrue(r.data["completed"])
+        self.assertIsNotNone(
+            PracticeSession.objects.get(id=data["session_id"]).completed_at)
+
+    def test_another_learners_session_is_not_answerable(self):
+        c, data = self._start()
+        intruder_acct = User.objects.create_user(
+            username="nosy", email="nosy@test.com", password="x", is_verified=True)
+        intruder = LearnerProfile.objects.create(
+            account=intruder_acct, display_name="nosy", is_default=True)
+        c2 = APIClient()
+        c2.force_authenticate(
+            user=intruder_acct,
+            token={"context": "learner", "active_profile": str(intruder.id)})
+        q = data["questions"][0]
+        r = c2.post(f"/api/student/practice/{data['session_id']}/answer/",
+                    {"question_id": q["id"], "choice_id": q["choices"][0]["id"]},
+                    format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def test_practice_answers_still_never_touch_graded_accuracy(self):
+        # End to end: answer a whole practice set correctly, graded stays 50%.
+        c, data = self._start()
+        for q in data["questions"]:
+            c.post(f"/api/student/practice/{data['session_id']}/answer/",
+                   {"question_id": q["id"], "choice_id": q["choices"][0]["id"]},
+                   format="json")
+        row = next(x for x in self._get().data if x["title"] == "Algebra")
+        self.assertEqual(row["accuracy"], 50)
+        self.assertEqual(row["answered"], 2)
+
+    def test_a_chapter_from_a_course_the_learner_is_not_in_is_absent(self):
+        from courses.models import Chapter
+        other = Course.objects.create(title="Class 12")
+        other_subject = Subject.objects.create(course=other, name="Bio")
+        Chapter.objects.create(subject=other_subject, title="Genetics", order=0)
+        self.assertNotIn("Genetics", [x["title"] for x in self._get().data])
+
+
+class AdminQuestionBankReviewTest(TestCase):
+    """A1 · the admin review queue (Phase 7).
+
+    The phase's own done-criterion is end-to-end, not per-endpoint:
+    accepting a question must make it appear in ANOTHER teacher's
+    scope=school bank, and requesting changes must surface the feedback where
+    the first teacher will actually see it.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="ADMIN")
+
+        cls.admin = User.objects.create_user(
+            username="adm", email="adm@test.com", password="x",
+            is_verified=True, is_staff=True, is_superuser=True,
+        )
+        cls.author = User.objects.create_user(
+            username="wrote_it", email="wrote@test.com", password="x", is_verified=True)
+        cls.colleague = User.objects.create_user(
+            username="other_t", email="other@test.com", password="x", is_verified=True)
+        for u in (cls.author, cls.colleague):
+            UserRole.objects.create(
+                user=u, role=Role.objects.get(name="TEACHER"),
+                is_active=True, is_primary=True)
+
+        from courses.models import Batch
+
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Maths")
+        # BOTH teachers teach the subject — that is what makes scope=school
+        # meaningful. Each needs their own batch: TeachingAssignment is unique
+        # per subject when batch is NULL, so two batch-less rows collide.
+        for i, u in enumerate((cls.author, cls.colleague)):
+            batch = Batch.objects.create(
+                course=cls.course, name=f"10-{i}", code=f"10{i}")
+            TeachingAssignment.objects.create(
+                subject=cls.subject, teacher=u, batch=batch, is_active=True)
+
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.author, title="Algebra")
+        cls.q = Question.objects.create(
+            quiz=cls.quiz, text="What is x?", marks=1, order=0, explanation="e")
+        Choice.objects.create(question=cls.q, text="4", is_correct=True)
+        Choice.objects.create(question=cls.q, text="5", is_correct=False)
+        # A question the author kept to themselves.
+        cls.private_q = Question.objects.create(
+            quiz=cls.quiz, text="Class-specific one", marks=1, order=1,
+            explanation="e", suggest_to_bank=False)
+
+    def _admin(self):
+        c = APIClient()
+        c.force_authenticate(user=self.admin, token={"context": "admin"})
+        return c
+
+    def _teacher(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user, token={"context": "teacher"})
+        return c
+
+    def test_queue_defaults_to_what_is_actually_waiting(self):
+        r = self._admin().get("/api/quizzes/admin/question-bank/queue/")
+        self.assertEqual(r.status_code, 200, r.content)
+        texts = [q["text"] for q in r.data["results"]]
+        self.assertIn("What is x?", texts)
+        self.assertEqual(r.data["counts"]["suggested"], 1)
+
+    def test_a_privately_kept_question_never_reaches_the_queue(self):
+        # The teacher opted out. Surfacing it here would leak work they
+        # explicitly chose not to share.
+        r = self._admin().get(
+            "/api/quizzes/admin/question-bank/queue/?state=private")
+        self.assertNotIn(
+            "Class-specific one", [q["text"] for q in r.data["results"]])
+
+    def test_accepting_publishes_it_into_a_colleagues_school_bank(self):
+        # Phase 7's done-criterion, first half.
+        before = self._teacher(self.colleague).get(
+            "/api/teacher/question-bank/?scope=school")
+        self.assertEqual(len(before.data), 0)
+
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.q.id}/review/",
+            {"action": "accept"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+
+        after = self._teacher(self.colleague).get(
+            "/api/teacher/question-bank/?scope=school")
+        self.assertEqual([q["text"] for q in after.data], ["What is x?"])
+
+    def test_requesting_changes_surfaces_the_note_on_the_teachers_own_bank(self):
+        # Phase 7's done-criterion, second half.
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.q.id}/review/",
+            {"action": "request_changes", "feedback": "Option B is ambiguous."},
+            format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+
+        mine = self._teacher(self.author).get(
+            "/api/teacher/question-bank/?scope=mine&state=changes_requested")
+        row = mine.data[0]
+        self.assertEqual(row["bank_feedback"], "Option B is ambiguous.")
+
+    def test_requesting_changes_without_feedback_is_refused(self):
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.q.id}/review/",
+            {"action": "request_changes"}, format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+        self.q.refresh_from_db()
+        self.assertEqual(self.q.bank_state, Question.BANK_STATE_SUGGESTED)
+
+    def test_bulk_accept_is_all_or_nothing(self):
+        q2 = Question.objects.create(
+            quiz=self.quiz, text="Second", marks=1, order=2, explanation="e")
+        r = self._admin().post(
+            "/api/quizzes/admin/question-bank/bulk-review/",
+            {"question_ids": [str(self.q.id), str(q2.id),
+                              "00000000-0000-0000-0000-000000000000"],
+             "action": "accept"},
+            format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+        # nothing applied
+        self.q.refresh_from_db()
+        self.assertEqual(self.q.bank_state, Question.BANK_STATE_SUGGESTED)
+
+    def test_bulk_accept_applies_to_every_named_question(self):
+        q2 = Question.objects.create(
+            quiz=self.quiz, text="Second", marks=1, order=2, explanation="e")
+        r = self._admin().post(
+            "/api/quizzes/admin/question-bank/bulk-review/",
+            {"question_ids": [str(self.q.id), str(q2.id)], "action": "accept"},
+            format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["updated"], 2)
+        for q in (self.q, q2):
+            q.refresh_from_db()
+            self.assertEqual(q.bank_state, Question.BANK_STATE_ACCEPTED)
+
+    def test_an_admin_can_remap_the_question_to_a_real_chapter(self):
+        from courses.models import Chapter
+        real = Chapter.objects.create(
+            subject=self.subject, title="Linear equations", order=0)
+
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.q.id}/review/",
+            {"action": "accept", "map_to_chapter_id": str(real.id)},
+            format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(
+            [t["label"] for t in r.data["chapter_tags"]]
+            if "chapter_tags" in r.data else [r.data["chapter_label"]],
+            ["Linear equations"])
+
+    def test_a_chapter_from_another_subject_is_refused(self):
+        from courses.models import Chapter
+        other_subject = Subject.objects.create(course=self.course, name="Physics")
+        foreign = Chapter.objects.create(
+            subject=other_subject, title="Optics", order=0)
+
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.q.id}/review/",
+            {"action": "accept", "map_to_chapter_id": str(foreign.id)},
+            format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_promoting_makes_a_teachers_own_chapter_real(self):
+        from courses.models import Chapter
+        from courses.chapter_tags import set_tags
+        custom = Chapter.objects.create(
+            subject=self.subject, title="Board-pattern sums", order=1,
+            is_custom=True, created_by=self.author)
+        set_tags(self.quiz, [(custom, "", 0)])
+
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.q.id}/review/",
+            {"action": "accept", "promote_chapter": True}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        custom.refresh_from_db()
+        self.assertIsNotNone(custom.promoted_at)
+
+    def test_a_teacher_cannot_reach_the_admin_queue(self):
+        r = self._teacher(self.author).get(
+            "/api/quizzes/admin/question-bank/queue/")
+        self.assertIn(r.status_code, (401, 403))
+
+
+class TeacherBankStatusT4Test(TestCase):
+    """T4: the four state counts, the auto-suggest default, and the latest note."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from accounts.models import TeacherProfile
+
+        Role.objects.get_or_create(name="TEACHER")
+        cls.teacher = User.objects.create_user(
+            username="t4_t", email="t4_t@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        TeacherProfile.objects.create(user=cls.teacher)
+        cls.course = Course.objects.create(title="Class 12")
+        cls.subject = Subject.objects.create(course=cls.course, name="Bio")
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Cells")
+
+        for state, n in [
+            (Question.BANK_STATE_ACCEPTED, 2),
+            (Question.BANK_STATE_SUGGESTED, 3),
+            (Question.BANK_STATE_PRIVATE, 1),
+        ]:
+            for i in range(n):
+                q = Question.objects.create(
+                    quiz=cls.quiz, text=f"{state}{i}", marks=1, order=i,
+                    explanation="e")
+                Question.objects.filter(id=q.id).update(bank_state=state)
+
+        cls.flagged = Question.objects.create(
+            quiz=cls.quiz, text="The ambiguous one", marks=1, order=9,
+            explanation="e")
+        Question.objects.filter(id=cls.flagged.id).update(
+            bank_state=Question.BANK_STATE_CHANGES_REQUESTED,
+            bank_feedback="Option C is ambiguous — please reword it.",
+        )
+
+    def _client(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        return c
+
+    def test_state_counts_and_latest_note(self):
+        r = self._client().get("/api/teacher/bank-status/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["accepted"], 2)
+        self.assertEqual(r.data["suggested"], 3)
+        self.assertEqual(r.data["private"], 1)
+        self.assertEqual(r.data["changes_requested"], 1)
+        # "2 need changes" is a dead end without the admin's actual words.
+        self.assertEqual(
+            r.data["latest_note"]["feedback"],
+            "Option C is ambiguous — please reword it.")
+        self.assertEqual(
+            r.data["latest_note"]["question_id"], str(self.flagged.id))
+
+    def test_auto_suggest_defaults_on_and_can_be_turned_off(self):
+        c = self._client()
+        self.assertIs(c.get("/api/teacher/bank-status/").data["auto_suggest_questions"], True)
+
+        r = c.patch("/api/teacher/bank-status/",
+                    {"auto_suggest_questions": False}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIs(c.get("/api/teacher/bank-status/").data["auto_suggest_questions"], False)
+
+    def test_turning_auto_suggest_off_does_not_rewrite_existing_questions(self):
+        # The switch is a default for NEW work. Sweeping existing rows would
+        # silently un-suggest what an admin already accepted and wipe a
+        # changes-requested conversation.
+        c = self._client()
+        c.patch("/api/teacher/bank-status/",
+                {"auto_suggest_questions": False}, format="json")
+
+        r = c.get("/api/teacher/bank-status/")
+        self.assertEqual(r.data["accepted"], 2)
+        self.assertEqual(r.data["suggested"], 3)
+        self.assertEqual(r.data["changes_requested"], 1)
+
+    def test_a_non_boolean_is_rejected(self):
+        r = self._client().patch("/api/teacher/bank-status/",
+                                 {"auto_suggest_questions": "yes"}, format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+
+class TeacherBankT3RowDataTest(TestCase):
+    """T3 shows each question's chapter, and must not pay a query per row.
+
+    A Question has no chapter of its own — Phase 3 put chapter tagging on the
+    quiz — so the chip resolves through the quiz. Doing that naively inside
+    the serializer is one query per row, which on a real 142-question bank is
+    142 extra round trips.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Chapter
+        from courses.chapter_tags import set_tags
+
+        Role.objects.get_or_create(name="TEACHER")
+        cls.teacher = User.objects.create_user(
+            username="t3_t", email="t3_t@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        cls.course = Course.objects.create(title="Class 11")
+        cls.subject = Subject.objects.create(course=cls.course, name="Physics")
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, is_active=True)
+        syllabus = Chapter.objects.create(
+            subject=cls.subject, title="Kinematics", order=0)
+        custom = Chapter.objects.create(
+            subject=cls.subject, title="Board-pattern numericals", order=1,
+            is_custom=True, created_by=cls.teacher)
+
+        # Two quizzes so the page spans more than one chapter.
+        for i, (chapter, title) in enumerate(
+            [(syllabus, "Motion"), (custom, "Extra drill")]
+        ):
+            quiz = Quiz.objects.create(
+                subject=cls.subject, created_by=cls.teacher, title=title,
+                review_status=Quiz.REVIEW_DRAFT,
+            )
+            set_tags(quiz, [(chapter, "", 0)])
+            for n in range(3):
+                q = Question.objects.create(
+                    quiz=quiz, text=f"{title} Q{n}", marks=1, order=n,
+                    explanation="e",
+                )
+                Choice.objects.create(question=q, text="a", is_correct=True)
+                Choice.objects.create(question=q, text="b", is_correct=False)
+
+    def _client(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        return c
+
+    def test_rows_carry_their_chapter_and_flag_a_custom_one(self):
+        r = self._client().get("/api/teacher/question-bank/?scope=mine")
+        self.assertEqual(r.status_code, 200, r.content)
+        by_label = {}
+        for row in r.data:
+            by_label.setdefault(row["chapter_label"], set()).add(
+                row["chapter_is_custom"])
+        self.assertEqual(by_label["Kinematics"], {False})
+        # a teacher-typed chapter no admin has promoted gets the warning tint
+        self.assertEqual(by_label["Board-pattern numericals"], {True})
+
+    def test_the_chapter_chip_does_not_cost_a_query_per_row(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        c = self._client()
+        with CaptureQueriesContext(connection) as ctx:
+            r = c.get("/api/teacher/question-bank/?scope=mine")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.data), 6)
+        # Flat: resolving 6 questions across 2 quizzes must not approach 6+
+        # extra queries. Generous ceiling — it is a regression guard, not a
+        # measurement of the current exact count.
+        self.assertLess(
+            len(ctx), 10,
+            f"chapter chip looks N+1 again: {len(ctx)} queries for 6 rows",
+        )
+
+
+class QuizDraftChapterRoundTripTest(TestCase):
+    """The builder's edit load must return the quiz's chapter tagging.
+
+    Caught by browser-driving the rebuilt builder (Phase 5a), not by any test:
+    QuizDetailTeacherSerializer exposed no chapter fields at all, so the
+    picker repopulated itself as empty on edit. On its own that was a
+    cosmetic read gap — the old builder only sent chapter fields on create.
+    The moment the builder started sending `chapter_tags` on PATCH too, the
+    empty picker became a destructive write that silently unfiled the quiz
+    from every chapter it was tagged with.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        # Local imports, matching the convention the rest of this module uses
+        # for courses models it needs in only one class.
+        from courses.models import Chapter
+        from courses.chapter_tags import set_tags
+
+        Role.objects.get_or_create(name="TEACHER")
+        cls.teacher = User.objects.create_user(
+            username="dr_t", email="dr_t@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Maths")
+        cls.chapter = Chapter.objects.create(
+            subject=cls.subject, title="Algebra", order=0)
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Algebra unit test",
+            chapter=cls.chapter, chapter_note="revise identities first",
+        )
+        set_tags(cls.quiz, [(cls.chapter, "", 0), (None, "Mixed revision", 1)])
+
+    def _draft(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        return c.get(f"/api/quizzes/{self.quiz.id}/draft/")
+
+    def test_draft_returns_the_chapter_tags(self):
+        r = self._draft()
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn("chapter_tags", r.data)
+        tags = r.data["chapter_tags"]
+        # `label` carries the chapter's own title for a chapter-backed tag and
+        # the free text for a custom one, so the picker can render a name
+        # without a second lookup. `chapter_id` is what distinguishes them —
+        # which is exactly what fromChapterPayload() splits on.
+        self.assertEqual(
+            [(t["chapter_id"], t["label"]) for t in tags],
+            [(str(self.chapter.id), "Algebra"), (None, "Mixed revision")],
+        )
+
+    def test_draft_returns_the_note_and_the_no_specific_flag(self):
+        r = self._draft()
+        self.assertEqual(r.data["chapter_note"], "revise identities first")
+        self.assertIs(r.data["no_specific_chapter"], False)
+
+    def test_draft_questions_expose_their_bank_opt_in(self):
+        # Same read-gap trap as the chapter fields: the builder's per-question
+        # switch needs the real value, or it defaults every switch to on and
+        # re-suggests questions the teacher deliberately kept private.
+        from quizzes.models import Question, Choice
+        q = Question.objects.create(
+            quiz=self.quiz, text="Private one?", marks=1, order=0,
+            explanation="because.", suggest_to_bank=False,
+        )
+        Choice.objects.create(question=q, text="a", is_correct=True)
+        Choice.objects.create(question=q, text="b", is_correct=False)
+
+        r = self._draft()
+        row = next(x for x in r.data["questions"] if str(x["id"]) == str(q.id))
+        self.assertIs(row["suggest_to_bank"], False)
+        self.assertEqual(row["bank_state"], Question.BANK_STATE_PRIVATE)
+
+    def test_the_keys_are_the_ones_the_picker_reads(self):
+        # fromChapterPayload() in the teacher app reads exactly these three
+        # names off the draft. Renaming any of them here empties the picker
+        # without erroring anywhere.
+        r = self._draft()
+        for key in ("chapter_tags", "no_specific_chapter", "chapter_note"):
+            self.assertIn(key, r.data, f"the builder reads `{key}` off the draft")
+        self.assertEqual(
+            sorted(r.data["chapter_tags"][0].keys()),
+            ["chapter_id", "is_custom", "label", "order"],
+        )
 
 
 class QuizStudentEndpointBatchIsolationTest(TestCase):
@@ -1129,17 +2076,17 @@ class QuizStudentEndpointBatchIsolationTest(TestCase):
 
         cls.quiz_mine = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="10-A test",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, batch=cls.batch_mine,
         )
         cls.quiz_other = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="10-B test",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, batch=cls.batch_other,
         )
         cls.quiz_course_wide = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Evergreen test",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True,
+            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, batch=None,
         )
 
@@ -1259,3 +2206,1569 @@ class QuizCreateBatchAndChapterTest(TestCase):
         self.assertEqual(quiz.title, "Renamed")
         self.assertEqual(quiz.batch_id, self.batch.id)
         self.assertEqual(quiz.chapter_id, chapter.id)
+
+
+# =====================================================================
+# PHASE 1 — assignment decoupled from admin approval
+# =====================================================================
+
+class QuizAssignmentDecouplingTest(TestCase):
+    """Phase 1: `is_assigned` (teacher-controlled) gates student visibility;
+    `review_status` is informational and gates nothing.
+
+    Before this, a teacher could not make their own quiz live for their own
+    class without an admin approving it, because every student queryset
+    filtered on `is_published` and only AdminQuizReviewView ever set it.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Batch
+        from enrollments.models import Enrollment
+
+        Role.objects.get_or_create(name="STUDENT")
+        Role.objects.get_or_create(name="TEACHER")
+
+        cls.teacher = User.objects.create_user(
+            username="ph1_t", email="ph1_t@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+
+        now = timezone.now()
+        cls.course = Course.objects.create(title="Class 11")
+        cls.subject = Subject.objects.create(course=cls.course, name="Chemistry")
+        cls.batch_a = Batch.objects.create(course=cls.course, name="11-A", code="11A")
+        cls.batch_b = Batch.objects.create(course=cls.course, name="11-B", code="11B")
+        cls.batch_c = Batch.objects.create(course=cls.course, name="11-C", code="11C")
+        TeachingAssignment.objects.create(
+            batch=cls.batch_a, subject=cls.subject, teacher=cls.teacher, is_active=True,
+        )
+
+        # A wholly unrelated course, for the cross-course rejection test.
+        cls.other_course = Course.objects.create(title="Class 12")
+        cls.other_batch = Batch.objects.create(
+            course=cls.other_course, name="12-A", code="12A",
+        )
+
+        def make_student(tag, batch):
+            user = User.objects.create_user(
+                username=f"ph1_{tag}", email=f"ph1_{tag}@test.com",
+                password="x", is_verified=True,
+            )
+            UserRole.objects.create(
+                user=user, role=Role.objects.get(name="STUDENT"),
+                is_active=True, is_primary=True,
+            )
+            profile = LearnerProfile.objects.create(
+                account=user, display_name=tag.upper(), is_default=True,
+            )
+            Subscription.objects.create(
+                user=user, learner_profile=profile, course=cls.course,
+                status=Subscription.STATUS_ACTIVE,
+                starts_at=now, expires_at=now + timedelta(days=30),
+            )
+            Enrollment.objects.create(
+                user=user, learner_profile=profile, course=cls.course,
+                batch=batch, status=Enrollment.STATUS_ACTIVE,
+            )
+            return user, profile
+
+        cls.student_a, cls.profile_a = make_student("sa", cls.batch_a)
+        cls.student_b, cls.profile_b = make_student("sb", cls.batch_b)
+        cls.student_c, cls.profile_c = make_student("sc", cls.batch_c)
+
+    # ── helpers ──────────────────────────────────────────────────────────
+
+    def _student_client(self, user, profile):
+        c = APIClient()
+        c.force_authenticate(
+            user=user,
+            token={"context": "learner", "active_profile": str(profile.id)},
+        )
+        return c
+
+    def _teacher_client(self, user=None):
+        c = APIClient()
+        c.force_authenticate(user=user or self.teacher, token={"context": "teacher"})
+        return c
+
+    def _make_quiz(self, title, *, assigned, review_status=Quiz.REVIEW_DRAFT,
+                   batches=(), legacy_batch=None, questions=0):
+        quiz = Quiz.objects.create(
+            subject=self.subject, created_by=self.teacher, title=title,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=assigned,
+            # Deliberately NOT mirrored: these tests must prove visibility
+            # keys off is_assigned alone.
+            is_published=False, review_status=review_status,
+            batch=legacy_batch,
+        )
+        if batches:
+            quiz.batches.set(batches)
+        for i in range(questions):
+            q = Question.objects.create(quiz=quiz, text=f"Q{i}", marks=1, order=i)
+            Choice.objects.create(question=q, text="right", is_correct=True)
+            Choice.objects.create(question=q, text="wrong", is_correct=False)
+        return quiz
+
+    def _visible_titles(self, user, profile):
+        r = self._student_client(user, profile).get(
+            f"/api/student/quizzes/?course={self.course.id}"
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        rows = r.data["results"] if isinstance(r.data, dict) and "results" in r.data else r.data
+        return [row["title"] for row in rows]
+
+    # ── 1 · a DRAFT quiz that is assigned IS visible ──────────────────────
+
+    def test_a_draft_but_assigned_quiz_is_visible_to_its_batch(self):
+        """The whole point of Phase 1: no admin involvement required."""
+        self._make_quiz("Draft-but-live", assigned=True,
+                        review_status=Quiz.REVIEW_DRAFT, batches=[self.batch_a])
+        self.assertIn("Draft-but-live", self._visible_titles(self.student_a, self.profile_a))
+
+    # ── 2 · an APPROVED quiz that is NOT assigned is NOT visible ──────────
+
+    def test_an_approved_but_unassigned_quiz_is_invisible(self):
+        """review_status must gate nothing. An admin approving a quiz the
+        teacher never assigned must not push it at students."""
+        quiz = self._make_quiz("Approved-not-assigned", assigned=False,
+                               review_status=Quiz.REVIEW_APPROVED,
+                               batches=[self.batch_a])
+        self.assertNotIn(
+            "Approved-not-assigned",
+            self._visible_titles(self.student_a, self.profile_a),
+        )
+        # ...and every per-object door is shut too, not just the list.
+        c = self._student_client(self.student_a, self.profile_a)
+        self.assertEqual(c.get(f"/api/quizzes/{quiz.id}/").status_code, 404)
+        self.assertEqual(c.post(f"/api/quizzes/{quiz.id}/start/").status_code, 404)
+        self.assertEqual(
+            c.get(f"/api/student/quizzes/{quiz.id}/attempts/").status_code, 404,
+        )
+
+    # ── 3 · the M2M duplicate-row trap ───────────────────────────────────
+
+    def test_a_quiz_in_two_batches_appears_exactly_once(self):
+        """`Q(batches__isnull=True) | Q(batches=<id>)` over a JOIN would return
+        one row PER matching batch. quizzes/visibility.py uses Exists()
+        subqueries instead, so there is no join to duplicate."""
+        self._make_quiz("Shared A+B", assigned=True,
+                        batches=[self.batch_a, self.batch_b], questions=3)
+        titles = self._visible_titles(self.student_a, self.profile_a)
+        self.assertEqual(titles.count("Shared A+B"), 1, titles)
+
+    def test_the_batch_rule_adds_no_join_so_needs_no_distinct(self):
+        """The duplicate-row trap, asserted at the queryset level.
+
+        Worth recording precisely what is and is not a hazard here, because it
+        is counter-intuitive and was measured rather than assumed:
+
+          · `Q(batches__isnull=True) | Q(batches=<one id>)` does NOT duplicate.
+            Django collapses the OR into ONE left join whose condition
+            (`t.batch_id IS NULL OR t.batch_id = X`) can match at most one
+            through-row per quiz.
+          · `Q(batches=A) | Q(batches=B)` DOES duplicate — 2 rows for a quiz in
+            both, and a plain `Count()` alongside it doubles.
+
+        The second shape is the one that matters: dashboard/views.py's
+        _quiz_batch_visibility_q ORs one scope term PER COURSE, so a join-based
+        rule would land exactly there. Exists() contributes no join at all and
+        is immune to both shapes, which is why the rule is built that way.
+
+        Endpoint-level tests cannot see any of this — StudentDashboardView
+        already calls .distinct() and annotates Count(..., distinct=True), so
+        it masks the bug entirely.
+        """
+        from django.db.models import Count
+
+        from quizzes.visibility import batch_scope_q, visible_quiz_q
+
+        quiz = self._make_quiz("Raw A+B", assigned=True,
+                               batches=[self.batch_a, self.batch_b], questions=3)
+
+        ids = list(
+            Quiz.objects.filter(visible_quiz_q(self.batch_a.id))
+            .values_list("id", flat=True)
+        )
+        self.assertEqual(ids.count(quiz.id), 1, ids)
+
+        # The dangerous shape: several scope terms OR'd together, as the
+        # dashboard helper builds one per course. A join-based rule returns
+        # this quiz twice.
+        multi = batch_scope_q(self.batch_a.id) | batch_scope_q(self.batch_b.id)
+        ids = list(
+            Quiz.objects.filter(Q(is_assigned=True) & multi)
+            .values_list("id", flat=True)
+        )
+        self.assertEqual(ids.count(quiz.id), 1, ids)
+
+        # ...and a plain Count() (deliberately NOT distinct=True) is not
+        # multiplied by it: 3 questions, not 3 x 2 batch rows.
+        row = (
+            Quiz.objects.filter(Q(is_assigned=True) & multi)
+            .annotate(n=Count("questions"))
+            .get(id=quiz.id)
+        )
+        self.assertEqual(row.n, 3)
+
+    def test_the_endpoints_questions_count_is_correct_for_a_multi_batch_quiz(self):
+        self._make_quiz("Counted A+B", assigned=True,
+                        batches=[self.batch_a, self.batch_b], questions=3)
+        r = self._student_client(self.student_a, self.profile_a).get(
+            f"/api/student/quizzes/?course={self.course.id}"
+        )
+        rows = r.data["results"] if isinstance(r.data, dict) and "results" in r.data else r.data
+        row = next(x for x in rows if x["title"] == "Counted A+B")
+        self.assertEqual(row["questions_count"], 3)
+
+    # ── 4 · empty `batches` means every batch of the course ───────────────
+
+    def test_a_quiz_with_no_batches_is_visible_to_every_batch(self):
+        """Empty M2M has to preserve what `batch IS NULL` meant, or every
+        pre-existing course-wide quiz vanishes."""
+        self._make_quiz("Evergreen", assigned=True, batches=[], legacy_batch=None)
+        for user, profile in (
+            (self.student_a, self.profile_a),
+            (self.student_b, self.profile_b),
+            (self.student_c, self.profile_c),
+        ):
+            self.assertIn("Evergreen", self._visible_titles(user, profile))
+
+    def test_a_legacy_fk_only_quiz_is_still_batch_scoped(self):
+        """QuizCreateSerializer still writes only the legacy `batch` FK. If the
+        rule read the M2M alone, such a quiz would have an empty `batches` set,
+        be read as course-wide, and leak to every batch in the course."""
+        self._make_quiz("Legacy FK A-only", assigned=True,
+                        batches=[], legacy_batch=self.batch_a)
+        self.assertIn("Legacy FK A-only",
+                      self._visible_titles(self.student_a, self.profile_a))
+        self.assertNotIn("Legacy FK A-only",
+                         self._visible_titles(self.student_b, self.profile_b))
+
+    # ── 5 · cross-batch isolation, list AND StudentQuizAttemptsView ───────
+
+    def test_another_batch_cannot_see_or_probe_an_a_only_quiz(self):
+        quiz = self._make_quiz("A only", assigned=True, batches=[self.batch_a])
+
+        self.assertNotIn("A only", self._visible_titles(self.student_b, self.profile_b))
+
+        # StudentQuizAttemptsView had NO batch check at all before Phase 1 —
+        # it handed a Batch-B learner the quiz title, type and total_marks.
+        r = self._student_client(self.student_b, self.profile_b).get(
+            f"/api/student/quizzes/{quiz.id}/attempts/"
+        )
+        self.assertEqual(r.status_code, 404, r.content)
+
+        # The owning batch still gets through, so the fix isn't just "deny".
+        r = self._student_client(self.student_a, self.profile_a).get(
+            f"/api/student/quizzes/{quiz.id}/attempts/"
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+
+    # ── 6 · the assign endpoint rejects a foreign batch ───────────────────
+
+    def test_assign_rejects_a_batch_from_another_course(self):
+        quiz = self._make_quiz("Cross-course attempt", assigned=False)
+        r = self._teacher_client().patch(
+            f"/api/teacher/quizzes/{quiz.id}/assign/",
+            {"assign": True, "batch_ids": [str(self.other_batch.id)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+        quiz.refresh_from_db()
+        self.assertFalse(quiz.is_assigned)
+        self.assertEqual(quiz.batches.count(), 0)
+
+    def test_assign_rejects_a_foreign_batch_mixed_in_with_a_valid_one(self):
+        """Partial validation would be worse than none: the valid batch would
+        be assigned and the caller would think the whole call failed."""
+        quiz = self._make_quiz("Mixed", assigned=False)
+        r = self._teacher_client().patch(
+            f"/api/teacher/quizzes/{quiz.id}/assign/",
+            {"assign": True,
+             "batch_ids": [str(self.batch_a.id), str(self.other_batch.id)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+        quiz.refresh_from_db()
+        self.assertEqual(quiz.batches.count(), 0)
+
+    # ── 7 · only the owning teacher may assign ────────────────────────────
+
+    def test_another_teacher_cannot_assign_someone_elses_quiz(self):
+        other = User.objects.create_user(
+            username="ph1_t2", email="ph1_t2@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=other, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        quiz = self._make_quiz("Not yours", assigned=False)
+        r = self._teacher_client(other).patch(
+            f"/api/teacher/quizzes/{quiz.id}/assign/",
+            {"assign": True, "batch_ids": [str(self.batch_a.id)]},
+            format="json",
+        )
+        self.assertIn(r.status_code, (403, 404), r.content)
+        quiz.refresh_from_db()
+        self.assertFalse(quiz.is_assigned)
+
+    def test_a_student_cannot_assign(self):
+        quiz = self._make_quiz("Student attempt", assigned=False)
+        r = self._student_client(self.student_a, self.profile_a).patch(
+            f"/api/teacher/quizzes/{quiz.id}/assign/",
+            {"assign": True}, format="json",
+        )
+        self.assertIn(r.status_code, (401, 403, 404), r.content)
+
+    # ── the assign endpoint's happy path + the legacy shims ──────────────
+
+    def test_assigning_makes_a_draft_quiz_live_and_mirrors_the_legacy_fields(self):
+        quiz = self._make_quiz("Assign me", assigned=False, questions=2)
+        r = self._teacher_client().patch(
+            f"/api/teacher/quizzes/{quiz.id}/assign/",
+            {"assign": True, "batch_ids": [str(self.batch_a.id), str(self.batch_b.id)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(r.data["is_assigned"])
+
+        quiz.refresh_from_db()
+        self.assertTrue(quiz.is_assigned)
+        # is_published mirrored for back-compat; review_status untouched.
+        self.assertTrue(quiz.is_published)
+        self.assertEqual(quiz.review_status, Quiz.REVIEW_DRAFT)
+        # Legacy single-batch shim = the first submitted batch.
+        self.assertEqual(quiz.batch_id, self.batch_a.id)
+        self.assertEqual(
+            set(quiz.batches.values_list("id", flat=True)),
+            {self.batch_a.id, self.batch_b.id},
+        )
+        # Both batches can see it; the third cannot.
+        self.assertIn("Assign me", self._visible_titles(self.student_a, self.profile_a))
+        self.assertIn("Assign me", self._visible_titles(self.student_b, self.profile_b))
+        self.assertNotIn("Assign me", self._visible_titles(self.student_c, self.profile_c))
+
+    def test_assigning_with_an_empty_batch_list_is_course_wide(self):
+        quiz = self._make_quiz("Everyone", assigned=False, legacy_batch=self.batch_a)
+        r = self._teacher_client().patch(
+            f"/api/teacher/quizzes/{quiz.id}/assign/",
+            {"assign": True, "batch_ids": []}, format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        quiz.refresh_from_db()
+        self.assertIsNone(quiz.batch_id)
+        self.assertEqual(quiz.batches.count(), 0)
+        self.assertIn("Everyone", self._visible_titles(self.student_c, self.profile_c))
+
+    def test_unassigning_hides_the_quiz_again(self):
+        quiz = self._make_quiz("Temporary", assigned=True, batches=[self.batch_a])
+        r = self._teacher_client().patch(
+            f"/api/teacher/quizzes/{quiz.id}/assign/",
+            {"assign": False}, format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        quiz.refresh_from_db()
+        self.assertFalse(quiz.is_assigned)
+        self.assertFalse(quiz.is_published)
+        self.assertNotIn("Temporary", self._visible_titles(self.student_a, self.profile_a))
+
+    def test_omitting_batch_ids_leaves_the_existing_scope_alone(self):
+        """A bare {"assign": false} must not silently widen a batch-scoped quiz
+        to the whole course — the next re-assign would leak it to every batch."""
+        quiz = self._make_quiz("Keep my scope", assigned=True, batches=[self.batch_a])
+        self._teacher_client().patch(
+            f"/api/teacher/quizzes/{quiz.id}/assign/",
+            {"assign": False}, format="json",
+        )
+        quiz.refresh_from_db()
+        self.assertEqual(
+            set(quiz.batches.values_list("id", flat=True)), {self.batch_a.id},
+        )
+        self._teacher_client().patch(
+            f"/api/teacher/quizzes/{quiz.id}/assign/",
+            {"assign": True}, format="json",
+        )
+        self.assertNotIn("Keep my scope",
+                         self._visible_titles(self.student_b, self.profile_b))
+
+    def test_publish_and_submit_for_review_still_work_and_do_not_assign(self):
+        """Phase 1 must not break the two legacy routes, and neither of them
+        may make a quiz visible any more."""
+        quiz = self._make_quiz("Review me", assigned=False, questions=1)
+        for route in ("publish", "submit-for-review"):
+            quiz.review_status = Quiz.REVIEW_DRAFT
+            quiz.save(update_fields=["review_status"])
+            r = self._teacher_client().patch(
+                f"/api/teacher/quizzes/{quiz.id}/{route}/", {}, format="json",
+            )
+            self.assertEqual(r.status_code, 200, f"{route}: {r.content}")
+            quiz.refresh_from_db()
+            self.assertEqual(quiz.review_status, Quiz.REVIEW_PENDING)
+            self.assertFalse(quiz.is_assigned, route)
+        self.assertNotIn("Review me",
+                         self._visible_titles(self.student_a, self.profile_a))
+
+
+class QuizBackfillInvariantTest(TestCase):
+    """Migration 0020/0021 must not cost any student access they had before.
+
+    The build guide said to backfill from `review_status="approved"`. Nothing
+    ever gated student visibility on review_status — `is_published` did — so
+    any row where the two diverge would silently lose its audience. These
+    tests run the real migration functions over rows built in the
+    pre-migration state and assert the visibility rule is preserved.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Batch
+        from enrollments.models import Enrollment
+
+        Role.objects.get_or_create(name="STUDENT")
+        Role.objects.get_or_create(name="TEACHER")
+
+        cls.teacher = User.objects.create_user(
+            username="bf_t", email="bf_t@test.com", password="x",
+        )
+        cls.student = User.objects.create_user(
+            username="bf_s", email="bf_s@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.student, role=Role.objects.get(name="STUDENT"),
+            is_active=True, is_primary=True,
+        )
+        cls.profile = LearnerProfile.objects.create(
+            account=cls.student, display_name="BF", is_default=True,
+        )
+
+        now = timezone.now()
+        cls.course = Course.objects.create(title="Class 8")
+        cls.subject = Subject.objects.create(course=cls.course, name="Biology")
+        cls.batch = Batch.objects.create(course=cls.course, name="8-A", code="8A")
+        cls.other_batch = Batch.objects.create(course=cls.course, name="8-B", code="8B")
+        Subscription.objects.create(
+            user=cls.student, learner_profile=cls.profile, course=cls.course,
+            status=Subscription.STATUS_ACTIVE,
+            starts_at=now, expires_at=now + timedelta(days=30),
+        )
+        Enrollment.objects.create(
+            user=cls.student, learner_profile=cls.profile, course=cls.course,
+            batch=cls.batch, status=Enrollment.STATUS_ACTIVE,
+        )
+
+    def _pre_migration_quiz(self, title, *, is_published, review_status, batch):
+        """A row as it existed before 0019: is_assigned unset, no M2M rows."""
+        return Quiz.objects.create(
+            subject=self.subject, created_by=self.teacher, title=title,
+            quiz_type=Quiz.TYPE_MOCK, is_published=is_published,
+            review_status=review_status, batch=batch, is_assigned=False,
+        )
+
+    def test_is_assigned_is_backfilled_from_is_published_not_review_status(self):
+        from importlib import import_module
+        from django.apps import apps as real_apps
+
+        mod = import_module("quizzes.migrations.0020_backfill_quiz_is_assigned")
+
+        # The divergent rows are the whole point. A published-but-not-approved
+        # quiz WAS visible yesterday; approving-as-the-source would hide it.
+        divergent_visible = self._pre_migration_quiz(
+            "Published, never approved", is_published=True,
+            review_status=Quiz.REVIEW_DRAFT, batch=None,
+        )
+        # ...and an approved-but-unpublished quiz was NOT visible; the guide's
+        # rule would have made it appear out of nowhere.
+        divergent_hidden = self._pre_migration_quiz(
+            "Approved, not published", is_published=False,
+            review_status=Quiz.REVIEW_APPROVED, batch=None,
+        )
+        agreeing_visible = self._pre_migration_quiz(
+            "Normal live quiz", is_published=True,
+            review_status=Quiz.REVIEW_APPROVED, batch=None,
+        )
+
+        mod.backfill_is_assigned(real_apps, None)
+
+        for quiz, expected in (
+            (divergent_visible, True),
+            (divergent_hidden, False),
+            (agreeing_visible, True),
+        ):
+            quiz.refresh_from_db()
+            self.assertEqual(
+                quiz.is_assigned, expected,
+                f"{quiz.title}: is_assigned must equal is_published "
+                f"({quiz.is_published}), not review_status ({quiz.review_status})",
+            )
+
+    def test_nobody_loses_visibility_across_the_backfill(self):
+        from importlib import import_module
+        from django.apps import apps as real_apps
+
+        quizzes = [
+            self._pre_migration_quiz(
+                "Course-wide published", is_published=True,
+                review_status=Quiz.REVIEW_DRAFT, batch=None),
+            self._pre_migration_quiz(
+                "My batch published", is_published=True,
+                review_status=Quiz.REVIEW_APPROVED, batch=self.batch),
+            self._pre_migration_quiz(
+                "Other batch published", is_published=True,
+                review_status=Quiz.REVIEW_APPROVED, batch=self.other_batch),
+            self._pre_migration_quiz(
+                "Unpublished draft", is_published=False,
+                review_status=Quiz.REVIEW_DRAFT, batch=self.batch),
+        ]
+
+        # The OLD rule, computed before the backfill touches anything.
+        expected = {
+            q.title for q in quizzes
+            if q.is_published and q.batch_id in (None, self.batch.id)
+        }
+
+        import_module(
+            "quizzes.migrations.0020_backfill_quiz_is_assigned"
+        ).backfill_is_assigned(real_apps, None)
+        import_module(
+            "quizzes.migrations.0021_backfill_quiz_batches"
+        ).backfill_batches(real_apps, None)
+
+        c = APIClient()
+        c.force_authenticate(
+            user=self.student,
+            token={"context": "learner", "active_profile": str(self.profile.id)},
+        )
+        r = c.get(f"/api/student/quizzes/?course={self.course.id}")
+        self.assertEqual(r.status_code, 200, r.content)
+        rows = r.data["results"] if isinstance(r.data, dict) and "results" in r.data else r.data
+        self.assertEqual({row["title"] for row in rows}, expected)
+
+    def test_batches_backfill_mirrors_the_fk_and_leaves_null_rows_course_wide(self):
+        from importlib import import_module
+        from django.apps import apps as real_apps
+
+        scoped = self._pre_migration_quiz(
+            "Scoped", is_published=True,
+            review_status=Quiz.REVIEW_APPROVED, batch=self.batch)
+        course_wide = self._pre_migration_quiz(
+            "Course-wide", is_published=True,
+            review_status=Quiz.REVIEW_APPROVED, batch=None)
+
+        import_module(
+            "quizzes.migrations.0021_backfill_quiz_batches"
+        ).backfill_batches(real_apps, None)
+
+        self.assertEqual(
+            set(scoped.batches.values_list("id", flat=True)), {self.batch.id},
+        )
+        # NULL must stay EMPTY, not be expanded to "every batch": expanding it
+        # would freeze the audience, so a batch created tomorrow would silently
+        # not see a quiz that is course-wide today.
+        self.assertEqual(course_wide.batches.count(), 0)
+
+    def test_the_backfill_is_idempotent(self):
+        from importlib import import_module
+        from django.apps import apps as real_apps
+
+        quiz = self._pre_migration_quiz(
+            "Rerun me", is_published=True,
+            review_status=Quiz.REVIEW_APPROVED, batch=self.batch)
+
+        mod = import_module("quizzes.migrations.0021_backfill_quiz_batches")
+        mod.backfill_batches(real_apps, None)
+        mod.backfill_batches(real_apps, None)
+
+        self.assertEqual(quiz.batches.count(), 1)
+
+
+# =====================================================
+# PHASE 2 · question-level site-bank state
+# =====================================================
+
+class QuestionBankStateInvariantTest(TestCase):
+    """Question.save()'s invariant: suggest_to_bank=False always forces
+    bank_state="private", and turning it on never overwrites an admin's
+    existing accept/request-changes decision."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.teacher = User.objects.create_user(
+            username="qbs_t", email="qbs_t@test.com", password="x",
+        )
+        cls.course = Course.objects.create(title="Class 9")
+        cls.subject = Subject.objects.create(course=cls.course, name="Geography")
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Rivers",
+            quiz_type=Quiz.TYPE_MOCK,
+        )
+
+    def test_new_question_defaults_to_suggested_and_suggest_true(self):
+        q = Question.objects.create(
+            quiz=self.quiz, text="Longest river?", marks=1, order=0,
+        )
+        self.assertTrue(q.suggest_to_bank)
+        self.assertEqual(q.bank_state, Question.BANK_STATE_SUGGESTED)
+
+    def test_suggest_to_bank_false_forces_private_on_create(self):
+        q = Question.objects.create(
+            quiz=self.quiz, text="Opted out from the start", marks=1, order=1,
+            suggest_to_bank=False,
+        )
+        self.assertEqual(q.bank_state, Question.BANK_STATE_PRIVATE)
+
+    def test_turning_suggest_to_bank_off_moves_an_accepted_question_to_private(self):
+        """Turning the flag off always wins, even over an admin's prior
+        "accepted" decision — see README "Interactions & behaviour"."""
+        q = Question.objects.create(
+            quiz=self.quiz, text="Already accepted", marks=1, order=2,
+            bank_state=Question.BANK_STATE_ACCEPTED,
+        )
+        self.assertEqual(q.bank_state, Question.BANK_STATE_ACCEPTED)
+
+        q.suggest_to_bank = False
+        q.save()
+        q.refresh_from_db()
+        self.assertEqual(q.bank_state, Question.BANK_STATE_PRIVATE)
+
+    def test_accepted_question_is_not_downgraded_by_an_unrelated_save(self):
+        """The admin-decision-clobber guard. Without the `elif` excluding
+        accepted/changes_requested in Question.save(), a teacher fixing a
+        typo on an already-accepted question would silently revert it to
+        "suggested" — discarding real curation work — on every single save."""
+        q = Question.objects.create(
+            quiz=self.quiz, text="Typo hree", marks=1, order=3,
+            bank_state=Question.BANK_STATE_ACCEPTED,
+        )
+        self.assertEqual(q.bank_state, Question.BANK_STATE_ACCEPTED)
+
+        q.text = "Typo here"
+        q.save()
+        q.refresh_from_db()
+        self.assertEqual(q.text, "Typo here")
+        self.assertEqual(q.bank_state, Question.BANK_STATE_ACCEPTED)
+
+    def test_changes_requested_question_is_also_not_downgraded(self):
+        q = Question.objects.create(
+            quiz=self.quiz, text="Needs a fix", marks=1, order=4,
+            bank_state=Question.BANK_STATE_CHANGES_REQUESTED,
+        )
+        q.marks = 2
+        q.save()
+        q.refresh_from_db()
+        self.assertEqual(q.bank_state, Question.BANK_STATE_CHANGES_REQUESTED)
+
+
+class QuestionBankStateBackfillTest(TestCase):
+    """Migration 0023 must derive bank_state from quiz.review_status — NOT
+    from is_published, unlike Phase 1's 0020. review_status IS the real gate
+    the pre-Phase-2 bank endpoints filtered on (see 0023's own docstring for
+    the full reasoning); this test proves the backfill matches that gate
+    exactly, for all four review_status values."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.teacher = User.objects.create_user(
+            username="qbf_t", email="qbf_t@test.com", password="x",
+        )
+        cls.course = Course.objects.create(title="Class 7")
+        cls.subject = Subject.objects.create(course=cls.course, name="Civics")
+
+    def _quiz(self, review_status, title):
+        return Quiz.objects.create(
+            subject=self.subject, created_by=self.teacher, title=title,
+            quiz_type=Quiz.TYPE_MOCK, review_status=review_status,
+        )
+
+    def test_backfill_maps_approved_to_accepted_and_everything_else_to_suggested(self):
+        from importlib import import_module
+        from django.apps import apps as real_apps
+
+        pairs = [
+            (self._quiz(Quiz.REVIEW_APPROVED, "Approved"), Question.BANK_STATE_ACCEPTED),
+            (self._quiz(Quiz.REVIEW_DRAFT, "Draft"), Question.BANK_STATE_SUGGESTED),
+            (self._quiz(Quiz.REVIEW_PENDING, "Pending"), Question.BANK_STATE_SUGGESTED),
+            (self._quiz(Quiz.REVIEW_REJECTED, "Rejected"), Question.BANK_STATE_SUGGESTED),
+        ]
+        questions = [
+            Question.objects.create(quiz=quiz, text=quiz.title, marks=1, order=0)
+            for quiz, _ in pairs
+        ]
+
+        import_module(
+            "quizzes.migrations.0023_backfill_question_bank_state"
+        ).backfill_bank_state(real_apps, None)
+
+        for question, (quiz, expected) in zip(questions, pairs):
+            question.refresh_from_db()
+            self.assertEqual(
+                question.bank_state, expected,
+                f"{quiz.title} (review_status={quiz.review_status})",
+            )
+            # suggest_to_bank is untouched — stays at its schema default of
+            # True for every existing row; nothing becomes private here.
+            self.assertTrue(question.suggest_to_bank)
+
+
+class TeacherQuestionBankOwnershipTest(TestCase):
+    """Phase 2's central fix: `scope=mine` is ownership-gated, not
+    admin-approval-gated. Also covers the state filter, the summary
+    endpoint, the PATCH opt-out endpoint, and the "additive-only" response
+    shape contract the existing teacher QuizBank.jsx screen depends on."""
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        teacher_role = Role.objects.get(name="TEACHER")
+
+        cls.teacher = User.objects.create_user(
+            username="tqb_t1", email="tqb_t1@test.com", password="x",
+            is_verified=True,
+        )
+        cls.other_teacher = User.objects.create_user(
+            username="tqb_t2", email="tqb_t2@test.com", password="x",
+            is_verified=True,
+        )
+        for u in (cls.teacher, cls.other_teacher):
+            UserRole.objects.create(
+                user=u, role=teacher_role, is_active=True, is_primary=True,
+            )
+
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Physics")
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, is_active=True,
+        )
+        # ASSISTANT: a course-wide PRIMARY slot is unique per subject, and
+        # cls.teacher already holds it — see uniq_active_primary_per_subject_
+        # courselevel on TeachingAssignment.
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.other_teacher, is_active=True,
+            role=TeachingAssignment.ROLE_ASSISTANT,
+        )
+
+    # ── helpers ──────────────────────────────────────────────────────────
+
+    def _teacher_client(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user, token={"context": "teacher"})
+        return c
+
+    def _results(self, response):
+        data = response.data
+        return data["results"] if isinstance(data, dict) and "results" in data else data
+
+    def _quiz(self, owner, review_status=Quiz.REVIEW_DRAFT, title="Quiz"):
+        return Quiz.objects.create(
+            subject=self.subject, created_by=owner, title=title,
+            quiz_type=Quiz.TYPE_MOCK, review_status=review_status,
+        )
+
+    # ── scope=mine: ownership, not approval ─────────────────────────────
+
+    def test_scope_mine_returns_questions_from_a_non_approved_quiz(self):
+        """Before this fix, TeacherQuestionBankView's base queryset filtered
+        quiz__review_status=Quiz.REVIEW_APPROVED BEFORE the scope branch, so
+        a teacher's own question on a draft/pending/rejected quiz was
+        invisible even under scope=mine — the exact ownership inversion
+        README T3 exists to remove ("Everything you write lands here
+        automatically"). Asserting the new behaviour explicitly: this must
+        now return the question.
+        """
+        draft_quiz = self._quiz(self.teacher, Quiz.REVIEW_DRAFT, "My draft")
+        q = Question.objects.create(
+            quiz=draft_quiz, text="Unapproved but mine", marks=1, order=0,
+        )
+
+        r = self._teacher_client(self.teacher).get(
+            "/api/teacher/question-bank/?scope=mine"
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        ids = [row["id"] for row in self._results(r)]
+        self.assertIn(str(q.id), ids)
+
+    def test_scope_mine_never_returns_another_teachers_questions(self):
+        other_quiz = self._quiz(self.other_teacher, Quiz.REVIEW_APPROVED, "Not mine")
+        Question.objects.create(
+            quiz=other_quiz, text="Someone else's", marks=1, order=0,
+            bank_state=Question.BANK_STATE_ACCEPTED,
+        )
+
+        r = self._teacher_client(self.teacher).get(
+            "/api/teacher/question-bank/?scope=mine"
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self._results(r), [])
+
+    # ── scope=school: bank_state="accepted", not "on an approved quiz" ──
+
+    def test_scope_school_returns_only_accepted_bank_state(self):
+        approved_quiz = self._quiz(
+            self.other_teacher, Quiz.REVIEW_APPROVED, "Other's approved",
+        )
+        accepted_q = Question.objects.create(
+            quiz=approved_quiz, text="Accepted", marks=1, order=0,
+            bank_state=Question.BANK_STATE_ACCEPTED,
+        )
+        # On the SAME approved quiz, but the teacher opted it out — this must
+        # NOT surface in school scope just because the quiz was approved.
+        private_q = Question.objects.create(
+            quiz=approved_quiz, text="Private despite approved quiz",
+            marks=1, order=1, suggest_to_bank=False,
+        )
+
+        r = self._teacher_client(self.teacher).get(
+            "/api/teacher/question-bank/?scope=school"
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        ids = [row["id"] for row in self._results(r)]
+        self.assertIn(str(accepted_q.id), ids)
+        self.assertNotIn(str(private_q.id), ids)
+
+    def test_scope_school_excludes_the_requesters_own_questions(self):
+        own_quiz = self._quiz(self.teacher, Quiz.REVIEW_APPROVED, "Mine, approved")
+        own_accepted = Question.objects.create(
+            quiz=own_quiz, text="Mine", marks=1, order=0,
+            bank_state=Question.BANK_STATE_ACCEPTED,
+        )
+
+        r = self._teacher_client(self.teacher).get(
+            "/api/teacher/question-bank/?scope=school"
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        ids = [row["id"] for row in self._results(r)]
+        self.assertNotIn(str(own_accepted.id), ids)
+
+    # ── state= filter ────────────────────────────────────────────────────
+
+    def test_state_filter_narrows_to_each_bank_state(self):
+        quiz = self._quiz(self.teacher, title="Mixed states")
+        by_state = {
+            Question.BANK_STATE_PRIVATE: Question.objects.create(
+                quiz=quiz, text="P", marks=1, order=0, suggest_to_bank=False,
+            ),
+            Question.BANK_STATE_SUGGESTED: Question.objects.create(
+                quiz=quiz, text="S", marks=1, order=1,
+            ),
+            Question.BANK_STATE_ACCEPTED: Question.objects.create(
+                quiz=quiz, text="A", marks=1, order=2,
+                bank_state=Question.BANK_STATE_ACCEPTED,
+            ),
+            Question.BANK_STATE_CHANGES_REQUESTED: Question.objects.create(
+                quiz=quiz, text="C", marks=1, order=3,
+                bank_state=Question.BANK_STATE_CHANGES_REQUESTED,
+            ),
+        }
+
+        client = self._teacher_client(self.teacher)
+        for state, expected in by_state.items():
+            r = client.get(f"/api/teacher/question-bank/?scope=mine&state={state}")
+            self.assertEqual(r.status_code, 200, r.content)
+            ids = [row["id"] for row in self._results(r)]
+            self.assertEqual(ids, [str(expected.id)], f"state={state} -> {ids}")
+
+    # ── summary ──────────────────────────────────────────────────────────
+
+    def test_summary_counts_are_correct_and_scoped_to_the_requester(self):
+        quiz = self._quiz(self.teacher, title="Mine")
+        Question.objects.create(quiz=quiz, text="P1", marks=1, order=0, suggest_to_bank=False)
+        Question.objects.create(quiz=quiz, text="P2", marks=1, order=1, suggest_to_bank=False)
+        Question.objects.create(quiz=quiz, text="S1", marks=1, order=2)
+        Question.objects.create(
+            quiz=quiz, text="A1", marks=1, order=3, bank_state=Question.BANK_STATE_ACCEPTED,
+        )
+        Question.objects.create(
+            quiz=quiz, text="A2", marks=1, order=4, bank_state=Question.BANK_STATE_ACCEPTED,
+        )
+        Question.objects.create(
+            quiz=quiz, text="A3", marks=1, order=5, bank_state=Question.BANK_STATE_ACCEPTED,
+        )
+        Question.objects.create(
+            quiz=quiz, text="C1", marks=1, order=6,
+            bank_state=Question.BANK_STATE_CHANGES_REQUESTED,
+        )
+
+        other_quiz = self._quiz(self.other_teacher, title="Not mine")
+        Question.objects.create(
+            quiz=other_quiz, text="Other's", marks=1, order=0,
+            bank_state=Question.BANK_STATE_ACCEPTED,
+        )
+
+        r = self._teacher_client(self.teacher).get("/api/teacher/question-bank/summary/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data, {
+            "total": 7, "accepted": 3, "suggested": 1,
+            "changes_requested": 1, "private": 2,
+        })
+
+    # ── PATCH .../bank/ ──────────────────────────────────────────────────
+
+    def test_only_the_owning_teacher_can_patch_the_bank_flag(self):
+        quiz = self._quiz(self.teacher, title="Mine to toggle")
+        q = Question.objects.create(quiz=quiz, text="Q", marks=1, order=0)
+
+        r = self._teacher_client(self.other_teacher).patch(
+            f"/api/teacher/questions/{q.id}/bank/",
+            {"suggest_to_bank": False}, format="json",
+        )
+        self.assertIn(r.status_code, (403, 404), r.content)
+        q.refresh_from_db()
+        self.assertTrue(q.suggest_to_bank)
+        self.assertEqual(q.bank_state, Question.BANK_STATE_SUGGESTED)
+
+    def test_owning_teacher_can_patch_and_it_moves_the_question_to_private(self):
+        quiz = self._quiz(self.teacher, title="Mine to toggle 2")
+        q = Question.objects.create(quiz=quiz, text="Q", marks=1, order=0)
+
+        r = self._teacher_client(self.teacher).patch(
+            f"/api/teacher/questions/{q.id}/bank/",
+            {"suggest_to_bank": False}, format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["suggest_to_bank"], False)
+        self.assertEqual(r.data["bank_state"], Question.BANK_STATE_PRIVATE)
+        q.refresh_from_db()
+        self.assertFalse(q.suggest_to_bank)
+        self.assertEqual(q.bank_state, Question.BANK_STATE_PRIVATE)
+
+    # ── response shape: additive only ───────────────────────────────────
+
+    def test_bank_response_shape_is_additive_only(self):
+        """BUILD_GUIDE's "done when": the existing Quiz Bank screen still
+        renders unchanged. Every field the pre-Phase-2 serializer returned
+        must still be present, unrenamed and untyped-away."""
+        quiz = self._quiz(self.teacher, title="Shape check")
+        Question.objects.create(
+            quiz=quiz, text="Q", marks=1, order=0, explanation="Because",
+            topic="Motion", difficulty=Question.DIFFICULTY_EASY,
+        )
+
+        r = self._teacher_client(self.teacher).get(
+            "/api/teacher/question-bank/?scope=mine"
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        row = self._results(r)[0]
+
+        pre_existing_fields = {
+            "id", "text", "marks", "explanation", "topic", "difficulty",
+            "choices", "quiz_id", "quiz_title", "subject_id", "subject_name",
+            "author_name", "author_id", "created_at",
+        }
+        missing = pre_existing_fields - set(row.keys())
+        self.assertEqual(missing, set(), f"pre-existing fields dropped: {missing}")
+
+        # And the new fields are present too, additively.
+        for new_field in ("bank_state", "suggest_to_bank", "bank_feedback"):
+            self.assertIn(new_field, row)
+
+
+# =========================================================================
+# Phase 4 · mock-test model: negative marking, attempt quota, sections
+# =========================================================================
+
+
+class _Phase4Base(TestCase):
+    """Shared fixture: one teacher who teaches one subject in one batch, and
+    one enrolled, subscribed learner profile."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Batch
+        from enrollments.models import Enrollment
+
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="STUDENT")
+
+        cls.teacher = User.objects.create_user(
+            username="p4_t", email="p4_t@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        cls.other_teacher = User.objects.create_user(
+            username="p4_t2", email="p4_t2@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.other_teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+
+        cls.student = User.objects.create_user(
+            username="p4_s", email="p4_s@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.student, role=Role.objects.get(name="STUDENT"),
+            is_active=True, is_primary=True,
+        )
+        cls.profile = LearnerProfile.objects.create(
+            account=cls.student, display_name="S", is_default=True,
+        )
+
+        now = timezone.now()
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Physics")
+        cls.batch = Batch.objects.create(course=cls.course, name="10-A", code="P4A")
+        TeachingAssignment.objects.create(
+            batch=cls.batch, subject=cls.subject, teacher=cls.teacher, is_active=True,
+        )
+        Subscription.objects.create(
+            user=cls.student, learner_profile=cls.profile, course=cls.course,
+            status=Subscription.STATUS_ACTIVE,
+            starts_at=now, expires_at=now + timedelta(days=30),
+        )
+        Enrollment.objects.create(
+            user=cls.student, learner_profile=cls.profile, course=cls.course,
+            batch=cls.batch, status=Enrollment.STATUS_ACTIVE,
+        )
+
+    # ── clients ──────────────────────────────────────────────────────────
+
+    def _student(self):
+        c = APIClient()
+        c.force_authenticate(
+            user=self.student,
+            token={"context": "learner", "active_profile": str(self.profile.id)},
+        )
+        return c
+
+    def _teacher(self, user=None):
+        c = APIClient()
+        c.force_authenticate(user=user or self.teacher, token={"context": "teacher"})
+        return c
+
+    # ── fixtures ─────────────────────────────────────────────────────────
+
+    def _quiz(self, *, quiz_type=Quiz.TYPE_MOCK, negative="0", questions=4,
+              max_attempts=None, reveal=None, marks=1):
+        quiz = Quiz.objects.create(
+            subject=self.subject, created_by=self.teacher,
+            title=f"{quiz_type} paper", quiz_type=quiz_type,
+            negative_marks_per_wrong=Decimal(str(negative)),
+            max_attempts=max_attempts,
+            reveal_answers=reveal or (
+                Quiz.REVEAL_AFTER_SUBMIT if quiz_type == Quiz.TYPE_MOCK
+                else Quiz.REVEAL_AFTER_EACH
+            ),
+            is_assigned=True, review_status=Quiz.REVIEW_DRAFT,
+            total_marks=questions * marks,
+        )
+        self.qs = []
+        for i in range(questions):
+            q = Question.objects.create(
+                quiz=quiz, text=f"Q{i}", marks=marks, order=i,
+                explanation="Because",
+            )
+            q.right = Choice.objects.create(question=q, text="right", is_correct=True)
+            q.wrong = Choice.objects.create(question=q, text="wrong", is_correct=False)
+            self.qs.append(q)
+        return quiz
+
+    def _submit(self, quiz, answers, *, new_attempt=False, client=None):
+        """`answers` is a list of (question, choice_or_None). A question left
+        out of the list entirely, or passed with None, is a BLANK."""
+        c = client or self._student()
+        start = c.post(
+            f"/api/quizzes/{quiz.id}/start/",
+            {"new_attempt": True} if new_attempt else {}, format="json",
+        )
+        self.assertEqual(start.status_code, 200, start.content)
+        payload = [
+            {"question": str(q.id),
+             "selected_choice": str(ch.id) if ch is not None else None}
+            for q, ch in answers
+        ]
+        r = c.post(
+            f"/api/student/quizzes/{quiz.id}/submit/",
+            {"answers": payload}, format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        return (
+            QuizAttempt.objects
+            .filter(quiz=quiz, learner_profile=self.profile,
+                    status=QuizAttempt.STATUS_SUBMITTED)
+            .order_by("-attempt_number")
+            .first()
+        )
+
+
+class MockNegativeMarkingTest(_Phase4Base):
+    """Negative marking applies to mock tests only, never to blanks, and the
+    arithmetic is exact."""
+
+    def test_mock_with_two_wrong_at_quarter_mark_scores_correctly(self):
+        """BUILD_GUIDE Phase 4 item 5, case 1."""
+        quiz = self._quiz(negative="0.25", questions=4)
+        q = self.qs
+        attempt = self._submit(quiz, [
+            (q[0], q[0].right), (q[1], q[1].right),
+            (q[2], q[2].wrong), (q[3], q[3].wrong),
+        ])
+        # 2 correct × 1 mark − 2 wrong × 0.25 = 1.5
+        self.assertEqual(attempt.score, 1.5)
+
+    def test_practice_attempt_never_subtracts(self):
+        """BUILD_GUIDE Phase 4 item 5, case 2. The penalty is deliberately
+        left STORED on the practice quiz — the point is that quiz_type, not
+        the stored value, decides whether it is applied."""
+        quiz = self._quiz(quiz_type=Quiz.TYPE_PRACTICE, negative="0.5", questions=4)
+        q = self.qs
+        attempt = self._submit(quiz, [
+            (q[0], q[0].right),
+            (q[1], q[1].wrong), (q[2], q[2].wrong), (q[3], q[3].wrong),
+        ])
+        self.assertEqual(attempt.score, 1.0)
+        # And the value really is on the row — this is not passing because
+        # the fixture forgot to set it.
+        quiz.refresh_from_db()
+        self.assertEqual(quiz.negative_marks_per_wrong, Decimal("0.50"))
+
+    def test_blank_answers_are_not_penalised(self):
+        """Both spellings of "blank": omitted from the payload entirely, and
+        present with selected_choice=null (what the mock screen sends for a
+        visited-but-skipped question)."""
+        quiz = self._quiz(negative="0.25", questions=4)
+        q = self.qs
+        attempt = self._submit(quiz, [
+            (q[0], q[0].right),
+            (q[1], q[1].wrong),
+            (q[2], None),          # explicit null
+            # q[3] omitted entirely
+        ])
+        # 1 − 0.25, with nothing deducted for the two blanks.
+        self.assertEqual(attempt.score, 0.75)
+        # Neither blank produced a StudentAnswer row.
+        self.assertEqual(attempt.answers.count(), 2)
+
+    def test_zero_negative_marking_behaves_like_no_negative_marking(self):
+        quiz = self._quiz(negative="0", questions=4)
+        q = self.qs
+        attempt = self._submit(quiz, [
+            (q[0], q[0].right), (q[1], q[1].right),
+            (q[2], q[2].wrong), (q[3], q[3].wrong),
+        ])
+        self.assertEqual(attempt.score, 2.0)
+
+    def test_three_wrong_at_point_33_is_exactly_0_99(self):
+        """Decimal, not float. In binary floating point 3 × 0.33 is
+        0.9899999999999999, so a float implementation stores 0.010000000000000009
+        here and fails this assertion."""
+        quiz = self._quiz(negative="0.33", questions=4)
+        q = self.qs
+        attempt = self._submit(quiz, [
+            (q[0], q[0].right),
+            (q[1], q[1].wrong), (q[2], q[2].wrong), (q[3], q[3].wrong),
+        ])
+        self.assertEqual(attempt.score, 0.01)
+        self.assertEqual(Decimal(str(attempt.score)), Decimal("0.01"))
+        # Proof the float route would NOT have satisfied the above.
+        self.assertNotEqual(1 - 3 * 0.33, 0.01)
+
+    def test_a_mock_total_may_go_negative(self):
+        """PRODUCT DECISION, flagged in the Phase 4 handoff: the total is NOT
+        floored at zero. Standard for the Indian competitive exams this
+        platform serves, and honest — a clamped 0 would tell a learner who
+        guessed badly the same thing it tells one who answered nothing."""
+        quiz = self._quiz(negative="1", questions=4)
+        q = self.qs
+        attempt = self._submit(quiz, [
+            (q[0], q[0].wrong), (q[1], q[1].wrong), (q[2], q[2].wrong),
+        ])
+        self.assertEqual(attempt.score, -3.0)
+
+    def test_result_endpoint_reports_the_fractional_score(self):
+        """Regression: QuizResultSerializer.score was an IntegerField, which
+        truncated 2.75 → 2 on the way out — the screen would have disagreed
+        with the stored score."""
+        quiz = self._quiz(negative="0.25", questions=4)
+        q = self.qs
+        self._submit(quiz, [
+            (q[0], q[0].right), (q[1], q[1].right), (q[2], q[2].right),
+            (q[3], q[3].wrong),
+        ])
+        r = self._student().get(f"/api/quizzes/{quiz.id}/result/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["score"], 2.75)
+
+    def test_a_flat_practice_quiz_is_untouched_by_any_of_this(self):
+        """A practice quiz created the pre-Phase-4 way: no sections, default
+        penalty, no attempt cap. Everything must behave exactly as before."""
+        quiz = Quiz.objects.create(
+            subject=self.subject, created_by=self.teacher, title="Legacy practice",
+            quiz_type=Quiz.TYPE_PRACTICE, is_assigned=True, total_marks=2,
+        )
+        for i in range(2):
+            q = Question.objects.create(
+                quiz=quiz, text=f"L{i}", marks=1, order=i, explanation="B",
+            )
+            Choice.objects.create(question=q, text="r", is_correct=True)
+            Choice.objects.create(question=q, text="w", is_correct=False)
+
+        self.assertEqual(quiz.negative_marks_per_wrong, Decimal("0"))
+        self.assertIsNone(quiz.max_attempts)
+        self.assertFalse(quiz.shuffle_questions)
+        self.assertEqual(quiz.reveal_answers, Quiz.REVEAL_AFTER_EACH)
+        self.assertEqual(list(quiz.sections.all()), [])
+        self.assertFalse(quiz.questions.filter(section__isnull=False).exists())
+
+        questions = list(quiz.questions.order_by("order"))
+        attempt = self._submit(quiz, [
+            (questions[0], questions[0].choices.get(is_correct=True)),
+            (questions[1], questions[1].choices.get(is_correct=False)),
+        ])
+        self.assertEqual(attempt.score, 1.0)
+        # And the student payload still renders (sections is simply []).
+        r = self._student().get(f"/api/quizzes/{quiz.id}/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["sections"], [])
+
+
+class NegativeScoreDownstreamTest(_Phase4Base):
+    """Negative marking (above) is intentionally allowed to push a mock
+    total below zero. This class covers the readers of `attempt.score`
+    that were written assuming score >= 0: the mock-average stat, the
+    analytics histogram, and total_marks=0 as a division hazard negatives
+    make more visible."""
+
+    def test_avg_mock_score_reports_negative_not_floored_at_zero(self):
+        """StudentQuizStatsView.avg_mock_score used to seed each quiz's
+        running best at 0 (`best_by_quiz.get(quiz_id, 0)`), so a quiz whose
+        only attempt scored -100% still reported a "best" of 0 — `max(-100,
+        0)` always wins for 0. The running best must start at -inf so a
+        genuinely negative best survives."""
+        quiz = self._quiz(negative="1", questions=4)
+        q = self.qs
+        self._submit(quiz, [
+            (q[0], q[0].wrong), (q[1], q[1].wrong),
+            (q[2], q[2].wrong), (q[3], q[3].wrong),
+        ])
+        r = self._student().get("/api/student/quizzes/stats/")
+        self.assertEqual(r.status_code, 200, r.content)
+        # 4 wrong × 1 mark penalty − 0 correct = -4, over total_marks 4 = -100%.
+        self.assertEqual(r.data["avg_mock_score"], -100.0)
+
+    def test_negative_attempt_lands_in_the_below_zero_bucket(self):
+        """TeacherQuizAnalyticsView's score_distribution buckets used to
+        start at 0, so a negative attempt fell into no bucket at all and
+        silently vanished from the chart. The new "Below 0" bucket must
+        catch it, prepended ahead of the pre-existing buckets whose own
+        labels/boundaries must stay exactly as they were."""
+        quiz = self._quiz(negative="1", questions=4)
+        q = self.qs
+        self._submit(quiz, [
+            (q[0], q[0].wrong), (q[1], q[1].wrong),
+            (q[2], q[2].wrong), (q[3], q[3].wrong),
+        ])
+        r = self._teacher().get(f"/api/teacher/quizzes/{quiz.id}/analytics/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["score_distribution"], [
+            {"range": "Below 0", "count": 1},
+            {"range": "0–19", "count": 0},
+            {"range": "20–39", "count": 0},
+            {"range": "40–59", "count": 0},
+            {"range": "60–79", "count": 0},
+            {"range": "80–100", "count": 0},
+        ])
+
+    def test_the_below_zero_bucket_is_absent_when_nothing_scored_negative(self):
+        """The bucket is conditional, not unconditional. A mock with negative
+        marking switched ON but no actually-negative attempt must NOT grow a
+        "Below 0" column — otherwise every chart on the platform gains a
+        permanently-empty bar, since negative marking is mock-only and most
+        attempts are not negative. Pairs with the test above: together they
+        pin both directions of the condition."""
+        quiz = self._quiz(negative="0.25", questions=4)
+        q = self.qs
+        self._submit(quiz, [
+            (q[0], q[0].right), (q[1], q[1].right),
+            (q[2], q[2].right), (q[3], q[3].right),
+        ])
+        r = self._teacher().get(f"/api/teacher/quizzes/{quiz.id}/analytics/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertNotIn(
+            "Below 0", [b["range"] for b in r.data["score_distribution"]]
+        )
+        self.assertEqual(len(r.data["score_distribution"]), 5)
+
+    def test_zero_total_marks_quiz_does_not_raise_zero_division(self):
+        """total_marks can fall out of sync with a quiz's questions (a
+        pre-existing hazard — see QuizDashboardSerializer.get_best_score);
+        at total_marks=0 every score/total_marks% site must skip the
+        division rather than raise, negative score or not."""
+        quiz = self._quiz(negative="0.25", questions=2)
+        quiz.total_marks = 0
+        quiz.save(update_fields=["total_marks"])
+        q = self.qs
+        attempt = self._submit(
+            quiz, [(q[0], q[0].right), (q[1], q[1].wrong)]
+        )
+        self.assertEqual(attempt.score, 0.75)
+
+        r = self._teacher().get(f"/api/teacher/quizzes/{quiz.id}/analytics/")
+        self.assertEqual(r.status_code, 200, r.content)
+        # No "Below 0" entry: it is emitted only when something actually
+        # scored below zero, so a practice quiz — which can never have
+        # negative marking — never grows a permanently-empty column.
+        self.assertEqual(r.data["score_distribution"], [
+            {"range": "0–19", "count": 0},
+            {"range": "20–39", "count": 0},
+            {"range": "40–59", "count": 0},
+            {"range": "60–79", "count": 0},
+            {"range": "80–100", "count": 0},
+        ])
+
+        r2 = self._student().get(f"/api/quizzes/{quiz.id}/result/")
+        self.assertEqual(r2.status_code, 200, r2.content)
+        self.assertEqual(r2.data["score"], 0.75)
+
+        r3 = self._student().get("/api/student/quizzes/stats/")
+        self.assertEqual(r3.status_code, 200, r3.content)
+        self.assertEqual(r3.data["avg_mock_score"], 0)
+
+
+class MockAttemptQuotaTest(_Phase4Base):
+    """`max_attempts` (quota) vs the pre-existing `new_attempt` flag (intent).
+    They must compose, not compete."""
+
+    def test_max_attempts_one_blocks_a_second_mock_attempt(self):
+        quiz = self._quiz(negative="0.25", questions=2, max_attempts=1)
+        q = self.qs
+        self._submit(quiz, [(q[0], q[0].right)])
+
+        c = self._student()
+        # Even an EXPLICIT retake request is refused — a deliberate ask
+        # cannot manufacture an entitlement.
+        again = c.post(
+            f"/api/quizzes/{quiz.id}/start/", {"new_attempt": True}, format="json",
+        )
+        self.assertEqual(again.status_code, 200, again.content)
+        self.assertTrue(again.data["already_submitted"])
+        self.assertTrue(again.data["attempts_exhausted"])
+        self.assertEqual(
+            QuizAttempt.objects.filter(quiz=quiz, learner_profile=self.profile).count(), 1,
+        )
+
+    def test_null_max_attempts_allows_unlimited_practice_retries(self):
+        quiz = self._quiz(quiz_type=Quiz.TYPE_PRACTICE, questions=2, max_attempts=None)
+        q = self.qs
+        self._submit(quiz, [(q[0], q[0].right)])
+        self._submit(quiz, [(q[0], q[0].right)], new_attempt=True)
+        self._submit(quiz, [(q[0], q[0].right)], new_attempt=True)
+        self.assertEqual(
+            QuizAttempt.objects.filter(quiz=quiz, learner_profile=self.profile).count(), 3,
+        )
+
+    def test_the_existing_new_attempt_retake_path_still_works(self):
+        """The accidental-retake guard is unchanged where there is no quota:
+        a bare re-post creates nothing, `new_attempt: true` starts a retake,
+        and neither response claims the attempts are exhausted."""
+        quiz = self._quiz(questions=2, max_attempts=None)
+        q = self.qs
+        self._submit(quiz, [(q[0], q[0].right)])
+
+        c = self._student()
+        bare = c.post(f"/api/quizzes/{quiz.id}/start/")
+        self.assertTrue(bare.data["already_submitted"])
+        self.assertNotIn("attempts_exhausted", bare.data)
+        self.assertEqual(QuizAttempt.objects.filter(quiz=quiz).count(), 1)
+
+        retake = c.post(
+            f"/api/quizzes/{quiz.id}/start/", {"new_attempt": True}, format="json",
+        )
+        self.assertFalse(retake.data.get("already_submitted", False))
+        self.assertEqual(QuizAttempt.objects.filter(quiz=quiz).count(), 2)
+
+    def test_an_in_progress_single_attempt_mock_can_still_be_resumed(self):
+        """The quota bounds how many attempts a learner gets, not whether
+        they may finish the one they are in — a page refresh mid-paper must
+        not lock them out of their own live attempt."""
+        quiz = self._quiz(questions=2, max_attempts=1)
+        c = self._student()
+        first = c.post(f"/api/quizzes/{quiz.id}/start/")
+        resumed = c.post(f"/api/quizzes/{quiz.id}/start/")
+        self.assertEqual(resumed.status_code, 200, resumed.content)
+        self.assertEqual(resumed.data["attempt_id"], first.data["attempt_id"])
+        self.assertNotIn("attempts_exhausted", resumed.data)
+
+    def test_creating_a_mock_defaults_to_one_attempt_and_reveal_after_submit(self):
+        """The per-quiz-type defaults live at CREATION time (a column cannot
+        hold two defaults, and Quiz.save() would re-impose them on every
+        edit)."""
+        r = self._teacher().post("/api/teacher/quizzes/", {
+            "subject": str(self.subject.id), "batch_id": str(self.batch.id),
+            "title": "Unit test mock", "quiz_type": Quiz.TYPE_MOCK,
+        }, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        quiz = Quiz.objects.get(id=r.data["id"])
+        self.assertEqual(quiz.max_attempts, 1)
+        self.assertEqual(quiz.reveal_answers, Quiz.REVEAL_AFTER_SUBMIT)
+        self.assertEqual(quiz.negative_marks_per_wrong, Decimal("0"))
+
+    def test_creating_a_practice_quiz_stays_unlimited_and_reveals_after_each(self):
+        r = self._teacher().post("/api/teacher/quizzes/", {
+            "subject": str(self.subject.id), "batch_id": str(self.batch.id),
+            "title": "Unit test practice", "quiz_type": Quiz.TYPE_PRACTICE,
+        }, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        quiz = Quiz.objects.get(id=r.data["id"])
+        self.assertIsNone(quiz.max_attempts)
+        self.assertEqual(quiz.reveal_answers, Quiz.REVEAL_AFTER_EACH)
+
+    def test_an_explicit_null_max_attempts_on_a_mock_is_respected(self):
+        """The creation-time default only fills an ABSENT key — a teacher who
+        deliberately opens a mock up to unlimited retries keeps that."""
+        r = self._teacher().post("/api/teacher/quizzes/", {
+            "subject": str(self.subject.id), "batch_id": str(self.batch.id),
+            "title": "Open mock", "quiz_type": Quiz.TYPE_MOCK,
+            "max_attempts": None,
+        }, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertIsNone(Quiz.objects.get(id=r.data["id"]).max_attempts)
+
+
+class QuizSectionReplaceSemanticsTest(_Phase4Base):
+    """PUT /teacher/quizzes/:pk/sections/ matches by id. The trap it exists
+    to avoid: delete-all-and-recreate would SET_NULL every question.section
+    and silently flatten a paper the teacher was only renaming."""
+
+    def _put(self, quiz, sections, *, user=None):
+        return self._teacher(user).put(
+            f"/api/teacher/quizzes/{quiz.id}/sections/",
+            {"sections": sections}, format="json",
+        )
+
+    def _two_sections(self, quiz):
+        r = self._put(quiz, [
+            {"name": "Section A · Objective", "order": 0, "instructions": "Tick one"},
+            {"name": "Section B · Numerical", "order": 1},
+        ])
+        self.assertEqual(r.status_code, 200, r.content)
+        a, b = QuizSection.objects.filter(quiz=quiz).order_by("order")
+        # Two questions in A, one in B, one left flat.
+        Question.objects.filter(id=self.qs[0].id).update(section=a)
+        Question.objects.filter(id=self.qs[1].id).update(section=a)
+        Question.objects.filter(id=self.qs[2].id).update(section=b)
+        return a, b
+
+    def test_renaming_a_section_preserves_its_questions(self):
+        quiz = self._quiz(questions=4)
+        a, b = self._two_sections(quiz)
+
+        r = self._put(quiz, [
+            {"id": str(a.id), "name": "Section A · MCQ", "order": 0},
+            {"id": str(b.id), "name": "Section B · Numerical", "order": 1},
+        ])
+        self.assertEqual(r.status_code, 200, r.content)
+
+        a.refresh_from_db()
+        self.assertEqual(a.name, "Section A · MCQ")
+        self.assertEqual(
+            set(a.questions.values_list("id", flat=True)),
+            {self.qs[0].id, self.qs[1].id},
+        )
+        self.assertEqual(b.questions.count(), 1)
+        # No section was churned — same rows, same ids.
+        self.assertEqual(QuizSection.objects.filter(quiz=quiz).count(), 2)
+
+    def test_deleting_a_section_flattens_its_questions_instead_of_deleting_them(self):
+        quiz = self._quiz(questions=4)
+        a, b = self._two_sections(quiz)
+
+        r = self._put(quiz, [{"id": str(a.id), "name": "Section A · Objective"}])
+        self.assertEqual(r.status_code, 200, r.content)
+
+        self.assertFalse(QuizSection.objects.filter(id=b.id).exists())
+        # B's question survived and merged into the flat list.
+        self.assertEqual(quiz.questions.count(), 4)
+        self.qs[2].refresh_from_db()
+        self.assertIsNone(self.qs[2].section_id)
+        # A's grouping is untouched.
+        self.assertEqual(a.questions.count(), 2)
+
+    def test_section_ordering_is_respected(self):
+        quiz = self._quiz(questions=2)
+        r = self._put(quiz, [
+            {"name": "Third", "order": 30},
+            {"name": "First", "order": 10},
+            {"name": "Second", "order": 20},
+        ])
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual([s["name"] for s in r.data], ["First", "Second", "Third"])
+        self.assertEqual(
+            [s.name for s in QuizSection.objects.filter(quiz=quiz)],
+            ["First", "Second", "Third"],
+        )
+
+    def test_order_defaults_to_payload_position(self):
+        quiz = self._quiz(questions=1)
+        r = self._put(quiz, [{"name": "One"}, {"name": "Two"}, {"name": "Three"}])
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual([s["name"] for s in r.data], ["One", "Two", "Three"])
+        self.assertEqual([s["order"] for s in r.data], [0, 1, 2])
+
+    def test_a_section_id_from_another_quiz_is_rejected_not_silently_created(self):
+        quiz = self._quiz(questions=1)
+        other = self._quiz(questions=1)
+        stray = QuizSection.objects.create(quiz=other, name="Elsewhere", order=0)
+
+        r = self._put(quiz, [{"id": str(stray.id), "name": "Mine now"}])
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(QuizSection.objects.filter(quiz=quiz).count(), 0)
+        stray.refresh_from_db()
+        self.assertEqual(stray.name, "Elsewhere")
+
+    def test_a_nameless_section_is_rejected(self):
+        quiz = self._quiz(questions=1)
+        self.assertEqual(self._put(quiz, [{"name": "   "}]).status_code, 400)
+        self.assertEqual(QuizSection.objects.filter(quiz=quiz).count(), 0)
+
+    def test_only_the_owning_teacher_may_replace_the_sections(self):
+        quiz = self._quiz(questions=1)
+        r = self._put(quiz, [{"name": "Hostile"}], user=self.other_teacher)
+        self.assertEqual(r.status_code, 403, r.content)
+        self.assertEqual(QuizSection.objects.filter(quiz=quiz).count(), 0)
+
+    def test_bulk_question_save_without_a_section_key_keeps_the_grouping(self):
+        """The orphaning trap from the other side: the pre-Phase-5 builder
+        does not send `section`, so a save must not strip the grouping."""
+        quiz = self._quiz(questions=4)
+        a, _b = self._two_sections(quiz)
+
+        payload = [
+            {"id": str(q.id), "text": q.text, "marks": 1, "order": i,
+             "explanation": "Because",
+             "choices": [{"text": "right", "is_correct": True},
+                         {"text": "wrong", "is_correct": False}]}
+            for i, q in enumerate(self.qs)
+        ]
+        r = self._teacher().put(
+            f"/api/teacher/quizzes/{quiz.id}/questions/bulk/",
+            {"questions": payload}, format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(a.questions.count(), 2)
+
+    def test_bulk_question_save_can_file_a_question_into_a_section(self):
+        quiz = self._quiz(questions=4)
+        a, _b = self._two_sections(quiz)
+
+        target = self.qs[3]  # currently flat
+        r = self._teacher().put(
+            f"/api/teacher/quizzes/{quiz.id}/questions/bulk/",
+            {"questions": [
+                {"id": str(q.id), "text": q.text, "marks": 1, "order": i,
+                 "explanation": "Because",
+                 "section": str(a.id) if q.id == target.id else None,
+                 "choices": [{"text": "right", "is_correct": True},
+                             {"text": "wrong", "is_correct": False}]}
+                for i, q in enumerate(self.qs)
+            ]}, format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        target.refresh_from_db()
+        self.assertEqual(target.section_id, a.id)
+        # An explicit null ungrouped the rest.
+        self.assertEqual(a.questions.count(), 1)

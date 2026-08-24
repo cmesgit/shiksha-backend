@@ -4,6 +4,10 @@ from django.db import models
 from django.db.models import Q
 from django.conf import settings
 from django.utils import timezone
+from courses.models_chapter_tags import (
+    chapter_note_field,
+    no_specific_chapter_field,
+)
 
 
 # ==========================================
@@ -18,9 +22,48 @@ class Assignment(models.Model):
         editable=False
     )
 
+    # THE curriculum anchor, and the authorization source of truth.
+    #
+    # Authorization for an assignment (who may edit it, who may see it, which
+    # course/board it belongs to) used to be derived by walking
+    # chapter.subject.course — the staffing triangle in serializers.py, the
+    # _teacher_scope() queryset in views.py, the media gate in
+    # config/media_security.py, the teacher rollups in dashboard/views.py.
+    # That was only safe while `chapter` was a required FK.
+    #
+    # `chapter` is now optional (a teacher may legitimately save an assignment
+    # with no chapter, or several chapters, via courses.ContentChapterTag), so
+    # deriving authorization through it would mean a NULL chapter silently
+    # produced "no subject" and therefore no staffing check. Authorization
+    # must never depend on a nullable field, so it hangs off this instead.
+    #
+    # Note `batch` below cannot serve this purpose either: it is nullable by
+    # design (SET_NULL, so deleting a batch demotes content rather than
+    # destroying it), and legacy rows have none.
+    #
+    # This mirrors what Quiz, LiveSession and SessionRecording already do —
+    # all three have carried a non-null `subject` plus an optional `chapter`
+    # from the start. Assignment and StudyMaterial were the outliers.
+    subject = models.ForeignKey(
+        "courses.Subject",
+        on_delete=models.CASCADE,
+        related_name="assignments",
+        db_index=True,
+    )
+
+    # Curriculum placement within the subject. OPTIONAL: see `subject` above.
+    #
+    # SET_NULL, not CASCADE. Teacher-typed chapter names became real
+    # courses.Chapter rows when custom chapters shipped, which meant an admin
+    # tidying a subject's syllabus would silently delete every assignment
+    # filed under the chapter they removed — including student submissions,
+    # which cascade off Assignment. Losing the curriculum label is an
+    # acceptable outcome of deleting a chapter; losing the graded work is not.
     chapter = models.ForeignKey(
         "courses.Chapter",
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="assignments",
         db_index=True
     )
@@ -79,6 +122,14 @@ class Assignment(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
+    # --- Flexible chapter tagging (courses.models_chapter_tags) ---
+    # The rich multi-chapter placement lives in ContentChapterTag, keyed on
+    # (content_type, object_id). These two are the scalar companions; see
+    # courses/models_chapter_tags.py for what each one means and why
+    # no_specific_chapter is not the same state as "no tags".
+    chapter_note = chapter_note_field()
+    no_specific_chapter = no_specific_chapter_field()
+
     # -------------------------------------------------------
     # Idempotency key — teacher frontend generates a random
     # UUID per "new assignment" form session and sends it as
@@ -100,12 +151,31 @@ class Assignment(models.Model):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["chapter"]),
+            models.Index(fields=["subject"]),
             models.Index(fields=["due_date"]),
             models.Index(fields=["batch", "due_date"]),
         ]
 
+    def save(self, *args, **kwargs):
+        # `subject` is NOT NULL because authorization hangs off it, but for
+        # years the only thing callers passed was `chapter` — the subject was
+        # implied by it. Deriving it here keeps every existing writer (the
+        # create serializer, seed_demo_data, admin inlines, test fixtures)
+        # correct without each having to learn about the new column, and makes
+        # it impossible to end up with a row whose authorization anchor is
+        # unset.
+        #
+        # Only fills a MISSING subject. It deliberately does not "correct" a
+        # subject that disagrees with the chapter: silently rewriting one of
+        # two conflicting values would hide the bug that produced them. The
+        # serializers enforce that a chapter stays inside the assignment's own
+        # subject instead.
+        if self.subject_id is None and self.chapter_id is not None:
+            self.subject_id = self.chapter.subject_id
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        return f"{self.title} ({self.chapter})"
+        return f"{self.title} ({self.chapter or self.subject})"
 
     @property
     def is_expired(self):

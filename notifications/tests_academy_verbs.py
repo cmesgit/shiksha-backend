@@ -164,13 +164,22 @@ class BatchScopingTest(AcademyVerbFixture):
 
 
 class QuizPostedTest(AcademyVerbFixture):
-    def test_publishing_emits_the_verb_and_deep_links_to_the_quiz_list(self):
+    """Phase 1 repointed this lifecycle from is_published onto is_assigned.
+
+    These tests are the guard on activity/signals.py's repoint: assigning is
+    now the moment a quiz becomes visible, so it must be the moment students
+    are told. If the receivers were left reading is_published, assigning a
+    quiz would notify NOBODY and every assertion below would still have
+    passed on the old field — which is why they toggle is_assigned now.
+    """
+
+    def test_assigning_emits_the_verb_and_deep_links_to_the_quiz_list(self):
         from quizzes.models import Quiz
         with patch(WS_SIGNALS):
             quiz = Quiz.objects.create(
                 subject=self.subject, title="Optics quiz",
-                created_by=self.teacher, is_published=False)
-            quiz.is_published = True
+                created_by=self.teacher, is_assigned=False)
+            quiz.is_assigned = True
             quiz.save()
 
         rows = Notification.objects.filter(verb="quiz.posted")
@@ -180,11 +189,28 @@ class QuizPostedTest(AcademyVerbFixture):
         self.assertTrue(all(
             r.link_url == f"/subjects/quiz/{self.subject.id}" for r in rows))
 
-    def test_an_unpublished_quiz_notifies_nobody(self):
+    def test_an_unassigned_quiz_notifies_nobody(self):
         from quizzes.models import Quiz
         with patch(WS_SIGNALS):
             Quiz.objects.create(subject=self.subject, title="Draft",
-                                created_by=self.teacher, is_published=False)
+                                created_by=self.teacher, is_assigned=False)
+        self.assertEqual(Notification.objects.filter(verb="quiz.posted").count(), 0)
+
+    def test_admin_approval_alone_notifies_nobody(self):
+        """review_status/is_published are informational after Phase 1.
+
+        An admin approving a quiz no longer makes it visible, so it must not
+        claim to students that a quiz is available. Only the teacher assigning
+        it does.
+        """
+        from quizzes.models import Quiz
+        with patch(WS_SIGNALS):
+            quiz = Quiz.objects.create(
+                subject=self.subject, title="Approved but unassigned",
+                created_by=self.teacher, is_assigned=False)
+            quiz.review_status = Quiz.REVIEW_APPROVED
+            quiz.is_published = True
+            quiz.save()
         self.assertEqual(Notification.objects.filter(verb="quiz.posted").count(), 0)
 
 

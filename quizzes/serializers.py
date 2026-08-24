@@ -1,6 +1,7 @@
 from .models import Quiz
 
 from datetime import timedelta
+from decimal import Decimal
 from django.db.models import Avg, Max, Min, Count
 import uuid
 from django.db import transaction
@@ -11,10 +12,12 @@ from rest_framework.exceptions import ValidationError, PermissionDenied
 from courses.board_display import board_name_via
 from courses.models import Batch, Chapter
 from courses.services import is_teacher_of, resolve_or_create_chapter, teaches_subject
+from courses.chapter_tags import ChapterTagWriteMixin, serialize_tags
 from enrollments.models import Enrollment
 
 from .models import (
     Quiz,
+    QuizSection,
     Question,
     Choice,
     QuizAttempt,
@@ -24,6 +27,26 @@ from .models import (
 # Absorbs real network/render lag on a legitimate last-second auto-submit;
 # not meant to give any meaningful extra working time.
 SUBMIT_GRACE_SECONDS = 20
+
+
+def negative_marks_for(quiz):
+    """Marks to deduct per WRONG answer on `quiz`, as a Decimal.
+
+    The `quiz_type == "mock"` gate lives here, in one function, rather than
+    at the call site: a practice attempt must never subtract, whatever
+    `negative_marks_per_wrong` happens to hold (a quiz switched mock →
+    practice keeps its configured penalty so switching back doesn't lose it,
+    which means a stored non-zero value on a practice quiz is normal, not a
+    bug). Returning Decimal("0") rather than short-circuiting keeps the
+    scoring loop branch-free and Decimal-only.
+    """
+    if quiz.quiz_type != Quiz.TYPE_MOCK:
+        return Decimal("0")
+    # DecimalField gives a Decimal back from the DB, but an in-memory Quiz
+    # built with `negative_marks_per_wrong=0.25` (a float literal, as tests
+    # and shells do) has not been through the field's to_python — so coerce
+    # via str() and never let a float into the arithmetic.
+    return Decimal(str(quiz.negative_marks_per_wrong or 0))
 
 
 class ChoiceAdminSerializer(serializers.ModelSerializer):
@@ -38,14 +61,42 @@ class ChoicePublicSerializer(serializers.ModelSerializer):
         fields = ["id", "text"]
 
 
+class QuizSectionSerializer(serializers.ModelSerializer):
+    """A mock paper's section. `id` is WRITABLE on input on purpose — it is
+    how PUT /teacher/quizzes/:pk/sections/ tells "rename section A" apart
+    from "delete A, add B"; see TeacherQuizSectionsView for why that
+    distinction is load-bearing."""
+
+    id = serializers.UUIDField(required=False)
+    question_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = QuizSection
+        fields = ["id", "name", "order", "instructions", "question_count"]
+
+    def get_question_count(self, obj):
+        return obj.questions.count()
+
+
 class QuestionCreateSerializer(serializers.ModelSerializer):
     choices = ChoiceAdminSerializer(many=True)
+    # Optional mock-paper grouping. Validated against the quiz in context so
+    # a question can't be filed into another teacher's section.
+    section = serializers.PrimaryKeyRelatedField(
+        queryset=QuizSection.objects.all(), required=False, allow_null=True,
+    )
 
     class Meta:
         model = Question
         fields = ["id", "text", "marks", "order", "choices",
-                  "explanation", "topic", "difficulty"]
+                  "explanation", "topic", "difficulty", "section"]
         read_only_fields = ["id"]
+
+    def validate_section(self, section):
+        quiz = self.context.get("quiz")
+        if section is not None and quiz is not None and section.quiz_id != quiz.id:
+            raise ValidationError("That section belongs to a different quiz.")
+        return section
 
     def validate(self, attrs):
         choices = attrs.get("choices", [])
@@ -92,7 +143,7 @@ class BulkQuestionCreateSerializer(serializers.Serializer):
         return created
 
 
-class QuizCreateSerializer(serializers.ModelSerializer):
+class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
     # Also used (with partial=True) by TeacherUpdateQuizView to edit a draft's
     # title/quiz_type/time_limit_minutes — batch/chapter are create-only
     # (see validate()), matching how Assignment editing leaves batch alone.
@@ -110,12 +161,25 @@ class QuizCreateSerializer(serializers.ModelSerializer):
     custom_chapter = serializers.CharField(
         write_only=True, required=False, allow_blank=True,
     )
+    # New multi-value payload. Coexists with the two legacy keys above,
+    # which the live QuizBuilder still sends.
+    chapter_tags = serializers.ListField(
+        child=serializers.DictField(), required=False, write_only=True,
+    )
+    save_chapters_to_course = serializers.BooleanField(
+        required=False, write_only=True,
+    )
 
     class Meta:
         model = Quiz
         fields = ["id", "subject", "batch_id", "chapter_id", "custom_chapter",
+                  "chapter_tags", "save_chapters_to_course",
+                  "chapter_note", "no_specific_chapter",
                   "title", "description", "time_limit_minutes", "quiz_type",
-                  "reveal_answers_after"]
+                  "reveal_answers_after",
+                  # Phase 4 mock-test settings.
+                  "negative_marks_per_wrong", "max_attempts",
+                  "shuffle_questions", "reveal_answers"]
         read_only_fields = ["id"]
 
     def validate_subject(self, subject):
@@ -129,9 +193,17 @@ class QuizCreateSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         custom_chapter = attrs.pop("custom_chapter", "")
 
+        # Popped BEFORE the partial-edit shortcut below: chapter_tags and
+        # save_chapters_to_course are not model fields, so leaving them in
+        # attrs on a PATCH would have ModelSerializer try to setattr them on
+        # the Quiz and blow up. Re-tagging an existing quiz is a legitimate
+        # edit, so update() applies them.
+        self._tag_input = self.pop_chapter_tag_input(attrs)
+
         if self.instance is not None:
             # A partial edit (TeacherUpdateQuizView) never touches batch or
-            # chapter — nothing to resolve.
+            # chapter — nothing else to resolve.
+            self._tag_subject = self.instance.subject
             return attrs
 
         subject = attrs.get("subject")
@@ -152,25 +224,112 @@ class QuizCreateSerializer(serializers.ModelSerializer):
                     ]}
                 )
 
+        # Chapter is OPTIONAL as of Phase 3 — a question bank or a mixed
+        # mock test may map to no single chapter. Authorization does not
+        # depend on it (validate_subject + the is_teacher_of check above
+        # both run on `subject`), so relaxing this opens nothing.
         if chapter is None:
-            if not custom_chapter.strip():
-                raise ValidationError(
-                    {"chapter_id": "Select a chapter or enter a new chapter name."}
+            if custom_chapter.strip():
+                chapter = resolve_or_create_chapter(
+                    subject, custom_title=custom_chapter,
+                    created_by=self.context["request"].user,
                 )
-            chapter = resolve_or_create_chapter(subject, custom_title=custom_chapter)
-            attrs["chapter"] = chapter
+                attrs["chapter"] = chapter
         elif subject and chapter.subject_id != subject.id:
             raise ValidationError(
                 {"chapter_id": "Pick a chapter from this quiz's own subject."}
             )
 
+        self._tag_subject = subject
         return attrs
 
+    def _apply_tags(self, quiz):
+        tags, save_to_course, present = getattr(
+            self, "_tag_input", ([], False, False)
+        )
+        return self.apply_chapter_tags(
+            quiz, getattr(self, "_tag_subject", None) or quiz.subject,
+            tags, save_to_course, present,
+        )
+
+    # Atomic for the same reason as the assignment serializer: _apply_tags
+    # resolves the payload after the row exists (tags need the pk) and can
+    # still raise there, which otherwise left a committed quiz behind a 400.
+    @transaction.atomic
     def create(self, validated_data):
-        return Quiz.objects.create(
+        # ── Per-quiz-type defaults (Phase 4) ──────────────────────────────
+        # The spec wants `reveal_answers=after_submit` + `max_attempts=1` for
+        # a mock and `after_each` + unlimited for practice. That cannot be a
+        # plain field default (one column, two defaults), and it must NOT be
+        # in Quiz.save() either: save() runs on every edit, so it would
+        # silently re-impose max_attempts=1 on a mock a teacher had
+        # deliberately opened up, and would retroactively cap the thousands
+        # of existing unlimited mock quizzes the moment anything touched
+        # them. Creation time is the only correct hook — a default is a
+        # starting value, not an invariant.
+        #
+        # Only applied when the client omitted the key entirely, so an
+        # explicit `max_attempts: null` from the builder still means
+        # "unlimited" on a mock.
+        # `or TYPE_MOCK`: quiz_type's own model default is mock, so an omitted
+        # quiz_type produces a mock and must get the mock defaults too.
+        if (validated_data.get("quiz_type") or Quiz.TYPE_MOCK) == Quiz.TYPE_MOCK:
+            validated_data.setdefault("reveal_answers", Quiz.REVEAL_AFTER_SUBMIT)
+            if "max_attempts" not in validated_data:
+                validated_data["max_attempts"] = 1
+        return self._apply_tags(Quiz.objects.create(
             created_by=self.context["request"].user,
             **validated_data
-        )
+        ))
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        return self._apply_tags(super().update(instance, validated_data))
+
+
+class QuizAssignSerializer(serializers.Serializer):
+    """Body for PATCH /teacher/quizzes/:pk/assign/ — the Phase 1 endpoint that
+    lets a teacher make their own quiz live for their own batches with no admin
+    involvement.
+
+    `batch_ids` is deliberately tri-state:
+      · absent      → leave the existing batch scope untouched
+      · []          → course-wide (every batch of the course)
+      · [a, b, ...] → only those batches
+
+    Treating "absent" as "course-wide" would mean a bare `{"assign": false}`
+    silently widened a batch-scoped quiz to the whole course, so the next
+    re-assign leaks it to every batch. See TeacherQuizAssignView.
+    """
+
+    assign = serializers.BooleanField()
+    batch_ids = serializers.ListField(
+        child=serializers.PrimaryKeyRelatedField(queryset=Batch.objects.all()),
+        required=False,
+        allow_empty=True,
+    )
+
+    def validate_batch_ids(self, batches):
+        # Never trust a batch id from the payload: without this, a teacher
+        # could assign their quiz to a batch of a course they have nothing to
+        # do with, and every student in it would see it. Same class of bug as
+        # the cross-batch LiveKit token leak.
+        quiz = self.context["quiz"]
+        course_id = quiz.subject.course_id
+        stray = sorted(str(b.id) for b in batches if b.course_id != course_id)
+        if stray:
+            raise ValidationError(
+                "These batches belong to a different course than this quiz's "
+                f"subject: {', '.join(stray)}."
+            )
+        # De-dupe while preserving order, so batch_ids[0] (the legacy FK shim)
+        # is predictable.
+        seen, unique = set(), []
+        for b in batches:
+            if b.id not in seen:
+                seen.add(b.id)
+                unique.append(b)
+        return unique
 
 
 class QuizDashboardSerializer(serializers.ModelSerializer):
@@ -257,8 +416,13 @@ class QuizSubmitSerializer(serializers.Serializer):
         if not has_active_subscription(user=user, course=quiz.subject.course, learner_profile=learner):
             raise ValidationError("Your subscription for this course has expired.")
 
-        if not quiz.is_published:
-            raise ValidationError("Quiz not published.")
+        # Defence-in-depth mirror of SubmitQuizView's own `is_assigned` gate.
+        # Reads is_assigned, NOT is_published: after Phase 1 a teacher-assigned
+        # quiz is live without ever being admin-approved, and this check ran on
+        # every submit — left on is_published it would reject every legitimate
+        # submission to a quiz the teacher assigned themselves.
+        if not quiz.is_assigned:
+            raise ValidationError("Quiz not assigned.")
 
         # Allow partial submission (auto-submit on timer expiry)
         # We do NOT validate all questions answered here — partial is OK.
@@ -304,7 +468,21 @@ class QuizSubmitSerializer(serializers.Serializer):
                     "Start a new attempt to try again."
                 )
 
-        score = 0
+        # ── Scoring ───────────────────────────────────────────────────────
+        # Decimal, not float, for the whole computation: the UI offers 0.33 as
+        # a penalty, and 3 × 0.33 in binary floating point is
+        # 0.9899999999999999, so a float score fails an exact comparison and
+        # renders as 9.010000000000002 on the result screen. Decimal("0.33")
+        # is exactly 0.33. `question.marks` is an int, which Decimal absorbs
+        # exactly — nothing here may introduce a float.
+        #
+        # `attempt.score` is a FloatField (pre-existing, and the denominator
+        # of several Avg()/Max() aggregates elsewhere), so the final value is
+        # quantized to 2dp and converted ONCE, at the boundary. Every value
+        # this can produce is exactly representable to 2dp, so the stored
+        # double round-trips.
+        penalty = negative_marks_for(quiz)
+        score = Decimal("0")
         attempt.answers.all().delete()
 
         for item in submitted_answers:
@@ -319,10 +497,26 @@ class QuizSubmitSerializer(serializers.Serializer):
             choice = Choice.objects.filter(
                 id=choice_id, question=question).first()
             if not choice:
-                continue  # skip invalid choices gracefully
+                # BLANK / unanswered — and this is the ONLY path a blank can
+                # take, in either of its two spellings: the question is
+                # missing from `answers` entirely, or it is present with
+                # `selected_choice: null` (which is what the mock screen
+                # sends for a question the learner visited but skipped).
+                # Both land here, both are skipped, and neither is penalised.
+                # StudentAnswer.selected_choice is a non-nullable FK, so a
+                # persisted "answered with nothing" row cannot exist — a
+                # blank is always the absence of a row.
+                #
+                # Not penalising blanks is not a nicety: every Indian
+                # competitive exam this platform serves marks only attempted
+                # questions, and the results screen counts "Blank" separately
+                # from "Got wrong".
+                continue
 
             if choice.is_correct:
-                score += question.marks
+                score += Decimal(question.marks)
+            else:
+                score -= penalty
 
             time_spent = item.get("time_spent") or item.get("time_spent_seconds") or 0
             try:
@@ -339,7 +533,13 @@ class QuizSubmitSerializer(serializers.Serializer):
                 marked_for_review=bool(item.get("marked_for_review", False)),
             )
 
-        attempt.score = score
+        # NOT floored at zero. A mock with negative marking can legitimately
+        # score below 0, which is how the real exams work and is information
+        # the learner needs (it says "you guessed too much", where a clamped
+        # 0 says "you knew nothing"). Flagged in the handoff as a product
+        # decision to confirm; if it must be floored, do it HERE and nowhere
+        # else.
+        attempt.score = float(score.quantize(Decimal("0.01")))
         attempt.status = QuizAttempt.STATUS_SUBMITTED
         attempt.submitted_at = timezone.now()
         attempt.save(update_fields=["score", "status", "submitted_at"])
@@ -351,7 +551,8 @@ class QuestionPublicSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Question
-        fields = ["id", "text", "marks", "order", "choices", "topic", "difficulty"]
+        fields = ["id", "text", "marks", "order", "choices", "topic",
+                  "difficulty", "section"]
         # NOTE: explanation is intentionally omitted from the public serializer
         # so students don't see it before submitting
 
@@ -362,8 +563,18 @@ class QuestionTeacherSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Question
+        # `suggest_to_bank` is read back so the builder's per-question switch
+        # can show its real state. Without it the builder would default every
+        # switch to on and send that back on the next save, silently
+        # re-suggesting questions the teacher had deliberately kept private —
+        # the same read-gap-becomes-destructive-write shape as the missing
+        # chapter fields on QuizDetailTeacherSerializer. `bank_state` rides
+        # along read-only so the UI can tell "an admin already accepted this"
+        # apart from "still queued".
         fields = ["id", "text", "marks", "order", "choices",
-                  "explanation", "topic", "difficulty"]
+                  "explanation", "topic", "difficulty", "section",
+                  "suggest_to_bank", "bank_state"]
+        read_only_fields = ["bank_state"]
 
 
 class QuizDetailSerializer(serializers.ModelSerializer):
@@ -375,6 +586,7 @@ class QuizDetailSerializer(serializers.ModelSerializer):
     teacher_name = serializers.CharField(
         source="created_by.email", read_only=True, default=None)
     questions = serializers.SerializerMethodField()
+    sections = QuizSectionSerializer(many=True, read_only=True)
 
     class Meta:
         model = Quiz
@@ -383,6 +595,11 @@ class QuizDetailSerializer(serializers.ModelSerializer):
             "board_name",
             "teacher_name", "created_at", "time_limit_minutes", "questions",
             "quiz_type",
+            # Phase 4: the attempt screen needs the rules it is enforcing —
+            # the penalty to show in the instructions, whether to shuffle,
+            # and when answers appear. `sections` is [] for a flat quiz.
+            "negative_marks_per_wrong", "max_attempts", "shuffle_questions",
+            "reveal_answers", "sections",
         ]
 
     def get_board_name(self, obj):
@@ -407,6 +624,17 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
         source="created_by.email", read_only=True, default=None)
     questions = serializers.SerializerMethodField()
     is_editable = serializers.BooleanField(read_only=True)
+    # Named to match QuizAssignSerializer's write field, so the teacher app can
+    # round-trip the assign form without renaming anything.
+    batch_ids = serializers.PrimaryKeyRelatedField(
+        source="batches", many=True, read_only=True,
+    )
+    sections = QuizSectionSerializer(many=True, read_only=True)
+    # The builder's chapter picker reads these to repopulate itself on edit.
+    # Without them the picker loads empty and the next save writes an empty
+    # `chapter_tags`, silently dropping every chapter the quiz was filed under
+    # — a read gap that turns into data loss the moment the write side exists.
+    chapter_tags = serializers.SerializerMethodField()
 
     class Meta:
         model = Quiz
@@ -416,8 +644,16 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
             "time_limit_minutes",
             "is_published", "questions", "quiz_type", "review_status",
             "review_note", "reviewed_at", "submitted_for_review_at",
-            "is_editable",
+            "is_editable", "is_assigned", "batch_ids",
+            # Phase 4 mock-test settings, so the builder round-trips them.
+            "negative_marks_per_wrong", "max_attempts", "shuffle_questions",
+            "reveal_answers", "reveal_answers_after", "sections",
+            # Phase 3 chapter tagging, same reason.
+            "chapter_tags", "no_specific_chapter", "chapter_note",
         ]
+
+    def get_chapter_tags(self, obj):
+        return serialize_tags(obj)
 
     def get_board_name(self, obj):
         return board_name_via(obj, "subject", "course")
@@ -473,7 +709,11 @@ class QuizResultSerializer(serializers.Serializer):
     teacher_name = serializers.CharField()
     quiz_type = serializers.CharField(default="mock")
     total_marks = serializers.IntegerField()
-    score = serializers.IntegerField()
+    # FloatField, NOT IntegerField: with negative marking a score is
+    # fractional (and can be negative). IntegerField would have silently
+    # truncated 9.01 → 9 and −0.5 → 0 on the way out, i.e. the result screen
+    # would have shown a different score than the one stored.
+    score = serializers.FloatField()
     submitted_at = serializers.DateTimeField()
     attempt_number = serializers.IntegerField(default=1)
     answers_revealed = serializers.BooleanField(default=True)
@@ -540,13 +780,26 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
     highest_score = serializers.FloatField(read_only=True)
     lowest_score = serializers.FloatField(read_only=True)
     submission_rate = serializers.FloatField(read_only=True)
+    # Annotated by the list views; declared so DRF doesn't try to resolve them
+    # as model fields when a caller serializes an un-annotated Quiz.
+    batch_count = serializers.IntegerField(read_only=True, default=0)
+    bank_accepted = serializers.IntegerField(read_only=True, default=0)
+    bank_suggested = serializers.IntegerField(read_only=True, default=0)
+    bank_changes_requested = serializers.IntegerField(read_only=True, default=0)
+    bank_private = serializers.IntegerField(read_only=True, default=0)
+    chapter_tags = serializers.SerializerMethodField()
+
+    def get_chapter_tags(self, obj):
+        # Reads the `_prefetched_chapter_tags` attribute attach_chapter_tags()
+        # sets, so this is free per row rather than a query each.
+        return serialize_tags(obj)
 
     class Meta:
         model = Quiz
         fields = [
             "id", "title", "created_at", "subject_name", "subject_id",
             "course_title", "board_name",
-            "is_published", "questions_count",
+            "is_published", "is_assigned", "questions_count",
             # total_marks is the DENOMINATOR for average/highest/lowest, which
             # are raw marks, not percentages. Without it the Quizzes card had
             # no way to turn "7.5" into "75%" and rendered the mark itself
@@ -556,6 +809,17 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
             "total_attempts", "submission_rate", "average_score",
             "highest_score", "lowest_score", "quiz_type", "review_status",
             "review_note",
+            # ── T1 row data (Phase 6) ────────────────────────────────────
+            # The row's meta line lists the quiz's chapter tags and its
+            # timing rules, and it carries two status chips: one for the
+            # assignment state (needs the batch count) and one for the
+            # site-bank state (needs the per-quiz bank breakdown). All of it
+            # comes off annotations/prefetch so a 40-quiz list stays flat
+            # rather than firing a query per row.
+            "chapter_tags", "no_specific_chapter",
+            "batch_count", "time_limit_minutes", "max_attempts",
+            "bank_accepted", "bank_suggested", "bank_changes_requested",
+            "bank_private",
         ]
 
     def get_board_name(self, obj):
@@ -578,10 +842,19 @@ class TeacherQuizStudentSummarySerializer(serializers.Serializer):
 # =====================================================
 
 class BankQuestionSerializer(serializers.ModelSerializer):
-    """A question surfaced in the teacher question bank. The bank is not a
-    separate table — it's a filtered view over questions that already
-    belong to a *finalized* (admin-approved) quiz, so what you reuse has
-    already been vetted."""
+    """A question surfaced in the teacher question bank.
+
+    Phase 2: `scope=mine` is every question on the requesting teacher's own
+    quizzes regardless of review/curation state (ownership, not admin
+    approval, is what makes it "yours"); `scope=school` is still gated on
+    `bank_state="accepted"` — the shared ShikshaCom bank other teachers draw
+    on. See TeacherQuestionBankView.get_queryset.
+
+    `bank_state`/`suggest_to_bank`/`bank_feedback` are additive fields for
+    the T3 "My question bank" screen (state chip + admin-feedback block).
+    Do not rename or remove any of the pre-existing fields below — the
+    current teacher QuizBank.jsx screen consumes this response shape as-is.
+    """
     choices = ChoiceAdminSerializer(many=True, read_only=True)
     quiz_id = serializers.UUIDField(source="quiz.id", read_only=True)
     quiz_title = serializers.CharField(source="quiz.title", read_only=True)
@@ -590,14 +863,58 @@ class BankQuestionSerializer(serializers.ModelSerializer):
     author_name = serializers.CharField(
         source="quiz.created_by.email", read_only=True, default=None)
     author_id = serializers.UUIDField(source="quiz.created_by.id", read_only=True, default=None)
+    # T3's chapter chip. A Question has no chapter of its own — Phase 3 put
+    # chapter tagging on the quiz — so this is the quiz's first tag, which is
+    # what the question is actually filed under. `chapter_is_custom` drives the
+    # spec's warning tint for a teacher-typed chapter that no admin has
+    # promoted into the syllabus yet.
+    chapter_label = serializers.SerializerMethodField()
+    chapter_is_custom = serializers.SerializerMethodField()
+
+    def _first_tag(self, obj):
+        # Prefer the map the list view builds (one query for the whole page).
+        # select_related gives every Question its OWN Quiz instance, so
+        # attach_chapter_tags() on a deduped list would not reach them —
+        # hence a plain id→tags dict rather than a prefetch attribute.
+        by_quiz = self.context.get("chapter_tags_by_quiz")
+        if by_quiz is not None:
+            tags = by_quiz.get(obj.quiz_id) or []
+        else:
+            # Fallback for single-object use; one query, not N.
+            tags = serialize_tags(obj.quiz)
+        return tags[0] if tags else None
+
+    def get_chapter_label(self, obj):
+        tag = self._first_tag(obj)
+        return (tag or {}).get("label") or None
+
+    def get_chapter_is_custom(self, obj):
+        tag = self._first_tag(obj)
+        return bool((tag or {}).get("is_custom"))
 
     class Meta:
         model = Question
         fields = [
             "id", "text", "marks", "explanation", "topic", "difficulty",
             "choices", "quiz_id", "quiz_title", "subject_id", "subject_name",
-            "author_name", "author_id", "created_at",
+            "author_name", "author_id", "created_at", "source",
+            # Phase 2 additions — purely additive, see class docstring.
+            "bank_state", "suggest_to_bank", "bank_feedback",
+            # Phase 6 (T3) additions.
+            "chapter_label", "chapter_is_custom",
         ]
+
+
+class QuestionBankStateSerializer(serializers.Serializer):
+    """Body for PATCH /teacher/questions/:pk/bank/ — the teacher's per-
+    question opt-in/out of the shared ShikshaCom bank.
+
+    Only `suggest_to_bank` is teacher-writable. `bank_state` follows from it
+    via Question.save()'s invariant (see that method's docstring for why
+    turning this off always wins, but turning it on never clobbers an
+    admin's existing accept/request-changes decision).
+    """
+    suggest_to_bank = serializers.BooleanField()
 
 
 # =====================================================
@@ -617,7 +934,8 @@ class AdminQuizListSerializer(serializers.ModelSerializer):
         model = Quiz
         fields = [
             "id", "title", "subject_name", "course_title", "teacher_name",
-            "quiz_type", "review_status", "is_published", "questions_count",
+            "quiz_type", "review_status", "is_published", "is_assigned",
+            "questions_count",
             "attempts_count", "total_marks", "created_at",
             "submitted_for_review_at", "reviewed_at",
         ]
@@ -638,7 +956,7 @@ class AdminQuizDetailSerializer(serializers.ModelSerializer):
         fields = [
             "id", "title", "description", "subject_name", "course_title",
             "teacher_name", "quiz_type", "review_status", "review_note",
-            "is_published", "total_marks", "time_limit_minutes",
+            "is_published", "is_assigned", "total_marks", "time_limit_minutes",
             "created_at", "submitted_for_review_at", "reviewed_at",
             "reviewed_by_name", "questions",
         ]

@@ -94,9 +94,9 @@ class Command(BaseCommand):
             process(
                 AssignmentSubmission.objects
                 .filter(learner_profile__isnull=True)
-                .select_related("student", "assignment__chapter__subject"),
+                .select_related("student", "assignment__subject", "assignment__chapter"),
                 "AssignmentSubmission",
-                lambda r: r.assignment.chapter.subject.course_id,
+                lambda r: r.assignment.subject.course_id,
             )
             if dry:
                 transaction.set_rollback(True)

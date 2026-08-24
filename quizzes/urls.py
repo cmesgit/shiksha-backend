@@ -6,7 +6,12 @@ from .views import (
     AddQuestionView,
     BulkAddQuestionsView,
     SubmitQuizForReviewView,
+    TeacherQuizAssignView,
+    TeacherQuizSectionsView,
     StudentDashboardView,
+    StudentPracticeChaptersView,
+    StudentPracticeStartView,
+    StudentPracticeAnswerView,
     StudentQuizStatsView,
     StartQuizView,
     SubmitQuizView,
@@ -22,12 +27,19 @@ from .views import (
     TeacherStudentAttemptsView,
     TeacherSubjectQuizListView,
     TeacherAllQuizListView,
+    TeacherQuizStatsView,
     TeacherQuizAttemptsView,
     TeacherQuizAnalyticsView,
     TeacherQuizRemindView,
     TeacherGenerateAIQuestionsView,
     TeacherQuestionBankView,
     TeacherBankFiltersView,
+    TeacherBankSummaryView,
+    TeacherBankStatusView,
+    AdminQuestionBankQueueView,
+    AdminQuestionReviewView,
+    AdminQuestionBulkReviewView,
+    TeacherQuestionBankStateView,
     AdminQuizListView,
     AdminQuizDetailView,
     AdminQuizReviewView,
@@ -46,6 +58,13 @@ urlpatterns = [
     # "publish" kept for backward compatibility; both now submit for admin review.
     path("teacher/quizzes/<uuid:pk>/publish/", SubmitQuizForReviewView.as_view()),
     path("teacher/quizzes/<uuid:pk>/submit-for-review/", SubmitQuizForReviewView.as_view()),
+    # Make a quiz live for the teacher's own batches — no admin involved. This
+    # is the one that controls student visibility; the two above only ask an
+    # admin to review the questions.
+    path("teacher/quizzes/<uuid:pk>/assign/", TeacherQuizAssignView.as_view()),
+    # Mock-test section set. PUT replaces it, matching by id — see the view's
+    # docstring for why a naive delete-and-recreate would flatten the paper.
+    path("teacher/quizzes/<uuid:pk>/sections/", TeacherQuizSectionsView.as_view()),
     path("teacher/quizzes/<uuid:pk>/delete/", TeacherDeleteQuizView.as_view()),
     path("teacher/quizzes/<uuid:pk>/duplicate/", TeacherQuizDuplicateView.as_view()),
     path("teacher/quizzes/<uuid:pk>/analytics/", TeacherQuizAnalyticsView.as_view()),
@@ -60,6 +79,8 @@ urlpatterns = [
         "teacher/quizzes/all/",
         TeacherAllQuizListView.as_view(),
     ),
+    # T1 stat strip: attempts this week vs last (Phase 6).
+    path("teacher/quizzes/stats/", TeacherQuizStatsView.as_view()),
     path(
         "teacher/quizzes/<uuid:pk>/attempts/",
         TeacherQuizAttemptsView.as_view(),
@@ -76,9 +97,18 @@ urlpatterns = [
     # ── Teacher question bank ("finalized" reusable questions) ───────────────
     path("teacher/question-bank/", TeacherQuestionBankView.as_view()),
     path("teacher/question-bank/filters/", TeacherBankFiltersView.as_view()),
+    path("teacher/question-bank/summary/", TeacherBankSummaryView.as_view()),
+    # T4 · ShikshaCom bank status (Phase 6).
+    path("teacher/bank-status/", TeacherBankStatusView.as_view()),
+    # Per-question site-bank opt-in/out (Phase 2). Question.id is a UUID.
+    path("teacher/questions/<uuid:pk>/bank/", TeacherQuestionBankStateView.as_view()),
 
     # ── Student ───────────────────────────────────────────────────────────────
     path("student/quizzes/", StudentDashboardView.as_view()),
+    # S1 · practise by chapter (Phase 8).
+    path("student/practice/chapters/", StudentPracticeChaptersView.as_view()),
+    path("student/practice/start/", StudentPracticeStartView.as_view()),
+    path("student/practice/<uuid:pk>/answer/", StudentPracticeAnswerView.as_view()),
     path("student/quizzes/stats/", StudentQuizStatsView.as_view()),
     path("student/quiz-subjects/", StudentQuizSubjectsView.as_view()),
     path("student/quizzes/<uuid:pk>/submit/", SubmitQuizView.as_view()),
@@ -99,4 +129,8 @@ urlpatterns = [
     path("quizzes/admin/", AdminQuizListView.as_view()),
     path("quizzes/admin/<uuid:pk>/", AdminQuizDetailView.as_view()),
     path("quizzes/admin/<uuid:pk>/review/", AdminQuizReviewView.as_view()),
+    # A1 · admin question-bank review queue (Phase 7).
+    path("quizzes/admin/question-bank/queue/", AdminQuestionBankQueueView.as_view()),
+    path("quizzes/admin/question-bank/bulk-review/", AdminQuestionBulkReviewView.as_view()),
+    path("quizzes/admin/question-bank/<uuid:pk>/review/", AdminQuestionReviewView.as_view()),
 ]
