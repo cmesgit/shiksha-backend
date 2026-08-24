@@ -746,6 +746,40 @@ class ChapterTagCreationTest(AssignmentScopeFixtureMixin, TestCase):
         self.assertEqual([t.chapter_id for t in self._tags(assignment)],
                          [self.chapter.id])
 
+    def test_the_pickers_verbatim_payload_round_trips(self):
+        """The contract test the original bug slipped through.
+
+        Every other test here hand-writes its payload, which is exactly how
+        the dialect mismatch survived: each side asserted its own spelling and
+        both suites stayed green. The body below is copied verbatim from what
+        `toChapterPayload()` in shiksha-teacher-dashboard actually emits for
+        one syllabus chapter plus one free-text label — including the explicit
+        `chapter_id: None`, which takes a different branch in resolve_tags()
+        than an absent key does, and the read-side `order` the picker sends
+        back. If the picker's wire format ever drifts again, this fails.
+        """
+        r = self._create(
+            chapter_tags=[
+                {"chapter_id": str(self.chapter.id), "order": 0},
+                {"chapter_id": None, "label": "Mixed revision", "order": 1},
+            ],
+            no_specific_chapter=False,
+            chapter_note="ch 3-4",
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+
+        tags = self._tags(assignment)
+        self.assertEqual(len(tags), 2, "both tags must survive the round trip")
+        self.assertEqual(tags[0].chapter_id, self.chapter.id)
+        self.assertEqual(tags[0].custom_label, "")
+        # chapter_id=None + a label is the free-text case, not a blank row.
+        self.assertIsNone(tags[1].chapter_id)
+        self.assertEqual(tags[1].custom_label, "Mixed revision")
+        self.assertEqual(assignment.chapter_note, "ch 3-4")
+        # the additive invariant still points the legacy FK at the real chapter
+        self.assertEqual(assignment.chapter_id, self.chapter.id)
+
     def test_one_custom_label_stays_free_text(self):
         r = self._create(chapter_tags=[{"label": "Mixed revision"}])
         self.assertEqual(r.status_code, 201, r.content)
