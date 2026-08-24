@@ -962,10 +962,17 @@ class StudentQuizStatsView(APIView):
         for a in mock_attempts:
             if not a.quiz.total_marks:
                 continue
-            # Clamped for the same reason as QuizDashboardSerializer.get_best_score
-            # — total_marks can fall out of sync with a quiz's questions.
+            # Clamped on the upper end for the same reason as
+            # QuizDashboardSerializer.get_best_score — total_marks can fall
+            # out of sync with a quiz's questions. NOT clamped on the lower
+            # end: negative marking means pct can legitimately be negative,
+            # and defaulting the "no entry yet" case to 0 (instead of -inf)
+            # used to silently floor a quiz whose every attempt was negative
+            # at 0 — max(pct, 0) always won against a first, negative pct.
             pct = min(100.0, a.score * 100.0 / a.quiz.total_marks)
-            best_by_quiz[a.quiz_id] = max(pct, best_by_quiz.get(a.quiz_id, 0))
+            best_by_quiz[a.quiz_id] = max(
+                pct, best_by_quiz.get(a.quiz_id, float("-inf"))
+            )
         avg_mock_score = round(sum(best_by_quiz.values()) / len(best_by_quiz), 1) if best_by_quiz else 0
 
         # ── questions solved this week ───────────────────────────────────────
@@ -2103,7 +2110,24 @@ class TeacherQuizAnalyticsView(APIView):
         # dropped and the chart's columns summed to less than the attempt
         # count.
         buckets = [("0–19", 0, 20), ("20–39", 20, 40), ("40–59", 40, 60), ("60–79", 60, 80)]
-        score_distribution = [
+        # Negative marking (Phase 4) lets pct_scores go below 0, which used to
+        # fall into none of the buckets below and silently vanish from the
+        # chart — the columns would then sum to less than the attempt count,
+        # the same failure mode the half-open-range fix above already solved
+        # for the 20/40/60/80 boundaries.
+        #
+        # Emitted ONLY when something actually scored below zero. Negative
+        # marking is mock-only, so an unconditional bucket would put a
+        # permanently-empty "Below 0" column on every practice quiz's chart.
+        # Note this DOES shift the index of every later bucket when present —
+        # safe today because QuizAnalytics.jsx keys off each entry's `range`
+        # label rather than its position, but a positional consumer would
+        # break, so keep reading this list by label.
+        below_zero = sum(1 for p in pct_scores if p < 0)
+        score_distribution = (
+            [{"range": "Below 0", "count": below_zero}] if below_zero else []
+        )
+        score_distribution += [
             {"range": label, "count": sum(1 for p in pct_scores if lo <= p < hi)}
             for label, lo, hi in buckets
         ]

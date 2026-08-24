@@ -2483,6 +2483,109 @@ class MockNegativeMarkingTest(_Phase4Base):
         self.assertEqual(r.data["sections"], [])
 
 
+class NegativeScoreDownstreamTest(_Phase4Base):
+    """Negative marking (above) is intentionally allowed to push a mock
+    total below zero. This class covers the readers of `attempt.score`
+    that were written assuming score >= 0: the mock-average stat, the
+    analytics histogram, and total_marks=0 as a division hazard negatives
+    make more visible."""
+
+    def test_avg_mock_score_reports_negative_not_floored_at_zero(self):
+        """StudentQuizStatsView.avg_mock_score used to seed each quiz's
+        running best at 0 (`best_by_quiz.get(quiz_id, 0)`), so a quiz whose
+        only attempt scored -100% still reported a "best" of 0 — `max(-100,
+        0)` always wins for 0. The running best must start at -inf so a
+        genuinely negative best survives."""
+        quiz = self._quiz(negative="1", questions=4)
+        q = self.qs
+        self._submit(quiz, [
+            (q[0], q[0].wrong), (q[1], q[1].wrong),
+            (q[2], q[2].wrong), (q[3], q[3].wrong),
+        ])
+        r = self._student().get("/api/student/quizzes/stats/")
+        self.assertEqual(r.status_code, 200, r.content)
+        # 4 wrong × 1 mark penalty − 0 correct = -4, over total_marks 4 = -100%.
+        self.assertEqual(r.data["avg_mock_score"], -100.0)
+
+    def test_negative_attempt_lands_in_the_below_zero_bucket(self):
+        """TeacherQuizAnalyticsView's score_distribution buckets used to
+        start at 0, so a negative attempt fell into no bucket at all and
+        silently vanished from the chart. The new "Below 0" bucket must
+        catch it, prepended ahead of the pre-existing buckets whose own
+        labels/boundaries must stay exactly as they were."""
+        quiz = self._quiz(negative="1", questions=4)
+        q = self.qs
+        self._submit(quiz, [
+            (q[0], q[0].wrong), (q[1], q[1].wrong),
+            (q[2], q[2].wrong), (q[3], q[3].wrong),
+        ])
+        r = self._teacher().get(f"/api/teacher/quizzes/{quiz.id}/analytics/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["score_distribution"], [
+            {"range": "Below 0", "count": 1},
+            {"range": "0–19", "count": 0},
+            {"range": "20–39", "count": 0},
+            {"range": "40–59", "count": 0},
+            {"range": "60–79", "count": 0},
+            {"range": "80–100", "count": 0},
+        ])
+
+    def test_the_below_zero_bucket_is_absent_when_nothing_scored_negative(self):
+        """The bucket is conditional, not unconditional. A mock with negative
+        marking switched ON but no actually-negative attempt must NOT grow a
+        "Below 0" column — otherwise every chart on the platform gains a
+        permanently-empty bar, since negative marking is mock-only and most
+        attempts are not negative. Pairs with the test above: together they
+        pin both directions of the condition."""
+        quiz = self._quiz(negative="0.25", questions=4)
+        q = self.qs
+        self._submit(quiz, [
+            (q[0], q[0].right), (q[1], q[1].right),
+            (q[2], q[2].right), (q[3], q[3].right),
+        ])
+        r = self._teacher().get(f"/api/teacher/quizzes/{quiz.id}/analytics/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertNotIn(
+            "Below 0", [b["range"] for b in r.data["score_distribution"]]
+        )
+        self.assertEqual(len(r.data["score_distribution"]), 5)
+
+    def test_zero_total_marks_quiz_does_not_raise_zero_division(self):
+        """total_marks can fall out of sync with a quiz's questions (a
+        pre-existing hazard — see QuizDashboardSerializer.get_best_score);
+        at total_marks=0 every score/total_marks% site must skip the
+        division rather than raise, negative score or not."""
+        quiz = self._quiz(negative="0.25", questions=2)
+        quiz.total_marks = 0
+        quiz.save(update_fields=["total_marks"])
+        q = self.qs
+        attempt = self._submit(
+            quiz, [(q[0], q[0].right), (q[1], q[1].wrong)]
+        )
+        self.assertEqual(attempt.score, 0.75)
+
+        r = self._teacher().get(f"/api/teacher/quizzes/{quiz.id}/analytics/")
+        self.assertEqual(r.status_code, 200, r.content)
+        # No "Below 0" entry: it is emitted only when something actually
+        # scored below zero, so a practice quiz — which can never have
+        # negative marking — never grows a permanently-empty column.
+        self.assertEqual(r.data["score_distribution"], [
+            {"range": "0–19", "count": 0},
+            {"range": "20–39", "count": 0},
+            {"range": "40–59", "count": 0},
+            {"range": "60–79", "count": 0},
+            {"range": "80–100", "count": 0},
+        ])
+
+        r2 = self._student().get(f"/api/quizzes/{quiz.id}/result/")
+        self.assertEqual(r2.status_code, 200, r2.content)
+        self.assertEqual(r2.data["score"], 0.75)
+
+        r3 = self._student().get("/api/student/quizzes/stats/")
+        self.assertEqual(r3.status_code, 200, r3.content)
+        self.assertEqual(r3.data["avg_mock_score"], 0)
+
+
 class MockAttemptQuotaTest(_Phase4Base):
     """`max_attempts` (quota) vs the pre-existing `new_attempt` flag (intent).
     They must compose, not compete."""
