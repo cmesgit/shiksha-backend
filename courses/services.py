@@ -77,13 +77,35 @@ def may_view_subject_directory(request, subject):
     ).exists()
 
 
-def resolve_or_create_chapter(subject, chapter_id=None, custom_title=None):
+def next_chapter_order(subject):
+    """The `order` a newly appended chapter of `subject` should take.
+
+    `Chapter.order` defaults to 0, so every chapter minted by
+    resolve_or_create_chapter() used to pile up at 0 and sort arbitrarily
+    against each other (and ahead of, or interleaved with, the curated
+    syllabus). Appending puts a teacher's new chapter at the end of the list,
+    which is where a teacher typing one expects it.
+    """
+    current_max = Chapter.objects.filter(subject=subject).aggregate(
+        top=models.Max("order")
+    )["top"]
+    return 0 if current_max is None else current_max + 1
+
+
+def resolve_or_create_chapter(subject, chapter_id=None, custom_title=None,
+                              created_by=None):
     """Resolve a chapter for `subject`, either by id or by name.
 
     A `custom_title` that already exists for this subject (case-insensitive)
     reuses the existing row rather than hitting the `unique_chapter_per_subject`
     constraint — repeat teacher input shouldn't 500, and near-duplicate titles
     that differ only by case shouldn't fork into two chapters.
+
+    A chapter CREATED here is by definition teacher-typed, so it is stamped
+    `is_custom=True` (+ `created_by`, when the caller passes the teacher) and
+    appended to the end of the subject's chapter order. Resolving an EXISTING
+    chapter never rewrites those fields: matching the name of a curated
+    syllabus chapter must not relabel it as custom.
     """
     if chapter_id:
         return get_object_or_404(Chapter, id=chapter_id, subject=subject)
@@ -95,7 +117,13 @@ def resolve_or_create_chapter(subject, chapter_id=None, custom_title=None):
     existing = Chapter.objects.filter(subject=subject, title__iexact=title).first()
     if existing:
         return existing
-    return Chapter.objects.create(subject=subject, title=title)
+    return Chapter.objects.create(
+        subject=subject,
+        title=title,
+        order=next_chapter_order(subject),
+        is_custom=True,
+        created_by=created_by,
+    )
 
 
 def scope_to_enrollment(qs, enrollment):

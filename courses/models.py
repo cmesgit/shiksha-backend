@@ -248,6 +248,35 @@ class Chapter(models.Model):
         related_name="marked_chapters",
     )
 
+    # --- Provenance: curated syllabus vs teacher-typed ---
+    # A teacher can type a chapter name that isn't in the curated syllabus
+    # (courses.services.resolve_or_create_chapter mints a real Chapter row for
+    # it). Before this field there was no way to tell those apart from a
+    # chapter an admin authored, which is what an admin needs in order to
+    # review them and decide whether to promote one into the syllabus proper.
+    #
+    # NOTE ON THE BACKFILL: rows that predate this field are indistinguishable
+    # — the shipped resolve_or_create_chapter() path left no trace — so they
+    # all default to is_custom=False. See migration 0036's docstring.
+    is_custom = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Typed by a teacher rather than authored as part of the "
+                  "curated syllabus.",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_chapters",
+        help_text="The teacher who typed this chapter, for is_custom rows.",
+    )
+    # Set when an admin accepts a custom chapter into the syllabus. Kept as a
+    # timestamp rather than flipping is_custom back to False so the fact that
+    # it originated with a teacher is not erased by the promotion.
+    promoted_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["order"]
         constraints = [
