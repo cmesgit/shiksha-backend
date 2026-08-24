@@ -38,6 +38,44 @@ from django.contrib.contenttypes.models import ContentType
 from django.db import models
 
 
+# ---------------------------------------------------------------------------
+# The two scalar companions to ContentChapterTag.
+#
+# Factories rather than module-level field instances: a Django Field object
+# binds to exactly one model, so five models cannot share one instance. These
+# keep the definition (and the reasoning) in one place while still handing each
+# model its own field.
+# ---------------------------------------------------------------------------
+
+def chapter_note_field():
+    """The teacher's own free-text note about coverage. SHOWN TO STUDENTS.
+
+    Distinct from ContentChapterTag.custom_label: a label names a chapter, this
+    is prose ("focus on the worked examples in 4.2"). It is never parsed and
+    never used for authorization or filtering.
+    """
+    return models.TextField(
+        blank=True,
+        help_text="Teacher's note about what this covers. Shown to students.",
+    )
+
+
+def no_specific_chapter_field():
+    """An EXPLICIT "this doesn't map to a chapter" from the teacher.
+
+    Deliberately not the same state as "no tags": zero tags means nobody has
+    said anything yet, while this means a teacher looked and decided the
+    content genuinely spans no single chapter (a mixed revision sheet, an
+    orientation session). The UI renders those differently, and setting this
+    together with tags is rejected as a contradiction.
+    """
+    return models.BooleanField(
+        default=False,
+        help_text="Teacher explicitly marked this as spanning no particular "
+                  "chapter. Mutually exclusive with chapter tags.",
+    )
+
+
 class ContentChapterTag(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
