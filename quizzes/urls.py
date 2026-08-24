@@ -7,6 +7,7 @@ from .views import (
     BulkAddQuestionsView,
     SubmitQuizForReviewView,
     TeacherQuizAssignView,
+    TeacherQuizSectionsView,
     StudentDashboardView,
     StudentQuizStatsView,
     StartQuizView,
@@ -53,6 +54,9 @@ urlpatterns = [
     # is the one that controls student visibility; the two above only ask an
     # admin to review the questions.
     path("teacher/quizzes/<uuid:pk>/assign/", TeacherQuizAssignView.as_view()),
+    # Mock-test section set. PUT replaces it, matching by id — see the view's
+    # docstring for why a naive delete-and-recreate would flatten the paper.
+    path("teacher/quizzes/<uuid:pk>/sections/", TeacherQuizSectionsView.as_view()),
     path("teacher/quizzes/<uuid:pk>/delete/", TeacherDeleteQuizView.as_view()),
     path("teacher/quizzes/<uuid:pk>/duplicate/", TeacherQuizDuplicateView.as_view()),
     path("teacher/quizzes/<uuid:pk>/analytics/", TeacherQuizAnalyticsView.as_view()),

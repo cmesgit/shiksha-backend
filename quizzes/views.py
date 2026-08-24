@@ -36,7 +36,9 @@ from courses.board_display import board_name_via
 from courses.models import Subject, TeachingAssignment
 from courses.services import teaches_subject
 
-from .models import Quiz, QuizAttempt, Question, Choice, StudentAnswer
+from .models import (
+    Quiz, QuizSection, QuizAttempt, Question, Choice, StudentAnswer,
+)
 from .visibility import batch_scope_q, learner_may_see_quiz
 from .serializers import (
     QuizCreateSerializer,
@@ -44,6 +46,7 @@ from .serializers import (
     BulkQuestionCreateSerializer,
     QuizDashboardSerializer,
     QuizAssignSerializer,
+    QuizSectionSerializer,
     QuizSubmitSerializer,
     QuizDetailSerializer,
     QuizDetailTeacherSerializer,
@@ -269,6 +272,7 @@ class BulkAddQuestionsView(APIView):
 
         existing_by_id = {str(q.id): q for q in quiz.questions.all()}
         valid_sources = {c[0] for c in Question.SOURCE_CHOICES}
+        section_ids = {str(s.id) for s in quiz.sections.all()}
         keep_ids = set()
         cleaned = []
 
@@ -287,8 +291,23 @@ class BulkAddQuestionsView(APIView):
             if q_id and q_id not in existing_by_id:
                 raise ValidationError(f"Question {i + 1}: not part of this quiz.")
 
+            # `section` is applied ONLY when the key is present. Defaulting a
+            # missing key to None would re-run the section-orphaning bug from
+            # the other side: the pre-Phase-5 builder doesn't send `section`,
+            # so every save would silently strip the grouping off a sectioned
+            # mock paper. Send `"section": null` to deliberately ungroup one.
+            section_given = "section" in q_data
+            section_id = q_data.get("section")
+            if section_given and section_id is not None:
+                section_id = str(section_id)
+                if section_id not in section_ids:
+                    raise ValidationError(
+                        f"Question {i + 1}: section is not a section of this quiz."
+                    )
+
             cleaned.append({
                 "id": q_id,
+                **({"section_id": section_id} if section_given else {}),
                 "text": q_data["text"].strip(),
                 "marks": int(q_data.get("marks") or 1),
                 "order": q_data.get("order", i),
@@ -437,6 +456,120 @@ class TeacherQuizAssignView(APIView):
 
         return Response(
             QuizDetailTeacherSerializer(quiz, context={"request": request}).data
+        )
+
+
+class TeacherQuizSectionsView(APIView):
+    """PUT /teacher/quizzes/:pk/sections/   {sections: [{id?, name, order?,
+    instructions?}, ...]}
+
+    Replaces the quiz's section set and returns the result. Owner-only, same
+    gate as TeacherQuizAssignView (created_by == request.user, after
+    require_teacher_context).
+
+    ── REPLACE SEMANTICS, and why this is not "delete all, recreate" ───────
+    The obvious implementation — `quiz.sections.all().delete()` then create
+    everything from the payload — is silently destructive. Question.section
+    is SET_NULL, so deleting a section NULLs the section FK of every question
+    in it. A teacher who opened the builder, renamed "Section A" to
+    "Section A · Objective" and hit save would get back a paper whose
+    sections exist but are all empty: every question flattened into the
+    unsectioned list, no error, nothing to undo. The rename is the single
+    most common edit, so that bug would be near-universal.
+
+    So sections are matched BY ID:
+
+      · payload entry WITH an id that belongs to this quiz → updated in
+        place. The row survives, so `question.section_id` still points at it
+        and the grouping is untouched.
+      · payload entry with NO id → created.
+      · existing section whose id is absent from the payload → deleted, and
+        SET_NULL merges its questions back into the flat list. That is the
+        intended "ungroup this section" behaviour, and it is the ONLY case
+        that should move any question.
+      · id that isn't one of this quiz's sections → 400, not a silent
+        create. It means the client is confused about which quiz it is
+        editing, and inventing a section would hide that.
+
+    Deliberately NOT gated on `quiz.is_editable` (unlike AddQuestionView):
+    is_editable tracks the admin review workflow, which Phase 1 severed from
+    the teacher's own control of their own quiz. Sections are structure, not
+    question content, and a teacher must be able to fix a section title on a
+    live paper without asking an admin.
+    """
+
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def put(self, request, pk):
+        require_teacher_context(request)
+
+        quiz = get_object_or_404(Quiz.objects.select_related("subject"), pk=pk)
+        if quiz.created_by != request.user:
+            raise PermissionDenied("You did not create this quiz.")
+
+        payload = request.data.get("sections", [])
+        if not isinstance(payload, list):
+            raise ValidationError("`sections` must be a list.")
+
+        existing = {str(s.id): s for s in quiz.sections.all()}
+        seen_ids = set()
+        cleaned = []
+
+        for i, row in enumerate(payload):
+            if not isinstance(row, dict):
+                raise ValidationError(f"Section {i + 1}: expected an object.")
+            name = (row.get("name") or "").strip()
+            if not name:
+                raise ValidationError(f"Section {i + 1}: name is required.")
+            if len(name) > 80:
+                raise ValidationError(
+                    f"Section {i + 1}: name is longer than 80 characters."
+                )
+
+            sid = str(row["id"]) if row.get("id") else None
+            if sid is not None:
+                if sid not in existing:
+                    raise ValidationError(
+                        f"Section {i + 1}: not a section of this quiz."
+                    )
+                if sid in seen_ids:
+                    raise ValidationError(
+                        f"Section {i + 1}: id repeated in the payload."
+                    )
+                seen_ids.add(sid)
+
+            # order defaults to the payload position, so a client that just
+            # sends the list in the right order gets the right order.
+            try:
+                order = int(row["order"]) if row.get("order") is not None else i
+            except (TypeError, ValueError):
+                raise ValidationError(f"Section {i + 1}: order must be a number.")
+            if order < 0:
+                raise ValidationError(f"Section {i + 1}: order must not be negative.")
+
+            cleaned.append({
+                "id": sid,
+                "name": name,
+                "order": order,
+                "instructions": (row.get("instructions") or "").strip(),
+            })
+
+        with transaction.atomic():
+            # Only genuinely removed sections are deleted — see the docstring.
+            quiz.sections.exclude(id__in=seen_ids).delete()
+
+            for row in cleaned:
+                sid = row.pop("id")
+                if sid:
+                    QuizSection.objects.filter(id=sid).update(**row)
+                else:
+                    QuizSection.objects.create(quiz=quiz, **row)
+
+        return Response(
+            QuizSectionSerializer(
+                quiz.sections.all(), many=True, context={"request": request},
+            ).data,
+            status=status.HTTP_200_OK,
         )
 
 
@@ -903,6 +1036,11 @@ class StartQuizView(APIView):
     the question order under a new attempt key. Unlimited retakes remain
     intentional; they just have to be ASKED for (the Reattempt buttons pass
     the flag) rather than happening by accident.
+
+    Phase 4 adds a separate, second condition: `Quiz.max_attempts` (NULL =
+    unlimited, 1 = single-attempt mock). It is a QUOTA, not another copy of
+    the flag above — see the inline comment at the check for how the two
+    compose and why the quota is evaluated first.
     """
     permission_classes = [IsAuthenticated, IsEmailVerified]
 
@@ -1007,6 +1145,66 @@ class StartQuizView(APIView):
                 quiz=quiz,
                 learner_profile=learner
             ).order_by("-attempt_number").first()
+
+            # ── Attempt QUOTA (Quiz.max_attempts, Phase 4) ────────────────
+            # Checked BEFORE the `new_attempt` intent gate below, because the
+            # two are different questions and the quota is the harder no:
+            #
+            #   max_attempts  = "how many attempts is this learner ENTITLED
+            #                    to" — a mock-test rule, NULL = unlimited.
+            #   new_attempt   = "did the learner ASK for another one" — a
+            #                    UI-safety flag that stops a Back-button
+            #                    re-mount from burning an attempt.
+            #
+            # So they compose rather than compete: no quota → the intent gate
+            # decides (unchanged); quota exhausted → refused even WITH
+            # `new_attempt: true`, since a deliberate retake request cannot
+            # manufacture an entitlement. Deliberately NOT a second copy of
+            # the intent gate, and the intent gate was not widened into a
+            # quota — `new_attempt` still means exactly what it did.
+            #
+            # Counts SUBMITTED attempts, not last_attempt.attempt_number:
+            # numbering can have gaps (an expired 0-answer ghost is deleted
+            # above), and a quota must count real completions.
+            #
+            # Placed after the resume branch, so a learner mid-attempt on a
+            # single-attempt mock can still resume it — the quota bounds how
+            # many attempts they get, not whether they may finish one.
+            if quiz.max_attempts is not None:
+                submitted_count = QuizAttempt.objects.filter(
+                    quiz=quiz,
+                    learner_profile=learner,
+                    status=QuizAttempt.STATUS_SUBMITTED,
+                ).count()
+                if submitted_count >= quiz.max_attempts:
+                    # 200 + `already_submitted`, matching the intent gate's
+                    # existing shape so current clients keep routing to the
+                    # result screen; `attempts_exhausted` is the new signal
+                    # for a client that wants to explain WHY.
+                    return Response(
+                        {
+                            "detail": (
+                                "You have used all "
+                                f"{quiz.max_attempts} attempt(s) for this test."
+                            ),
+                            "already_submitted": True,
+                            "attempts_exhausted": True,
+                            "max_attempts": quiz.max_attempts,
+                            "attempts_used": submitted_count,
+                            "attempt_id": (
+                                last_attempt.id if last_attempt else None
+                            ),
+                            "attempt_number": (
+                                last_attempt.attempt_number
+                                if last_attempt else None
+                            ),
+                            "started_at": (
+                                last_attempt.started_at if last_attempt else None
+                            ),
+                            "expires_at": None,
+                        },
+                        status=status.HTTP_200_OK,
+                    )
 
             # A retake over a finished attempt must be deliberate — see the
             # class docstring. Only guards the RETAKE case: with no prior
@@ -1114,6 +1312,15 @@ class CheckAnswerView(APIView):
         if quiz.quiz_type != Quiz.TYPE_PRACTICE:
             raise PermissionDenied(
                 "Instant feedback is only available in practice-mode quizzes."
+            )
+
+        # Phase 4: a practice quiz may also be configured to hold answers
+        # back (`reveal_answers` = after_submit / never). Checked through the
+        # model helper so this endpoint and QuizResultView can never disagree
+        # about what the two reveal fields mean.
+        if not quiz.instant_feedback_enabled:
+            raise PermissionDenied(
+                "This quiz does not reveal answers until it is submitted."
             )
 
         question = get_object_or_404(
@@ -1328,10 +1535,12 @@ class QuizResultView(APIView):
         # a free score. Practice mode is exempt: instant per-question
         # feedback is that mode's whole point, already scoped separately
         # (CheckAnswerView), not this end-of-attempt review.
-        answers_revealed = (
-            quiz.quiz_type == Quiz.TYPE_PRACTICE
-            or attempt.attempt_number <= quiz.reveal_answers_after
-        )
+        #
+        # That rule now also has to respect `reveal_answers="never"`, so it
+        # lives on the model (Quiz.answers_revealed_for) rather than inline
+        # here — one place where the timing mode and the attempt budget
+        # combine. Same behaviour as before for every existing quiz.
+        answers_revealed = quiz.answers_revealed_for(attempt.attempt_number)
 
         result_questions = []
         topic_stats = {}      # topic -> [correct, total]

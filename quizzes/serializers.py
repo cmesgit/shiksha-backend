@@ -1,6 +1,7 @@
 from .models import Quiz
 
 from datetime import timedelta
+from decimal import Decimal
 from django.db.models import Avg, Max, Min, Count
 import uuid
 from django.db import transaction
@@ -16,6 +17,7 @@ from enrollments.models import Enrollment
 
 from .models import (
     Quiz,
+    QuizSection,
     Question,
     Choice,
     QuizAttempt,
@@ -25,6 +27,26 @@ from .models import (
 # Absorbs real network/render lag on a legitimate last-second auto-submit;
 # not meant to give any meaningful extra working time.
 SUBMIT_GRACE_SECONDS = 20
+
+
+def negative_marks_for(quiz):
+    """Marks to deduct per WRONG answer on `quiz`, as a Decimal.
+
+    The `quiz_type == "mock"` gate lives here, in one function, rather than
+    at the call site: a practice attempt must never subtract, whatever
+    `negative_marks_per_wrong` happens to hold (a quiz switched mock →
+    practice keeps its configured penalty so switching back doesn't lose it,
+    which means a stored non-zero value on a practice quiz is normal, not a
+    bug). Returning Decimal("0") rather than short-circuiting keeps the
+    scoring loop branch-free and Decimal-only.
+    """
+    if quiz.quiz_type != Quiz.TYPE_MOCK:
+        return Decimal("0")
+    # DecimalField gives a Decimal back from the DB, but an in-memory Quiz
+    # built with `negative_marks_per_wrong=0.25` (a float literal, as tests
+    # and shells do) has not been through the field's to_python — so coerce
+    # via str() and never let a float into the arithmetic.
+    return Decimal(str(quiz.negative_marks_per_wrong or 0))
 
 
 class ChoiceAdminSerializer(serializers.ModelSerializer):
@@ -39,14 +61,42 @@ class ChoicePublicSerializer(serializers.ModelSerializer):
         fields = ["id", "text"]
 
 
+class QuizSectionSerializer(serializers.ModelSerializer):
+    """A mock paper's section. `id` is WRITABLE on input on purpose — it is
+    how PUT /teacher/quizzes/:pk/sections/ tells "rename section A" apart
+    from "delete A, add B"; see TeacherQuizSectionsView for why that
+    distinction is load-bearing."""
+
+    id = serializers.UUIDField(required=False)
+    question_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = QuizSection
+        fields = ["id", "name", "order", "instructions", "question_count"]
+
+    def get_question_count(self, obj):
+        return obj.questions.count()
+
+
 class QuestionCreateSerializer(serializers.ModelSerializer):
     choices = ChoiceAdminSerializer(many=True)
+    # Optional mock-paper grouping. Validated against the quiz in context so
+    # a question can't be filed into another teacher's section.
+    section = serializers.PrimaryKeyRelatedField(
+        queryset=QuizSection.objects.all(), required=False, allow_null=True,
+    )
 
     class Meta:
         model = Question
         fields = ["id", "text", "marks", "order", "choices",
-                  "explanation", "topic", "difficulty"]
+                  "explanation", "topic", "difficulty", "section"]
         read_only_fields = ["id"]
+
+    def validate_section(self, section):
+        quiz = self.context.get("quiz")
+        if section is not None and quiz is not None and section.quiz_id != quiz.id:
+            raise ValidationError("That section belongs to a different quiz.")
+        return section
 
     def validate(self, attrs):
         choices = attrs.get("choices", [])
@@ -126,7 +176,10 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
                   "chapter_tags", "save_chapters_to_course",
                   "chapter_note", "no_specific_chapter",
                   "title", "description", "time_limit_minutes", "quiz_type",
-                  "reveal_answers_after"]
+                  "reveal_answers_after",
+                  # Phase 4 mock-test settings.
+                  "negative_marks_per_wrong", "max_attempts",
+                  "shuffle_questions", "reveal_answers"]
         read_only_fields = ["id"]
 
     def validate_subject(self, subject):
@@ -200,6 +253,26 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
         )
 
     def create(self, validated_data):
+        # ── Per-quiz-type defaults (Phase 4) ──────────────────────────────
+        # The spec wants `reveal_answers=after_submit` + `max_attempts=1` for
+        # a mock and `after_each` + unlimited for practice. That cannot be a
+        # plain field default (one column, two defaults), and it must NOT be
+        # in Quiz.save() either: save() runs on every edit, so it would
+        # silently re-impose max_attempts=1 on a mock a teacher had
+        # deliberately opened up, and would retroactively cap the thousands
+        # of existing unlimited mock quizzes the moment anything touched
+        # them. Creation time is the only correct hook — a default is a
+        # starting value, not an invariant.
+        #
+        # Only applied when the client omitted the key entirely, so an
+        # explicit `max_attempts: null` from the builder still means
+        # "unlimited" on a mock.
+        # `or TYPE_MOCK`: quiz_type's own model default is mock, so an omitted
+        # quiz_type produces a mock and must get the mock defaults too.
+        if (validated_data.get("quiz_type") or Quiz.TYPE_MOCK) == Quiz.TYPE_MOCK:
+            validated_data.setdefault("reveal_answers", Quiz.REVEAL_AFTER_SUBMIT)
+            if "max_attempts" not in validated_data:
+                validated_data["max_attempts"] = 1
         return self._apply_tags(Quiz.objects.create(
             created_by=self.context["request"].user,
             **validated_data
@@ -390,7 +463,21 @@ class QuizSubmitSerializer(serializers.Serializer):
                     "Start a new attempt to try again."
                 )
 
-        score = 0
+        # ── Scoring ───────────────────────────────────────────────────────
+        # Decimal, not float, for the whole computation: the UI offers 0.33 as
+        # a penalty, and 3 × 0.33 in binary floating point is
+        # 0.9899999999999999, so a float score fails an exact comparison and
+        # renders as 9.010000000000002 on the result screen. Decimal("0.33")
+        # is exactly 0.33. `question.marks` is an int, which Decimal absorbs
+        # exactly — nothing here may introduce a float.
+        #
+        # `attempt.score` is a FloatField (pre-existing, and the denominator
+        # of several Avg()/Max() aggregates elsewhere), so the final value is
+        # quantized to 2dp and converted ONCE, at the boundary. Every value
+        # this can produce is exactly representable to 2dp, so the stored
+        # double round-trips.
+        penalty = negative_marks_for(quiz)
+        score = Decimal("0")
         attempt.answers.all().delete()
 
         for item in submitted_answers:
@@ -405,10 +492,26 @@ class QuizSubmitSerializer(serializers.Serializer):
             choice = Choice.objects.filter(
                 id=choice_id, question=question).first()
             if not choice:
-                continue  # skip invalid choices gracefully
+                # BLANK / unanswered — and this is the ONLY path a blank can
+                # take, in either of its two spellings: the question is
+                # missing from `answers` entirely, or it is present with
+                # `selected_choice: null` (which is what the mock screen
+                # sends for a question the learner visited but skipped).
+                # Both land here, both are skipped, and neither is penalised.
+                # StudentAnswer.selected_choice is a non-nullable FK, so a
+                # persisted "answered with nothing" row cannot exist — a
+                # blank is always the absence of a row.
+                #
+                # Not penalising blanks is not a nicety: every Indian
+                # competitive exam this platform serves marks only attempted
+                # questions, and the results screen counts "Blank" separately
+                # from "Got wrong".
+                continue
 
             if choice.is_correct:
-                score += question.marks
+                score += Decimal(question.marks)
+            else:
+                score -= penalty
 
             time_spent = item.get("time_spent") or item.get("time_spent_seconds") or 0
             try:
@@ -425,7 +528,13 @@ class QuizSubmitSerializer(serializers.Serializer):
                 marked_for_review=bool(item.get("marked_for_review", False)),
             )
 
-        attempt.score = score
+        # NOT floored at zero. A mock with negative marking can legitimately
+        # score below 0, which is how the real exams work and is information
+        # the learner needs (it says "you guessed too much", where a clamped
+        # 0 says "you knew nothing"). Flagged in the handoff as a product
+        # decision to confirm; if it must be floored, do it HERE and nowhere
+        # else.
+        attempt.score = float(score.quantize(Decimal("0.01")))
         attempt.status = QuizAttempt.STATUS_SUBMITTED
         attempt.submitted_at = timezone.now()
         attempt.save(update_fields=["score", "status", "submitted_at"])
@@ -437,7 +546,8 @@ class QuestionPublicSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Question
-        fields = ["id", "text", "marks", "order", "choices", "topic", "difficulty"]
+        fields = ["id", "text", "marks", "order", "choices", "topic",
+                  "difficulty", "section"]
         # NOTE: explanation is intentionally omitted from the public serializer
         # so students don't see it before submitting
 
@@ -449,7 +559,7 @@ class QuestionTeacherSerializer(serializers.ModelSerializer):
     class Meta:
         model = Question
         fields = ["id", "text", "marks", "order", "choices",
-                  "explanation", "topic", "difficulty"]
+                  "explanation", "topic", "difficulty", "section"]
 
 
 class QuizDetailSerializer(serializers.ModelSerializer):
@@ -461,6 +571,7 @@ class QuizDetailSerializer(serializers.ModelSerializer):
     teacher_name = serializers.CharField(
         source="created_by.email", read_only=True, default=None)
     questions = serializers.SerializerMethodField()
+    sections = QuizSectionSerializer(many=True, read_only=True)
 
     class Meta:
         model = Quiz
@@ -469,6 +580,11 @@ class QuizDetailSerializer(serializers.ModelSerializer):
             "board_name",
             "teacher_name", "created_at", "time_limit_minutes", "questions",
             "quiz_type",
+            # Phase 4: the attempt screen needs the rules it is enforcing —
+            # the penalty to show in the instructions, whether to shuffle,
+            # and when answers appear. `sections` is [] for a flat quiz.
+            "negative_marks_per_wrong", "max_attempts", "shuffle_questions",
+            "reveal_answers", "sections",
         ]
 
     def get_board_name(self, obj):
@@ -498,6 +614,7 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
     batch_ids = serializers.PrimaryKeyRelatedField(
         source="batches", many=True, read_only=True,
     )
+    sections = QuizSectionSerializer(many=True, read_only=True)
 
     class Meta:
         model = Quiz
@@ -508,6 +625,9 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
             "is_published", "questions", "quiz_type", "review_status",
             "review_note", "reviewed_at", "submitted_for_review_at",
             "is_editable", "is_assigned", "batch_ids",
+            # Phase 4 mock-test settings, so the builder round-trips them.
+            "negative_marks_per_wrong", "max_attempts", "shuffle_questions",
+            "reveal_answers", "reveal_answers_after", "sections",
         ]
 
     def get_board_name(self, obj):
@@ -564,7 +684,11 @@ class QuizResultSerializer(serializers.Serializer):
     teacher_name = serializers.CharField()
     quiz_type = serializers.CharField(default="mock")
     total_marks = serializers.IntegerField()
-    score = serializers.IntegerField()
+    # FloatField, NOT IntegerField: with negative marking a score is
+    # fractional (and can be negative). IntegerField would have silently
+    # truncated 9.01 → 9 and −0.5 → 0 on the way out, i.e. the result screen
+    # would have shown a different score than the one stored.
+    score = serializers.FloatField()
     submitted_at = serializers.DateTimeField()
     attempt_number = serializers.IntegerField(default=1)
     answers_revealed = serializers.BooleanField(default=True)
