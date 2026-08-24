@@ -114,13 +114,73 @@ class Quiz(models.Model):
     # long as it's published, gated only by is_published / review_status).
     time_limit_minutes = models.PositiveIntegerField(null=True, blank=True)
 
-    # Retakes stay unlimited by design (see StartQuizView) — this instead
+    # ── The two reveal fields, and why there are two ──────────────────────
+    #
+    # These are NOT duplicates. They answer different questions and are
+    # combined in exactly one place — `answers_revealed_for()` below, which
+    # is the only thing any view may call. Never re-derive the rule inline.
+    #
+    # `reveal_answers_after` (pre-existing, an ATTEMPT BUDGET, "how many"):
     # bounds how many of a student's own attempts get the full answer-key
-    # review (correct_choice + explanation in QuizResultView), so a retake
-    # can't be used to read the key and then resubmit for a free 100%.
-    # Ignored for TYPE_PRACTICE, where instant per-question feedback is the
-    # whole point of the mode.
+    # review (correct_choice + explanation in QuizResultView), so an
+    # unlimited retake can't be used to read the key and then resubmit for a
+    # free 100%. An anti-cheat quota, not a display preference.
     reveal_answers_after = models.PositiveIntegerField(default=1)
+
+    # `reveal_answers` (Phase 4, a TIMING MODE, "when"): at what point in the
+    # flow the learner is allowed to see correctness at all. Nothing in
+    # `reveal_answers_after` can express this — it has no notion of
+    # during-vs-after the paper, and no way to say "never".
+    #
+    #   after_each   — instant per-question feedback while attempting
+    #                  (practice mode; gates CheckAnswerView)
+    #   after_submit — nothing until the paper is submitted, then the normal
+    #                  end-of-attempt review (mock mode)
+    #   never        — no answer key, ever, on any attempt
+    #
+    # DEFAULTS: the spec wants `after_each` for practice and `after_submit`
+    # for mock. A per-quiz-type default cannot be a plain field default, so
+    # the field default is `after_each` (the practice value, and the
+    # behaviour every pre-Phase-4 practice quiz already had) and the mock
+    # default is applied at CREATION time by QuizCreateSerializer when the
+    # client doesn't send the field. Existing mock rows were backfilled to
+    # `after_submit` by migration 0026 — behaviourally a no-op (CheckAnswerView
+    # already refuses mock quizzes), but it keeps the stored value honest.
+    REVEAL_AFTER_EACH = "after_each"
+    REVEAL_AFTER_SUBMIT = "after_submit"
+    REVEAL_NEVER = "never"
+    REVEAL_CHOICES = [
+        (REVEAL_AFTER_EACH, "After each question"),
+        (REVEAL_AFTER_SUBMIT, "After the paper is submitted"),
+        (REVEAL_NEVER, "Never"),
+    ]
+    reveal_answers = models.CharField(
+        max_length=16, choices=REVEAL_CHOICES, default=REVEAL_AFTER_EACH,
+    )
+
+    # ── Mock-test settings (Phase 4) ──────────────────────────────────────
+    # All defaulted so every pre-existing practice quiz keeps its behaviour
+    # with no data migration: 0 penalty, unlimited attempts, no shuffle.
+
+    # Marks deducted per WRONG answer. Applied by QuizSubmitSerializer ONLY
+    # when quiz_type == "mock" — a practice attempt must never subtract, no
+    # matter what is stored here (a quiz switched mock→practice keeps its
+    # configured value so switching back doesn't lose it). Blank/unanswered
+    # questions are never penalised. UI offers 0, 0.25, 0.33, 0.5, 1.
+    negative_marks_per_wrong = models.DecimalField(
+        max_digits=4, decimal_places=2, default=0,
+    )
+
+    # Attempt QUOTA. NULL = unlimited (practice); 1 = single-attempt (mock).
+    # This is a quota, deliberately separate from StartQuizView's
+    # `new_attempt: true` flag, which is an INTENT check (it stops a stray
+    # Back-button re-mount from burning an attempt). See StartQuizView for
+    # how the two compose. NULL default means no existing quiz gains a limit.
+    max_attempts = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    # Per-attempt question order randomisation (mock papers). Read by the
+    # attempt screen; scoring is order-independent.
+    shuffle_questions = models.BooleanField(default=False)
 
     quiz_type = models.CharField(
         max_length=10, choices=TYPE_CHOICES, default=TYPE_MOCK,
@@ -187,6 +247,70 @@ class Quiz(models.Model):
         submitted for admin verification (or after it was sent back)."""
         return self.review_status in (self.REVIEW_DRAFT, self.REVIEW_REJECTED)
 
+    # ── The one place the two reveal fields combine ───────────────────────
+
+    @property
+    def instant_feedback_enabled(self):
+        """May CheckAnswerView hand back correctness mid-attempt?
+
+        Practice mode AND `reveal_answers == after_each`. A practice quiz set
+        to `after_submit`/`never` is a legitimate configuration (untimed,
+        unlimited retries, but no peeking) and must not leak the key
+        per-question.
+        """
+        return (
+            self.quiz_type == self.TYPE_PRACTICE
+            and self.reveal_answers == self.REVEAL_AFTER_EACH
+        )
+
+    def answers_revealed_for(self, attempt_number):
+        """Is the end-of-attempt answer key visible on this attempt?
+
+        Composes the timing mode with the attempt budget — see the long
+        comment on the two fields above. `never` wins outright; otherwise
+        practice always reveals after submit (that mode's whole point) and a
+        mock reveals only within its `reveal_answers_after` budget.
+        """
+        if self.reveal_answers == self.REVEAL_NEVER:
+            return False
+        if self.quiz_type == self.TYPE_PRACTICE:
+            return True
+        return attempt_number <= self.reveal_answers_after
+
+
+# -------------------------------------------------------
+# 1️⃣b QUIZ SECTION  (mock tests)
+# -------------------------------------------------------
+
+class QuizSection(models.Model):
+    """A named group of questions inside a mock paper ("Section A · Objective").
+
+    Only mock tests use these. A question with `section=NULL` belongs to the
+    flat list, which is what every practice quiz (and every pre-Phase-4 quiz)
+    looks like — so this model is purely additive.
+
+    PK is a UUID, matching every other model in this codebase (Quiz,
+    Question, Choice, QuizAttempt, StudentAnswer all do the same). An
+    implicit integer PK here would be the only one, and would leak
+    guessable/enumerable section ids into the teacher API.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    quiz = models.ForeignKey(
+        Quiz, on_delete=models.CASCADE, related_name="sections",
+    )
+    name = models.CharField(max_length=80)
+    order = models.PositiveSmallIntegerField(default=0)
+    instructions = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["order", "name"]
+        indexes = [models.Index(fields=["quiz", "order"])]
+
+    def __str__(self):
+        return f"{self.name} — {self.quiz.title}"
+
 
 # -------------------------------------------------------
 # 2️⃣ QUESTION
@@ -207,6 +331,23 @@ class Question(models.Model):
     quiz = models.ForeignKey(
         Quiz,
         on_delete=models.CASCADE,
+        related_name="questions",
+    )
+
+    # Which mock-paper section this question sits in. NULL = the flat list,
+    # i.e. every practice quiz and every pre-Phase-4 quiz.
+    #
+    # SET_NULL is the whole design, not a default: deleting a section must
+    # NOT delete the teacher's questions. They fall back to the flat list —
+    # "merge this section's questions into the main list" comes for free, and
+    # a mis-click on a section's delete button can never destroy question
+    # content. (CASCADE here would silently take the questions, their
+    # choices and their answer key with it.)
+    section = models.ForeignKey(
+        "QuizSection",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="questions",
     )
 
