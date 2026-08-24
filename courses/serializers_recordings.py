@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from .board_display import board_name_via
 from .models_recordings import SessionRecording, RecordingNote
+from .chapter_tags import serialize_tags
 
 
 class SessionRecordingSerializer(serializers.ModelSerializer):
@@ -12,6 +13,8 @@ class SessionRecordingSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     course_title = serializers.SerializerMethodField()
     board_name = serializers.SerializerMethodField()
+    # Multi-chapter placement; `chapter` above stays the single-value view.
+    chapter_tags = serializers.SerializerMethodField()
 
     class Meta:
         model = SessionRecording
@@ -22,6 +25,9 @@ class SessionRecordingSerializer(serializers.ModelSerializer):
             "course_title",
             "board_name",
             "chapter",
+            "chapter_tags",
+            "chapter_note",
+            "no_specific_chapter",
             "batch",
             "live_session",
             "title",
@@ -42,6 +48,9 @@ class SessionRecordingSerializer(serializers.ModelSerializer):
 
     def get_board_name(self, obj):
         return board_name_via(obj, "subject", "course")
+
+    def get_chapter_tags(self, obj):
+        return serialize_tags(obj)
 
     def get_uploaded_by_name(self, obj):
         user = obj.uploaded_by

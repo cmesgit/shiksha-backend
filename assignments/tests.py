@@ -612,10 +612,29 @@ class CustomChapterCreationTest(AssignmentScopeFixtureMixin, TestCase):
         second_assignment = Assignment.objects.get(id=second.data["id"])
         self.assertEqual(first_assignment.chapter_id, second_assignment.chapter_id)
 
-    def test_neither_chapter_id_nor_custom_chapter_is_rejected(self):
+    def test_neither_chapter_nor_subject_is_rejected(self):
+        """Sending no curriculum placement AT ALL is still a 400 — but the
+        complaint is now about the SUBJECT, not the chapter.
+
+        This assertion deliberately changed in Phase 3. A chapter is optional
+        now (an assignment may legitimately cover none), so demanding one
+        would contradict the feature. What is not optional is the subject: it
+        is the authorization anchor and the model's NOT NULL column, so a
+        request that names neither a chapter to imply it nor a subject_id to
+        state it cannot be placed anywhere and is refused.
+        """
         r = self._create(self.teacher_b)
         self.assertEqual(r.status_code, 400, r.content)
-        self.assertIn("chapter_id", r.data)
+        self.assertIn("subject_id", r.data)
+
+    def test_subject_alone_creates_an_assignment_with_no_chapter(self):
+        """The headline of Phase 3: zero chapters is a valid assignment."""
+        r = self._create(self.teacher_b, subject_id=str(self.subject.id))
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+        self.assertIsNone(assignment.chapter_id)
+        # ...but it is still anchored to a subject, so authorization works.
+        self.assertEqual(assignment.subject_id, self.subject.id)
 
     def test_custom_chapter_for_a_subject_not_taught_in_this_batch_is_rejected(self):
         other_subject = Subject.objects.create(course=self.course, name="Chemistry")

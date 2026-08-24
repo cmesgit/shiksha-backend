@@ -16,8 +16,52 @@ from django.core.exceptions import PermissionDenied
 
 from courses.models import Chapter, Batch
 from courses.services import resolve_or_create_chapter, teaches_subject
+from courses.chapter_tags import (
+    primary_chapter,
+    resolve_tags,
+    set_tags,
+    validate_tag_payload,
+)
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from accounts.auth_flow import get_active_profile
 from enrollments.services import active_batch_id, has_active_subscription
+
+import json
+
+
+def _parse_bool(raw):
+    """Coerce a multipart form value to a bool.
+
+    This endpoint is MultiPartParser-only (it takes file ids alongside
+    metadata), so every value arrives as a STRING — including "false", which
+    is truthy in Python. Without this, sending no_specific_chapter=false would
+    set it True and then collide with any chapter tags in the same request.
+    """
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_chapter_tags(request):
+    """Read `chapter_tags` from a multipart body.
+
+    Accepted as a JSON array in one field (what a JS client sends most
+    naturally), or as repeated `chapter_tags` fields each holding one JSON
+    object. A malformed value is treated as "no tags" rather than a 500 —
+    tags are optional everywhere, so the safe failure is to ignore them.
+    """
+    raw = request.data.get("chapter_tags")
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple)):
+        candidates = raw
+    else:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        candidates = parsed if isinstance(parsed, list) else [parsed]
+    return [c for c in candidates if isinstance(c, dict)]
 
 
 # Sentinel returned (as the "batch_id") for a teacher: unlike a student's
@@ -97,36 +141,64 @@ class UploadStudyMaterial(APIView):
         chapter_id = request.data.get("chapter_id")
         custom_chapter = request.data.get("custom_chapter")
 
+        # Resolve the SUBJECT first — it is the authorization anchor and the
+        # model's NOT NULL column. A chapter, if one was named, implies it;
+        # otherwise the caller states it with subject_id. Chapter itself is
+        # optional now (a revision pack may span the whole term), so the gate
+        # below runs on the subject either way.
+        chapter = None
         if chapter_id:
             chapter = get_object_or_404(
                 Chapter.objects.select_related("subject"), id=chapter_id
             )
-            if not teaches_subject(request.user, chapter.subject):
-                raise PermissionDenied(
-                    "You are not assigned to teach this subject."
-                )
-        elif custom_chapter:
+            subject = chapter.subject
+        else:
             subject_id = request.data.get("subject_id")
             if not subject_id:
                 return Response(
-                    {"detail": "Subject is required for custom chapter"},
+                    {"detail": "Subject is required."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
             subject = get_object_or_404(Subject, id=subject_id)
-            if not teaches_subject(request.user, subject):
-                raise PermissionDenied(
-                    "You are not assigned to teach this subject."
-                )
-            # A repeat (or case-varied) chapter name reuses the existing row
-            # instead of hitting unique_chapter_per_subject with a 500.
+
+        # Checked BEFORE any chapter is minted, so an unauthorized request
+        # cannot leave a stray Chapter row behind under a subject this teacher
+        # has no claim to.
+        if not teaches_subject(request.user, subject):
+            raise PermissionDenied(
+                "You are not assigned to teach this subject."
+            )
+
+        if chapter is None and custom_chapter:
+            # Legacy single-value shim — the key the live Upload-material
+            # screen sends today. A repeat (or case-varied) chapter name
+            # reuses the existing row instead of hitting
+            # unique_chapter_per_subject with a 500.
             chapter = resolve_or_create_chapter(
                 subject, custom_title=custom_chapter, created_by=request.user,
             )
-        else:
-            return Response(
-                {"detail": "Chapter or custom chapter required"},
-                status=status.HTTP_400_BAD_REQUEST
+
+        # New multi-value payload. Validated before anything is written so a
+        # contradictory request 400s rather than half-saving.
+        raw_tags = _parse_chapter_tags(request)
+        no_specific = _parse_bool(request.data.get("no_specific_chapter"))
+        try:
+            validate_tag_payload(raw_tags, no_specific)
+            resolved_tags = resolve_tags(
+                subject, raw_tags, teacher=request.user,
+                save_to_course=_parse_bool(
+                    request.data.get("save_chapters_to_course")
+                ),
             )
+        except DRFValidationError as exc:
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+
+        # The additive invariant: keep the single `chapter` FK pointing at the
+        # first resolved chapter so authorization and every legacy read path
+        # keep working. Only when tags were actually sent — otherwise the
+        # legacy chapter above stands.
+        if raw_tags:
+            chapter = primary_chapter(resolved_tags) or chapter
 
         title = request.data.get("title")
         file_ids = request.data.getlist("file_ids")
@@ -149,17 +221,24 @@ class UploadStudyMaterial(APIView):
             # material was invisible to every student while the teacher's
             # list showed it uploaded. _enrollments_for below would also have
             # notified nobody, for the same reason.
+            # subject.course_id, not chapter.subject.course_id — chapter is
+            # optional now and would be None for a chapter-less upload.
             batch = get_object_or_404(
-                Batch, id=batch_id, course_id=chapter.subject.course_id,
+                Batch, id=batch_id, course_id=subject.course_id,
             )
 
         material = StudyMaterial.objects.create(
+            subject=subject,
             chapter=chapter,
             batch=batch,
             title=title,
             description=request.data.get("description", ""),
+            chapter_note=request.data.get("chapter_note", ""),
+            no_specific_chapter=no_specific,
             uploaded_by=request.user
         )
+        if raw_tags:
+            set_tags(material, resolved_tags)
 
         for fid in file_ids:
             # Only an unclaimed temp file this user uploaded (or a legacy
@@ -205,18 +284,19 @@ class UploadStudyMaterial(APIView):
         from activity.models import Activity
         from activity.signals import _bulk_notify_students, _enrollments_for
 
-        course = chapter.subject.course
+        # subject, not chapter.subject — chapter is optional now.
+        course = subject.course
         _bulk_notify_students(
             _enrollments_for(course, material.batch_id),
             material,
             Activity.TYPE_MATERIAL,
             f"New study material: {title}",
             None,                       # materials have no due date
-            chapter.subject_id,
-            chapter.subject.name,
-            extra={"chapter": chapter.title},
+            subject.id,
+            subject.name,
+            extra={"chapter": chapter.title if chapter else None},
             verb="materials.uploaded",
-            link_url=f"/study-material/list/{chapter.subject_id}",
+            link_url=f"/study-material/list/{subject.id}",
         )
 
         serializer = StudyMaterialSerializer(

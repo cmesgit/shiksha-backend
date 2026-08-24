@@ -92,6 +92,20 @@ def next_chapter_order(subject):
     return 0 if current_max is None else current_max + 1
 
 
+def find_chapter_by_title(subject, title):
+    """The ONE definition of "this typed name is really that chapter".
+
+    Case-insensitive, whitespace-trimmed. Both the legacy `custom_chapter`
+    write path and the new chapter-tag path must dedupe identically, or the
+    same typed name would create a chapter on one screen and reuse one on
+    another. Returns None when nothing matches.
+    """
+    cleaned = (title or "").strip()
+    if not cleaned:
+        return None
+    return Chapter.objects.filter(subject=subject, title__iexact=cleaned).first()
+
+
 def resolve_or_create_chapter(subject, chapter_id=None, custom_title=None,
                               created_by=None):
     """Resolve a chapter for `subject`, either by id or by name.
@@ -114,7 +128,7 @@ def resolve_or_create_chapter(subject, chapter_id=None, custom_title=None,
     if not title:
         raise ValidationError({"chapter": "Select a chapter or enter a new chapter name."})
 
-    existing = Chapter.objects.filter(subject=subject, title__iexact=title).first()
+    existing = find_chapter_by_title(subject, title)
     if existing:
         return existing
     return Chapter.objects.create(

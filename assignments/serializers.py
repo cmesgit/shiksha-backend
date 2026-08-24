@@ -4,6 +4,7 @@ from .models import Assignment, AssignmentFile, AssignmentSubmission
 from courses.board_display import board_name_via
 from courses.models import Chapter, Batch, Subject
 from courses.services import is_teacher_of, resolve_or_create_chapter
+from courses.chapter_tags import ChapterTagWriteMixin, serialize_tags
 import os
 
 
@@ -190,6 +191,8 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
     # Method field, not source="chapter.title": `chapter` is optional now, and
     # a dotted source raises rather than yielding null when a hop is None.
     chapter_name = serializers.SerializerMethodField()
+    # Students see every chapter this covers, plus the teacher's own note.
+    chapter_tags = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
     assigned_on = serializers.DateTimeField(
         source="created_at",                read_only=True)
@@ -208,6 +211,9 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
             "due_date",
             "assigned_on",
             "chapter_name",
+            "chapter_tags",
+            "chapter_note",
+            "no_specific_chapter",
             "subject_name",
             "course_name",
             "board_name",
@@ -227,6 +233,9 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
 
     def get_chapter_name(self, obj):
         return obj.chapter.title if obj.chapter_id else None
+
+    def get_chapter_tags(self, obj):
+        return serialize_tags(obj)
 
     def get_submission(self, obj):
         return getattr(obj, "user_submission", None)
@@ -281,14 +290,33 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
 # TEACHER SERIALIZERS
 # ==========================================
 
-class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
-    # Optional now: a teacher may instead send `custom_chapter` (+ `subject_id`)
-    # to mint a brand-new chapter for a subject that isn't in the curated list.
+class TeacherAssignmentCreateSerializer(ChapterTagWriteMixin,
+                                        serializers.ModelSerializer):
+    # ── Chapter placement, three accepted shapes ──────────────────────────
+    # 1. `chapter_id`      — legacy single value. The live Edit/Create screens
+    #                        send this today.
+    # 2. `custom_chapter`  — legacy free-text single value, shipped 2026-08-24
+    #                        and in daily use. Mints or reuses a real Chapter.
+    # 3. `chapter_tags`    — the new multi-value payload, plus `chapter_note`
+    #                        and `no_specific_chapter`.
+    # All three coexist deliberately: (1) and (2) are what production clients
+    # send right now and must not break. Whichever path runs, the `chapter` FK
+    # is left populated when a single chapter resolves, so authorization and
+    # every legacy read path keep working.
+    #
+    # `chapter_tags` and `save_chapters_to_course` are declared by the mixin,
+    # below, since they are not model fields.
     chapter_id = serializers.PrimaryKeyRelatedField(
         queryset=Chapter.objects.all(),
         source="chapter",
         write_only=True,
         required=False,
+    )
+    chapter_tags = serializers.ListField(
+        child=serializers.DictField(), required=False, write_only=True,
+    )
+    save_chapters_to_course = serializers.BooleanField(
+        required=False, write_only=True,
     )
     # Free-text chapter name. Not a model field — resolved (and popped) in
     # validate() via resolve_or_create_chapter(), which reuses an existing
@@ -317,6 +345,10 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
         fields = (
             "chapter_id",
             "custom_chapter",
+            "chapter_tags",
+            "save_chapters_to_course",
+            "chapter_note",
+            "no_specific_chapter",
             "subject_id",
             "batch_id",
             "title",
@@ -333,6 +365,8 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             "max_marks": {"required": False},
             "is_published": {"required": False},
+            "chapter_note": {"required": False},
+            "no_specific_chapter": {"required": False},
         }
 
     def validate(self, attrs):
@@ -352,61 +386,89 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
         user = self.context["request"].user
 
         chapter = attrs.get("chapter")
-        custom_chapter = attrs.pop("custom_chapter", "")
+        custom_chapter = (attrs.pop("custom_chapter", "") or "").strip()
         subject = attrs.pop("subject_id", None)
 
-        if chapter is None:
-            if not subject or not custom_chapter.strip():
-                raise serializers.ValidationError(
-                    {"chapter_id": "Select a chapter or enter a new chapter name."}
-                )
-            # Gate the CREATE itself, not just the identical check below —
-            # an unauthorized custom-chapter attempt must not leave a stray
-            # Chapter row behind under a subject this teacher has no claim to.
-            if batch and not is_teacher_of(user, batch, subject):
-                raise serializers.ValidationError(
-                    {"non_field_errors": [
-                        f"You are not assigned to teach {subject.name} in "
-                        f"{batch.name}. Pick a batch you teach."
-                    ]}
-                )
-            chapter = resolve_or_create_chapter(
-                subject, custom_title=custom_chapter, created_by=user,
-            )
-            attrs["chapter"] = chapter
-
-        # Triangle guard: the batch and the chapter's subject share a course.
-        if chapter and batch and chapter.subject.course_id != batch.course_id:
+        # ── 1. Establish the SUBJECT first ────────────────────────────────
+        # Subject is the authorization anchor and the model's NOT NULL column,
+        # so it is resolved before anything else and every check below reads
+        # it. A chapter, if one was sent, implies it; otherwise the caller must
+        # name it. Chapter itself is now OPTIONAL — zero chapters is a valid
+        # assignment — which is exactly why authorization can no longer be
+        # derived from it.
+        if chapter is not None:
+            subject = chapter.subject
+        if subject is None:
             raise serializers.ValidationError(
-                {"batch_id": "Batch and chapter belong to different courses."}
+                {"subject_id": "Pick a subject for this assignment."}
+            )
+        attrs["subject"] = subject
+
+        # ── 2. Triangle guard: batch and subject share a course ───────────
+        if batch and subject.course_id != batch.course_id:
+            raise serializers.ValidationError(
+                {"batch_id": "Batch and subject belong to different courses."}
             )
 
-        # Authz: assigned to this (batch, subject) — either scoped to the
-        # batch, or course-wide (is_teacher_of() covers both).
-        if chapter and batch and not is_teacher_of(user, batch, chapter.subject):
+        # ── 3. Staffing guard, BEFORE anything is created ─────────────────
+        # Runs on the subject, so it applies identically whether the caller
+        # sent a chapter, a custom chapter name, chapter tags, or nothing at
+        # all. Ordering matters: an unauthorized request must not leave a
+        # stray Chapter row behind under a subject this teacher has no claim
+        # to, so no chapter is minted until this has passed.
+        if batch and not is_teacher_of(user, batch, subject):
             # Names the BATCH, not just the subject. The old wording ("You are
             # not assigned to this subject") was false and unactionable for the
             # case that actually produces it: a teacher who does teach the
             # subject, but only in another batch. They read it as a bug.
             raise serializers.ValidationError(
                 {"non_field_errors": [
-                    f"You are not assigned to teach {chapter.subject.name} "
+                    f"You are not assigned to teach {subject.name} "
                     f"in {batch.name}. Pick a batch you teach."
                 ]}
             )
+
+        # ── 4. Legacy single-value shim ───────────────────────────────────
+        # `custom_chapter` is the key the live Create-assignment screen sends
+        # today; it must keep minting (or case-insensitively reusing) a real
+        # Chapter exactly as it does now.
+        if chapter is None and custom_chapter:
+            chapter = resolve_or_create_chapter(
+                subject, custom_title=custom_chapter, created_by=user,
+            )
+            attrs["chapter"] = chapter
+
+        # ── 5. New chapter-tag payload ────────────────────────────────────
+        # Held on the serializer and applied in create(), because tags need
+        # the saved row's pk. Validated here so a contradictory request 400s
+        # before anything is written.
+        self._tag_input = self.pop_chapter_tag_input(attrs)
+        self._tag_subject = subject
         return attrs
+
+    def create(self, validated_data):
+        instance = super().create(validated_data)
+        tags, save_to_course, present = getattr(
+            self, "_tag_input", ([], False, False)
+        )
+        return self.apply_chapter_tags(
+            instance, self._tag_subject, tags, save_to_course, present,
+        )
 
     def validate_attachment(self, value):
         return validate_assignment_file(value)
 
 
-class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
+class TeacherAssignmentUpdateSerializer(ChapterTagWriteMixin,
+                                        serializers.ModelSerializer):
     """
     Supports:
       - Editing title / description / due_date
       - Replacing legacy attachment
       - Adding new files via `new_files` (list of uploaded files)
       - Deleting specific files via `delete_file_ids` (list of UUIDs)
+      - Re-tagging chapters via `chapter_tags` / `chapter_note` /
+        `no_specific_chapter`, or the legacy single-value `chapter_id`
     """
 
     # Accept multiple new file uploads
@@ -435,6 +497,12 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False,
     )
+    chapter_tags = serializers.ListField(
+        child=serializers.DictField(), required=False, write_only=True,
+    )
+    save_chapters_to_course = serializers.BooleanField(
+        required=False, write_only=True,
+    )
 
     class Meta:
         model = Assignment
@@ -446,6 +514,10 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
             "new_files",
             "delete_file_ids",
             "chapter_id",
+            "chapter_tags",
+            "save_chapters_to_course",
+            "chapter_note",
+            "no_specific_chapter",
             "max_marks",
             # PATCH is_published=true to publish a draft — that transition is
             # what fires the class notification (activity/signals.py's
@@ -482,6 +554,12 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"chapter_id": "Pick a chapter from this assignment's own subject."}
                 )
+
+        # Tags are confined to the assignment's OWN subject for the same
+        # reason: resolve_tags() rejects a chapter_id outside it, and a
+        # newly-created custom chapter is created under it, so re-tagging can
+        # never walk an assignment into a subject the teacher doesn't teach.
+        self._tag_input = self.pop_chapter_tag_input(attrs)
         return attrs
 
     def update(self, instance, validated_data):
@@ -505,11 +583,19 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
                 original_filename=os.path.basename(f.name),
             )
 
-        return instance
+        tags, save_to_course, present = getattr(
+            self, "_tag_input", ([], False, False)
+        )
+        return self.apply_chapter_tags(
+            instance, instance.subject, tags, save_to_course, present,
+        )
 
 
 class TeacherAssignmentListSerializer(serializers.ModelSerializer):
     chapter_name = serializers.SerializerMethodField()
+    # The full multi-chapter placement. `chapter_name`/`chapter_id` above
+    # remain the single-value view of it for the current UI.
+    chapter_tags = serializers.SerializerMethodField()
     # chapter_id: the Edit form's chapter <select> is seeded from this row, so
     # without it the select opened blank and forced the teacher to re-pick a
     # chapter they hadn't asked to change.
@@ -552,6 +638,9 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
             "description",
             "chapter_name",
             "chapter_id",
+            "chapter_tags",
+            "chapter_note",
+            "no_specific_chapter",
             "subject_id",
             "subject_name",
             "course_title",
@@ -568,6 +657,9 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
 
     def get_chapter_name(self, obj):
         return obj.chapter.title if obj.chapter else None
+
+    def get_chapter_tags(self, obj):
+        return serialize_tags(obj)
 
     def _subject(self, obj):
         return obj.subject

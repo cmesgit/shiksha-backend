@@ -2,7 +2,11 @@ from .serializers import ChapterSerializer
 from .models import Chapter
 from django.db.models import Case, Count, IntegerField, Prefetch, Q, When
 from .models import TeachingAssignment
-from .services import teaches_subject
+from .services import (
+    find_chapter_by_title,
+    resolve_or_create_chapter,
+    teaches_subject,
+)
 from accounts.models import LearnerProfile
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -594,6 +598,17 @@ class TeacherMyClassesView(APIView):
 # =========================
 
 class SubjectChaptersView(APIView):
+    """The chapter list behind the shared chapter picker.
+
+    GET  — the subject's syllabus chapters, plus custom chapters. A teacher
+           sees their OWN custom chapters; everyone sees custom chapters an
+           admin has promoted into the syllabus (`promoted_at` set). Another
+           teacher's unpromoted scratch chapters stay private to them, so one
+           teacher's shorthand doesn't clutter a colleague's picker.
+    POST — create a custom chapter (`is_custom=True`) for this subject.
+           Teacher-only, and only a teacher assigned to the subject.
+    """
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, subject_id):
@@ -605,12 +620,56 @@ class SubjectChaptersView(APIView):
         if denied is not None:
             return denied
 
+        # Curated syllabus + promoted customs + this caller's own customs.
         chapters = Chapter.objects.filter(
-            subject_id=subject_id
-        ).order_by("order")
+            Q(is_custom=False)
+            | Q(promoted_at__isnull=False)
+            | Q(created_by=request.user),
+            subject_id=subject_id,
+        ).order_by("order", "title")
 
         serializer = ChapterSerializer(chapters, many=True)
         return Response(serializer.data)
+
+    def post(self, request, subject_id):
+        subject = get_object_or_404(
+            Subject.objects.select_related("course"), id=subject_id
+        )
+
+        # Deliberately stricter than GET's _require_subject_access(), which
+        # also admits enrolled students — a student must never be able to
+        # write into a course syllabus.
+        if not (request.user.has_role("TEACHER")
+                and teaches_subject(request.user, subject)):
+            return Response(
+                {"detail": "Not assigned to this subject."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        title = (request.data.get("title") or "").strip()
+        if not title:
+            return Response(
+                {"title": "Chapter name is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Checked BEFORE the call so the response status can say truthfully
+        # whether anything was created — 200 for "that chapter already
+        # existed, here it is", 201 for a genuinely new row. The picker
+        # dedupes on the returned id either way.
+        existed = find_chapter_by_title(subject, title) is not None
+
+        # resolve_or_create_chapter, not a bare create(): a repeat (or
+        # case-varied) name must return the EXISTING chapter rather than trip
+        # unique_chapter_per_subject with a 500. It also appends the new row
+        # at max(order)+1 and stamps is_custom/created_by.
+        chapter = resolve_or_create_chapter(
+            subject, custom_title=title, created_by=request.user,
+        )
+        return Response(
+            ChapterSerializer(chapter).data,
+            status=status.HTTP_200_OK if existed else status.HTTP_201_CREATED,
+        )
 
 
 # =========================

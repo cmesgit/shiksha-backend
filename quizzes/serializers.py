@@ -11,6 +11,7 @@ from rest_framework.exceptions import ValidationError, PermissionDenied
 from courses.board_display import board_name_via
 from courses.models import Batch, Chapter
 from courses.services import is_teacher_of, resolve_or_create_chapter, teaches_subject
+from courses.chapter_tags import ChapterTagWriteMixin, serialize_tags
 from enrollments.models import Enrollment
 
 from .models import (
@@ -92,7 +93,7 @@ class BulkQuestionCreateSerializer(serializers.Serializer):
         return created
 
 
-class QuizCreateSerializer(serializers.ModelSerializer):
+class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
     # Also used (with partial=True) by TeacherUpdateQuizView to edit a draft's
     # title/quiz_type/time_limit_minutes — batch/chapter are create-only
     # (see validate()), matching how Assignment editing leaves batch alone.
@@ -110,10 +111,20 @@ class QuizCreateSerializer(serializers.ModelSerializer):
     custom_chapter = serializers.CharField(
         write_only=True, required=False, allow_blank=True,
     )
+    # New multi-value payload. Coexists with the two legacy keys above,
+    # which the live QuizBuilder still sends.
+    chapter_tags = serializers.ListField(
+        child=serializers.DictField(), required=False, write_only=True,
+    )
+    save_chapters_to_course = serializers.BooleanField(
+        required=False, write_only=True,
+    )
 
     class Meta:
         model = Quiz
         fields = ["id", "subject", "batch_id", "chapter_id", "custom_chapter",
+                  "chapter_tags", "save_chapters_to_course",
+                  "chapter_note", "no_specific_chapter",
                   "title", "description", "time_limit_minutes", "quiz_type",
                   "reveal_answers_after"]
         read_only_fields = ["id"]
@@ -129,9 +140,17 @@ class QuizCreateSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         custom_chapter = attrs.pop("custom_chapter", "")
 
+        # Popped BEFORE the partial-edit shortcut below: chapter_tags and
+        # save_chapters_to_course are not model fields, so leaving them in
+        # attrs on a PATCH would have ModelSerializer try to setattr them on
+        # the Quiz and blow up. Re-tagging an existing quiz is a legitimate
+        # edit, so update() applies them.
+        self._tag_input = self.pop_chapter_tag_input(attrs)
+
         if self.instance is not None:
             # A partial edit (TeacherUpdateQuizView) never touches batch or
-            # chapter — nothing to resolve.
+            # chapter — nothing else to resolve.
+            self._tag_subject = self.instance.subject
             return attrs
 
         subject = attrs.get("subject")
@@ -152,28 +171,42 @@ class QuizCreateSerializer(serializers.ModelSerializer):
                     ]}
                 )
 
+        # Chapter is OPTIONAL as of Phase 3 — a question bank or a mixed
+        # mock test may map to no single chapter. Authorization does not
+        # depend on it (validate_subject + the is_teacher_of check above
+        # both run on `subject`), so relaxing this opens nothing.
         if chapter is None:
-            if not custom_chapter.strip():
-                raise ValidationError(
-                    {"chapter_id": "Select a chapter or enter a new chapter name."}
+            if custom_chapter.strip():
+                chapter = resolve_or_create_chapter(
+                    subject, custom_title=custom_chapter,
+                    created_by=self.context["request"].user,
                 )
-            chapter = resolve_or_create_chapter(
-                subject, custom_title=custom_chapter,
-                created_by=self.context["request"].user,
-            )
-            attrs["chapter"] = chapter
+                attrs["chapter"] = chapter
         elif subject and chapter.subject_id != subject.id:
             raise ValidationError(
                 {"chapter_id": "Pick a chapter from this quiz's own subject."}
             )
 
+        self._tag_subject = subject
         return attrs
 
+    def _apply_tags(self, quiz):
+        tags, save_to_course, present = getattr(
+            self, "_tag_input", ([], False, False)
+        )
+        return self.apply_chapter_tags(
+            quiz, getattr(self, "_tag_subject", None) or quiz.subject,
+            tags, save_to_course, present,
+        )
+
     def create(self, validated_data):
-        return Quiz.objects.create(
+        return self._apply_tags(Quiz.objects.create(
             created_by=self.context["request"].user,
             **validated_data
-        )
+        ))
+
+    def update(self, instance, validated_data):
+        return self._apply_tags(super().update(instance, validated_data))
 
 
 class QuizAssignSerializer(serializers.Serializer):

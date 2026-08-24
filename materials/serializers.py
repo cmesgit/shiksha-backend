@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from courses.board_display import board_name_via
+from courses.chapter_tags import serialize_tags
 
 from .models import StudyMaterial, MaterialFile
 
@@ -49,6 +50,9 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
 
     files = serializers.SerializerMethodField()
     chapter_title = serializers.SerializerMethodField()
+    # Full multi-chapter placement; chapter_title stays the single-value
+    # view of it for the current UI.
+    chapter_tags = serializers.SerializerMethodField()
     # The learner's Study Material screen is one flat, subject-filtered list, so
     # a row has to say which subject it belongs to. These read the material's
     # own non-null `subject` rather than walking the now-optional `chapter`, so a
@@ -72,6 +76,9 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
             "description",
             "created_at",
             "chapter_title",
+            "chapter_tags",
+            "chapter_note",
+            "no_specific_chapter",
             "subject_id",
             "subject_name",
             "course_title",
@@ -92,6 +99,9 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
         if obj.chapter:
             return obj.chapter.title
         return getattr(obj, "custom_chapter", None) or "No chapter"
+
+    def get_chapter_tags(self, obj):
+        return serialize_tags(obj)
 
     def get_subject_id(self, obj):
         return str(obj.subject_id)

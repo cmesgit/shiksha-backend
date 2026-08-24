@@ -223,7 +223,14 @@ class CourseSerializer(serializers.ModelSerializer):
 class ChapterSerializer(serializers.ModelSerializer):
     class Meta:
         model = Chapter
-        fields = ["id", "title", "order", "content_html", "trusted_html"]
+        # is_custom / promoted_at let the picker style a teacher-typed
+        # chapter differently from curated syllabus, and tell it whether an
+        # admin has already accepted one into the course.
+        fields = [
+            "id", "title", "order", "content_html", "trusted_html",
+            "is_custom", "promoted_at",
+        ]
+        read_only_fields = ["is_custom", "promoted_at"]
 
 
 class RecordingSerializer(serializers.ModelSerializer):
