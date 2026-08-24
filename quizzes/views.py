@@ -175,6 +175,32 @@ class TeacherUpdateQuizView(APIView):
         )
 
 
+def recalc_total_marks(quiz):
+    """Resync `Quiz.total_marks` with the questions actually on the paper.
+
+    This used to happen in exactly ONE place — SubmitQuizForReviewView — which
+    was fine while every quiz reached students through submit-for-review.
+    Phase 1 replaced that route with assign/, and Phase 5b pointed the builder
+    at it, so nothing recomputed the field any more: every quiz created through
+    the new flow kept the model default of 0.
+
+    That is not cosmetic. `total_marks` is the DENOMINATOR for six different
+    score percentages (QuizDashboardSerializer.get_best_score, the student
+    result and analytics views, the teacher roster). Each one guards against a
+    zero denominator by bailing out, so the symptom is a silently blank or
+    absent percentage rather than an error — a student's best score simply
+    stopped being reported.
+
+    Called wherever the question set changes, which is the only thing that can
+    move this number.
+    """
+    total = quiz.questions.aggregate(total=models.Sum("marks"))["total"] or 0
+    if quiz.total_marks != total:
+        quiz.total_marks = total
+        quiz.save(update_fields=["total_marks", "updated_at"])
+    return total
+
+
 class AddQuestionView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -236,6 +262,7 @@ class BulkAddQuestionsView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         created = serializer.save()
+        recalc_total_marks(quiz)
 
         return Response(
             {"detail": f"{len(created)} question(s) added.", "count": len(created)},
@@ -363,6 +390,10 @@ class BulkAddQuestionsView(APIView):
                     for c in choices_data
                 ])
 
+            # Inside the transaction: the marks total and the questions it is
+            # derived from must never be observable out of step.
+            recalc_total_marks(quiz)
+
         return Response(
             {"detail": f"{len(cleaned)} question(s) saved.", "count": len(cleaned)},
             status=status.HTTP_200_OK,
@@ -470,6 +501,11 @@ class TeacherQuizAssignView(APIView):
             if batches is not None:
                 quiz.batches.set(batches)
                 quiz.batch = batches[0] if batches else None
+
+            # Backstop: whatever route a quiz took to get here, it must not go
+            # live with a zero denominator — that is what silently blanks every
+            # student's score percentage.
+            recalc_total_marks(quiz)
 
             quiz.is_assigned = assign
             quiz.is_published = assign

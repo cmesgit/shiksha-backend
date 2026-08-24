@@ -643,6 +643,61 @@ class BulkQuestionReplaceSemanticsTest(TestCase):
         self.assertEqual(self.quiz.questions.count(), 2)
         self.assertTrue(Question.objects.filter(id=self.q2.id).exists())
 
+    def test_saving_questions_keeps_total_marks_in_sync(self):
+        """`total_marks` is the denominator of every score percentage.
+
+        It used to be recomputed in exactly one place — SubmitQuizForReviewView.
+        Phase 1 replaced that route with assign/ and Phase 5b pointed the
+        builder at it, so nothing recomputed the field any more and every quiz
+        made through the new flow kept the model default of 0. Six different
+        score calculations divide by it and each guards against zero by
+        bailing out, so the symptom was a silently blank percentage rather than
+        an error — a student's best score just stopped being reported.
+        """
+        self.quiz.total_marks = 0
+        self.quiz.save(update_fields=["total_marks"])
+
+        c = self._client()
+        r = c.put(
+            f"/api/teacher/quizzes/{self.quiz.id}/questions/bulk/",
+            {"questions": [self._payload_for(self.q1), self._payload_for(self.q2)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+
+        self.quiz.refresh_from_db()
+        # q1 is 2 marks, q2 is 3 (see setUp)
+        self.assertEqual(self.quiz.total_marks, 5)
+
+    def test_deleting_a_question_lowers_total_marks(self):
+        # The replace contract deletes omitted questions, so the total has to
+        # come down too — otherwise every percentage is quietly deflated.
+        c = self._client()
+        r = c.put(
+            f"/api/teacher/quizzes/{self.quiz.id}/questions/bulk/",
+            {"questions": [self._payload_for(self.q1)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.quiz.refresh_from_db()
+        self.assertEqual(self.quiz.total_marks, 2)
+
+    def test_assigning_resyncs_total_marks_as_a_backstop(self):
+        # Whatever route a quiz took, it must not go live with a zero
+        # denominator — that is what blanks the student-facing percentages.
+        self.quiz.total_marks = 0
+        self.quiz.save(update_fields=["total_marks"])
+
+        c = self._client()
+        r = c.patch(
+            f"/api/teacher/quizzes/{self.quiz.id}/assign/",
+            {"assign": True}, format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.quiz.refresh_from_db()
+        self.assertEqual(self.quiz.total_marks, 5)
+        self.assertTrue(self.quiz.is_assigned)
+
     def test_turning_suggest_to_bank_off_makes_the_question_private(self):
         """The Phase 2 invariant, through the endpoint that used to skip it.
 
