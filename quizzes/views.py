@@ -39,6 +39,7 @@ from courses.services import teaches_subject
 
 from .models import (
     Quiz, QuizSection, QuizAttempt, Question, Choice, StudentAnswer,
+    PracticeSession,
 )
 from .visibility import batch_scope_q, learner_may_see_quiz
 from .serializers import (
@@ -1131,6 +1132,103 @@ class StudentPracticeChaptersView(APIView):
                 "accuracy": None if total == 0 else round(right * 100.0 / total),
             })
         return Response(out)
+
+
+class StudentPracticeStartView(APIView):
+    """
+    POST /student/practice/start/   { chapter_id, count? }
+
+    Draws a fresh practice set for one chapter from the shared ShikshaCom
+    bank — accepted questions only, so a learner never practises against
+    something an admin has not vetted or a teacher kept private.
+
+    Every start re-draws. That is the spec's rule ("retry re-draws a fresh
+    sample from the site bank") and it is also what keeps the weak-area
+    report meaningful: re-answering one memorised set would raise the
+    accuracy number without the learner knowing any more than before.
+
+    Ungraded by construction — see PracticeSession's docstring. Nothing here
+    writes a QuizAttempt, so no score, no attempt quota, and no path by which
+    this can reach graded analytics.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def post(self, request):
+        from courses.models import Chapter
+        from enrollments.models import Enrollment
+
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response(
+                {"detail": "Select a learner profile.",
+                 "lock_reason": "no_learner_profile"},
+                status=403,
+            )
+
+        chapter_id = request.data.get("chapter_id")
+        if not chapter_id:
+            raise ValidationError({"chapter_id": "Required."})
+
+        chapter = get_object_or_404(
+            Chapter.objects.select_related("subject"), id=chapter_id)
+
+        # Same gate as every other student read: you can only practise a
+        # chapter of a course you are actually enrolled in.
+        enrolled = Enrollment.objects.filter(
+            learner_profile=learner,
+            course_id=chapter.subject.course_id,
+            status=Enrollment.STATUS_ACTIVE,
+        ).exists()
+        if not enrolled:
+            raise PermissionDenied("You are not enrolled in this course.")
+
+        try:
+            count = min(int(request.data.get("count") or 10), 30)
+        except (TypeError, ValueError):
+            count = 10
+
+        pool = list(
+            Question.objects
+            .filter(
+                bank_state=Question.BANK_STATE_ACCEPTED,
+                quiz__chapter=chapter,
+            )
+            .prefetch_related("choices")
+        )
+        if not pool:
+            return Response(
+                {"detail": "No questions in the ShikshaCom bank for this chapter yet.",
+                 "available": 0},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        import random
+        picked = random.sample(pool, min(count, len(pool)))
+
+        session = PracticeSession.objects.create(
+            learner_profile=learner, chapter=chapter)
+        session.questions.set(picked)
+
+        return Response({
+            "session_id": str(session.id),
+            "chapter_id": str(chapter.id),
+            "chapter_title": chapter.title,
+            "questions": [
+                {
+                    "id": str(q.id),
+                    "text": q.text,
+                    "marks": q.marks,
+                    "difficulty": q.difficulty,
+                    # The answer key never leaves the server on a start call —
+                    # same discipline the mock attempt uses.
+                    "choices": [
+                        {"id": str(c.id), "text": c.text}
+                        for c in q.choices.all()
+                    ],
+                }
+                for q in picked
+            ],
+        }, status=status.HTTP_201_CREATED)
 
 
 class StudentQuizStatsView(APIView):

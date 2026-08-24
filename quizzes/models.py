@@ -594,3 +594,80 @@ class StudentAnswer(models.Model):
 
     def __str__(self):
         return f"Answer {self.question.id} - {self.attempt.student.email}"
+
+
+# -------------------------------------------------------
+# 6️⃣ CHAPTER PRACTICE (Phase 8)
+# -------------------------------------------------------
+# A practice set is NOT a Quiz and a practice answer is NOT a StudentAnswer,
+# deliberately. Two reasons, both load-bearing:
+#
+#   1. "Practice must not pollute graded analytics" (BUILD_GUIDE Phase 8
+#      item 4). A boolean on QuizAttempt would put that guarantee in the hands
+#      of every present and future aggregation site remembering to exclude it.
+#      There are at least six such sites today, and the `total_marks`
+#      regression showed exactly how quietly one missed spot fails here.
+#      Separate tables make the guarantee structural: graded queries cannot
+#      reach this data even by mistake.
+#
+#   2. A practice set draws its questions from the shared bank, which spans
+#      MANY quizzes. QuizAttempt.quiz is a single FK and cannot represent
+#      that. Synthesising a Quiz per session would litter every teacher's
+#      list with system rows and duplicate questions that then drift from
+#      the originals a teacher keeps editing.
+#
+# Practice is ungraded by design: no score, no marks, no attempt quota. The
+# only thing recorded is what was answered and whether it was right, which is
+# what the weak-area report needs and nothing more.
+
+class PracticeSession(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    learner_profile = models.ForeignKey(
+        "accounts.LearnerProfile",
+        on_delete=models.CASCADE,
+        related_name="practice_sessions",
+    )
+    chapter = models.ForeignKey(
+        "courses.Chapter",
+        on_delete=models.CASCADE,
+        related_name="practice_sessions",
+    )
+    # The questions served, in the order served. Bank questions are shared, so
+    # this is M2M rather than ownership — deleting a session must never touch
+    # the teacher's question.
+    questions = models.ManyToManyField(Question, related_name="practice_sessions")
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["learner_profile", "chapter"])]
+
+    def __str__(self):
+        return f"Practice {self.chapter_id} · {self.learner_profile_id}"
+
+
+class PracticeAnswer(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        PracticeSession, on_delete=models.CASCADE, related_name="answers")
+    question = models.ForeignKey(
+        Question, on_delete=models.CASCADE, related_name="practice_answers")
+    selected_choice = models.ForeignKey(
+        Choice, on_delete=models.CASCADE, null=True, blank=True,
+        related_name="practice_answers",
+    )
+    is_correct = models.BooleanField(default=False)
+    answered_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # One answer per question per session — retrying re-draws a NEW
+        # session rather than overwriting history, so the record of what a
+        # learner knew when stays intact.
+        constraints = [
+            models.UniqueConstraint(
+                fields=["session", "question"], name="unique_practice_answer"),
+        ]
+
+    def __str__(self):
+        return f"PracticeAnswer {self.question_id}"

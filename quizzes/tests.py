@@ -1426,6 +1426,71 @@ class StudentPracticeChaptersTest(TestCase):
         self.assertIsNone(row["accuracy"])
         self.assertEqual(row["answered"], 0)
 
+    def test_starting_practice_draws_only_from_the_accepted_bank(self):
+        from quizzes.models import PracticeSession
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)})
+        r = c.post("/api/student/practice/start/",
+                   {"chapter_id": str(self.chapter.id)}, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(len(r.data["questions"]), 2)  # both mock Qs are accepted
+
+        # The answer key must not leave the server on a start call.
+        for q in r.data["questions"]:
+            for choice in q["choices"]:
+                self.assertNotIn("is_correct", choice)
+
+        session = PracticeSession.objects.get(id=r.data["session_id"])
+        self.assertEqual(session.learner_profile_id, self.learner.id)
+
+    def test_practice_writes_no_quiz_attempt_at_all(self):
+        # THE structural guarantee. Practice cannot pollute graded analytics
+        # because it never touches the tables graded analytics reads — not
+        # because six aggregation sites each remember to filter it.
+        from quizzes.models import PracticeSession
+        before = QuizAttempt.objects.count()
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)})
+        c.post("/api/student/practice/start/",
+               {"chapter_id": str(self.chapter.id)}, format="json")
+
+        self.assertEqual(QuizAttempt.objects.count(), before)
+        self.assertEqual(PracticeSession.objects.count(), 1)
+        # and the graded accuracy is untouched
+        row = next(x for x in self._get().data if x["title"] == "Algebra")
+        self.assertEqual(row["accuracy"], 50)
+
+    def test_a_chapter_with_no_bank_supply_says_so_rather_than_serving_nothing(self):
+        from courses.models import Chapter
+        empty = Chapter.objects.create(
+            subject=self.subject, title="Nothing here", order=5)
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)})
+        r = c.post("/api/student/practice/start/",
+                   {"chapter_id": str(empty.id)}, format="json")
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertEqual(r.data["available"], 0)
+
+    def test_practice_on_a_course_the_learner_is_not_in_is_refused(self):
+        from courses.models import Chapter
+        other = Course.objects.create(title="Class 12")
+        other_subject = Subject.objects.create(course=other, name="Bio")
+        foreign = Chapter.objects.create(
+            subject=other_subject, title="Genetics", order=0)
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)})
+        r = c.post("/api/student/practice/start/",
+                   {"chapter_id": str(foreign.id)}, format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+
     def test_a_chapter_from_a_course_the_learner_is_not_in_is_absent(self):
         from courses.models import Chapter
         other = Course.objects.create(title="Class 12")
