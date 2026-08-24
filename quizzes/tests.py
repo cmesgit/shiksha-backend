@@ -1315,6 +1315,93 @@ class TeacherQuizListT1RowDataTest(TestCase):
         self.assertEqual(r.data["attempts_delta"], -2)
 
 
+class TeacherBankStatusT4Test(TestCase):
+    """T4: the four state counts, the auto-suggest default, and the latest note."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from accounts.models import TeacherProfile
+
+        Role.objects.get_or_create(name="TEACHER")
+        cls.teacher = User.objects.create_user(
+            username="t4_t", email="t4_t@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        TeacherProfile.objects.create(user=cls.teacher)
+        cls.course = Course.objects.create(title="Class 12")
+        cls.subject = Subject.objects.create(course=cls.course, name="Bio")
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Cells")
+
+        for state, n in [
+            (Question.BANK_STATE_ACCEPTED, 2),
+            (Question.BANK_STATE_SUGGESTED, 3),
+            (Question.BANK_STATE_PRIVATE, 1),
+        ]:
+            for i in range(n):
+                q = Question.objects.create(
+                    quiz=cls.quiz, text=f"{state}{i}", marks=1, order=i,
+                    explanation="e")
+                Question.objects.filter(id=q.id).update(bank_state=state)
+
+        cls.flagged = Question.objects.create(
+            quiz=cls.quiz, text="The ambiguous one", marks=1, order=9,
+            explanation="e")
+        Question.objects.filter(id=cls.flagged.id).update(
+            bank_state=Question.BANK_STATE_CHANGES_REQUESTED,
+            bank_feedback="Option C is ambiguous — please reword it.",
+        )
+
+    def _client(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        return c
+
+    def test_state_counts_and_latest_note(self):
+        r = self._client().get("/api/teacher/bank-status/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["accepted"], 2)
+        self.assertEqual(r.data["suggested"], 3)
+        self.assertEqual(r.data["private"], 1)
+        self.assertEqual(r.data["changes_requested"], 1)
+        # "2 need changes" is a dead end without the admin's actual words.
+        self.assertEqual(
+            r.data["latest_note"]["feedback"],
+            "Option C is ambiguous — please reword it.")
+        self.assertEqual(
+            r.data["latest_note"]["question_id"], str(self.flagged.id))
+
+    def test_auto_suggest_defaults_on_and_can_be_turned_off(self):
+        c = self._client()
+        self.assertIs(c.get("/api/teacher/bank-status/").data["auto_suggest_questions"], True)
+
+        r = c.patch("/api/teacher/bank-status/",
+                    {"auto_suggest_questions": False}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIs(c.get("/api/teacher/bank-status/").data["auto_suggest_questions"], False)
+
+    def test_turning_auto_suggest_off_does_not_rewrite_existing_questions(self):
+        # The switch is a default for NEW work. Sweeping existing rows would
+        # silently un-suggest what an admin already accepted and wipe a
+        # changes-requested conversation.
+        c = self._client()
+        c.patch("/api/teacher/bank-status/",
+                {"auto_suggest_questions": False}, format="json")
+
+        r = c.get("/api/teacher/bank-status/")
+        self.assertEqual(r.data["accepted"], 2)
+        self.assertEqual(r.data["suggested"], 3)
+        self.assertEqual(r.data["changes_requested"], 1)
+
+    def test_a_non_boolean_is_rejected(self):
+        r = self._client().patch("/api/teacher/bank-status/",
+                                 {"auto_suggest_questions": "yes"}, format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+
 class TeacherBankT3RowDataTest(TestCase):
     """T3 shows each question's chapter, and must not pay a query per row.
 

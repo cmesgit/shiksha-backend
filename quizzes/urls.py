@@ -32,6 +32,7 @@ from .views import (
     TeacherQuestionBankView,
     TeacherBankFiltersView,
     TeacherBankSummaryView,
+    TeacherBankStatusView,
     TeacherQuestionBankStateView,
     AdminQuizListView,
     AdminQuizDetailView,
@@ -91,6 +92,8 @@ urlpatterns = [
     path("teacher/question-bank/", TeacherQuestionBankView.as_view()),
     path("teacher/question-bank/filters/", TeacherBankFiltersView.as_view()),
     path("teacher/question-bank/summary/", TeacherBankSummaryView.as_view()),
+    # T4 · ShikshaCom bank status (Phase 6).
+    path("teacher/bank-status/", TeacherBankStatusView.as_view()),
     # Per-question site-bank opt-in/out (Phase 2). Question.id is a UUID.
     path("teacher/questions/<uuid:pk>/bank/", TeacherQuestionBankStateView.as_view()),
 

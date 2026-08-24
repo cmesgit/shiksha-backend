@@ -363,6 +363,9 @@ class BulkAddQuestionsView(APIView):
             if q_id:
                 keep_ids.add(q_id)
 
+        profile = getattr(request.user, "teacher_profile", None)
+        auto_suggest = True if profile is None else profile.auto_suggest_questions
+
         with transaction.atomic():
             quiz.questions.exclude(id__in=keep_ids).delete()
 
@@ -384,6 +387,11 @@ class BulkAddQuestionsView(APIView):
                     question.save()
                     question.choices.all().delete()
                 else:
+                    # A brand-new question inherits the teacher's auto-suggest
+                    # default when the client didn't state one. Existing rows
+                    # are untouched — the preference is a default for new work,
+                    # never a retroactive sweep over an admin's decisions.
+                    q_data.setdefault("suggest_to_bank", auto_suggest)
                     question = Question.objects.create(quiz=quiz, **q_data)
                 Choice.objects.bulk_create([
                     Choice(question_id=question.id, **c)
@@ -2551,6 +2559,68 @@ class TeacherQuestionBankView(generics.ListAPIView):
             qid: serialize_tags(quiz) for qid, quiz in quizzes.items()
         }
         return Response(self.get_serializer(rows, many=True).data)
+
+
+class TeacherBankStatusView(APIView):
+    """
+    GET   /teacher/bank-status/   T4's payload
+    PATCH /teacher/bank-status/   { auto_suggest_questions: bool }
+
+    The four state counts come from the same aggregate as the summary
+    endpoint. What T4 adds is the teacher-level auto-suggest default and the
+    most recent admin note, so "2 questions need changes" is not a dead end —
+    the teacher can read what was actually asked and jump straight to them.
+
+    `auto_suggest_questions` is the DEFAULT applied to newly written
+    questions. Toggling it deliberately does NOT rewrite existing rows: doing
+    so would let one switch silently un-suggest work an admin had already
+    accepted, or wipe a changes-requested conversation. Per-question control
+    lives in the builder.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified, IsTeacherContext]
+
+    def _profile(self, request):
+        profile = getattr(request.user, "teacher_profile", None)
+        if profile is None:
+            raise PermissionDenied("No teaching profile on this account.")
+        return profile
+
+    def get(self, request):
+        mine = Question.objects.filter(quiz__created_by=request.user)
+        rows = mine.values("bank_state").annotate(n=Count("id"))
+        by_state = {r["bank_state"]: r["n"] for r in rows}
+
+        latest = (
+            mine.filter(bank_state=Question.BANK_STATE_CHANGES_REQUESTED)
+            .exclude(bank_feedback="")
+            .order_by("-bank_reviewed_at", "-created_at")
+            .first()
+        )
+
+        return Response({
+            "auto_suggest_questions": self._profile(request).auto_suggest_questions,
+            "accepted": by_state.get(Question.BANK_STATE_ACCEPTED, 0),
+            "suggested": by_state.get(Question.BANK_STATE_SUGGESTED, 0),
+            "changes_requested": by_state.get(
+                Question.BANK_STATE_CHANGES_REQUESTED, 0),
+            "private": by_state.get(Question.BANK_STATE_PRIVATE, 0),
+            "latest_note": None if latest is None else {
+                "question_id": str(latest.id),
+                "question_text": latest.text,
+                "feedback": latest.bank_feedback,
+                "reviewed_at": latest.bank_reviewed_at,
+            },
+        })
+
+    def patch(self, request):
+        value = request.data.get("auto_suggest_questions")
+        if not isinstance(value, bool):
+            raise ValidationError(
+                {"auto_suggest_questions": "Must be true or false."})
+        profile = self._profile(request)
+        profile.auto_suggest_questions = value
+        profile.save(update_fields=["auto_suggest_questions"])
+        return Response({"auto_suggest_questions": value})
 
 
 class TeacherBankFiltersView(APIView):
