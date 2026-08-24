@@ -425,7 +425,7 @@ class SubjectDashboardView(APIView):
         is_student = user.has_role("STUDENT")
 
         # ── Assignments: 1 query ──
-        assignment_qs = Assignment.objects.filter(chapter__subject=subject)
+        assignment_qs = Assignment.objects.filter(subject=subject)
         assignment_counts = assignment_qs.aggregate(
             total=Count("id", distinct=True),
             completed=Count(
@@ -488,7 +488,7 @@ class SubjectDashboardView(APIView):
         recordings_count = SessionRecording.objects.filter(
             subject=subject).count()
         study_materials_count = StudyMaterial.objects.filter(
-            chapter__subject=subject).count()
+            subject=subject).count()
         students_count = Enrollment.objects.filter(
             course=subject.course,
             status=Enrollment.STATUS_ACTIVE

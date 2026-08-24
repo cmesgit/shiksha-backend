@@ -157,7 +157,10 @@ class QuizCreateSerializer(serializers.ModelSerializer):
                 raise ValidationError(
                     {"chapter_id": "Select a chapter or enter a new chapter name."}
                 )
-            chapter = resolve_or_create_chapter(subject, custom_title=custom_chapter)
+            chapter = resolve_or_create_chapter(
+                subject, custom_title=custom_chapter,
+                created_by=self.context["request"].user,
+            )
             attrs["chapter"] = chapter
         elif subject and chapter.subject_id != subject.id:
             raise ValidationError(

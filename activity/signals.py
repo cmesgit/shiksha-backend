@@ -255,7 +255,7 @@ def assignment_created(sender, instance, created, **kwargs):
     if was or not instance.is_published:
         return
 
-    subject = instance.chapter.subject
+    subject = instance.subject
     course = subject.course
 
     enrollments = _enrollments_for(course, instance.batch_id)
@@ -316,7 +316,7 @@ def assignment_submitted(sender, instance, created, **kwargs):
         resubmitted = True
 
     assignment = instance.assignment
-    subject = assignment.chapter.subject
+    subject = assignment.subject
     student_name = _display_name(instance.student)
 
     # WHICH teachers to tell. This used to filter `batch__isnull=True`, which

@@ -182,33 +182,33 @@ class DashboardAssignmentSerializer(serializers.ModelSerializer):
 
     def get_course_title(self, obj):
         try:
-            course = obj.chapter.subject.course if obj.chapter_id else None
+            course = obj.subject.course if obj.subject_id else None
             return course.title if course else ""
         except Exception:
             return ""
 
     def get_board_name(self, obj):
-        return board_name_via(obj, "chapter", "subject", "course")
+        return board_name_via(obj, "subject", "course")
 
     def get_subject_id(self, obj):
         try:
-            if obj.chapter_id and obj.chapter and obj.chapter.subject_id:
-                return str(obj.chapter.subject.id)
+            if obj.subject_id:
+                return str(obj.subject.id)
             return None
         except Exception:
             return None
 
     def get_subject_name(self, obj):
         try:
-            if obj.chapter_id and obj.chapter and obj.chapter.subject_id:
-                return obj.chapter.subject.name
+            if obj.subject_id:
+                return obj.subject.name
             return ""
         except Exception:
             return ""
 
     def get_teacher(self, obj):
         try:
-            subject = obj.chapter.subject if obj.chapter_id else None
+            subject = obj.subject if obj.subject_id else None
             if not subject:
                 return "Unknown"
             teachers = getattr(subject, "prefetched_teachers", None)
@@ -437,12 +437,12 @@ class DashboardGradingItemSerializer(serializers.Serializer):
 
     def get_course_title(self, obj):
         try:
-            return obj.assignment.chapter.subject.course.title
+            return obj.assignment.subject.course.title
         except Exception:
             return ""
 
     def get_board_name(self, obj):
-        return board_name_via(obj, "assignment", "chapter", "subject", "course")
+        return board_name_via(obj, "assignment", "subject", "course")
 
     def get_id(self, obj):
         return str(obj.id)
@@ -467,13 +467,13 @@ class DashboardGradingItemSerializer(serializers.Serializer):
 
     def get_subject(self, obj):
         try:
-            return obj.assignment.chapter.subject.name
+            return obj.assignment.subject.name
         except Exception:
             return ""
 
     def get_subject_id(self, obj):
         try:
-            return str(obj.assignment.chapter.subject_id)
+            return str(obj.assignment.subject_id)
         except Exception:
             return None
 

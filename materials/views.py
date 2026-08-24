@@ -74,8 +74,8 @@ class ChapterMaterials(APIView):
             materials = materials.filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
         materials = (
             materials
-            # chapter__subject: the serializer reports subject_id/subject_name.
-            .select_related("chapter__subject__course__board", "batch")
+            # subject: the serializer reports subject_id/subject_name.
+            .select_related("subject__course__board", "chapter", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -119,7 +119,9 @@ class UploadStudyMaterial(APIView):
                 )
             # A repeat (or case-varied) chapter name reuses the existing row
             # instead of hitting unique_chapter_per_subject with a 500.
-            chapter = resolve_or_create_chapter(subject, custom_title=custom_chapter)
+            chapter = resolve_or_create_chapter(
+                subject, custom_title=custom_chapter, created_by=request.user,
+            )
         else:
             return Response(
                 {"detail": "Chapter or custom chapter required"},
@@ -231,7 +233,7 @@ class DeleteStudyMaterial(APIView):
 
     def delete(self, request, material_id):
         material = get_object_or_404(
-            StudyMaterial.objects.select_related("chapter__subject"),
+            StudyMaterial.objects.select_related("subject", "chapter"),
             id=material_id,
         )
         # Subject teaching staff (or an admin) may delete, not just the
@@ -252,7 +254,7 @@ class DeleteStudyMaterial(APIView):
         if not (
             request.user.is_staff
             or material.uploaded_by_id == request.user.id
-            or teaches_subject(request.user, material.chapter.subject)
+            or teaches_subject(request.user, material.subject)
         ):
             return Response(
                 {"detail": "You are not assigned to teach this subject."},
@@ -279,13 +281,13 @@ class SubjectMaterials(APIView):
         allowed, batch_id = _authorize_subject_materials(request, subject)
         if not allowed:
             raise PermissionDenied("No active subscription for this course.")
-        materials = StudyMaterial.objects.filter(chapter__subject=subject)
+        materials = StudyMaterial.objects.filter(subject=subject)
         if batch_id is not TEACHER_UNRESTRICTED:
             materials = materials.filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
         materials = (
             materials
-            # chapter__subject: the serializer reports subject_id/subject_name.
-            .select_related("chapter__subject__course__board", "batch")
+            # subject: the serializer reports subject_id/subject_name.
+            .select_related("subject__course__board", "chapter", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -323,9 +325,9 @@ class StudentSubjectMaterials(APIView):
             batch_q = Q(batch__isnull=True) | Q(batch_id=batch_id)
         materials = (
             StudyMaterial.objects
-            .filter(chapter__subject=subject)
+            .filter(subject=subject)
             .filter(batch_q)
-            .select_related("chapter__subject__course__board", "batch")
+            .select_related("subject__course__board", "chapter", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -356,11 +358,11 @@ class TeacherAllMaterials(APIView):
         materials = (
             StudyMaterial.objects
             .filter(
-                chapter__subject__teaching_assignments__teacher=request.user,
-                chapter__subject__teaching_assignments__is_active=True,
+                subject__teaching_assignments__teacher=request.user,
+                subject__teaching_assignments__is_active=True,
             )
-            # chapter__subject: the serializer reports subject_id/subject_name.
-            .select_related("chapter__subject__course__board", "batch")
+            # subject: the serializer reports subject_id/subject_name.
+            .select_related("subject__course__board", "chapter", "batch")
             .prefetch_related("files")
             # distinct(): a teacher listed twice on one subject would otherwise
             # duplicate every material on it.
@@ -421,10 +423,10 @@ class StudentCourseMaterials(APIView):
 
         materials = (
             StudyMaterial.objects
-            .filter(chapter__subject__course_id=course_id)
+            .filter(subject__course_id=course_id)
             .filter(batch_q)
             # subject_id/subject_name are read off chapter.subject per row.
-            .select_related("chapter__subject__course__board", "batch")
+            .select_related("subject__course__board", "chapter", "batch")
             .prefetch_related("files")
             .order_by("-created_at")
         )
@@ -444,12 +446,12 @@ class StudyMaterialDetail(APIView):
     def get(self, request, material_id):
         material = get_object_or_404(
             StudyMaterial.objects
-            .select_related("chapter__subject__course__board", "batch")
+            .select_related("subject__course__board", "chapter", "batch")
             .prefetch_related("files"),
             id=material_id
         )
         allowed, batch_id = _authorize_subject_materials(
-            request, material.chapter.subject
+            request, material.subject
         )
         if not allowed:
             raise PermissionDenied("No active subscription for this course.")

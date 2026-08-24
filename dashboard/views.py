@@ -229,7 +229,7 @@ def _learner_assignments(chapter_ids, teacher_prefetch, batch_q, submitted_ids):
         Assignment.objects.filter(chapter_id__in=chapter_ids, is_published=True)
         .filter(batch_q)
         .exclude(id__in=submitted_ids)
-        .select_related("chapter__subject__course__board")
+        .select_related("subject__course__board", "chapter")
         .prefetch_related(teacher_prefetch)
         .order_by("due_date")[:20]
     )
@@ -367,10 +367,10 @@ def _teacher_live_sessions(user, today_start, excluded, week_only):
 def _teacher_assignments(user, teacher_prefetch):
     return list(
         Assignment.objects.filter(
-            chapter__subject__teaching_assignments__teacher=user,
-            chapter__subject__teaching_assignments__is_active=True,
+            subject__teaching_assignments__teacher=user,
+            subject__teaching_assignments__is_active=True,
         )
-        .select_related("chapter__subject__course__board")
+        .select_related("subject__course__board", "chapter")
         .prefetch_related(teacher_prefetch)
         .distinct()
         .order_by("due_date")
@@ -416,8 +416,8 @@ def _ungraded_submissions_q(user):
     afford.
     """
     return AssignmentSubmission.objects.filter(
-        assignment__chapter__subject__teaching_assignments__teacher=user,
-        assignment__chapter__subject__teaching_assignments__is_active=True,
+        assignment__subject__teaching_assignments__teacher=user,
+        assignment__subject__teaching_assignments__is_active=True,
         graded_at__isnull=True,
     )
 
@@ -430,7 +430,7 @@ def _teacher_grading_queue(user, limit=15):
     """
     return list(
         _ungraded_submissions_q(user)
-        .select_related("student", "assignment__chapter__subject__course__board")
+        .select_related("student", "assignment__subject__course__board", "assignment__chapter")
         .distinct()
         .order_by("-submitted_at")[:limit]
     )
@@ -512,7 +512,7 @@ class DashboardView(APIView):
         excluded = [LiveSession.STATUS_COMPLETED, LiveSession.STATUS_CANCELLED]
 
         teacher_prefetch = Prefetch(
-            "chapter__subject__teaching_assignments",
+            "subject__teaching_assignments",
             queryset=TeachingAssignment.objects.filter(
                 batch__isnull=True, is_active=True,
             ).select_related("teacher"),
@@ -630,7 +630,7 @@ class DashboardView(APIView):
             # failure (_guard's fallbacks) so a hiccup can never blank the
             # dashboard.
             assignment_batch_q = _batch_visibility_q(
-                batch_ids_by_course, "chapter__subject__course_id")
+                batch_ids_by_course, "subject__course_id")
             quiz_batch_q = _quiz_batch_visibility_q(batch_ids_by_course)
             submitted_ids = _guard(
                 "learner.submitted_assignments",

@@ -18,11 +18,11 @@ class AssignmentSubmissionInline(admin.TabularInline):
 class AssignmentAdmin(admin.ModelAdmin):
     list_display = ("title", "chapter", "due_date",
                     "created_at", "idempotency_key")
-    list_filter = ("due_date", "chapter__subject__course")
+    list_filter = ("due_date", "subject__course", "chapter")
     search_fields = (
         "title",
-        "chapter__subject__name",
-        "chapter__subject__course__title",
+        "subject__name",
+        "subject__course__title",
     )
     ordering = ("-created_at",)
     readonly_fields = ("idempotency_key",)
@@ -40,6 +40,6 @@ class AssignmentFileAdmin(admin.ModelAdmin):
 @admin.register(AssignmentSubmission)
 class AssignmentSubmissionAdmin(admin.ModelAdmin):
     list_display = ("assignment", "student", "submitted_at")
-    list_filter = ("submitted_at", "assignment__chapter__subject__course")
+    list_filter = ("submitted_at", "assignment__subject__course")
     search_fields = ("student__email", "assignment__title")
     ordering = ("-submitted_at",)

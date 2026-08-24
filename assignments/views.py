@@ -61,7 +61,7 @@ def _assert_teacher_owns_assignment(user, assignment):
     is no batch to scope those to, so subject level is the only check
     available and they keep the old rule.
     """
-    subject = assignment.chapter.subject
+    subject = assignment.subject
 
     if assignment.batch_id is None:
         if not teaches_subject(user, subject):
@@ -101,7 +101,7 @@ def _assert_learner_may_see_assignment(learner, assignment):
 
     batch_id = active_batch_id(
         learner_profile=learner,
-        course_id=assignment.chapter.subject.course_id,
+        course_id=assignment.subject.course_id,
     )
     # batch_id None = not placed in a batch yet. The list endpoints
     # deliberately degrade to showing EVERYTHING in that case rather than
@@ -118,17 +118,17 @@ def teacher_scope_filter(qs, user):
     endpoints have to agree with the per-object check or the UI goes back to
     offering Edit/Delete/Review buttons that 403.
 
-    All three conditions ride the SAME `chapter__subject__teaching_assignments`
+    All three conditions ride the SAME `subject__teaching_assignments`
     join because they sit in one `filter()` call, so a row qualifies only when
     ONE teaching assignment satisfies teacher + active + scope together —
     not when three different rows each satisfy one clause.
     """
     return qs.filter(
         Q(batch__isnull=True)                                            # course-wide assignment
-        | Q(chapter__subject__teaching_assignments__batch__isnull=True)  # course-wide staffing
-        | Q(chapter__subject__teaching_assignments__batch=F("batch")),   # same batch
-        chapter__subject__teaching_assignments__teacher=user,
-        chapter__subject__teaching_assignments__is_active=True,
+        | Q(subject__teaching_assignments__batch__isnull=True)  # course-wide staffing
+        | Q(subject__teaching_assignments__batch=F("batch")),   # same batch
+        subject__teaching_assignments__teacher=user,
+        subject__teaching_assignments__is_active=True,
     )
 
 
@@ -157,14 +157,14 @@ class AssignmentDetailView(generics.RetrieveAPIView):
         )
         return (
             Assignment.objects
-            .select_related("chapter__subject__course__board")
+            .select_related("subject__course__board", "chapter")
             .prefetch_related(submission_prefetch, "files")
         )
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         user = request.user
-        subject = instance.chapter.subject
+        subject = instance.subject
         course = subject.course
 
         instance.user_submission = (
@@ -204,14 +204,14 @@ class SubmitAssignmentView(APIView):
 
     def post(self, request, assignment_id):
         assignment = get_object_or_404(
-            Assignment.objects.select_related("chapter__subject__course__board"),
+            Assignment.objects.select_related("subject__course__board", "chapter"),
             id=assignment_id,
         )
 
         from enrollments.services import has_active_subscription, lock_payload
         from accounts.auth_flow import get_active_profile
 
-        course = assignment.chapter.subject.course
+        course = assignment.subject.course
         learner = get_active_profile(request)
         if learner is None:
             return Response(
@@ -287,9 +287,9 @@ class CourseAssignmentsView(generics.ListAPIView):
 
         if _in_teacher_context(self.request):
             queryset = Assignment.objects.filter(
-                chapter__subject__course__id=course_id,
-                chapter__subject__teaching_assignments__teacher=user,
-                chapter__subject__teaching_assignments__is_active=True,
+                subject__course__id=course_id,
+                subject__teaching_assignments__teacher=user,
+                subject__teaching_assignments__is_active=True,
             )
         else:
             from courses.models import Course
@@ -305,7 +305,7 @@ class CourseAssignmentsView(generics.ListAPIView):
             # deliberately does NOT filter on it — a teacher must see their
             # own drafts in order to finish and publish them.
             queryset = Assignment.objects.filter(
-                chapter__subject__course__id=course_id, is_published=True)
+                subject__course__id=course_id, is_published=True)
             # Batch isolation: show course-wide assignments (batch IS NULL) plus
             # this student's own batch's assignments. Due dates are cohort-
             # relative, so a later batch must not inherit an earlier one's.
@@ -327,7 +327,7 @@ class CourseAssignmentsView(generics.ListAPIView):
 
         return (
             queryset
-            .select_related("chapter__subject__course__board")
+            .select_related("subject__course__board", "chapter")
             .prefetch_related(submission_prefetch)
             .distinct()
         )
@@ -440,7 +440,7 @@ class TeacherUpdateAssignmentView(APIView):
 
         assignment = get_object_or_404(
             Assignment.objects.select_related(
-                "chapter__subject__course__board").prefetch_related("files"),
+                "subject__course__board", "chapter").prefetch_related("files"),
             id=assignment_id,
         )
 
@@ -492,7 +492,7 @@ class TeacherDeleteAssignmentFileView(APIView):
         require_teacher_context(request)
 
         assignment = get_object_or_404(
-            Assignment.objects.select_related("chapter__subject"),
+            Assignment.objects.select_related("subject", "chapter"),
             id=assignment_id,
         )
 
@@ -519,7 +519,7 @@ class TeacherDeleteAssignmentView(APIView):
         require_teacher_context(request)
 
         assignment = get_object_or_404(
-            Assignment.objects.select_related("chapter__subject"),
+            Assignment.objects.select_related("subject", "chapter"),
             id=assignment_id,
         )
 
@@ -557,8 +557,8 @@ class TeacherSubjectAssignmentsView(generics.ListAPIView):
         # with working Edit / Delete / Review buttons.
         return (
             teacher_scope_filter(
-                Assignment.objects.filter(chapter__subject=subject), user)
-            .select_related("chapter__subject__course__board", "batch")
+                Assignment.objects.filter(subject=subject), user)
+            .select_related("subject__course__board", "chapter", "batch")
             .prefetch_related("files")
             .annotate(total_submissions=Count("submissions", distinct=True))
             # distinct(): a teacher holding two staffing rows on one subject
@@ -653,9 +653,9 @@ class TeacherAllAssignmentsView(generics.ListAPIView):
     def get_queryset(self):
         return (
             teacher_scope_filter(Assignment.objects.all(), self.request.user)
-            # chapter__subject + batch: the serializer reports subject_id/
+            # subject + batch: the serializer reports subject_id/
             # subject_name and batch_id/batch_name off these.
-            .select_related("chapter__subject__course__board", "batch")
+            .select_related("subject__course__board", "chapter", "batch")
             .prefetch_related("files")
             .annotate(total_submissions=Count("submissions", distinct=True))
             # distinct(): a teacher listed twice on one subject would otherwise
@@ -694,7 +694,7 @@ class TeacherAssignmentSubmissionsView(APIView):
 
     def get(self, request, assignment_id):
         assignment = get_object_or_404(
-            Assignment.objects.select_related("chapter__subject__course"),
+            Assignment.objects.select_related("subject__course", "chapter"),
             id=assignment_id,
         )
 
@@ -737,7 +737,7 @@ class TeacherAssignmentSubmissionsView(APIView):
         )
 
         roster_qs = Enrollment.objects.filter(
-            course_id=assignment.chapter.subject.course_id,
+            course_id=assignment.subject.course_id,
             status=Enrollment.STATUS_ACTIVE,
         ).select_related("user", "learner_profile")
         if assignment.batch_id is not None:
@@ -806,7 +806,7 @@ class TeacherGradeSubmissionView(APIView):
     def post(self, request, submission_id):
         submission = get_object_or_404(
             AssignmentSubmission.objects.select_related(
-                "assignment", "assignment__chapter__subject", "learner_profile__account",
+                "assignment", "assignment__subject", "assignment__chapter", "learner_profile__account",
             ),
             id=submission_id,
         )
@@ -934,7 +934,7 @@ class SubjectAssignmentsView(APIView):
         )
 
         teacher_prefetch = Prefetch(
-            "chapter__subject__teaching_assignments",
+            "subject__teaching_assignments",
             queryset=TeachingAssignment.objects.filter(
                 batch__isnull=True, is_active=True,
             ).select_related("teacher").order_by("order"),
@@ -944,8 +944,8 @@ class SubjectAssignmentsView(APIView):
         assignments = (
             Assignment.objects
             # Student-facing view — drafts stay hidden until published.
-            .filter(chapter__subject_id=subject_id, is_published=True)
-            .select_related("chapter__subject__course__board")
+            .filter(subject_id=subject_id, is_published=True)
+            .select_related("subject__course__board", "chapter")
             .prefetch_related(submission_prefetch, teacher_prefetch, "files")
         )
 
@@ -970,7 +970,7 @@ class SubjectAssignmentsView(APIView):
                 if assignment.user_submission_list else None
             )
 
-            teachers = assignment.chapter.subject.prefetched_teachers
+            teachers = assignment.subject.prefetched_teachers
             teacher_name = (
                 (lambda p: p.full_name if p else None)(teachers[0].teacher.default_learner_profile()) if teachers else None if teachers else None
             )
@@ -980,8 +980,9 @@ class SubjectAssignmentsView(APIView):
                 "title": assignment.title,
                 "due_date": assignment.due_date,
                 "status": "SUBMITTED" if submission else "PENDING",
-                "subject": assignment.chapter.subject.name,
-                "chapter": assignment.chapter.title,
+                "subject": assignment.subject.name,
+                # chapter is optional now — null rather than an AttributeError.
+                "chapter": assignment.chapter.title if assignment.chapter_id else None,
                 "teacher": teacher_name,
             })
 
@@ -1001,7 +1002,7 @@ class DownloadAllSubmissionsView(APIView):
         require_teacher_context(request)
 
         assignment = get_object_or_404(
-            Assignment.objects.select_related("chapter__subject"),
+            Assignment.objects.select_related("subject", "chapter"),
             id=assignment_id,
         )
 

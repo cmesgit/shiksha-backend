@@ -121,7 +121,7 @@ class AssignmentFileSerializer(serializers.ModelSerializer):
 class AssignmentListSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
     subject_name = serializers.CharField(
-        source="chapter.subject.name",
+        source="subject.name",
         read_only=True,
     )
     # The learner's Assignments screen is one flat, subject-filtered list built
@@ -129,11 +129,11 @@ class AssignmentListSerializer(serializers.ModelSerializer):
     # into subject pills and to link each row at
     # /subjects/<subject_id>/assignments/<id>.
     subject_id = serializers.UUIDField(
-        source="chapter.subject.id",
+        source="subject.id",
         read_only=True,
     )
     course_id = serializers.UUIDField(
-        source="chapter.subject.course.id",
+        source="subject.course.id",
         read_only=True,
     )
     board_name = serializers.SerializerMethodField()
@@ -158,7 +158,7 @@ class AssignmentListSerializer(serializers.ModelSerializer):
         )
 
     def get_board_name(self, obj):
-        return board_name_via(obj, "chapter", "subject", "course")
+        return board_name_via(obj, "subject", "course")
 
     def get_status(self, obj):
         submission = getattr(obj, "user_submission", None)
@@ -183,12 +183,13 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
     graded_at = serializers.SerializerMethodField()
 
     subject_name = serializers.CharField(
-        source="chapter.subject.name",         read_only=True)
+        source="subject.name",             read_only=True)
     course_name = serializers.CharField(
-        source="chapter.subject.course.title",  read_only=True)
+        source="subject.course.title",     read_only=True)
     board_name = serializers.SerializerMethodField()
-    chapter_name = serializers.CharField(
-        source="chapter.title",                 read_only=True)
+    # Method field, not source="chapter.title": `chapter` is optional now, and
+    # a dotted source raises rather than yielding null when a hop is None.
+    chapter_name = serializers.SerializerMethodField()
     teacher_name = serializers.SerializerMethodField()
     assigned_on = serializers.DateTimeField(
         source="created_at",                read_only=True)
@@ -222,7 +223,10 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
         )
 
     def get_board_name(self, obj):
-        return board_name_via(obj, "chapter", "subject", "course")
+        return board_name_via(obj, "subject", "course")
+
+    def get_chapter_name(self, obj):
+        return obj.chapter.title if obj.chapter_id else None
 
     def get_submission(self, obj):
         return getattr(obj, "user_submission", None)
@@ -258,7 +262,7 @@ class AssignmentDetailSerializer(serializers.ModelSerializer):
         return submission.graded_at if submission else None
 
     def get_teacher_name(self, obj):
-        subject = obj.chapter.subject
+        subject = obj.subject
         teacher = subject.teaching_assignments.filter(
             batch__isnull=True, is_active=True,
         ).select_related("teacher").first()
@@ -366,7 +370,9 @@ class TeacherAssignmentCreateSerializer(serializers.ModelSerializer):
                         f"{batch.name}. Pick a batch you teach."
                     ]}
                 )
-            chapter = resolve_or_create_chapter(subject, custom_title=custom_chapter)
+            chapter = resolve_or_create_chapter(
+                subject, custom_title=custom_chapter, created_by=user,
+            )
             attrs["chapter"] = chapter
 
         # Triangle guard: the batch and the chapter's subject share a course.
@@ -472,7 +478,7 @@ class TeacherAssignmentUpdateSerializer(serializers.ModelSerializer):
         # the way in and escaping it forever after.
         chapter = attrs.get("chapter")
         if chapter is not None and self.instance is not None:
-            if chapter.subject_id != self.instance.chapter.subject_id:
+            if chapter.subject_id != self.instance.subject_id:
                 raise serializers.ValidationError(
                     {"chapter_id": "Pick a chapter from this assignment's own subject."}
                 )
@@ -514,7 +520,10 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
     # The teacher's Assignments screen is one flat list across every subject
     # they teach, so a row has to name its subject — for the pill filter and to
     # target per-subject actions (edit / submissions) at the right class.
-    # Method fields because `chapter` is nullable; a dotted source would raise.
+    # Method fields for symmetry with the rest of this serializer; they now read
+    # the assignment's own non-null `subject` rather than walking the optional
+    # chapter, so a chapter-less assignment still reports its subject (and so
+    # still appears under the right pill instead of an "unknown subject" row).
     subject_id = serializers.SerializerMethodField()
     subject_name = serializers.SerializerMethodField()
     # The design filters the faculty Assignments list by BATCH — its teacher
@@ -561,7 +570,7 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
         return obj.chapter.title if obj.chapter else None
 
     def _subject(self, obj):
-        return getattr(obj.chapter, "subject", None) if obj.chapter else None
+        return obj.subject
 
     def get_course_title(self, obj):
         s = self._subject(obj)
@@ -569,7 +578,7 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
         return course.title if course else None
 
     def get_board_name(self, obj):
-        return board_name_via(obj, "chapter", "subject", "course")
+        return board_name_via(obj, "subject", "course")
 
     def get_subject_id(self, obj):
         s = self._subject(obj)

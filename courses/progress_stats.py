@@ -76,8 +76,8 @@ def build_progress_stats(course, student_user, subjects_qs, learner=None):
     quizzes_completed = len(attempts)
     quiz_avg_pct = average_quiz_score_pct(attempts)
 
-    # ---- Assignments: submissions on assignments in this course's subjects (via chapter).
-    submission_q = Q(assignment__chapter__subject_id__in=subject_ids)
+    # ---- Assignments: submissions on assignments in this course's subjects.
+    submission_q = Q(assignment__subject_id__in=subject_ids)
     submission_q &= _dual_key_q("student", student_user, learner)
     assignments_done = AssignmentSubmission.objects.filter(submission_q).count()
 

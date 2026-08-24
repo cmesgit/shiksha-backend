@@ -50,11 +50,11 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
     files = serializers.SerializerMethodField()
     chapter_title = serializers.SerializerMethodField()
     # The learner's Study Material screen is one flat, subject-filtered list, so
-    # a row has to say which subject it belongs to. Method fields rather than a
-    # dotted source because `chapter` is nullable (get_chapter_title below falls
-    # back to custom_chapter) — a dotted source would raise on those rows.
-    # Callers listing across subjects should
-    # select_related("chapter__subject__course__board") so this doesn't cost a
+    # a row has to say which subject it belongs to. These read the material's
+    # own non-null `subject` rather than walking the now-optional `chapter`, so a
+    # chapter-less material still reports its subject instead of dropping out of
+    # its pill. Callers listing across subjects should
+    # select_related("subject__course__board", "chapter") so this doesn't cost a
     # query per row.
     subject_id = serializers.SerializerMethodField()
     subject_name = serializers.SerializerMethodField()
@@ -94,20 +94,17 @@ class StudyMaterialSerializer(serializers.ModelSerializer):
         return getattr(obj, "custom_chapter", None) or "No chapter"
 
     def get_subject_id(self, obj):
-        subject = getattr(obj.chapter, "subject", None) if obj.chapter else None
-        return str(subject.id) if subject else None
+        return str(obj.subject_id)
 
     def get_subject_name(self, obj):
-        subject = getattr(obj.chapter, "subject", None) if obj.chapter else None
-        return subject.name if subject else None
+        return obj.subject.name
 
     def get_course_title(self, obj):
-        subject = getattr(obj.chapter, "subject", None) if obj.chapter else None
-        course = getattr(subject, "course", None) if subject else None
+        course = getattr(obj.subject, "course", None)
         return course.title if course else None
 
     def get_board_name(self, obj):
-        return board_name_via(obj, "chapter", "subject", "course")
+        return board_name_via(obj, "subject", "course")
 
     def get_batch_name(self, obj):
         return obj.batch.name if obj.batch_id else None
