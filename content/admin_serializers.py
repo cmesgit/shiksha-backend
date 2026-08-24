@@ -262,25 +262,59 @@ class ContentTagSerializer(serializers.ModelSerializer):
 
 # ── Homepage content ───────────────────────────────────────────────
 
-class HomeContentBlockAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
+class ResolvedImageMixin:
+    """Resolves the same read-only `img` the public serializers expose.
+
+    The admin screens need it to render a thumbnail of what is currently
+    saved: the editor writes `image` (an upload) or `image_url` (a link), but
+    neither is much use as a preview src on its own — `image` is a relative
+    path and only one of the two is ever set. Without this, the admin form's
+    `previewUrl={row?.img}` was always undefined and no existing image ever
+    showed up next to the upload control.
+
+    Note each serializer must still declare `img = SerializerMethodField()`
+    itself — DRF's SerializerMetaclass only harvests declared fields from
+    bases that are Serializers, so a field defined on a plain mixin like this
+    one is silently ignored and you get "Field name `img` is not valid for
+    model ..." from build_unknown_field. Only the resolver lives here.
+    """
+
+    def get_img(self, obj):
+        if obj.image:
+            request = self.context.get("request")
+            url = obj.image.url
+            return request.build_absolute_uri(url) if request else url
+        return obj.image_url or ""
+
+
+class HomeContentBlockAdminSerializer(
+    ResolvedImageMixin, FullCleanMixin, serializers.ModelSerializer
+):
+    img = serializers.SerializerMethodField()
+
     class Meta:
         model = HomeContentBlock
         fields = [
             "id", "section", "eyebrow", "heading", "heading_secondary",
             "subhead", "body", "cta_primary_label", "cta_primary_href",
             "cta_secondary_label", "cta_secondary_href", "image", "image_url",
-            "extra", "is_active", "created_at", "updated_at",
+            "img", "extra", "is_active", "created_at", "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]
 
 
-class HomeListItemAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
+class HomeListItemAdminSerializer(
+    ResolvedImageMixin, FullCleanMixin, serializers.ModelSerializer
+):
+    img = serializers.SerializerMethodField()
+
     class Meta:
         model = HomeListItem
         fields = [
             "id", "section", "variant", "icon", "title", "subtitle", "body",
-            "pills", "stat_text", "cta_label", "cta_href", "tint", "order",
-            "is_active", "created_at", "updated_at",
+            "pills", "stat_text", "cta_label", "cta_href", "tint", "image",
+            "image_url", "img", "order", "is_active", "created_at",
+            "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]
 

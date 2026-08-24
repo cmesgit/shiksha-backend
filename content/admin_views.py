@@ -163,6 +163,7 @@ class HomeListItemAdminViewSet(viewsets.ModelViewSet):
     serializer_class = HomeListItemAdminSerializer
     permission_classes = [IsContentEditor]
     pagination_class = AdminPagination
+    parser_classes = [MultiPartParser, FormParser, JSONParser]  # `image` upload
 
     def get_queryset(self):
         qs = super().get_queryset()
