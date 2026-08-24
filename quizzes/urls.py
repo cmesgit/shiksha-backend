@@ -33,6 +33,9 @@ from .views import (
     TeacherBankFiltersView,
     TeacherBankSummaryView,
     TeacherBankStatusView,
+    AdminQuestionBankQueueView,
+    AdminQuestionReviewView,
+    AdminQuestionBulkReviewView,
     TeacherQuestionBankStateView,
     AdminQuizListView,
     AdminQuizDetailView,
@@ -119,4 +122,8 @@ urlpatterns = [
     path("quizzes/admin/", AdminQuizListView.as_view()),
     path("quizzes/admin/<uuid:pk>/", AdminQuizDetailView.as_view()),
     path("quizzes/admin/<uuid:pk>/review/", AdminQuizReviewView.as_view()),
+    # A1 · admin question-bank review queue (Phase 7).
+    path("quizzes/admin/question-bank/queue/", AdminQuestionBankQueueView.as_view()),
+    path("quizzes/admin/question-bank/bulk-review/", AdminQuestionBulkReviewView.as_view()),
+    path("quizzes/admin/question-bank/<uuid:pk>/review/", AdminQuestionReviewView.as_view()),
 ]

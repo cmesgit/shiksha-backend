@@ -2815,6 +2815,200 @@ class AdminQuizDetailView(APIView):
         return Response(AdminQuizDetailSerializer(quiz).data)
 
 
+class AdminQuestionBankQueueView(generics.ListAPIView):
+    """
+    GET /quizzes/admin/question-bank/queue/?state=&subject=&search=
+
+    A1's review queue: every question teachers have OFFERED to the shared
+    ShikshaCom bank. Defaults to `suggested` — the ones actually waiting on an
+    admin — because that is the whole job of the screen.
+
+    Deliberately never returns `private` questions. A teacher who kept a
+    question to their own class has not asked anyone to look at it, and
+    surfacing it here would leak work they explicitly opted out of sharing.
+    """
+    serializer_class = BankQuestionSerializer
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get_queryset(self):
+        state = self.request.query_params.get("state", Question.BANK_STATE_SUGGESTED)
+        subject_id = self.request.query_params.get("subject")
+        search = self.request.query_params.get("search", "").strip()
+
+        qs = (
+            Question.objects
+            .exclude(bank_state=Question.BANK_STATE_PRIVATE)
+            .select_related("quiz", "quiz__subject", "quiz__created_by")
+            .prefetch_related("choices")
+        )
+        if state:
+            qs = qs.filter(bank_state=state)
+        if subject_id:
+            qs = qs.filter(quiz__subject_id=subject_id)
+        if search:
+            qs = qs.filter(Q(text__icontains=search) | Q(topic__icontains=search))
+        return qs.order_by("created_at")
+
+    _chapter_tags_by_quiz = None
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["chapter_tags_by_quiz"] = self._chapter_tags_by_quiz
+        return ctx
+
+    def list(self, request, *args, **kwargs):
+        rows = list(self.filter_queryset(self.get_queryset()))
+        quizzes = {q.quiz_id: q.quiz for q in rows}
+        attach_chapter_tags(list(quizzes.values()))
+        self._chapter_tags_by_quiz = {
+            qid: serialize_tags(quiz) for qid, quiz in quizzes.items()
+        }
+        counts = (
+            Question.objects
+            .exclude(bank_state=Question.BANK_STATE_PRIVATE)
+            .values("bank_state").annotate(n=Count("id"))
+        )
+        by_state = {c["bank_state"]: c["n"] for c in counts}
+        return Response({
+            "results": self.get_serializer(rows, many=True).data,
+            "counts": {
+                "suggested": by_state.get(Question.BANK_STATE_SUGGESTED, 0),
+                "accepted": by_state.get(Question.BANK_STATE_ACCEPTED, 0),
+                "changes_requested": by_state.get(
+                    Question.BANK_STATE_CHANGES_REQUESTED, 0),
+            },
+            "contributing_teachers": (
+                Question.objects
+                .filter(bank_state=Question.BANK_STATE_SUGGESTED)
+                .values("quiz__created_by").distinct().count()
+            ),
+        })
+
+
+def _apply_bank_review(question, *, action, feedback, admin,
+                       map_to_chapter_id=None, promote_chapter=False):
+    """One question's review decision. Shared by the single and bulk endpoints
+    so they can never drift apart.
+
+    Chapter mapping is part of the decision, not a separate step: the common
+    reason to reject a question is that it is filed under a chapter the
+    teacher invented, and forcing the admin to fix that elsewhere is how it
+    stops happening.
+    """
+    from courses.models import Chapter
+    from courses.chapter_tags import set_tags, tags_for
+
+    if map_to_chapter_id:
+        chapter = Chapter.objects.filter(
+            id=map_to_chapter_id, subject=question.quiz.subject).first()
+        if chapter is None:
+            raise ValidationError(
+                {"map_to_chapter_id": "Not a chapter of this question's subject."})
+        set_tags(question.quiz, [(chapter, "", 0)])
+    elif promote_chapter:
+        # Accept the teacher's own chapter into the syllabus rather than
+        # remapping away from it — `promoted_at` is what makes it visible to
+        # every other teacher of the subject.
+        for tag in tags_for(question.quiz):
+            if tag.chapter and tag.chapter.is_custom and not tag.chapter.promoted_at:
+                tag.chapter.promoted_at = timezone.now()
+                tag.chapter.save(update_fields=["promoted_at"])
+
+    if action == "accept":
+        question.bank_state = Question.BANK_STATE_ACCEPTED
+        question.bank_feedback = ""
+    else:
+        question.bank_state = Question.BANK_STATE_CHANGES_REQUESTED
+        question.bank_feedback = feedback
+
+    question.bank_reviewed_by = admin
+    question.bank_reviewed_at = timezone.now()
+    # save(), not update(): Question.save() is what keeps
+    # suggest_to_bank/bank_state coherent, and it deliberately does NOT
+    # clobber an accept/changes-requested decision on a later teacher edit.
+    question.save(update_fields=[
+        "bank_state", "bank_feedback", "bank_reviewed_by", "bank_reviewed_at",
+    ])
+    return question
+
+
+class AdminQuestionReviewView(APIView):
+    """
+    PATCH /quizzes/admin/question-bank/:pk/review/
+        { action: "accept"|"request_changes", feedback?, map_to_chapter_id?,
+          promote_chapter? }
+
+    Requesting changes REQUIRES feedback. "An admin asked for changes" with
+    no words attached is a dead end for the teacher — T3 renders the note on
+    the question itself, and there has to be a note to render.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def patch(self, request, pk):
+        question = get_object_or_404(
+            Question.objects.select_related("quiz", "quiz__subject"), pk=pk)
+
+        action = request.data.get("action")
+        if action not in ("accept", "request_changes"):
+            raise ValidationError(
+                {"action": 'Must be "accept" or "request_changes".'})
+
+        feedback = (request.data.get("feedback") or "").strip()
+        if action == "request_changes" and not feedback:
+            raise ValidationError(
+                {"feedback": "Say what needs changing — the teacher sees this."})
+
+        _apply_bank_review(
+            question, action=action, feedback=feedback, admin=request.user,
+            map_to_chapter_id=request.data.get("map_to_chapter_id"),
+            promote_chapter=bool(request.data.get("promote_chapter")),
+        )
+        return Response(BankQuestionSerializer(question).data)
+
+
+class AdminQuestionBulkReviewView(APIView):
+    """
+    POST /quizzes/admin/question-bank/bulk-review/
+        { question_ids: [...], action, feedback? }
+
+    A1's "Accept all 9 from R. Kulkarni". All-or-nothing in one transaction:
+    a half-applied bulk accept would leave the admin with no way to tell which
+    half landed.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        ids = request.data.get("question_ids") or []
+        if not isinstance(ids, list) or not ids:
+            raise ValidationError({"question_ids": "Give at least one question."})
+
+        action = request.data.get("action")
+        if action not in ("accept", "request_changes"):
+            raise ValidationError(
+                {"action": 'Must be "accept" or "request_changes".'})
+
+        feedback = (request.data.get("feedback") or "").strip()
+        if action == "request_changes" and not feedback:
+            raise ValidationError(
+                {"feedback": "Say what needs changing — the teacher sees this."})
+
+        questions = list(
+            Question.objects.select_related("quiz", "quiz__subject")
+            .filter(id__in=ids)
+        )
+        missing = set(map(str, ids)) - {str(q.id) for q in questions}
+        if missing:
+            raise ValidationError(
+                {"question_ids": f"Unknown question(s): {sorted(missing)}"})
+
+        with transaction.atomic():
+            for q in questions:
+                _apply_bank_review(
+                    q, action=action, feedback=feedback, admin=request.user)
+
+        return Response({"updated": len(questions), "action": action})
+
+
 class AdminQuizReviewView(APIView):
     """
     POST /quizzes/admin/:pk/review/   { action: "approve"|"reject", reason }

@@ -1315,6 +1315,193 @@ class TeacherQuizListT1RowDataTest(TestCase):
         self.assertEqual(r.data["attempts_delta"], -2)
 
 
+class AdminQuestionBankReviewTest(TestCase):
+    """A1 · the admin review queue (Phase 7).
+
+    The phase's own done-criterion is end-to-end, not per-endpoint:
+    accepting a question must make it appear in ANOTHER teacher's
+    scope=school bank, and requesting changes must surface the feedback where
+    the first teacher will actually see it.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="ADMIN")
+
+        cls.admin = User.objects.create_user(
+            username="adm", email="adm@test.com", password="x",
+            is_verified=True, is_staff=True, is_superuser=True,
+        )
+        cls.author = User.objects.create_user(
+            username="wrote_it", email="wrote@test.com", password="x", is_verified=True)
+        cls.colleague = User.objects.create_user(
+            username="other_t", email="other@test.com", password="x", is_verified=True)
+        for u in (cls.author, cls.colleague):
+            UserRole.objects.create(
+                user=u, role=Role.objects.get(name="TEACHER"),
+                is_active=True, is_primary=True)
+
+        from courses.models import Batch
+
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Maths")
+        # BOTH teachers teach the subject — that is what makes scope=school
+        # meaningful. Each needs their own batch: TeachingAssignment is unique
+        # per subject when batch is NULL, so two batch-less rows collide.
+        for i, u in enumerate((cls.author, cls.colleague)):
+            batch = Batch.objects.create(
+                course=cls.course, name=f"10-{i}", code=f"10{i}")
+            TeachingAssignment.objects.create(
+                subject=cls.subject, teacher=u, batch=batch, is_active=True)
+
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.author, title="Algebra")
+        cls.q = Question.objects.create(
+            quiz=cls.quiz, text="What is x?", marks=1, order=0, explanation="e")
+        Choice.objects.create(question=cls.q, text="4", is_correct=True)
+        Choice.objects.create(question=cls.q, text="5", is_correct=False)
+        # A question the author kept to themselves.
+        cls.private_q = Question.objects.create(
+            quiz=cls.quiz, text="Class-specific one", marks=1, order=1,
+            explanation="e", suggest_to_bank=False)
+
+    def _admin(self):
+        c = APIClient()
+        c.force_authenticate(user=self.admin, token={"context": "admin"})
+        return c
+
+    def _teacher(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user, token={"context": "teacher"})
+        return c
+
+    def test_queue_defaults_to_what_is_actually_waiting(self):
+        r = self._admin().get("/api/quizzes/admin/question-bank/queue/")
+        self.assertEqual(r.status_code, 200, r.content)
+        texts = [q["text"] for q in r.data["results"]]
+        self.assertIn("What is x?", texts)
+        self.assertEqual(r.data["counts"]["suggested"], 1)
+
+    def test_a_privately_kept_question_never_reaches_the_queue(self):
+        # The teacher opted out. Surfacing it here would leak work they
+        # explicitly chose not to share.
+        r = self._admin().get(
+            "/api/quizzes/admin/question-bank/queue/?state=private")
+        self.assertNotIn(
+            "Class-specific one", [q["text"] for q in r.data["results"]])
+
+    def test_accepting_publishes_it_into_a_colleagues_school_bank(self):
+        # Phase 7's done-criterion, first half.
+        before = self._teacher(self.colleague).get(
+            "/api/teacher/question-bank/?scope=school")
+        self.assertEqual(len(before.data), 0)
+
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.q.id}/review/",
+            {"action": "accept"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+
+        after = self._teacher(self.colleague).get(
+            "/api/teacher/question-bank/?scope=school")
+        self.assertEqual([q["text"] for q in after.data], ["What is x?"])
+
+    def test_requesting_changes_surfaces_the_note_on_the_teachers_own_bank(self):
+        # Phase 7's done-criterion, second half.
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.q.id}/review/",
+            {"action": "request_changes", "feedback": "Option B is ambiguous."},
+            format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+
+        mine = self._teacher(self.author).get(
+            "/api/teacher/question-bank/?scope=mine&state=changes_requested")
+        row = mine.data[0]
+        self.assertEqual(row["bank_feedback"], "Option B is ambiguous.")
+
+    def test_requesting_changes_without_feedback_is_refused(self):
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.q.id}/review/",
+            {"action": "request_changes"}, format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+        self.q.refresh_from_db()
+        self.assertEqual(self.q.bank_state, Question.BANK_STATE_SUGGESTED)
+
+    def test_bulk_accept_is_all_or_nothing(self):
+        q2 = Question.objects.create(
+            quiz=self.quiz, text="Second", marks=1, order=2, explanation="e")
+        r = self._admin().post(
+            "/api/quizzes/admin/question-bank/bulk-review/",
+            {"question_ids": [str(self.q.id), str(q2.id),
+                              "00000000-0000-0000-0000-000000000000"],
+             "action": "accept"},
+            format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+        # nothing applied
+        self.q.refresh_from_db()
+        self.assertEqual(self.q.bank_state, Question.BANK_STATE_SUGGESTED)
+
+    def test_bulk_accept_applies_to_every_named_question(self):
+        q2 = Question.objects.create(
+            quiz=self.quiz, text="Second", marks=1, order=2, explanation="e")
+        r = self._admin().post(
+            "/api/quizzes/admin/question-bank/bulk-review/",
+            {"question_ids": [str(self.q.id), str(q2.id)], "action": "accept"},
+            format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["updated"], 2)
+        for q in (self.q, q2):
+            q.refresh_from_db()
+            self.assertEqual(q.bank_state, Question.BANK_STATE_ACCEPTED)
+
+    def test_an_admin_can_remap_the_question_to_a_real_chapter(self):
+        from courses.models import Chapter
+        real = Chapter.objects.create(
+            subject=self.subject, title="Linear equations", order=0)
+
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.q.id}/review/",
+            {"action": "accept", "map_to_chapter_id": str(real.id)},
+            format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(
+            [t["label"] for t in r.data["chapter_tags"]]
+            if "chapter_tags" in r.data else [r.data["chapter_label"]],
+            ["Linear equations"])
+
+    def test_a_chapter_from_another_subject_is_refused(self):
+        from courses.models import Chapter
+        other_subject = Subject.objects.create(course=self.course, name="Physics")
+        foreign = Chapter.objects.create(
+            subject=other_subject, title="Optics", order=0)
+
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.q.id}/review/",
+            {"action": "accept", "map_to_chapter_id": str(foreign.id)},
+            format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_promoting_makes_a_teachers_own_chapter_real(self):
+        from courses.models import Chapter
+        from courses.chapter_tags import set_tags
+        custom = Chapter.objects.create(
+            subject=self.subject, title="Board-pattern sums", order=1,
+            is_custom=True, created_by=self.author)
+        set_tags(self.quiz, [(custom, "", 0)])
+
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.q.id}/review/",
+            {"action": "accept", "promote_chapter": True}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        custom.refresh_from_db()
+        self.assertIsNotNone(custom.promoted_at)
+
+    def test_a_teacher_cannot_reach_the_admin_queue(self):
+        r = self._teacher(self.author).get(
+            "/api/quizzes/admin/question-bank/queue/")
+        self.assertIn(r.status_code, (401, 403))
+
+
 class TeacherBankStatusT4Test(TestCase):
     """T4: the four state counts, the auto-suggest default, and the latest note."""
 
