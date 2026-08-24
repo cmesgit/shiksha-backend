@@ -11,7 +11,7 @@ from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from enrollments.models import Enrollment
 
@@ -349,7 +349,13 @@ class CourseAssignmentsView(generics.ListAPIView):
 
 class TeacherCreateAssignmentView(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
+    # JSONParser alongside the multipart parsers: an assignment can carry
+    # file attachments (hence multipart), but `chapter_tags` is a list of
+    # objects, which multipart cannot express natively. A client with no
+    # files to upload can now POST plain JSON; one with files sends
+    # multipart and encodes chapter_tags as a JSON string, which the
+    # serializer mixin decodes.
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request):
         user = request.user
@@ -431,7 +437,8 @@ class TeacherCreateAssignmentView(APIView):
 
 class TeacherUpdateAssignmentView(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
+    # See TeacherCreateAssignmentView on why JSONParser is here too.
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def patch(self, request, assignment_id):
         user = request.user

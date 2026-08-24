@@ -14,6 +14,8 @@ and every legacy read path use. Tags are the richer view alongside it, never
 a replacement — until a later phase retires the FK after an audit.
 """
 
+import json
+
 from django.contrib.contenttypes.models import ContentType
 from rest_framework import serializers
 
@@ -228,15 +230,35 @@ class ChapterTagWriteMixin:
     changed.
     """
 
-    def build_chapter_tag_fields(self):
-        return {
-            "chapter_tags": serializers.ListField(
-                child=serializers.DictField(), required=False, write_only=True,
-            ),
-            "save_chapters_to_course": serializers.BooleanField(
-                required=False, write_only=True,
-            ),
-        }
+    def to_internal_value(self, data):
+        """Decode a JSON-encoded `chapter_tags` sent over multipart.
+
+        These endpoints accept file uploads, so real clients POST multipart —
+        and multipart has no way to express a list of objects. A client with
+        files therefore sends `chapter_tags` as a JSON *string*, which
+        ListField(DictField) would reject. Decoding it here, before field
+        validation, lets one payload shape work over both parsers.
+
+        A malformed string is left exactly as it came in so ListField raises
+        its own clear error, rather than being silently swallowed into "no
+        tags" — a teacher who picked chapters must not be told the save
+        succeeded with none.
+        """
+        raw = data.get("chapter_tags") if hasattr(data, "get") else None
+        if isinstance(raw, str):
+            try:
+                decoded = json.loads(raw)
+            except (TypeError, ValueError):
+                decoded = None
+            if isinstance(decoded, list):
+                # A plain dict, not QueryDict.copy(): QueryDict stores every
+                # value as a list and get() returns only the LAST element, so
+                # assigning a list of tag dicts into one would silently
+                # collapse to the final tag.
+                data = {**data.dict(), "chapter_tags": decoded} \
+                    if hasattr(data, "dict") else {**data,
+                                                   "chapter_tags": decoded}
+        return super().to_internal_value(data)
 
     def pop_chapter_tag_input(self, attrs):
         """Pull the tag keys out of `attrs` and validate the structural rules.

@@ -647,3 +647,495 @@ class CustomChapterCreationTest(AssignmentScopeFixtureMixin, TestCase):
         self.assertFalse(
             Chapter.objects.filter(subject=other_subject, title="Organic Chemistry").exists()
         )
+
+
+# ==========================================================================
+# PHASE 3 — FLEXIBLE CHAPTER TAGGING
+# ==========================================================================
+
+from django.contrib.contenttypes.models import ContentType
+
+from courses.chapter_tags import serialize_tags
+from courses.models_chapter_tags import ContentChapterTag
+from courses.models_recordings import SessionRecording
+from materials.models import StudyMaterial
+from quizzes.models import Quiz
+
+
+class ChapterTagCreationTest(AssignmentScopeFixtureMixin, TestCase):
+    """The BUILD_GUIDE set: an assignment created with zero chapters, two
+    chapters, one custom label, no_specific_chapter, and a duplicate label."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.build_world()
+        cls.chapter_2 = Chapter.objects.create(
+            subject=cls.subject, title="Geometry", order=1)
+
+    def _create(self, **fields):
+        payload = {
+            "batch_id": str(self.batch_b.id),
+            "subject_id": str(self.subject.id),
+            "title": "Tagged worksheet",
+            "due_date": (timezone.now() + timedelta(days=3)).isoformat(),
+            **fields,
+        }
+        return _teacher_client(self.teacher_b).post(
+            "/api/assignments/teacher/create/", payload, format="json")
+
+    def _tags(self, assignment):
+        return list(
+            ContentChapterTag.objects
+            .filter(content_type=ContentType.objects.get_for_model(assignment),
+                    object_id=assignment.pk)
+            .order_by("order")
+        )
+
+    def test_zero_chapters_is_valid(self):
+        r = self._create()
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+        self.assertEqual(self._tags(assignment), [])
+        self.assertIsNone(assignment.chapter_id)
+        self.assertEqual(assignment.subject_id, self.subject.id)
+
+    def test_two_chapters(self):
+        r = self._create(chapter_tags=[
+            {"chapter_id": str(self.chapter.id)},
+            {"chapter_id": str(self.chapter_2.id)},
+        ])
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+        tags = self._tags(assignment)
+        self.assertEqual([t.chapter_id for t in tags],
+                         [self.chapter.id, self.chapter_2.id])
+        # The additive invariant: the legacy FK holds the FIRST chapter, so
+        # legacy chapter-filtered reads still find this assignment.
+        self.assertEqual(assignment.chapter_id, self.chapter.id)
+
+    def test_one_custom_label_stays_free_text(self):
+        r = self._create(chapter_tags=[{"label": "Mixed revision"}])
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+        tag, = self._tags(assignment)
+        self.assertIsNone(tag.chapter_id)
+        self.assertEqual(tag.custom_label, "Mixed revision")
+        # No Chapter row minted, because "save to the course" wasn't asked for.
+        self.assertFalse(
+            Chapter.objects.filter(subject=self.subject,
+                                   title="Mixed revision").exists()
+        )
+        self.assertIsNone(assignment.chapter_id)
+
+    def test_no_specific_chapter(self):
+        r = self._create(no_specific_chapter=True)
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+        self.assertTrue(assignment.no_specific_chapter)
+        self.assertEqual(self._tags(assignment), [])
+
+    def test_no_specific_chapter_with_tags_is_rejected(self):
+        r = self._create(
+            no_specific_chapter=True,
+            chapter_tags=[{"chapter_id": str(self.chapter.id)}],
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn("no_specific_chapter", r.data)
+
+    def test_duplicate_label_dedupes_against_an_existing_chapter(self):
+        """A typed label matching a real chapter name must SELECT it, not fork
+        a second Chapter — case-insensitively."""
+        r = self._create(chapter_tags=[{"label": "algebra"}])
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+        tag, = self._tags(assignment)
+        self.assertEqual(tag.chapter_id, self.chapter.id)
+        self.assertEqual(tag.custom_label, "")
+        self.assertEqual(
+            Chapter.objects.filter(subject=self.subject,
+                                   title__iexact="Algebra").count(), 1,
+        )
+
+    def test_the_same_chapter_sent_twice_yields_one_tag(self):
+        r = self._create(chapter_tags=[
+            {"chapter_id": str(self.chapter.id)},
+            {"label": "ALGEBRA"},
+        ])
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+        self.assertEqual(len(self._tags(assignment)), 1)
+
+    def test_save_to_course_creates_an_appended_custom_chapter(self):
+        r = self._create(
+            chapter_tags=[{"label": "Coordinate Geometry"}],
+            save_chapters_to_course=True,
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        chapter = Chapter.objects.get(
+            subject=self.subject, title="Coordinate Geometry")
+        self.assertTrue(chapter.is_custom)
+        self.assertEqual(chapter.created_by_id, self.teacher_b.id)
+        # Appended, NOT left at the default 0 alongside the syllabus.
+        self.assertEqual(chapter.order, 2)
+        self.assertNotEqual(chapter.order, 0)
+        # ...and the tag now points at the real chapter, not the label.
+        assignment = Assignment.objects.get(id=r.data["id"])
+        tag, = self._tags(assignment)
+        self.assertEqual(tag.chapter_id, chapter.id)
+        self.assertEqual(tag.custom_label, "")
+
+    def test_tag_from_another_subject_is_rejected(self):
+        foreign_subject = Subject.objects.create(
+            course=self.course, name="Physics")
+        foreign = Chapter.objects.create(
+            subject=foreign_subject, title="Optics", order=0)
+        r = self._create(chapter_tags=[{"chapter_id": str(foreign.id)}])
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn("chapter_tags", r.data)
+
+
+class ChapterTagLegacyShimTest(AssignmentScopeFixtureMixin, TestCase):
+    """The three live teacher screens still send `chapter_id` and
+    `custom_chapter`. Both must keep working exactly as they do in production
+    today, and must also produce a tag so the new read path agrees."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.build_world()
+
+    def _create(self, **fields):
+        payload = {
+            "batch_id": str(self.batch_b.id),
+            "title": "Legacy worksheet",
+            "due_date": (timezone.now() + timedelta(days=3)).isoformat(),
+            **fields,
+        }
+        return _teacher_client(self.teacher_b).post(
+            "/api/assignments/teacher/create/", payload, format="multipart")
+
+    def test_legacy_chapter_id_still_works(self):
+        r = self._create(chapter_id=str(self.chapter.id))
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+        self.assertEqual(assignment.chapter_id, self.chapter.id)
+        # Subject was derived from the chapter, so authorization still works.
+        self.assertEqual(assignment.subject_id, self.subject.id)
+
+    def test_legacy_custom_chapter_still_mints_a_chapter(self):
+        r = self._create(
+            custom_chapter="Mensuration", subject_id=str(self.subject.id))
+        self.assertEqual(r.status_code, 201, r.content)
+        chapter = Chapter.objects.get(
+            subject=self.subject, title="Mensuration")
+        assignment = Assignment.objects.get(id=r.data["id"])
+        self.assertEqual(assignment.chapter_id, chapter.id)
+        # Now stamped as teacher-typed and attributed, and appended in order.
+        self.assertTrue(chapter.is_custom)
+        self.assertEqual(chapter.created_by_id, self.teacher_b.id)
+        self.assertEqual(chapter.order, 1)
+
+    def test_legacy_custom_chapter_still_reuses_case_variants(self):
+        first = self._create(
+            custom_chapter="Mensuration", subject_id=str(self.subject.id))
+        second = self._create(
+            custom_chapter="MENSURATION", subject_id=str(self.subject.id))
+        self.assertEqual(first.status_code, 201, first.content)
+        self.assertEqual(second.status_code, 201, second.content)
+        self.assertEqual(
+            Chapter.objects.filter(
+                subject=self.subject, title__iexact="Mensuration").count(), 1,
+        )
+
+
+class ChapterTagAuthorizationTest(AssignmentScopeFixtureMixin, TestCase):
+    """A nullable chapter must not open a hole. The staffing triangle now runs
+    on `subject`, so it has to hold in every combination of chapter input —
+    including none at all."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.build_world()
+        # A whole other course the teacher has no staffing on.
+        cls.other_course = Course.objects.create(title="Class 9")
+        cls.other_subject = Subject.objects.create(
+            course=cls.other_course, name="Science")
+        cls.other_chapter = Chapter.objects.create(
+            subject=cls.other_subject, title="Cells", order=0)
+        cls.other_batch = Batch.objects.create(
+            course=cls.other_course, name="9-A", code="9A")
+
+    def _create(self, **fields):
+        payload = {
+            "title": "Trespass",
+            "due_date": (timezone.now() + timedelta(days=3)).isoformat(),
+            **fields,
+        }
+        return _teacher_client(self.teacher_b).post(
+            "/api/assignments/teacher/create/", payload, format="json")
+
+    def test_foreign_batch_rejected_with_a_chapter(self):
+        r = self._create(
+            batch_id=str(self.other_batch.id),
+            chapter_id=str(self.other_chapter.id),
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertFalse(Assignment.objects.filter(title="Trespass").exists())
+
+    def test_foreign_batch_rejected_with_no_specific_chapter(self):
+        """THE hole a nullable chapter could have opened: no chapter to walk,
+        so if authorization still derived subject from chapter this would
+        sail through with no staffing check at all."""
+        r = self._create(
+            batch_id=str(self.other_batch.id),
+            subject_id=str(self.other_subject.id),
+            no_specific_chapter=True,
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertFalse(Assignment.objects.filter(title="Trespass").exists())
+
+    def test_foreign_batch_rejected_with_zero_chapters(self):
+        r = self._create(
+            batch_id=str(self.other_batch.id),
+            subject_id=str(self.other_subject.id),
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertFalse(Assignment.objects.filter(title="Trespass").exists())
+
+    def test_own_batch_but_foreign_subject_is_rejected(self):
+        """Mismatched triangle: a batch this teacher does teach, but a subject
+        from a different course entirely."""
+        r = self._create(
+            batch_id=str(self.batch_b.id),
+            subject_id=str(self.other_subject.id),
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn("batch_id", r.data)
+
+    def test_unauthorized_tag_save_leaves_no_stray_chapter(self):
+        r = self._create(
+            batch_id=str(self.other_batch.id),
+            subject_id=str(self.other_subject.id),
+            chapter_tags=[{"label": "Sneaky Chapter"}],
+            save_chapters_to_course=True,
+        )
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertFalse(
+            Chapter.objects.filter(title="Sneaky Chapter").exists()
+        )
+
+
+class ChapterCascadeTest(AssignmentScopeFixtureMixin, TestCase):
+    """Assignment.chapter and StudyMaterial.chapter were CASCADE, so an admin
+    tidying a syllabus silently deleted the assignments filed under the
+    chapter they removed — and their student submissions with them. Both are
+    SET_NULL now."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.build_world()
+
+    def test_deleting_a_chapter_does_not_delete_assignments(self):
+        assignment_id = self.assignment_b.id
+        subject_id = self.assignment_b.subject_id
+
+        self.chapter.delete()
+
+        assignment = Assignment.objects.filter(id=assignment_id).first()
+        self.assertIsNotNone(
+            assignment,
+            "Deleting a chapter destroyed the assignment (CASCADE regression)",
+        )
+        self.assertIsNone(assignment.chapter_id)
+        # The authorization anchor survives, so the assignment is still
+        # reachable and still gated.
+        self.assertEqual(assignment.subject_id, subject_id)
+
+    def test_deleting_a_chapter_does_not_delete_study_material(self):
+        material = StudyMaterial.objects.create(
+            chapter=self.chapter, title="Notes", uploaded_by=self.teacher_b)
+        material_id = material.id
+
+        self.chapter.delete()
+
+        survivor = StudyMaterial.objects.filter(id=material_id).first()
+        self.assertIsNotNone(
+            survivor,
+            "Deleting a chapter destroyed the study material (CASCADE regression)",
+        )
+        self.assertIsNone(survivor.chapter_id)
+        self.assertEqual(survivor.subject_id, self.subject.id)
+
+
+class ChapterTagBackfillTest(TestCase):
+    """The 'nothing regresses' invariant: every pre-existing row with a chapter
+    must still resolve that chapter through the new tag table after the data
+    migration runs.
+
+    Calls the migration's own forwards() against the live app registry rather
+    than re-implementing it, so this tests the shipped code path.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        cls.course = Course.objects.create(title="Backfill Course")
+        cls.subject = Subject.objects.create(course=cls.course, name="Maths")
+        cls.chapter = Chapter.objects.create(
+            subject=cls.subject, title="Algebra", order=0)
+        cls.teacher = User.objects.create_user(
+            username="bf_teacher", email="bf@test.com", password="x",
+            is_verified=True)
+
+        now = timezone.now()
+        cls.assignment = Assignment.objects.create(
+            chapter=cls.chapter, title="Old worksheet",
+            due_date=now + timedelta(days=5))
+        cls.material = StudyMaterial.objects.create(
+            chapter=cls.chapter, title="Old notes", uploaded_by=cls.teacher)
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, chapter=cls.chapter, title="Old quiz")
+        cls.recording = SessionRecording.objects.create(
+            subject=cls.subject, chapter=cls.chapter, title="Old recording",
+            bunny_video_id="vid-1", uploaded_by=cls.teacher)
+        # A row with NO chapter must not produce a tag.
+        cls.chapterless = Assignment.objects.create(
+            subject=cls.subject, title="Chapterless",
+            due_date=now + timedelta(days=5))
+
+    def test_backfill_creates_one_tag_per_existing_chapter(self):
+        from django.apps import apps as global_apps
+        forwards = _load_backfill_forwards()
+
+        # Start from a clean slate: the serializers already tag on write, and
+        # the real migration runs against rows that have no tags yet.
+        ContentChapterTag.objects.all().delete()
+
+        forwards(global_apps, None)
+
+        for obj in (self.assignment, self.material, self.quiz, self.recording):
+            tags = list(ContentChapterTag.objects.filter(
+                content_type=ContentType.objects.get_for_model(obj),
+                object_id=obj.pk,
+            ))
+            self.assertEqual(
+                len(tags), 1,
+                f"{obj.__class__.__name__} did not get exactly one tag",
+            )
+            self.assertEqual(tags[0].chapter_id, self.chapter.id)
+
+        # The chapter-less assignment gets nothing — no phantom tag.
+        self.assertFalse(
+            ContentChapterTag.objects.filter(
+                content_type=ContentType.objects.get_for_model(self.chapterless),
+                object_id=self.chapterless.pk,
+            ).exists()
+        )
+
+    def test_backfill_is_idempotent(self):
+        from django.apps import apps as global_apps
+        forwards = _load_backfill_forwards()
+
+        ContentChapterTag.objects.all().delete()
+        forwards(global_apps, None)
+        first = ContentChapterTag.objects.count()
+        forwards(global_apps, None)
+        self.assertEqual(ContentChapterTag.objects.count(), first)
+
+    def test_every_row_still_reports_its_chapter_after_backfill(self):
+        from django.apps import apps as global_apps
+        forwards = _load_backfill_forwards()
+
+        ContentChapterTag.objects.all().delete()
+        forwards(global_apps, None)
+
+        # The legacy FK is untouched, and the new read path agrees with it.
+        self.assertEqual(self.assignment.chapter_id, self.chapter.id)
+        labels = [t["label"] for t in serialize_tags(self.assignment)]
+        self.assertEqual(labels, ["Algebra"])
+
+
+def _load_backfill_forwards():
+    """Import courses/migrations/0038's forwards() by file path.
+
+    Migration modules start with a digit, so they can't be imported with a
+    normal `from ... import` statement.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "courses" / "migrations"
+        / "0038_backfill_content_chapter_tags.py"
+    )
+    spec = importlib.util.spec_from_file_location("_backfill_0038", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.forwards
+
+
+class SubjectChaptersEndpointTest(AssignmentScopeFixtureMixin, TestCase):
+    """GET/POST /courses/subjects/<id>/chapters/ — the picker's data source."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.build_world()
+
+    def test_get_lists_syllabus_chapters(self):
+        r = _teacher_client(self.teacher_b).get(
+            f"/api/courses/subjects/{self.subject.id}/chapters/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn("Algebra", [c["title"] for c in r.data])
+
+    def test_post_creates_a_custom_chapter_appended_in_order(self):
+        r = _teacher_client(self.teacher_b).post(
+            f"/api/courses/subjects/{self.subject.id}/chapters/",
+            {"title": "Statistics"}, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        chapter = Chapter.objects.get(subject=self.subject, title="Statistics")
+        self.assertTrue(chapter.is_custom)
+        self.assertEqual(chapter.created_by_id, self.teacher_b.id)
+        self.assertEqual(chapter.order, 1)
+
+    def test_post_with_an_existing_name_reuses_it(self):
+        r = _teacher_client(self.teacher_b).post(
+            f"/api/courses/subjects/{self.subject.id}/chapters/",
+            {"title": "algebra"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["id"], str(self.chapter.id))
+        self.assertEqual(
+            Chapter.objects.filter(
+                subject=self.subject, title__iexact="Algebra").count(), 1,
+        )
+
+    def test_post_requires_a_title(self):
+        r = _teacher_client(self.teacher_b).post(
+            f"/api/courses/subjects/{self.subject.id}/chapters/",
+            {"title": "   "}, format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_student_cannot_create_a_chapter(self):
+        r = _learner_client(
+            self.learner_account, self.learner_profile
+        ).post(
+            f"/api/courses/subjects/{self.subject.id}/chapters/",
+            {"title": "Student Chapter"}, format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+        self.assertFalse(
+            Chapter.objects.filter(title="Student Chapter").exists()
+        )
+
+    def test_unassigned_teacher_cannot_create_a_chapter(self):
+        outsider = User.objects.create_user(
+            username="outsider", email="out@test.com", password="x",
+            is_verified=True)
+        UserRole.objects.create(
+            user=outsider, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+        r = _teacher_client(outsider).post(
+            f"/api/courses/subjects/{self.subject.id}/chapters/",
+            {"title": "Outsider Chapter"}, format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+        self.assertFalse(
+            Chapter.objects.filter(title="Outsider Chapter").exists()
+        )
