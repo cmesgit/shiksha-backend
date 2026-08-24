@@ -37,17 +37,21 @@ from courses.models import Subject, TeachingAssignment
 from courses.services import teaches_subject
 
 from .models import Quiz, QuizAttempt, Question, Choice, StudentAnswer
+from .visibility import batch_scope_q, learner_may_see_quiz
 from .serializers import (
     QuizCreateSerializer,
     QuestionCreateSerializer,
     BulkQuestionCreateSerializer,
     QuizDashboardSerializer,
+    QuizAssignSerializer,
     QuizSubmitSerializer,
     QuizDetailSerializer,
+    QuizDetailTeacherSerializer,
     QuizResultSerializer,
     TeacherQuizAnalyticsSerializer,
     TeacherQuizAttemptSerializer,
     BankQuestionSerializer,
+    QuestionBankStateSerializer,
     AdminQuizListSerializer,
     AdminQuizDetailSerializer,
     AdminQuizReviewActionSerializer,
@@ -65,26 +69,24 @@ _SUBMITTED_ATTEMPTS = Q(attempts__status=QuizAttempt.STATUS_SUBMITTED)
 
 
 def _assert_learner_may_see_quiz(learner, quiz):
-    """Raises Http404 unless `quiz`'s batch (if any) is this learner's own.
+    """Raises Http404 unless `quiz`'s batch scope includes this learner.
 
     StartQuizView, QuizDetailView and SubmitQuizView resolve a quiz by UUID
-    with only `is_published` + subscription checks — same shape assignments'
+    with only `is_assigned` + subscription checks — same shape assignments'
     per-object endpoints had before _assert_learner_may_see_assignment. Now
     that QuizCreateSerializer actually sets Quiz.batch (see its model-field
     comment), a batch-scoped quiz needs the same isolation or a Batch-B
     student who has/guesses the UUID can start, view and submit a
-    Batch-A-only quiz. Course-wide quizzes (batch IS NULL) are unaffected.
+    Batch-A-only quiz. Course-wide quizzes are unaffected.
+
+    Delegates to quizzes/visibility.py so the per-object rule and the
+    queryset rule can never drift; that module handles the M2M `batches`
+    plus the legacy `batch` FK fallback.
 
     404 rather than 403, matching the assignments precedent: a quiz scoped
     to a class the learner isn't in shouldn't be confirmed to exist.
     """
-    if quiz.batch_id is None:
-        return
-    batch_id = active_batch_id(learner_profile=learner, course_id=quiz.subject.course_id)
-    # None = not placed in a batch yet — StudentDashboardView's list filter
-    # degrades to "show everything" in that case too; matching it here means
-    # a quiz the learner can see on the list never 404s on open.
-    if batch_id is not None and batch_id != quiz.batch_id:
+    if not learner_may_see_quiz(learner, quiz):
         raise Http404
 
 
@@ -380,6 +382,64 @@ class SubmitQuizForReviewView(APIView):
 PublishQuizView = SubmitQuizForReviewView
 
 
+class TeacherQuizAssignView(APIView):
+    """PATCH /teacher/quizzes/:pk/assign/   {assign: bool, batch_ids?: [...]}
+
+    The Phase 1 endpoint: a teacher makes their OWN quiz live for their OWN
+    batches, with no admin involvement. Independent of `review_status`, which
+    is now purely informational — SubmitQuizForReviewView (publish/ and
+    submit-for-review/) is untouched and still only asks an admin to look at
+    the questions.
+
+    Writes four things, in an order that matters:
+
+      1. `batches` (M2M) — the real scope.
+      2. `batch` (legacy FK) = batch_ids[0], or NULL. Old clients still read
+         this, and quizzes/visibility.py still falls back to it.
+      3. `is_assigned` — the gate every student queryset now reads.
+      4. `is_published` — mirrored for back-compat only. Retires in Phase 10.
+
+    The M2M is written BEFORE the save because activity/signals.py's
+    `quiz_published` post_save receiver resolves the notify audience from the
+    batch scope. Save first and it would notify the PREVIOUS batches.
+    """
+
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def patch(self, request, pk):
+        require_teacher_context(request)
+
+        quiz = get_object_or_404(
+            Quiz.objects.select_related("subject"), pk=pk,
+        )
+        if quiz.created_by != request.user:
+            raise PermissionDenied("You did not create this quiz.")
+
+        serializer = QuizAssignSerializer(
+            data=request.data, context={"quiz": quiz},
+        )
+        serializer.is_valid(raise_exception=True)
+        assign = serializer.validated_data["assign"]
+        # Absent (vs []) means "don't touch the scope" — see the serializer's
+        # docstring for why that distinction is load-bearing.
+        batches = serializer.validated_data.get("batch_ids")
+
+        with transaction.atomic():
+            if batches is not None:
+                quiz.batches.set(batches)
+                quiz.batch = batches[0] if batches else None
+
+            quiz.is_assigned = assign
+            quiz.is_published = assign
+            quiz.save(update_fields=[
+                "batch", "is_assigned", "is_published", "updated_at",
+            ])
+
+        return Response(
+            QuizDetailTeacherSerializer(quiz, context={"request": request}).data
+        )
+
+
 class TeacherDeleteQuizView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
 
@@ -622,7 +682,7 @@ class StudentDashboardView(APIView):
                 subject__course__subscriptions__learner_profile=learner,
                 subject__course__subscriptions__status=_Sub.STATUS_ACTIVE,
                 subject__course__subscriptions__expires_at__gt=_tz.now(),
-                is_published=True,
+                is_assigned=True,
             )
             .distinct()
             .select_related("subject", "subject__course__board", "created_by")
@@ -667,16 +727,20 @@ class StudentDashboardView(APIView):
             quizzes = quizzes.filter(subject__course_id=course_id)
 
             # Batch isolation, finally enforced — see the warning on
-            # Quiz.batch. Course-wide quizzes (batch IS NULL) plus this
-            # learner's own batch's quizzes, matching
-            # materials/views.py's StudentCourseMaterials exactly. Only
-            # meaningful when a course is in scope, since a batch belongs
-            # to one course.
+            # Quiz.batch. Course-wide quizzes plus this learner's own
+            # batch's quizzes, matching materials/views.py's
+            # StudentCourseMaterials exactly. Only meaningful when a course
+            # is in scope, since a batch belongs to one course.
+            #
+            # batch_scope_q covers the M2M `batches` AND the legacy `batch`
+            # FK in one rule, via Exists() subqueries — so it adds no join
+            # and cannot duplicate rows into the questions_count Count()
+            # annotated above. See quizzes/visibility.py.
             batch_id = active_batch_id(
                 learner_profile=learner,
                 course_id=course_id,
             )
-            quizzes = quizzes.filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
+            quizzes = quizzes.filter(batch_scope_q(batch_id))
 
         if subject_id:
             quizzes = quizzes.filter(subject_id=subject_id)
@@ -846,7 +910,7 @@ class StartQuizView(APIView):
         quiz = get_object_or_404(
             Quiz.objects.select_related("subject__course__board"),
             pk=pk,
-            is_published=True,
+            is_assigned=True,
         )
 
         from enrollments.services import has_active_subscription, lock_payload
@@ -997,7 +1061,7 @@ class SubmitQuizView(APIView):
         quiz = get_object_or_404(
             Quiz.objects.select_related("subject__course__board"),
             pk=pk,
-            is_published=True,
+            is_assigned=True,
         )
 
         learner = get_active_profile(request)
@@ -1045,7 +1109,7 @@ class CheckAnswerView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
 
     def post(self, request, pk, qid):
-        quiz = get_object_or_404(Quiz, pk=pk, is_published=True)
+        quiz = get_object_or_404(Quiz, pk=pk, is_assigned=True)
 
         if quiz.quiz_type != Quiz.TYPE_PRACTICE:
             raise PermissionDenied(
@@ -1129,7 +1193,7 @@ class QuizDetailView(APIView):
             .select_related("subject", "subject__course__board", "created_by")
             .prefetch_related("questions__choices"),
             pk=pk,
-            is_published=True,
+            is_assigned=True,
         )
 
         # The owning teacher gets the full question set INCLUDING is_correct
@@ -1480,7 +1544,9 @@ class StudentQuizAttemptsView(APIView):
     permission_classes = [IsAuthenticated, IsEmailVerified]
 
     def get(self, request, pk):
-        quiz = get_object_or_404(Quiz, pk=pk, is_published=True)
+        quiz = get_object_or_404(
+            Quiz.objects.select_related("subject"), pk=pk, is_assigned=True,
+        )
 
         learner = get_active_profile(request)
         if learner is None:
@@ -1488,6 +1554,14 @@ class StudentQuizAttemptsView(APIView):
                 {"detail": "Select a learner profile.", "lock_reason": "no_learner_profile"},
                 status=403,
             )
+
+        # Pre-existing cross-batch leak, fixed here: this was the ONE student
+        # per-object quiz endpoint with no batch check at all, so a Batch-B
+        # learner holding a Batch-A quiz UUID got its title, quiz_type and
+        # total_marks back (and confirmation the quiz exists). Every sibling
+        # endpoint — StartQuizView, SubmitQuizView, QuizDetailView — has
+        # asserted this since Quiz.batch started being written.
+        _assert_learner_may_see_quiz(learner, quiz)
 
         attempts = (
             QuizAttempt.objects
@@ -2028,14 +2102,26 @@ class TeacherGenerateAIQuestionsView(APIView):
 
 class TeacherQuestionBankView(generics.ListAPIView):
     """
-    GET /teacher/question-bank/?scope=mine|school&subject=<id>&topic=&difficulty=&search=
+    GET /teacher/question-bank/?scope=mine|school&subject=<id>&topic=&difficulty=&state=&search=
 
-    The bank is a filtered view over questions belonging to *finalized*
-    (admin-approved) quizzes only, so what a teacher reuses has already
-    been vetted:
-      - scope=mine   → questions from the requesting teacher's own quizzes.
-      - scope=school → questions from other teachers assigned to the same
-                       subject(s) as the requester (their "school library").
+      - scope=mine   → EVERY question on the requesting teacher's own
+                       quizzes, regardless of quiz.review_status and
+                       regardless of bank_state. Ownership, not admin
+                       approval, is what makes a question "yours" (Phase 2 —
+                       before this, a teacher's own questions only showed up
+                       in their own bank once an admin approved the quiz,
+                       which is the exact ownership inversion this refactor
+                       removes; see quizzes/visibility.py for the parallel
+                       fix already done for quiz-level visibility).
+      - scope=school → questions from OTHER teachers assigned to the same
+                       subject(s) as the requester, gated on
+                       bank_state="accepted" — i.e. the shared ShikshaCom
+                       bank an admin has actually curated, not merely "on an
+                       approved quiz" (a question can sit on an approved quiz
+                       and still be bank_state="private").
+
+    `state=` additionally narrows either scope to one of the four
+    `Question.BANK_STATE_*` values, for the T3 state-chip filter row.
     """
     serializer_class = BankQuestionSerializer
     permission_classes = [IsAuthenticated, IsEmailVerified, IsTeacherContext]
@@ -2046,6 +2132,7 @@ class TeacherQuestionBankView(generics.ListAPIView):
         subject_id = self.request.query_params.get("subject")
         topic = self.request.query_params.get("topic", "").strip()
         difficulty = self.request.query_params.get("difficulty", "").strip()
+        state = self.request.query_params.get("state", "").strip()
         search = self.request.query_params.get("search", "").strip()
 
         assigned_subject_ids = TeachingAssignment.objects.filter(
@@ -2054,14 +2141,14 @@ class TeacherQuestionBankView(generics.ListAPIView):
 
         qs = (
             Question.objects
-            .filter(quiz__review_status=Quiz.REVIEW_APPROVED)
             .select_related("quiz", "quiz__subject", "quiz__created_by")
             .prefetch_related("choices")
         )
 
         if scope == "school":
             qs = qs.filter(
-                quiz__subject_id__in=assigned_subject_ids
+                quiz__subject_id__in=assigned_subject_ids,
+                bank_state=Question.BANK_STATE_ACCEPTED,
             ).exclude(quiz__created_by=user)
         else:
             qs = qs.filter(quiz__created_by=user)
@@ -2076,6 +2163,8 @@ class TeacherQuestionBankView(generics.ListAPIView):
             qs = qs.filter(topic__icontains=topic)
         if difficulty:
             qs = qs.filter(difficulty=difficulty)
+        if state:
+            qs = qs.filter(bank_state=state)
         if search:
             qs = qs.filter(Q(text__icontains=search) | Q(topic__icontains=search))
 
@@ -2101,10 +2190,13 @@ class TeacherBankFiltersView(APIView):
 
         topics = (
             Question.objects
-            .filter(
-                quiz__review_status=Quiz.REVIEW_APPROVED,
-                quiz__subject_id__in=assigned_subject_ids,
-            )
+            .filter(quiz__subject_id__in=assigned_subject_ids)
+            # Same ownership fix as TeacherQuestionBankView: topics must come
+            # from questions the teacher can actually pull into the bank —
+            # everything they wrote themselves (any bank_state), plus
+            # anyone's already-accepted questions (the "school" scope) — not
+            # gated on quiz__review_status, which is informational-only.
+            .filter(Q(quiz__created_by=user) | Q(bank_state=Question.BANK_STATE_ACCEPTED))
             .exclude(topic="")
             .values_list("topic", flat=True)
             .distinct()
@@ -2132,6 +2224,78 @@ class TeacherBankFiltersView(APIView):
             "subjects": subjects,
             "difficulties": [c[0] for c in Question.DIFFICULTY_CHOICES],
         })
+
+
+class TeacherBankSummaryView(APIView):
+    """
+    GET /teacher/question-bank/summary/
+
+    Counts, by bank_state, over EVERY question the requesting teacher has
+    ever written (`quiz__created_by=user`) — never another teacher's. One
+    aggregate query (values().annotate(Count)) rather than four separate
+    .count() calls, since T3's stat cards, T4's state rows and Phase 6's nav
+    pill (`suggested + changes_requested`) all need this on every page load.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified, IsTeacherContext]
+
+    def get(self, request):
+        rows = (
+            Question.objects
+            .filter(quiz__created_by=request.user)
+            .values("bank_state")
+            .annotate(n=Count("id"))
+        )
+        by_state = {row["bank_state"]: row["n"] for row in rows}
+
+        accepted = by_state.get(Question.BANK_STATE_ACCEPTED, 0)
+        suggested = by_state.get(Question.BANK_STATE_SUGGESTED, 0)
+        changes_requested = by_state.get(Question.BANK_STATE_CHANGES_REQUESTED, 0)
+        private = by_state.get(Question.BANK_STATE_PRIVATE, 0)
+
+        return Response({
+            "total": accepted + suggested + changes_requested + private,
+            "accepted": accepted,
+            "suggested": suggested,
+            "changes_requested": changes_requested,
+            "private": private,
+        })
+
+
+class TeacherQuestionBankStateView(APIView):
+    """PATCH /teacher/questions/:pk/bank/   {suggest_to_bank: bool}
+
+    The teacher's opt-in/out lever for the shared ShikshaCom bank (README
+    "Interactions & behaviour" — optimistic on the client, revert+toast on
+    failure). Ownership check follows the same pattern
+    TeacherQuizAssignView established for Phase 1: get-or-404, then 403 if
+    this teacher didn't write it — via `quiz__created_by`, since Question has
+    no `created_by` of its own.
+
+    Turning suggest_to_bank off always moves the question to "private",
+    including one an admin had already accepted — see Question.save()'s
+    docstring for why that direction is unconditional while the reverse
+    (turning it back on) never clobbers an existing admin decision.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def patch(self, request, pk):
+        require_teacher_context(request)
+
+        question = get_object_or_404(
+            Question.objects.select_related("quiz", "quiz__subject"), pk=pk,
+        )
+        if question.quiz.created_by != request.user:
+            raise PermissionDenied("You did not write this question.")
+
+        serializer = QuestionBankStateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        question.suggest_to_bank = serializer.validated_data["suggest_to_bank"]
+        question.save()
+
+        return Response(
+            BankQuestionSerializer(question, context={"request": request}).data
+        )
 
 
 # =====================================================

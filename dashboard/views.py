@@ -178,6 +178,38 @@ def _batch_visibility_q(batch_ids_by_course, course_field):
     return q
 
 
+def _quiz_batch_visibility_q(batch_ids_by_course):
+    """Quiz-specific counterpart to _batch_visibility_q above.
+
+    Quizzes carry a multi-batch M2M (`Quiz.batches`) as well as the legacy
+    single-batch FK, so the FK-only helper above would read a quiz assigned to
+    several batches as having no batch at all — i.e. course-wide — and show it
+    to every batch in the course. The per-course rule is delegated to
+    quizzes/visibility.py so there is exactly one definition of "is this quiz
+    in scope for this learner", shared with quizzes/views.py.
+
+    Two behaviours of the original are preserved deliberately:
+
+      · The base term is course-wide-in-ANY-course. _learner_course_ids uses
+        legacy_profile_q (so it includes pre-backfill enrollments with
+        learner_profile=NULL) while _batch_ids_for does not, so a course can
+        appear in subject_ids yet be absent from batch_ids_by_course. Without
+        this term every quiz in such a course would vanish.
+      · A course the learner is enrolled in but unplaced in is not restricted
+        at all — the same deliberate over-share _batch_ids_for documents.
+    """
+    from quizzes.visibility import batch_scope_q
+
+    q = batch_scope_q(None)
+    for course_id, batch_id in batch_ids_by_course.items():
+        in_course = Q(subject__course_id=course_id)
+        if batch_id is None:
+            q |= in_course
+        else:
+            q |= in_course & batch_scope_q(batch_id)
+    return q
+
+
 def _learner_assignments(chapter_ids, teacher_prefetch, batch_q, submitted_ids):
     """Assignments still outstanding for this learner.
 
@@ -245,8 +277,13 @@ def _learner_quizzes(subject_ids, batch_q, submitted_ids):
     # permanently. _learner_assignments' docstring above claimed quizzes
     # "behave correctly", which is exactly backwards — assignments were fixed
     # and quizzes were not, and the stale comment is why nobody re-checked.
+    # is_assigned, not is_published: Phase 1 moved student visibility onto the
+    # teacher-controlled flag. batch_q now comes from
+    # _quiz_batch_visibility_q, which is M2M-aware; it is built from Exists()
+    # subqueries so it adds no join and cannot duplicate rows into the [:20]
+    # slice below.
     return list(
-        Quiz.objects.filter(subject_id__in=subject_ids, is_published=True)
+        Quiz.objects.filter(subject_id__in=subject_ids, is_assigned=True)
         .filter(batch_q)
         .exclude(id__in=submitted_ids)
         .select_related("created_by", "subject__course__board")
@@ -594,8 +631,7 @@ class DashboardView(APIView):
             # dashboard.
             assignment_batch_q = _batch_visibility_q(
                 batch_ids_by_course, "chapter__subject__course_id")
-            quiz_batch_q = _batch_visibility_q(
-                batch_ids_by_course, "subject__course_id")
+            quiz_batch_q = _quiz_batch_visibility_q(batch_ids_by_course)
             submitted_ids = _guard(
                 "learner.submitted_assignments",
                 lambda: _submitted_assignment_ids(profile, chapter_ids), set())

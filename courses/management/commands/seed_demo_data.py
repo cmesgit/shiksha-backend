@@ -345,11 +345,21 @@ class Command(BaseCommand):
                 subject=subject, title=f"{name} — Chapter 1 quick check",
                 defaults={"created_by": faculty, "batch": batch,
                           "quiz_type": Quiz.TYPE_MOCK, "time_limit_minutes": 10,
+                          # is_assigned is what students actually filter on
+                          # (Phase 1); is_published is the legacy mirror and
+                          # review_status is now purely informational. All
+                          # three are set so seeded quizzes stay visible and
+                          # look like a real teacher-assigned, admin-approved
+                          # quiz.
+                          "is_assigned": True,
                           "is_published": True, "review_status": Quiz.REVIEW_APPROVED,
                           "reviewed_by": faculty, "reviewed_at": timezone.now(),
                           "submitted_for_review_at": timezone.now()},
             )
             if created:
+                # Mirror the legacy `batch` FK into the new M2M, as
+                # migration 0021 does for pre-existing rows.
+                quiz.batches.set([batch])
                 total = 0
                 questions = []
                 for text, options, correct_idx in bank[name]:

@@ -6,6 +6,7 @@ from .views import (
     AddQuestionView,
     BulkAddQuestionsView,
     SubmitQuizForReviewView,
+    TeacherQuizAssignView,
     StudentDashboardView,
     StudentQuizStatsView,
     StartQuizView,
@@ -28,6 +29,8 @@ from .views import (
     TeacherGenerateAIQuestionsView,
     TeacherQuestionBankView,
     TeacherBankFiltersView,
+    TeacherBankSummaryView,
+    TeacherQuestionBankStateView,
     AdminQuizListView,
     AdminQuizDetailView,
     AdminQuizReviewView,
@@ -46,6 +49,10 @@ urlpatterns = [
     # "publish" kept for backward compatibility; both now submit for admin review.
     path("teacher/quizzes/<uuid:pk>/publish/", SubmitQuizForReviewView.as_view()),
     path("teacher/quizzes/<uuid:pk>/submit-for-review/", SubmitQuizForReviewView.as_view()),
+    # Make a quiz live for the teacher's own batches — no admin involved. This
+    # is the one that controls student visibility; the two above only ask an
+    # admin to review the questions.
+    path("teacher/quizzes/<uuid:pk>/assign/", TeacherQuizAssignView.as_view()),
     path("teacher/quizzes/<uuid:pk>/delete/", TeacherDeleteQuizView.as_view()),
     path("teacher/quizzes/<uuid:pk>/duplicate/", TeacherQuizDuplicateView.as_view()),
     path("teacher/quizzes/<uuid:pk>/analytics/", TeacherQuizAnalyticsView.as_view()),
@@ -76,6 +83,9 @@ urlpatterns = [
     # ── Teacher question bank ("finalized" reusable questions) ───────────────
     path("teacher/question-bank/", TeacherQuestionBankView.as_view()),
     path("teacher/question-bank/filters/", TeacherBankFiltersView.as_view()),
+    path("teacher/question-bank/summary/", TeacherBankSummaryView.as_view()),
+    # Per-question site-bank opt-in/out (Phase 2). Question.id is a UUID.
+    path("teacher/questions/<uuid:pk>/bank/", TeacherQuestionBankStateView.as_view()),
 
     # ── Student ───────────────────────────────────────────────────────────────
     path("student/quizzes/", StudentDashboardView.as_view()),

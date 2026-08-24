@@ -173,6 +173,51 @@ class QuizCreateSerializer(serializers.ModelSerializer):
         )
 
 
+class QuizAssignSerializer(serializers.Serializer):
+    """Body for PATCH /teacher/quizzes/:pk/assign/ — the Phase 1 endpoint that
+    lets a teacher make their own quiz live for their own batches with no admin
+    involvement.
+
+    `batch_ids` is deliberately tri-state:
+      · absent      → leave the existing batch scope untouched
+      · []          → course-wide (every batch of the course)
+      · [a, b, ...] → only those batches
+
+    Treating "absent" as "course-wide" would mean a bare `{"assign": false}`
+    silently widened a batch-scoped quiz to the whole course, so the next
+    re-assign leaks it to every batch. See TeacherQuizAssignView.
+    """
+
+    assign = serializers.BooleanField()
+    batch_ids = serializers.ListField(
+        child=serializers.PrimaryKeyRelatedField(queryset=Batch.objects.all()),
+        required=False,
+        allow_empty=True,
+    )
+
+    def validate_batch_ids(self, batches):
+        # Never trust a batch id from the payload: without this, a teacher
+        # could assign their quiz to a batch of a course they have nothing to
+        # do with, and every student in it would see it. Same class of bug as
+        # the cross-batch LiveKit token leak.
+        quiz = self.context["quiz"]
+        course_id = quiz.subject.course_id
+        stray = sorted(str(b.id) for b in batches if b.course_id != course_id)
+        if stray:
+            raise ValidationError(
+                "These batches belong to a different course than this quiz's "
+                f"subject: {', '.join(stray)}."
+            )
+        # De-dupe while preserving order, so batch_ids[0] (the legacy FK shim)
+        # is predictable.
+        seen, unique = set(), []
+        for b in batches:
+            if b.id not in seen:
+                seen.add(b.id)
+                unique.append(b)
+        return unique
+
+
 class QuizDashboardSerializer(serializers.ModelSerializer):
     subject_id = serializers.UUIDField(read_only=True)
     subject_name = serializers.CharField(source="subject.name", read_only=True)
@@ -257,8 +302,13 @@ class QuizSubmitSerializer(serializers.Serializer):
         if not has_active_subscription(user=user, course=quiz.subject.course, learner_profile=learner):
             raise ValidationError("Your subscription for this course has expired.")
 
-        if not quiz.is_published:
-            raise ValidationError("Quiz not published.")
+        # Defence-in-depth mirror of SubmitQuizView's own `is_assigned` gate.
+        # Reads is_assigned, NOT is_published: after Phase 1 a teacher-assigned
+        # quiz is live without ever being admin-approved, and this check ran on
+        # every submit — left on is_published it would reject every legitimate
+        # submission to a quiz the teacher assigned themselves.
+        if not quiz.is_assigned:
+            raise ValidationError("Quiz not assigned.")
 
         # Allow partial submission (auto-submit on timer expiry)
         # We do NOT validate all questions answered here — partial is OK.
@@ -407,6 +457,11 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
         source="created_by.email", read_only=True, default=None)
     questions = serializers.SerializerMethodField()
     is_editable = serializers.BooleanField(read_only=True)
+    # Named to match QuizAssignSerializer's write field, so the teacher app can
+    # round-trip the assign form without renaming anything.
+    batch_ids = serializers.PrimaryKeyRelatedField(
+        source="batches", many=True, read_only=True,
+    )
 
     class Meta:
         model = Quiz
@@ -416,7 +471,7 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
             "time_limit_minutes",
             "is_published", "questions", "quiz_type", "review_status",
             "review_note", "reviewed_at", "submitted_for_review_at",
-            "is_editable",
+            "is_editable", "is_assigned", "batch_ids",
         ]
 
     def get_board_name(self, obj):
@@ -546,7 +601,7 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
         fields = [
             "id", "title", "created_at", "subject_name", "subject_id",
             "course_title", "board_name",
-            "is_published", "questions_count",
+            "is_published", "is_assigned", "questions_count",
             # total_marks is the DENOMINATOR for average/highest/lowest, which
             # are raw marks, not percentages. Without it the Quizzes card had
             # no way to turn "7.5" into "75%" and rendered the mark itself
@@ -578,10 +633,19 @@ class TeacherQuizStudentSummarySerializer(serializers.Serializer):
 # =====================================================
 
 class BankQuestionSerializer(serializers.ModelSerializer):
-    """A question surfaced in the teacher question bank. The bank is not a
-    separate table — it's a filtered view over questions that already
-    belong to a *finalized* (admin-approved) quiz, so what you reuse has
-    already been vetted."""
+    """A question surfaced in the teacher question bank.
+
+    Phase 2: `scope=mine` is every question on the requesting teacher's own
+    quizzes regardless of review/curation state (ownership, not admin
+    approval, is what makes it "yours"); `scope=school` is still gated on
+    `bank_state="accepted"` — the shared ShikshaCom bank other teachers draw
+    on. See TeacherQuestionBankView.get_queryset.
+
+    `bank_state`/`suggest_to_bank`/`bank_feedback` are additive fields for
+    the T3 "My question bank" screen (state chip + admin-feedback block).
+    Do not rename or remove any of the pre-existing fields below — the
+    current teacher QuizBank.jsx screen consumes this response shape as-is.
+    """
     choices = ChoiceAdminSerializer(many=True, read_only=True)
     quiz_id = serializers.UUIDField(source="quiz.id", read_only=True)
     quiz_title = serializers.CharField(source="quiz.title", read_only=True)
@@ -597,7 +661,21 @@ class BankQuestionSerializer(serializers.ModelSerializer):
             "id", "text", "marks", "explanation", "topic", "difficulty",
             "choices", "quiz_id", "quiz_title", "subject_id", "subject_name",
             "author_name", "author_id", "created_at",
+            # Phase 2 additions — purely additive, see class docstring.
+            "bank_state", "suggest_to_bank", "bank_feedback",
         ]
+
+
+class QuestionBankStateSerializer(serializers.Serializer):
+    """Body for PATCH /teacher/questions/:pk/bank/ — the teacher's per-
+    question opt-in/out of the shared ShikshaCom bank.
+
+    Only `suggest_to_bank` is teacher-writable. `bank_state` follows from it
+    via Question.save()'s invariant (see that method's docstring for why
+    turning this off always wins, but turning it on never clobbers an
+    admin's existing accept/request-changes decision).
+    """
+    suggest_to_bank = serializers.BooleanField()
 
 
 # =====================================================
@@ -617,7 +695,8 @@ class AdminQuizListSerializer(serializers.ModelSerializer):
         model = Quiz
         fields = [
             "id", "title", "subject_name", "course_title", "teacher_name",
-            "quiz_type", "review_status", "is_published", "questions_count",
+            "quiz_type", "review_status", "is_published", "is_assigned",
+            "questions_count",
             "attempts_count", "total_marks", "created_at",
             "submitted_for_review_at", "reviewed_at",
         ]
@@ -638,7 +717,7 @@ class AdminQuizDetailSerializer(serializers.ModelSerializer):
         fields = [
             "id", "title", "description", "subject_name", "course_title",
             "teacher_name", "quiz_type", "review_status", "review_note",
-            "is_published", "total_marks", "time_limit_minutes",
+            "is_published", "is_assigned", "total_marks", "time_limit_minutes",
             "created_at", "submitted_for_review_at", "reviewed_at",
             "reviewed_by_name", "questions",
         ]

@@ -41,6 +41,7 @@ from enrollments.models import Enrollment
 from livestream.models import LiveSession
 from livestream.services.notifications import push_ws_notification
 from quizzes.models import Quiz, QuizAttempt
+from quizzes.visibility import quiz_batch_ids
 
 from .models import Activity
 from .serializers import ActivitySerializer
@@ -97,11 +98,24 @@ def _enrollments_for(course, batch_id):
     was survivable as an Activity row; as a durable notification (with
     push, and email/SMS for some verbs) it is not.
     """
+    return _enrollments_for_batches(
+        course, set() if batch_id is None else {batch_id}
+    )
+
+
+def _enrollments_for_batches(course, batch_ids):
+    """Multi-batch form of _enrollments_for — see its docstring for the rule.
+
+    An EMPTY `batch_ids` means course-wide (everyone), exactly as `batch_id is
+    None` did. Needed because Quiz.batches lets one quiz target several
+    batches at once; the un-batched half of the OR is unchanged and just as
+    load-bearing.
+    """
     qs = (Enrollment.objects
           .filter(course=course, status=Enrollment.STATUS_ACTIVE)
           .select_related("user", "learner_profile"))
-    if batch_id is not None:
-        qs = qs.filter(Q(batch_id=batch_id) | Q(batch__isnull=True))
+    if batch_ids:
+        qs = qs.filter(Q(batch_id__in=batch_ids) | Q(batch__isnull=True))
     return qs
 
 
@@ -356,34 +370,46 @@ def assignment_submitted(sender, instance, created, **kwargs):
 
 
 # =====================================================
-# QUIZ — cache old published state before save
+# QUIZ — cache old ASSIGNED state before save
 # (unchanged fix: post_save re-queried the saved row, so the
 #  False→True transition was never observed)
+#
+# ⚠ Keyed on `is_assigned`, NOT `is_published`. Phase 1 moved student
+# visibility onto is_assigned; a teacher assigning a quiz to their class is
+# now the moment students can see it, so it is the only moment worth a "new
+# quiz" notification. Left on is_published, assigning a quiz would notify
+# NOBODY — the same silent-zero-recipients failure this platform already
+# shipped once with the 1-hour live-class reminders.
 # =====================================================
 
 @receiver(pre_save, sender=Quiz)
 def cache_quiz_published_state(sender, instance, **kwargs):
     if instance.pk:
-        instance._was_published = (
+        instance._was_assigned = (
             Quiz.objects
             .filter(pk=instance.pk)
-            .values_list("is_published", flat=True)
+            .values_list("is_assigned", flat=True)
             .first()
         ) or False
     else:
-        instance._was_published = False
+        instance._was_assigned = False
 
 
 @receiver(post_save, sender=Quiz)
 def quiz_published(sender, instance, created, **kwargs):
-    was = getattr(instance, "_was_published", False)
-    if was or not instance.is_published:
+    was = getattr(instance, "_was_assigned", False)
+    if was or not instance.is_assigned:
         return
 
     subject = instance.subject
     course = subject.course
 
-    enrollments = _enrollments_for(course, instance.batch_id)
+    # Effective batch scope: the M2M when set, else the legacy FK, else
+    # course-wide. Same resolution the student querysets use, which is the
+    # only correct basis for "tell exactly the people who can see it".
+    # TeacherQuizAssignView writes the M2M BEFORE saving the flag so this
+    # sees the new scope, not the old one.
+    enrollments = _enrollments_for_batches(course, quiz_batch_ids(instance))
 
     _bulk_notify_students(
         enrollments=enrollments,

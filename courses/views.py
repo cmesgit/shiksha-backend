@@ -439,7 +439,17 @@ class SubjectDashboardView(APIView):
         pending_assignments = total_assignments - completed_assignments
 
         # ── Quizzes: 1 query ──
-        quiz_qs = Quiz.objects.filter(subject=subject, is_published=True)
+        # is_assigned, not is_published — Phase 1 moved student visibility onto
+        # the teacher-controlled flag.
+        #
+        # NO batch scoping added here, deliberately. This view serves BOTH
+        # students and teachers (see `is_student` above): the totals feed a
+        # teacher's own subject dashboard as well as a learner's, and it has
+        # never been batch-scoped for either. Adding batch scoping would be a
+        # behaviour change beyond Phase 1's "preserve who sees what" mandate,
+        # and would be outright wrong for the teacher branch. Flagged as a
+        # separate question, not silently changed here.
+        quiz_qs = Quiz.objects.filter(subject=subject, is_assigned=True)
         quiz_counts = quiz_qs.aggregate(
             total=Count("id", distinct=True),
             completed=Count(
