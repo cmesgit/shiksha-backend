@@ -1315,6 +1315,89 @@ class TeacherQuizListT1RowDataTest(TestCase):
         self.assertEqual(r.data["attempts_delta"], -2)
 
 
+class TeacherBankT3RowDataTest(TestCase):
+    """T3 shows each question's chapter, and must not pay a query per row.
+
+    A Question has no chapter of its own — Phase 3 put chapter tagging on the
+    quiz — so the chip resolves through the quiz. Doing that naively inside
+    the serializer is one query per row, which on a real 142-question bank is
+    142 extra round trips.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Chapter
+        from courses.chapter_tags import set_tags
+
+        Role.objects.get_or_create(name="TEACHER")
+        cls.teacher = User.objects.create_user(
+            username="t3_t", email="t3_t@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        cls.course = Course.objects.create(title="Class 11")
+        cls.subject = Subject.objects.create(course=cls.course, name="Physics")
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, is_active=True)
+        syllabus = Chapter.objects.create(
+            subject=cls.subject, title="Kinematics", order=0)
+        custom = Chapter.objects.create(
+            subject=cls.subject, title="Board-pattern numericals", order=1,
+            is_custom=True, created_by=cls.teacher)
+
+        # Two quizzes so the page spans more than one chapter.
+        for i, (chapter, title) in enumerate(
+            [(syllabus, "Motion"), (custom, "Extra drill")]
+        ):
+            quiz = Quiz.objects.create(
+                subject=cls.subject, created_by=cls.teacher, title=title,
+                review_status=Quiz.REVIEW_DRAFT,
+            )
+            set_tags(quiz, [(chapter, "", 0)])
+            for n in range(3):
+                q = Question.objects.create(
+                    quiz=quiz, text=f"{title} Q{n}", marks=1, order=n,
+                    explanation="e",
+                )
+                Choice.objects.create(question=q, text="a", is_correct=True)
+                Choice.objects.create(question=q, text="b", is_correct=False)
+
+    def _client(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        return c
+
+    def test_rows_carry_their_chapter_and_flag_a_custom_one(self):
+        r = self._client().get("/api/teacher/question-bank/?scope=mine")
+        self.assertEqual(r.status_code, 200, r.content)
+        by_label = {}
+        for row in r.data:
+            by_label.setdefault(row["chapter_label"], set()).add(
+                row["chapter_is_custom"])
+        self.assertEqual(by_label["Kinematics"], {False})
+        # a teacher-typed chapter no admin has promoted gets the warning tint
+        self.assertEqual(by_label["Board-pattern numericals"], {True})
+
+    def test_the_chapter_chip_does_not_cost_a_query_per_row(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        c = self._client()
+        with CaptureQueriesContext(connection) as ctx:
+            r = c.get("/api/teacher/question-bank/?scope=mine")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.data), 6)
+        # Flat: resolving 6 questions across 2 quizzes must not approach 6+
+        # extra queries. Generous ceiling — it is a regression guard, not a
+        # measurement of the current exact count.
+        self.assertLess(
+            len(ctx), 10,
+            f"chapter chip looks N+1 again: {len(ctx)} queries for 6 rows",
+        )
+
+
 class QuizDraftChapterRoundTripTest(TestCase):
     """The builder's edit load must return the quiz's chapter tagging.
 

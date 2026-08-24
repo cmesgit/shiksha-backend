@@ -22,7 +22,7 @@ from rest_framework.throttling import ScopedRateThrottle
 logger = logging.getLogger(__name__)
 
 from accounts.permissions import IsEmailVerified, IsAdmin, require_teacher_context, IsTeacherContext, _in_teacher_context
-from courses.chapter_tags import attach_chapter_tags
+from courses.chapter_tags import attach_chapter_tags, serialize_tags
 from accounts.auth_flow import get_active_profile
 from enrollments.models import Enrollment
 from enrollments.services import active_batch_id
@@ -2530,6 +2530,27 @@ class TeacherQuestionBankView(generics.ListAPIView):
             qs = qs.filter(Q(text__icontains=search) | Q(topic__icontains=search))
 
         return qs.order_by("-created_at")
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["chapter_tags_by_quiz"] = self._chapter_tags_by_quiz
+        return ctx
+
+    _chapter_tags_by_quiz = None
+
+    def list(self, request, *args, **kwargs):
+        # T3 shows each question's chapter. That lives on the QUIZ (Phase 3 put
+        # chapter tagging there, not on Question), so resolve it once for the
+        # whole page rather than per row — a 142-question bank would otherwise
+        # be 142 extra queries.
+        queryset = self.filter_queryset(self.get_queryset())
+        rows = list(queryset)
+        quizzes = {q.quiz_id: q.quiz for q in rows}
+        attach_chapter_tags(list(quizzes.values()))
+        self._chapter_tags_by_quiz = {
+            qid: serialize_tags(quiz) for qid, quiz in quizzes.items()
+        }
+        return Response(self.get_serializer(rows, many=True).data)
 
 
 class TeacherBankFiltersView(APIView):

@@ -863,15 +863,45 @@ class BankQuestionSerializer(serializers.ModelSerializer):
     author_name = serializers.CharField(
         source="quiz.created_by.email", read_only=True, default=None)
     author_id = serializers.UUIDField(source="quiz.created_by.id", read_only=True, default=None)
+    # T3's chapter chip. A Question has no chapter of its own — Phase 3 put
+    # chapter tagging on the quiz — so this is the quiz's first tag, which is
+    # what the question is actually filed under. `chapter_is_custom` drives the
+    # spec's warning tint for a teacher-typed chapter that no admin has
+    # promoted into the syllabus yet.
+    chapter_label = serializers.SerializerMethodField()
+    chapter_is_custom = serializers.SerializerMethodField()
+
+    def _first_tag(self, obj):
+        # Prefer the map the list view builds (one query for the whole page).
+        # select_related gives every Question its OWN Quiz instance, so
+        # attach_chapter_tags() on a deduped list would not reach them —
+        # hence a plain id→tags dict rather than a prefetch attribute.
+        by_quiz = self.context.get("chapter_tags_by_quiz")
+        if by_quiz is not None:
+            tags = by_quiz.get(obj.quiz_id) or []
+        else:
+            # Fallback for single-object use; one query, not N.
+            tags = serialize_tags(obj.quiz)
+        return tags[0] if tags else None
+
+    def get_chapter_label(self, obj):
+        tag = self._first_tag(obj)
+        return (tag or {}).get("label") or None
+
+    def get_chapter_is_custom(self, obj):
+        tag = self._first_tag(obj)
+        return bool((tag or {}).get("is_custom"))
 
     class Meta:
         model = Question
         fields = [
             "id", "text", "marks", "explanation", "topic", "difficulty",
             "choices", "quiz_id", "quiz_title", "subject_id", "subject_name",
-            "author_name", "author_id", "created_at",
+            "author_name", "author_id", "created_at", "source",
             # Phase 2 additions — purely additive, see class docstring.
             "bank_state", "suggest_to_bank", "bank_feedback",
+            # Phase 6 (T3) additions.
+            "chapter_label", "chapter_is_custom",
         ]
 
 
