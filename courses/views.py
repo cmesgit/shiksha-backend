@@ -2232,6 +2232,13 @@ class PublicFeaturedView(APIView):
                 "link_path": card.link_path,
                 "link_state": card.link_state,
                 "course_id": str(card.course_id) if card.course_id else None,
+                # The /courses/:slug route resolves by SLUG, not id, so a card
+                # that only knew its course_id could not link to that course's
+                # detail/syllabus view at all — it 404'd and dumped the visitor
+                # on the bare catalog. Callers must tolerate this being absent:
+                # this response is cached for LIST_TTL, so entries written
+                # before this field existed keep serving until they expire.
+                "course_slug": course.slug if course else None,
                 "board_id": str(card.board_id) if card.board_id else None,
                 "order": card.order,
             })
