@@ -1491,6 +1491,89 @@ class StudentPracticeChaptersTest(TestCase):
                    {"chapter_id": str(foreign.id)}, format="json")
         self.assertEqual(r.status_code, 403, r.content)
 
+    def _start(self):
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)})
+        r = c.post("/api/student/practice/start/",
+                   {"chapter_id": str(self.chapter.id)}, format="json")
+        return c, r.data
+
+    def test_answering_returns_the_verdict_immediately(self):
+        # Practice IS instant feedback — a mock withholds the key, practice
+        # would be pointless if it did the same.
+        c, data = self._start()
+        q = data["questions"][0]
+        r = c.post(f"/api/student/practice/{data['session_id']}/answer/",
+                   {"question_id": q["id"], "choice_id": q["choices"][0]["id"]},
+                   format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn("is_correct", r.data)
+        self.assertIsNotNone(r.data["correct_choice_id"])
+        self.assertEqual(r.data["total"], 2)
+
+    def test_answering_the_same_question_twice_is_refused(self):
+        # Overwriting would let a second guess rewrite the first — the same
+        # self-flattering loop that keeping practice out of analytics prevents.
+        c, data = self._start()
+        q = data["questions"][0]
+        body = {"question_id": q["id"], "choice_id": q["choices"][0]["id"]}
+        url = f"/api/student/practice/{data['session_id']}/answer/"
+        self.assertEqual(c.post(url, body, format="json").status_code, 200)
+        self.assertEqual(c.post(url, body, format="json").status_code, 400)
+
+    def test_a_question_outside_the_set_is_refused(self):
+        # Otherwise a learner could answer any bank question and shape their
+        # own weak-area picture.
+        from quizzes.models import Question as Q2
+        c, data = self._start()
+        stray = Q2.objects.create(
+            quiz=self.mock, text="not served", marks=1, order=9, explanation="e")
+        ch = Choice.objects.create(question=stray, text="a", is_correct=True)
+        r = c.post(f"/api/student/practice/{data['session_id']}/answer/",
+                   {"question_id": str(stray.id), "choice_id": str(ch.id)},
+                   format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_completing_every_question_marks_the_session_done(self):
+        from quizzes.models import PracticeSession
+        c, data = self._start()
+        for q in data["questions"]:
+            r = c.post(f"/api/student/practice/{data['session_id']}/answer/",
+                       {"question_id": q["id"], "choice_id": q["choices"][0]["id"]},
+                       format="json")
+        self.assertTrue(r.data["completed"])
+        self.assertIsNotNone(
+            PracticeSession.objects.get(id=data["session_id"]).completed_at)
+
+    def test_another_learners_session_is_not_answerable(self):
+        c, data = self._start()
+        intruder_acct = User.objects.create_user(
+            username="nosy", email="nosy@test.com", password="x", is_verified=True)
+        intruder = LearnerProfile.objects.create(
+            account=intruder_acct, display_name="nosy", is_default=True)
+        c2 = APIClient()
+        c2.force_authenticate(
+            user=intruder_acct,
+            token={"context": "learner", "active_profile": str(intruder.id)})
+        q = data["questions"][0]
+        r = c2.post(f"/api/student/practice/{data['session_id']}/answer/",
+                    {"question_id": q["id"], "choice_id": q["choices"][0]["id"]},
+                    format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def test_practice_answers_still_never_touch_graded_accuracy(self):
+        # End to end: answer a whole practice set correctly, graded stays 50%.
+        c, data = self._start()
+        for q in data["questions"]:
+            c.post(f"/api/student/practice/{data['session_id']}/answer/",
+                   {"question_id": q["id"], "choice_id": q["choices"][0]["id"]},
+                   format="json")
+        row = next(x for x in self._get().data if x["title"] == "Algebra")
+        self.assertEqual(row["accuracy"], 50)
+        self.assertEqual(row["answered"], 2)
+
     def test_a_chapter_from_a_course_the_learner_is_not_in_is_absent(self):
         from courses.models import Chapter
         other = Course.objects.create(title="Class 12")

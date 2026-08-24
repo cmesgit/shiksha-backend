@@ -11,6 +11,7 @@ from .views import (
     StudentDashboardView,
     StudentPracticeChaptersView,
     StudentPracticeStartView,
+    StudentPracticeAnswerView,
     StudentQuizStatsView,
     StartQuizView,
     SubmitQuizView,
@@ -107,6 +108,7 @@ urlpatterns = [
     # S1 · practise by chapter (Phase 8).
     path("student/practice/chapters/", StudentPracticeChaptersView.as_view()),
     path("student/practice/start/", StudentPracticeStartView.as_view()),
+    path("student/practice/<uuid:pk>/answer/", StudentPracticeAnswerView.as_view()),
     path("student/quizzes/stats/", StudentQuizStatsView.as_view()),
     path("student/quiz-subjects/", StudentQuizSubjectsView.as_view()),
     path("student/quizzes/<uuid:pk>/submit/", SubmitQuizView.as_view()),

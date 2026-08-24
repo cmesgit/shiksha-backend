@@ -39,7 +39,7 @@ from courses.services import teaches_subject
 
 from .models import (
     Quiz, QuizSection, QuizAttempt, Question, Choice, StudentAnswer,
-    PracticeSession,
+    PracticeSession, PracticeAnswer,
 )
 from .visibility import batch_scope_q, learner_may_see_quiz
 from .serializers import (
@@ -1229,6 +1229,82 @@ class StudentPracticeStartView(APIView):
                 for q in picked
             ],
         }, status=status.HTTP_201_CREATED)
+
+
+class StudentPracticeAnswerView(APIView):
+    """
+    POST /student/practice/<session_id>/answer/   { question_id, choice_id }
+
+    Records one practice answer and returns the verdict immediately, because
+    that is what practice IS: "answer shown after each question" (README §T2's
+    practice card). A mock withholds the key until submit; practice would be
+    pointless if it did the same.
+
+    Re-answering a question inside the same session is refused rather than
+    overwritten. Retrying draws a fresh session (see StudentPracticeStartView),
+    so the record of what a learner knew at a point in time stays intact —
+    overwriting would let a second guess rewrite the first, which is the same
+    self-flattering loop that keeping practice out of graded analytics exists
+    to prevent.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def post(self, request, pk):
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response(
+                {"detail": "Select a learner profile.",
+                 "lock_reason": "no_learner_profile"},
+                status=403,
+            )
+
+        session = get_object_or_404(PracticeSession, pk=pk)
+        if session.learner_profile_id != learner.id:
+            raise PermissionDenied("Not your practice session.")
+
+        question_id = request.data.get("question_id")
+        choice_id = request.data.get("choice_id")
+        if not question_id or not choice_id:
+            raise ValidationError(
+                {"detail": "question_id and choice_id are both required."})
+
+        # The question must be one this session actually served — otherwise a
+        # learner could answer any question in the bank and shape their own
+        # weak-area picture.
+        question = session.questions.filter(id=question_id).first()
+        if question is None:
+            raise ValidationError(
+                {"question_id": "Not part of this practice set."})
+
+        choice = Choice.objects.filter(id=choice_id, question=question).first()
+        if choice is None:
+            raise ValidationError({"choice_id": "Not a choice of that question."})
+
+        if PracticeAnswer.objects.filter(
+                session=session, question=question).exists():
+            raise ValidationError(
+                {"detail": "Already answered. Start a new practice set to retry."})
+
+        PracticeAnswer.objects.create(
+            session=session, question=question,
+            selected_choice=choice, is_correct=choice.is_correct,
+        )
+
+        answered = session.answers.count()
+        total = session.questions.count()
+        if answered >= total and session.completed_at is None:
+            session.completed_at = timezone.now()
+            session.save(update_fields=["completed_at"])
+
+        correct = question.choices.filter(is_correct=True).first()
+        return Response({
+            "is_correct": choice.is_correct,
+            "correct_choice_id": str(correct.id) if correct else None,
+            "explanation": question.explanation,
+            "answered": answered,
+            "total": total,
+            "completed": session.completed_at is not None,
+        })
 
 
 class StudentQuizStatsView(APIView):
