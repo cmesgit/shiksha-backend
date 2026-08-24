@@ -1315,6 +1315,125 @@ class TeacherQuizListT1RowDataTest(TestCase):
         self.assertEqual(r.data["attempts_delta"], -2)
 
 
+class StudentPracticeChaptersTest(TestCase):
+    """S1's "Practise by chapter" list, and the rule that keeps it honest.
+
+    Accuracy is computed from GRADED attempts only. If practice counted, then
+    practising a weak chapter would raise the number that identified it as
+    weak — the weak-area report would measure how much you practised rather
+    than what you know.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Chapter, Batch
+        from enrollments.models import Enrollment, Subscription
+
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="STUDENT")
+
+        cls.teacher = User.objects.create_user(
+            username="pt_t", email="pt_t@test.com", password="x", is_verified=True)
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Maths")
+        cls.chapter = Chapter.objects.create(
+            subject=cls.subject, title="Algebra", order=0)
+        batch = Batch.objects.create(course=cls.course, name="10-A", code="10A")
+
+        cls.account = User.objects.create_user(
+            username="kid", email="kid@test.com", password="x", is_verified=True)
+        UserRole.objects.create(
+            user=cls.account, role=Role.objects.get(name="STUDENT"),
+            is_active=True, is_primary=True)
+        cls.learner = LearnerProfile.objects.create(
+            account=cls.account, display_name="kid", is_default=True)
+        now = timezone.now()
+        Subscription.objects.create(
+            user=cls.account, learner_profile=cls.learner, course=cls.course,
+            status=Subscription.STATUS_ACTIVE, starts_at=now,
+            expires_at=now + timedelta(days=30))
+        Enrollment.objects.create(
+            user=cls.account, learner_profile=cls.learner, course=cls.course,
+            batch=batch, status=Enrollment.STATUS_ACTIVE)
+
+        # A graded mock the learner sat: 1 of 2 right → 50%.
+        cls.mock = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Algebra mock",
+            chapter=cls.chapter, quiz_type=Quiz.TYPE_MOCK, is_assigned=True)
+        cls.attempt = QuizAttempt.objects.create(
+            quiz=cls.mock, student=cls.account, learner_profile=cls.learner,
+            status=QuizAttempt.STATUS_SUBMITTED, submitted_at=now, score=1)
+        for i, correct in enumerate([True, False]):
+            q = Question.objects.create(
+                quiz=cls.mock, text=f"m{i}", marks=1, order=i, explanation="e")
+            Question.objects.filter(id=q.id).update(
+                bank_state=Question.BANK_STATE_ACCEPTED)
+            right = Choice.objects.create(question=q, text="right", is_correct=True)
+            wrong = Choice.objects.create(question=q, text="wrong", is_correct=False)
+            StudentAnswer.objects.create(
+                attempt=cls.attempt, question=q, is_correct=correct,
+                selected_choice=right if correct else wrong)
+
+    def _get(self):
+        c = APIClient()
+        # get_active_profile() reads the JWT's active_profile claim, not a
+        # cookie — see accounts/auth_flow.py:146.
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)},
+        )
+        return c.get("/api/student/practice/chapters/")
+
+    def test_lists_the_chapter_with_its_graded_accuracy_and_bank_supply(self):
+        r = self._get()
+        self.assertEqual(r.status_code, 200, r.content)
+        row = next(x for x in r.data if x["title"] == "Algebra")
+        self.assertEqual(row["accuracy"], 50)
+        self.assertEqual(row["answered"], 2)
+        self.assertEqual(row["available"], 2)
+
+    def test_practice_answers_do_not_move_the_accuracy(self):
+        # The rule this endpoint exists to protect. A practice quiz on the
+        # same chapter, all correct — accuracy must stay at the graded 50%.
+        practice = Quiz.objects.create(
+            subject=self.subject, created_by=self.teacher,
+            title="Algebra practice", chapter=self.chapter,
+            quiz_type=Quiz.TYPE_PRACTICE, is_assigned=True)
+        att = QuizAttempt.objects.create(
+            quiz=practice, student=self.account, learner_profile=self.learner,
+            status=QuizAttempt.STATUS_SUBMITTED,
+            submitted_at=timezone.now(), score=3)
+        for i in range(3):
+            q = Question.objects.create(
+                quiz=practice, text=f"p{i}", marks=1, order=i, explanation="e")
+            right = Choice.objects.create(question=q, text="right", is_correct=True)
+            StudentAnswer.objects.create(
+                attempt=att, question=q, is_correct=True, selected_choice=right)
+
+        row = next(x for x in self._get().data if x["title"] == "Algebra")
+        self.assertEqual(row["accuracy"], 50, "practice leaked into graded accuracy")
+        self.assertEqual(row["answered"], 2)
+
+    def test_an_untried_chapter_reports_null_not_zero(self):
+        from courses.models import Chapter
+        Chapter.objects.create(subject=self.subject, title="Untouched", order=1)
+        row = next(x for x in self._get().data if x["title"] == "Untouched")
+        # "never tried" and "got everything wrong" must not look the same.
+        self.assertIsNone(row["accuracy"])
+        self.assertEqual(row["answered"], 0)
+
+    def test_a_chapter_from_a_course_the_learner_is_not_in_is_absent(self):
+        from courses.models import Chapter
+        other = Course.objects.create(title="Class 12")
+        other_subject = Subject.objects.create(course=other, name="Bio")
+        Chapter.objects.create(subject=other_subject, title="Genetics", order=0)
+        self.assertNotIn("Genetics", [x["title"] for x in self._get().data])
+
+
 class AdminQuestionBankReviewTest(TestCase):
     """A1 · the admin review queue (Phase 7).
 

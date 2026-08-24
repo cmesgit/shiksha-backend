@@ -1041,6 +1041,98 @@ class StudentDashboardView(APIView):
         return Response(serializer.data)
 
 
+class StudentPracticeChaptersView(APIView):
+    """
+    GET /student/practice/chapters/?subject=<id>
+
+    S1's "Practise by chapter" card: every chapter of the learner's subjects
+    that has questions available in the shared ShikshaCom bank, with how the
+    learner has actually done on it.
+
+    `accuracy` is computed ONLY from graded attempts on real teacher tests —
+    practice is explicitly excluded (Phase 8 item 4). Practising a weak
+    chapter must not flatter the number that told you it was weak, or the
+    weak-area report becomes a mirror of how much you practised rather than
+    what you know.
+
+    `available` counts bank questions the learner could be served. A chapter
+    with none is returned with available=0 rather than hidden, so the list
+    reflects the syllabus rather than silently shrinking.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def get(self, request):
+        from courses.models import Chapter
+        from enrollments.models import Enrollment
+
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response(
+                {"detail": "Select a learner profile.",
+                 "lock_reason": "no_learner_profile"},
+                status=403,
+            )
+
+        course_ids = (
+            Enrollment.objects
+            .filter(learner_profile=learner, status=Enrollment.STATUS_ACTIVE)
+            .values_list("course_id", flat=True)
+        )
+        chapters = Chapter.objects.filter(subject__course_id__in=course_ids)
+        subject_id = request.query_params.get("subject")
+        if subject_id:
+            chapters = chapters.filter(subject_id=subject_id)
+        chapters = chapters.select_related("subject").order_by(
+            "subject__name", "order", "title")
+
+        # How many accepted bank questions exist per chapter, in one query.
+        bank_rows = (
+            Question.objects
+            .filter(
+                bank_state=Question.BANK_STATE_ACCEPTED,
+                quiz__chapter__in=chapters,
+            )
+            .values("quiz__chapter")
+            .annotate(n=Count("id"))
+        )
+        available = {r["quiz__chapter"]: r["n"] for r in bank_rows}
+
+        # Graded accuracy per chapter. Practice sets carry no chapter FK of
+        # their own and are excluded by quiz_type anyway — stated explicitly
+        # here so a future practice implementation cannot leak in silently.
+        graded = (
+            StudentAnswer.objects
+            .filter(
+                attempt__learner_profile=learner,
+                attempt__status=QuizAttempt.STATUS_SUBMITTED,
+                question__quiz__chapter__in=chapters,
+            )
+            .exclude(question__quiz__quiz_type=Quiz.TYPE_PRACTICE)
+            .values("question__quiz__chapter")
+            .annotate(total=Count("id"), right=Count("id", filter=Q(is_correct=True)))
+        )
+        by_chapter = {
+            g["question__quiz__chapter"]: (g["total"], g["right"]) for g in graded
+        }
+
+        out = []
+        for ch in chapters:
+            total, right = by_chapter.get(ch.id, (0, 0))
+            out.append({
+                "chapter_id": str(ch.id),
+                "title": ch.title,
+                "subject_id": str(ch.subject_id),
+                "subject_name": ch.subject.name,
+                "is_custom": ch.is_custom,
+                "available": available.get(ch.id, 0),
+                "answered": total,
+                # None, not 0 — "never tried" and "got everything wrong" are
+                # different things, and the UI tints them differently.
+                "accuracy": None if total == 0 else round(right * 100.0 / total),
+            })
+        return Response(out)
+
+
 class StudentQuizStatsView(APIView):
     """
     GET /student/quizzes/stats/?course=<id>&subject=<id>
