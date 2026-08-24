@@ -22,6 +22,7 @@ from rest_framework.throttling import ScopedRateThrottle
 logger = logging.getLogger(__name__)
 
 from accounts.permissions import IsEmailVerified, IsAdmin, require_teacher_context, IsTeacherContext, _in_teacher_context
+from courses.chapter_tags import attach_chapter_tags
 from accounts.auth_flow import get_active_profile
 from enrollments.models import Enrollment
 from enrollments.services import active_batch_id
@@ -687,6 +688,66 @@ class TeacherQuizDuplicateView(APIView):
         )
 
 
+class TeacherQuizStatsView(APIView):
+    """
+    GET /teacher/quizzes/stats/
+
+    The two numbers T1's stat strip cannot derive from the quiz list itself:
+    how many attempts this teacher's quizzes took this week, and the same for
+    the week before, so the card can show a real delta rather than a decorative
+    one.
+
+    "This week" is the trailing 7 days, not a calendar week — a Monday-anchored
+    window would show a near-empty card every Monday morning, which reads as a
+    collapse in usage rather than as the week having just started.
+
+    The bank counts on the other two cards come from
+    /teacher/question-bank/summary/, and the live count is derived client-side
+    from the quiz list (which is unpaginated, so that count is complete).
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified, IsTeacherContext]
+
+    def get(self, request):
+        now = timezone.now()
+        week_ago = now - timedelta(days=7)
+        two_weeks_ago = now - timedelta(days=14)
+
+        mine = QuizAttempt.objects.filter(
+            quiz__created_by=request.user,
+            status=QuizAttempt.STATUS_SUBMITTED,
+        )
+        this_week = mine.filter(submitted_at__gte=week_ago).count()
+        last_week = mine.filter(
+            submitted_at__gte=two_weeks_ago, submitted_at__lt=week_ago,
+        ).count()
+
+        return Response({
+            "attempts_this_week": this_week,
+            "attempts_last_week": last_week,
+            "attempts_delta": this_week - last_week,
+        })
+
+
+def _t1_row_annotations():
+    """The extra per-quiz counts T1's rows need (Phase 6).
+
+    Each bank count is filtered on `bank_state`, and every one of them is
+    `distinct=True` — without it, joining questions and attempts in the same
+    queryset multiplies each question row by that quiz's attempt count and the
+    chips read wildly high on any quiz anyone has actually sat.
+    """
+    def bank(state):
+        return Count("questions", filter=Q(questions__bank_state=state), distinct=True)
+
+    return {
+        "batch_count": Count("batches", distinct=True),
+        "bank_accepted": bank(Question.BANK_STATE_ACCEPTED),
+        "bank_suggested": bank(Question.BANK_STATE_SUGGESTED),
+        "bank_changes_requested": bank(Question.BANK_STATE_CHANGES_REQUESTED),
+        "bank_private": bank(Question.BANK_STATE_PRIVATE),
+    }
+
+
 class TeacherAllQuizListView(generics.ListAPIView):
     """Every quiz across every subject this teacher is assigned to.
 
@@ -757,9 +818,18 @@ class TeacherAllQuizListView(generics.ListAPIView):
             )
             # distinct(): a teacher listed twice on one subject would otherwise
             # duplicate every quiz on it.
+            .annotate(**_t1_row_annotations())
             .distinct()
             .order_by("-created_at")
         )
+
+    def list(self, request, *args, **kwargs):
+        # attach_chapter_tags is two queries for the whole page instead of one
+        # per row — ContentChapterTag is a generic relation, so plain
+        # prefetch_related() can't reach it without a GenericRelation on Quiz.
+        queryset = self.filter_queryset(self.get_queryset())
+        rows = attach_chapter_tags(list(queryset))
+        return Response(self.get_serializer(rows, many=True).data)
 
 
 class TeacherSubjectQuizListView(generics.ListAPIView):

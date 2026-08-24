@@ -24,6 +24,7 @@ from .views import (
     TeacherStudentAttemptsView,
     TeacherSubjectQuizListView,
     TeacherAllQuizListView,
+    TeacherQuizStatsView,
     TeacherQuizAttemptsView,
     TeacherQuizAnalyticsView,
     TeacherQuizRemindView,
@@ -71,6 +72,8 @@ urlpatterns = [
         "teacher/quizzes/all/",
         TeacherAllQuizListView.as_view(),
     ),
+    # T1 stat strip: attempts this week vs last (Phase 6).
+    path("teacher/quizzes/stats/", TeacherQuizStatsView.as_view()),
     path(
         "teacher/quizzes/<uuid:pk>/attempts/",
         TeacherQuizAttemptsView.as_view(),

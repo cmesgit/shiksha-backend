@@ -563,8 +563,18 @@ class QuestionTeacherSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Question
+        # `suggest_to_bank` is read back so the builder's per-question switch
+        # can show its real state. Without it the builder would default every
+        # switch to on and send that back on the next save, silently
+        # re-suggesting questions the teacher had deliberately kept private —
+        # the same read-gap-becomes-destructive-write shape as the missing
+        # chapter fields on QuizDetailTeacherSerializer. `bank_state` rides
+        # along read-only so the UI can tell "an admin already accepted this"
+        # apart from "still queued".
         fields = ["id", "text", "marks", "order", "choices",
-                  "explanation", "topic", "difficulty", "section"]
+                  "explanation", "topic", "difficulty", "section",
+                  "suggest_to_bank", "bank_state"]
+        read_only_fields = ["bank_state"]
 
 
 class QuizDetailSerializer(serializers.ModelSerializer):
@@ -770,6 +780,19 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
     highest_score = serializers.FloatField(read_only=True)
     lowest_score = serializers.FloatField(read_only=True)
     submission_rate = serializers.FloatField(read_only=True)
+    # Annotated by the list views; declared so DRF doesn't try to resolve them
+    # as model fields when a caller serializes an un-annotated Quiz.
+    batch_count = serializers.IntegerField(read_only=True, default=0)
+    bank_accepted = serializers.IntegerField(read_only=True, default=0)
+    bank_suggested = serializers.IntegerField(read_only=True, default=0)
+    bank_changes_requested = serializers.IntegerField(read_only=True, default=0)
+    bank_private = serializers.IntegerField(read_only=True, default=0)
+    chapter_tags = serializers.SerializerMethodField()
+
+    def get_chapter_tags(self, obj):
+        # Reads the `_prefetched_chapter_tags` attribute attach_chapter_tags()
+        # sets, so this is free per row rather than a query each.
+        return serialize_tags(obj)
 
     class Meta:
         model = Quiz
@@ -786,6 +809,17 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
             "total_attempts", "submission_rate", "average_score",
             "highest_score", "lowest_score", "quiz_type", "review_status",
             "review_note",
+            # ── T1 row data (Phase 6) ────────────────────────────────────
+            # The row's meta line lists the quiz's chapter tags and its
+            # timing rules, and it carries two status chips: one for the
+            # assignment state (needs the batch count) and one for the
+            # site-bank state (needs the per-quiz bank breakdown). All of it
+            # comes off annotations/prefetch so a 40-quiz list stays flat
+            # rather than firing a query per row.
+            "chapter_tags", "no_specific_chapter",
+            "batch_count", "time_limit_minutes", "max_attempts",
+            "bank_accepted", "bank_suggested", "bank_changes_requested",
+            "bank_private",
         ]
 
     def get_board_name(self, obj):

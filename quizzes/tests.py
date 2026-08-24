@@ -1148,6 +1148,118 @@ class TeacherQuizDetailAnswerKeyTest(TestCase):
         self.assertEqual(r.status_code, 403, r.content)
 
 
+class TeacherQuizListT1RowDataTest(TestCase):
+    """T1's rows carry a bank breakdown and a batch count per quiz.
+
+    The trap this pins: `attempts` and `questions` are joined in the same
+    queryset, so a Count on questions without distinct=True is multiplied by
+    that quiz's attempt count. A 3-question quiz that two students had sat
+    would have reported 6 questions in the site bank.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Batch, Chapter
+        from courses.chapter_tags import set_tags
+
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="STUDENT")
+        cls.teacher = User.objects.create_user(
+            username="t1_t", email="t1_t@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        cls.course = Course.objects.create(title="Class 9")
+        cls.subject = Subject.objects.create(course=cls.course, name="Science")
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, is_active=True,
+        )
+        cls.chapter = Chapter.objects.create(
+            subject=cls.subject, title="Optics", order=0)
+        cls.b1 = Batch.objects.create(course=cls.course, name="9-A", code="9A")
+        cls.b2 = Batch.objects.create(course=cls.course, name="9-B", code="9B")
+
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Light",
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True, time_limit_minutes=30,
+        )
+        cls.quiz.batches.set([cls.b1, cls.b2])
+        set_tags(cls.quiz, [(cls.chapter, "", 0)])
+
+        # Three questions in three different bank states.
+        for i, state in enumerate([
+            Question.BANK_STATE_ACCEPTED,
+            Question.BANK_STATE_SUGGESTED,
+            Question.BANK_STATE_PRIVATE,
+        ]):
+            q = Question.objects.create(
+                quiz=cls.quiz, text=f"Q{i}", marks=1, order=i,
+                explanation="e", suggest_to_bank=(state != Question.BANK_STATE_PRIVATE),
+            )
+            Question.objects.filter(id=q.id).update(bank_state=state)
+            Choice.objects.create(question=q, text="a", is_correct=True)
+            Choice.objects.create(question=q, text="b", is_correct=False)
+
+        # Two submitted attempts — the multiplier that used to inflate counts.
+        for name in ("s1", "s2"):
+            acct = User.objects.create_user(
+                username=name, email=f"{name}@test.com", password="x", is_verified=True)
+            prof = LearnerProfile.objects.create(
+                account=acct, display_name=name, is_default=True)
+            QuizAttempt.objects.create(
+                quiz=cls.quiz, student=acct, learner_profile=prof,
+                status=QuizAttempt.STATUS_SUBMITTED,
+                submitted_at=timezone.now(), score=1,
+            )
+
+    def _rows(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = c.get("/api/teacher/quizzes/all/")
+        self.assertEqual(r.status_code, 200, r.content)
+        return r.data
+
+    def test_bank_counts_are_not_multiplied_by_attempts(self):
+        row = self._rows()[0]
+        self.assertEqual(row["bank_accepted"], 1)
+        self.assertEqual(row["bank_suggested"], 1)
+        self.assertEqual(row["bank_private"], 1)
+        self.assertEqual(row["bank_changes_requested"], 0)
+        # the whole point: 3 questions, 2 attempts, still 3
+        self.assertEqual(row["questions_count"], 3)
+
+    def test_batch_count_drives_the_live_for_n_batches_chip(self):
+        self.assertEqual(self._rows()[0]["batch_count"], 2)
+
+    def test_rows_carry_their_chapter_tags_and_timing(self):
+        row = self._rows()[0]
+        self.assertEqual(
+            [t["label"] for t in row["chapter_tags"]], ["Optics"])
+        self.assertIs(row["no_specific_chapter"], False)
+        self.assertEqual(row["time_limit_minutes"], 30)
+
+    def test_stats_endpoint_reports_this_week_against_last(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = c.get("/api/teacher/quizzes/stats/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["attempts_this_week"], 2)
+        self.assertEqual(r.data["attempts_last_week"], 0)
+        self.assertEqual(r.data["attempts_delta"], 2)
+
+    def test_an_attempt_from_last_week_lands_in_the_previous_bucket(self):
+        QuizAttempt.objects.filter(quiz=self.quiz).update(
+            submitted_at=timezone.now() - timedelta(days=9))
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = c.get("/api/teacher/quizzes/stats/")
+        self.assertEqual(r.data["attempts_this_week"], 0)
+        self.assertEqual(r.data["attempts_last_week"], 2)
+        self.assertEqual(r.data["attempts_delta"], -2)
+
+
 class QuizDraftChapterRoundTripTest(TestCase):
     """The builder's edit load must return the quiz's chapter tagging.
 
@@ -1208,6 +1320,23 @@ class QuizDraftChapterRoundTripTest(TestCase):
         r = self._draft()
         self.assertEqual(r.data["chapter_note"], "revise identities first")
         self.assertIs(r.data["no_specific_chapter"], False)
+
+    def test_draft_questions_expose_their_bank_opt_in(self):
+        # Same read-gap trap as the chapter fields: the builder's per-question
+        # switch needs the real value, or it defaults every switch to on and
+        # re-suggests questions the teacher deliberately kept private.
+        from quizzes.models import Question, Choice
+        q = Question.objects.create(
+            quiz=self.quiz, text="Private one?", marks=1, order=0,
+            explanation="because.", suggest_to_bank=False,
+        )
+        Choice.objects.create(question=q, text="a", is_correct=True)
+        Choice.objects.create(question=q, text="b", is_correct=False)
+
+        r = self._draft()
+        row = next(x for x in r.data["questions"] if str(x["id"]) == str(q.id))
+        self.assertIs(row["suggest_to_bank"], False)
+        self.assertEqual(row["bank_state"], Question.BANK_STATE_PRIVATE)
 
     def test_the_keys_are_the_ones_the_picker_reads(self):
         # fromChapterPayload() in the teacher app reads exactly these three
