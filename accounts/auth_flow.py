@@ -742,6 +742,17 @@ class MeView(APIView):
             composed_name or self_profile.display_name
         ) if self_profile else ""
 
+        # Read-only feature flags for the teacher bootstrap (design_handoff_
+        # quiz_system Phase 0). Local import to match this module's existing
+        # avoid-circular-import convention for global_settings (see e.g.
+        # courses/views.py, skills/teacher_views.py). GlobalSettings.load()
+        # is an uncached get_or_create and MeView is on the hot auth path —
+        # this is the only GlobalSettings read in this view, so no dedupe
+        # is needed yet; if a second flag-consumer is added here, share this
+        # one query rather than calling load() again.
+        from global_settings.models import GlobalSettings
+        gs = GlobalSettings.load()
+
         return Response({
             "id":             str(user.id),
             "email":          user.email,
@@ -757,6 +768,10 @@ class MeView(APIView):
             "teacher":        serialize_teacher(teacher, active_track=active_track),
             "profile":          _legacy_profile_dict(active),
             "profile_complete": active.is_complete if active else False,
+            "feature_flags": {
+                "quiz_v2_enabled": gs.quiz_v2_enabled,
+                "ai_question_drafting_enabled": gs.ai_question_drafting_enabled,
+            },
         })
 
 

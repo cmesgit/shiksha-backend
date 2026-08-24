@@ -82,3 +82,58 @@ class RazorpaySecretEncryptionTest(TestCase):
         token = f1.encrypt(b"hello")
         f2 = _fernet()
         self.assertEqual(f2.decrypt(token), b"hello")
+
+
+class QuizV2FeatureFlagsTest(TestCase):
+    """design_handoff_quiz_system Phase 0 groundwork — both flags default OFF
+    and are readable/writable only via the admin settings endpoint. Nothing
+    in this phase consumes them yet; this pins the contract Phase 1+ builds on.
+    """
+
+    URL = "/api/admin/settings/"
+
+    def test_both_flags_default_false_on_a_fresh_row(self):
+        gs = GlobalSettings.load()
+        self.assertFalse(gs.quiz_v2_enabled)
+        self.assertFalse(gs.ai_question_drafting_enabled)
+
+    def _client(self, user):
+        from rest_framework.test import APIClient
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def test_admin_can_flip_both_flags_via_patch(self):
+        from accounts.models import User
+
+        admin = User.objects.create_user(
+            username="admin", email="admin@example.com", password="x", is_staff=True,
+        )
+        res = self._client(admin).patch(
+            self.URL,
+            {"quiz_v2_enabled": True, "ai_question_drafting_enabled": True},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertTrue(res.json()["quiz_v2_enabled"])
+        self.assertTrue(res.json()["ai_question_drafting_enabled"])
+        reloaded = GlobalSettings.objects.get(pk=1)
+        self.assertTrue(reloaded.quiz_v2_enabled)
+        self.assertTrue(reloaded.ai_question_drafting_enabled)
+
+    def test_non_admin_gets_403(self):
+        from accounts.models import User
+
+        GlobalSettings.load()  # ensure the singleton row exists to check afterwards
+        non_admin = User.objects.create_user(
+            username="student", email="student@example.com", password="x",
+        )
+        res = self._client(non_admin).patch(
+            self.URL,
+            {"quiz_v2_enabled": True, "ai_question_drafting_enabled": True},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 403, res.content)
+        reloaded = GlobalSettings.objects.get(pk=1)
+        self.assertFalse(reloaded.quiz_v2_enabled)
+        self.assertFalse(reloaded.ai_question_drafting_enabled)

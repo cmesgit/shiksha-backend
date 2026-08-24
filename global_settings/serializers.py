@@ -79,6 +79,8 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
             "live_host_policy",
             "live_launch_free_mode",
             "tours_enabled",
+            "quiz_v2_enabled",
+            "ai_question_drafting_enabled",
             "updated_at",
         ]
         read_only_fields = ["updated_at"]
