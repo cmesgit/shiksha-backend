@@ -643,6 +643,67 @@ class BulkQuestionReplaceSemanticsTest(TestCase):
         self.assertEqual(self.quiz.questions.count(), 2)
         self.assertTrue(Question.objects.filter(id=self.q2.id).exists())
 
+    def test_turning_suggest_to_bank_off_makes_the_question_private(self):
+        """The Phase 2 invariant, through the endpoint that used to skip it.
+
+        This PUT updated existing rows with `queryset.update()`, which goes
+        straight to SQL and never runs Question.save() — so the
+        `suggest_to_bank=False ⟹ bank_state="private"` rule was bypassed on
+        every builder save. It stayed harmless only because the endpoint
+        ignored suggest_to_bank entirely. Phase 5d sends it, so without the
+        switch to setattr+save() a teacher marking a question "keep this to
+        my class" would leave it sitting in the admin's curation queue.
+        """
+        self.assertEqual(self.q1.bank_state, Question.BANK_STATE_SUGGESTED)
+
+        payload = self._payload_for(self.q1)
+        payload["suggest_to_bank"] = False
+        c = self._client()
+        r = c.put(
+            f"/api/teacher/quizzes/{self.quiz.id}/questions/bulk/",
+            {"questions": [payload, self._payload_for(self.q2)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+
+        self.q1.refresh_from_db()
+        self.assertFalse(self.q1.suggest_to_bank)
+        self.assertEqual(self.q1.bank_state, Question.BANK_STATE_PRIVATE)
+
+    def test_an_admin_accepted_question_is_not_demoted_by_a_plain_resave(self):
+        # The other half of the invariant: re-saving with suggest_to_bank
+        # still true must not revert an admin's curation to "suggested".
+        self.q1.bank_state = Question.BANK_STATE_ACCEPTED
+        self.q1.save()
+
+        c = self._client()
+        r = c.put(
+            f"/api/teacher/quizzes/{self.quiz.id}/questions/bulk/",
+            {"questions": [self._payload_for(self.q1), self._payload_for(self.q2)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.q1.refresh_from_db()
+        self.assertEqual(self.q1.bank_state, Question.BANK_STATE_ACCEPTED)
+
+    def test_omitting_suggest_to_bank_leaves_it_alone(self):
+        # A client that never sends the key (the pre-5d builder) must not have
+        # its questions re-flagged — same present-vs-absent rule as `section`.
+        self.q1.suggest_to_bank = False
+        self.q1.save()
+        self.assertEqual(self.q1.bank_state, Question.BANK_STATE_PRIVATE)
+
+        c = self._client()
+        r = c.put(
+            f"/api/teacher/quizzes/{self.quiz.id}/questions/bulk/",
+            {"questions": [self._payload_for(self.q1), self._payload_for(self.q2)]},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.q1.refresh_from_db()
+        self.assertFalse(self.q1.suggest_to_bank)
+        self.assertEqual(self.q1.bank_state, Question.BANK_STATE_PRIVATE)
+
 
 class QuizResultTotalsTest(TestCase):
     """The result screen's denominator is the PAPER, not what was answered.

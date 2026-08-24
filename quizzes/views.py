@@ -247,7 +247,12 @@ class BulkAddQuestionsView(APIView):
 
         Replace-semantics sibling of the POST above, for the builder's
         "save": { "questions": [{id?, text, marks, order, explanation,
-        topic, difficulty, source, choices:[{text,is_correct}]}, ...] }.
+        topic, difficulty, source, section?, suggest_to_bank?,
+        choices:[{text,is_correct}]}, ...] }.
+
+        `section` and `suggest_to_bank` are applied ONLY when the key is
+        present — an older client that omits them must not have its grouping
+        stripped or its bank opt-in reset.
         Questions with an `id` already on this quiz are updated in place
         (choices fully replaced); questions without `id` are created;
         existing questions whose `id` is absent from the payload are
@@ -305,9 +310,16 @@ class BulkAddQuestionsView(APIView):
                         f"Question {i + 1}: section is not a section of this quiz."
                     )
 
+            # Same present-vs-absent rule as `section`, and for the same
+            # reason: a client that doesn't send the key must not have its
+            # questions silently re-flagged. Absent means "leave it alone".
+            suggest_given = "suggest_to_bank" in q_data
+
             cleaned.append({
                 "id": q_id,
                 **({"section_id": section_id} if section_given else {}),
+                **({"suggest_to_bank": bool(q_data.get("suggest_to_bank"))}
+                   if suggest_given else {}),
                 "text": q_data["text"].strip(),
                 "marks": int(q_data.get("marks") or 1),
                 "order": q_data.get("order", i),
@@ -330,8 +342,18 @@ class BulkAddQuestionsView(APIView):
                 choices_data = q_data.pop("choices")
                 q_id = q_data.pop("id")
                 if q_id:
-                    Question.objects.filter(id=q_id).update(**q_data)
+                    # setattr + save(), NOT queryset.update(): .update() goes
+                    # straight to SQL and never runs Question.save(), so the
+                    # `suggest_to_bank=False ⟹ bank_state="private"` invariant
+                    # was silently skipped on every builder save. Harmless
+                    # while this endpoint ignored suggest_to_bank; the moment
+                    # it accepts one (above), a teacher turning the switch off
+                    # would have left bank_state="suggested" and the question
+                    # sitting in the admin's curation queue anyway.
                     question = existing_by_id[q_id]
+                    for field, value in q_data.items():
+                        setattr(question, field, value)
+                    question.save()
                     question.choices.all().delete()
                 else:
                     question = Question.objects.create(quiz=quiz, **q_data)
