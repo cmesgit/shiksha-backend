@@ -620,6 +620,11 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
         source="batches", many=True, read_only=True,
     )
     sections = QuizSectionSerializer(many=True, read_only=True)
+    # The builder's chapter picker reads these to repopulate itself on edit.
+    # Without them the picker loads empty and the next save writes an empty
+    # `chapter_tags`, silently dropping every chapter the quiz was filed under
+    # — a read gap that turns into data loss the moment the write side exists.
+    chapter_tags = serializers.SerializerMethodField()
 
     class Meta:
         model = Quiz
@@ -633,7 +638,12 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
             # Phase 4 mock-test settings, so the builder round-trips them.
             "negative_marks_per_wrong", "max_attempts", "shuffle_questions",
             "reveal_answers", "reveal_answers_after", "sections",
+            # Phase 3 chapter tagging, same reason.
+            "chapter_tags", "no_specific_chapter", "chapter_note",
         ]
+
+    def get_chapter_tags(self, obj):
+        return serialize_tags(obj)
 
     def get_board_name(self, obj):
         return board_name_via(obj, "subject", "course")

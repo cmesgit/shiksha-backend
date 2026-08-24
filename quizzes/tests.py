@@ -1087,6 +1087,80 @@ class TeacherQuizDetailAnswerKeyTest(TestCase):
         self.assertEqual(r.status_code, 403, r.content)
 
 
+class QuizDraftChapterRoundTripTest(TestCase):
+    """The builder's edit load must return the quiz's chapter tagging.
+
+    Caught by browser-driving the rebuilt builder (Phase 5a), not by any test:
+    QuizDetailTeacherSerializer exposed no chapter fields at all, so the
+    picker repopulated itself as empty on edit. On its own that was a
+    cosmetic read gap — the old builder only sent chapter fields on create.
+    The moment the builder started sending `chapter_tags` on PATCH too, the
+    empty picker became a destructive write that silently unfiled the quiz
+    from every chapter it was tagged with.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        # Local imports, matching the convention the rest of this module uses
+        # for courses models it needs in only one class.
+        from courses.models import Chapter
+        from courses.chapter_tags import set_tags
+
+        Role.objects.get_or_create(name="TEACHER")
+        cls.teacher = User.objects.create_user(
+            username="dr_t", email="dr_t@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Maths")
+        cls.chapter = Chapter.objects.create(
+            subject=cls.subject, title="Algebra", order=0)
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Algebra unit test",
+            chapter=cls.chapter, chapter_note="revise identities first",
+        )
+        set_tags(cls.quiz, [(cls.chapter, "", 0), (None, "Mixed revision", 1)])
+
+    def _draft(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        return c.get(f"/api/quizzes/{self.quiz.id}/draft/")
+
+    def test_draft_returns_the_chapter_tags(self):
+        r = self._draft()
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn("chapter_tags", r.data)
+        tags = r.data["chapter_tags"]
+        # `label` carries the chapter's own title for a chapter-backed tag and
+        # the free text for a custom one, so the picker can render a name
+        # without a second lookup. `chapter_id` is what distinguishes them —
+        # which is exactly what fromChapterPayload() splits on.
+        self.assertEqual(
+            [(t["chapter_id"], t["label"]) for t in tags],
+            [(str(self.chapter.id), "Algebra"), (None, "Mixed revision")],
+        )
+
+    def test_draft_returns_the_note_and_the_no_specific_flag(self):
+        r = self._draft()
+        self.assertEqual(r.data["chapter_note"], "revise identities first")
+        self.assertIs(r.data["no_specific_chapter"], False)
+
+    def test_the_keys_are_the_ones_the_picker_reads(self):
+        # fromChapterPayload() in the teacher app reads exactly these three
+        # names off the draft. Renaming any of them here empties the picker
+        # without erroring anywhere.
+        r = self._draft()
+        for key in ("chapter_tags", "no_specific_chapter", "chapter_note"):
+            self.assertIn(key, r.data, f"the builder reads `{key}` off the draft")
+        self.assertEqual(
+            sorted(r.data["chapter_tags"][0].keys()),
+            ["chapter_id", "is_custom", "label", "order"],
+        )
+
+
 class QuizStudentEndpointBatchIsolationTest(TestCase):
     """StartQuizView/QuizDetailView/SubmitQuizView used to resolve a quiz by
     UUID with only is_published + subscription checks — no batch check, even
