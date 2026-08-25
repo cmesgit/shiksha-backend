@@ -1,4 +1,5 @@
 import uuid
+from django.contrib.contenttypes.fields import GenericRelation
 from django.db import models
 from django.db.models import Q
 from django.conf import settings
@@ -209,6 +210,24 @@ class Quiz(models.Model):
     # no_specific_chapter is not the same state as "no tags".
     chapter_note = chapter_note_field()
     no_specific_chapter = no_specific_chapter_field()
+
+    # Declared on Quiz ONLY, deliberately breaking chapter_tags.py's
+    # "don't add one to five models in four apps" rule. attach_chapter_tags()
+    # is enough for serializing a page of rows, but it cannot be JOINED, and
+    # the Phase 8 practice endpoints need exactly that: they aggregate
+    # question supply and graded accuracy *grouped by chapter* across the
+    # whole bank. Those currently go through the legacy `chapter` FK, which
+    # Phase 10 wants to drop — this is what lets them move off it without
+    # turning one aggregate into N queries.
+    #
+    # No DB column and no data: GenericRelation is a reverse-join declaration,
+    # so its migration is a no-op state change.
+    chapter_tags = GenericRelation(
+        "courses.ContentChapterTag",
+        content_type_field="content_type",
+        object_id_field="object_id",
+        related_query_name="quiz",
+    )
 
     # Informational only since Phase 1 — the admin's opinion of the questions,
     # shown on the teacher's card. MUST NOT gate student visibility.

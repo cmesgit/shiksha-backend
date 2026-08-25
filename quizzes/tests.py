@@ -1582,6 +1582,98 @@ class StudentPracticeChaptersTest(TestCase):
         self.assertNotIn("Genetics", [x["title"] for x in self._get().data])
 
 
+class QuizChapterTagInvariantTest(TestCase):
+    """`Quiz.chapter` and ContentChapterTag must not disagree.
+
+    Phase 10 wants the legacy FK dropped. It cannot be while some quizzes
+    record their chapter ONLY there — a read moved onto tags would silently
+    see "no chapter" for them, which is exactly what happened on S3.
+    Migration 0028 repaired existing rows; this pins that new quizzes created
+    through the pre-Phase-3 path (chapter_id / custom_chapter, still what the
+    builder sends) also get a tag, or the gap reopens on the next create.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Batch, Chapter
+
+        Role.objects.get_or_create(name="TEACHER")
+        cls.teacher = User.objects.create_user(
+            username="ct_t", email="ct_t@test.com", password="x", is_verified=True)
+        UserRole.objects.create(user=cls.teacher,
+                                role=Role.objects.get(name="TEACHER"),
+                                is_active=True, is_primary=True)
+        cls.course = Course.objects.create(title="Class 11")
+        cls.subject = Subject.objects.create(course=cls.course, name="Bio")
+        cls.batch = Batch.objects.create(
+            course=cls.course, name="11-A", code="11ABIO")
+        cls.chapter = Chapter.objects.create(
+            subject=cls.subject, title="Cell Structure", order=0)
+        TeachingAssignment.objects.create(
+            teacher=cls.teacher, subject=cls.subject, batch=cls.batch)
+
+    def _client(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        return c
+
+    def _tags_of(self, quiz):
+        from django.contrib.contenttypes.models import ContentType
+        from courses.models_chapter_tags import ContentChapterTag
+        return list(
+            ContentChapterTag.objects.filter(
+                content_type=ContentType.objects.get_for_model(Quiz),
+                object_id=quiz.id,
+            )
+        )
+
+    def test_creating_with_chapter_id_also_writes_a_tag(self):
+        r = self._client().post("/api/teacher/quizzes/", {
+            "title": "Cells quiz",
+            "subject": str(self.subject.id),
+            "batch_id": str(self.batch.id),
+            "chapter_id": str(self.chapter.id),
+        }, format="json")
+        self.assertIn(r.status_code, (200, 201), r.content)
+        quiz = Quiz.objects.get(id=r.json()["id"])
+        self.assertEqual(quiz.chapter_id, self.chapter.id)
+        tags = self._tags_of(quiz)
+        self.assertEqual(len(tags), 1,
+                         "a chapter-only create must still produce one tag")
+        self.assertEqual(tags[0].chapter_id, self.chapter.id)
+
+    def test_the_generic_relation_can_be_joined(self):
+        # The whole point of declaring GenericRelation on Quiz: the practice
+        # endpoints aggregate supply/accuracy GROUPED BY chapter and cannot do
+        # that through attach_chapter_tags(), which only serializes a page.
+        r = self._client().post("/api/teacher/quizzes/", {
+            "title": "Joinable", "subject": str(self.subject.id),
+            "batch_id": str(self.batch.id), "chapter_id": str(self.chapter.id),
+        }, format="json")
+        self.assertIn(r.status_code, (200, 201), r.content)
+        found = Quiz.objects.filter(chapter_tags__chapter=self.chapter)
+        self.assertIn(r.json()["id"], [str(q.id) for q in found])
+
+    def test_explicit_chapter_tags_are_not_overwritten_by_the_fk_mirror(self):
+        # When the client DOES send chapter_tags, apply_chapter_tags owns the
+        # rows and the FK mirror must not fire and flatten them back to one.
+        second = self.chapter.__class__.objects.create(
+            subject=self.subject, title="Cell Division", order=1)
+        r = self._client().post("/api/teacher/quizzes/", {
+            "title": "Two chapters",
+            "subject": str(self.subject.id),
+            "batch_id": str(self.batch.id),
+            "chapter_tags": [
+                {"chapter_id": str(self.chapter.id)},
+                {"chapter_id": str(second.id)},
+            ],
+        }, format="json")
+        self.assertIn(r.status_code, (200, 201), r.content)
+        quiz = Quiz.objects.get(id=r.json()["id"])
+        self.assertEqual(len(self._tags_of(quiz)), 2,
+                         "the FK mirror must not clobber explicit tags")
+
+
 class QuizResultS3PayloadTest(TestCase):
     """S3's extra result fields (Phase 9).
 

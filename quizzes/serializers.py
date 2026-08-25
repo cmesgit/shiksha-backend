@@ -12,7 +12,7 @@ from rest_framework.exceptions import ValidationError, PermissionDenied
 from courses.board_display import board_name_via
 from courses.models import Batch, Chapter
 from courses.services import is_teacher_of, resolve_or_create_chapter, teaches_subject
-from courses.chapter_tags import ChapterTagWriteMixin, serialize_tags
+from courses.chapter_tags import ChapterTagWriteMixin, serialize_tags, set_tags
 from enrollments.models import Enrollment
 
 from .models import (
@@ -247,10 +247,28 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
         tags, save_to_course, present = getattr(
             self, "_tag_input", ([], False, False)
         )
-        return self.apply_chapter_tags(
+        quiz = self.apply_chapter_tags(
             quiz, getattr(self, "_tag_subject", None) or quiz.subject,
             tags, save_to_course, present,
         )
+
+        # MIRROR THE FK WHEN THE CLIENT SENT NO TAGS.
+        #
+        # apply_chapter_tags() returns early when `present` is False, so the
+        # pre-Phase-3 path (chapter_id / custom_chapter, which the builder and
+        # every older client still use) sets `quiz.chapter` and writes no tag
+        # at all. That is how quizzes ended up with a chapter and zero tag
+        # rows, which made serialize_tags() come back empty on the S3 results
+        # screen and forced a fallback there.
+        #
+        # Migration 0028 repaired the existing rows; without this, every quiz
+        # created afterwards would reopen the same gap immediately and the
+        # legacy FK could never be retired. Deliberately NOT fixed inside the
+        # shared apply_chapter_tags mixin: that is used by five models across
+        # four apps and each has its own FK semantics to audit first.
+        if not present and quiz.chapter_id:
+            set_tags(quiz, [(quiz.chapter, "", 0)])
+        return quiz
 
     # Atomic for the same reason as the assignment serializer: _apply_tags
     # resolves the payload after the row exists (tags need the pk) and can
