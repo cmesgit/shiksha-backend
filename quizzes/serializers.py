@@ -733,13 +733,19 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
 class QuestionResultSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     text = serializers.CharField()
-    selected_choice = serializers.CharField()
+    # allow_blank: a Choice may legitimately have empty text (the teacher's
+    # builder does not require it). Without this, one such choice anywhere in
+    # an attempt makes is_valid(raise_exception=True) reject the WHOLE result
+    # payload, and the student sees "Unable to load result." rather than a
+    # blank option. Same reasoning as correct_choice below, which already
+    # had it — this field was simply missed.
+    selected_choice = serializers.CharField(allow_blank=True, default="")
     correct_choice = serializers.CharField(allow_blank=True, default="")
     is_correct = serializers.BooleanField()
     explanation = serializers.CharField(
         allow_blank=True, default="No explanation")
     topic = serializers.CharField(allow_blank=True, default="")
-    difficulty = serializers.CharField(default="medium")
+    difficulty = serializers.CharField(allow_blank=True, default="medium")
     time_spent_seconds = serializers.IntegerField(default=0)
     marked_for_review = serializers.BooleanField(default=False)
 
@@ -773,7 +779,12 @@ class QuizResultSerializer(serializers.Serializer):
     course_title = serializers.CharField(allow_blank=True, default="")
     board_name = serializers.CharField(
         allow_blank=True, allow_null=True, required=False, default=None)
-    teacher_name = serializers.CharField()
+    # allow_blank: Quiz.created_by is null=True, and QuizResultView feeds ""
+    # for a creatorless quiz (bank/seeded/imported sets). Without this the
+    # entire result screen 400s for those quizzes — a whole-page failure
+    # caused by one absent byline. course_title and board_name beside it
+    # already allowed blank; this one was missed.
+    teacher_name = serializers.CharField(allow_blank=True, default="")
     quiz_type = serializers.CharField(default="mock")
     total_marks = serializers.IntegerField()
     # FloatField, NOT IntegerField: with negative marking a score is

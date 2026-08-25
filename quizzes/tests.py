@@ -852,6 +852,88 @@ class QuizResultTotalsTest(TestCase):
         self.assertEqual(r.data["questions_total"], 4)
 
 
+class QuizResultBlankFieldsStillSerializeTest(TestCase):
+    """A missing byline or a blank choice must not 400 the whole result page.
+
+    QuizResultView ends in `serializer.is_valid(raise_exception=True)`, so any
+    CharField that forbids blank turns legitimate-but-empty data into a 400 for
+    the ENTIRE screen. The student sees one flat error line and there is
+    nothing in the UI to suggest which field did it.
+
+    Two fields did exactly that while their neighbours (course_title,
+    board_name, correct_choice) already allowed blank:
+
+      * `teacher_name` — the view sends "" whenever `Quiz.created_by` is NULL,
+        which the model explicitly permits (bank / seeded / imported sets).
+      * `selected_choice` — sends `Choice.text`, which the builder does not
+        require to be non-empty.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="STUDENT")
+        cls.student = User.objects.create_user(
+            username="bf_s", email="bf_s@test.com", password="x", is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.student, role=Role.objects.get(name="STUDENT"),
+            is_active=True, is_primary=True,
+        )
+        cls.profile = LearnerProfile.objects.create(
+            account=cls.student, display_name="B", is_default=True,
+        )
+        cls.course = Course.objects.create(title="Civics")
+        cls.subject = Subject.objects.create(course=cls.course, name="Civics")
+        Subscription.objects.create(
+            user=cls.student, learner_profile=cls.profile, course=cls.course,
+            status=Subscription.STATUS_ACTIVE,
+            starts_at=timezone.now(), expires_at=timezone.now() + timedelta(days=30),
+        )
+        # created_by deliberately omitted — this is the creatorless case.
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, title="Unowned set",
+            quiz_type=Quiz.TYPE_PRACTICE, is_assigned=True,
+            review_status=Quiz.REVIEW_APPROVED, total_marks=1,
+        )
+        cls.question = Question.objects.create(
+            quiz=cls.quiz, text="Blank-choice question", marks=1, order=0,
+        )
+        # A choice whose text is empty — the one the student will pick.
+        cls.blank_choice = Choice.objects.create(
+            question=cls.question, text="", is_correct=True,
+        )
+        Choice.objects.create(question=cls.question, text="other", is_correct=False)
+
+    def _client(self):
+        c = APIClient()
+        c.force_authenticate(
+            user=self.student,
+            token={"context": "learner", "active_profile": str(self.profile.id)},
+        )
+        return c
+
+    def test_creatorless_quiz_with_a_blank_choice_returns_200(self):
+        self.assertIsNone(self.quiz.created_by)
+
+        c = self._client()
+        c.post(f"/api/quizzes/{self.quiz.id}/start/")
+        c.post(
+            f"/api/student/quizzes/{self.quiz.id}/submit/",
+            {"answers": [{
+                "question": str(self.question.id),
+                "selected_choice": str(self.blank_choice.id),
+            }]},
+            format="json",
+        )
+
+        r = c.get(f"/api/quizzes/{self.quiz.id}/result/")
+        # Before the allow_blank fixes this was a 400 and the student saw
+        # "Unable to load result." with no way to tell why.
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["teacher_name"], "")
+        self.assertEqual(r.data["questions"][0]["selected_choice"], "")
+
+
 class TeacherQuizRosterProfileSplitTest(TestCase):
     """Two siblings on one parent account are two rows, not one (theme T2).
 

@@ -861,6 +861,49 @@ class ChapterTagCreationTest(AssignmentScopeFixtureMixin, TestCase):
         self.assertEqual(r.status_code, 400, r.content)
         self.assertIn("chapter_tags", r.data)
 
+    def test_chapter_tags_alone_cannot_imply_the_subject(self):
+        """`chapter_tags` does NOT satisfy the subject requirement.
+
+        This is the contract the Create Assignment screen broke. `_create`
+        above hardcodes `subject_id` into every payload, so no test in this
+        file ever exercised the real client's shape — and the real client had
+        stopped sending it.
+
+        The reason tags cannot imply a subject: `validate()` reads
+        `attrs.get("chapter")`, which only the legacy single-value
+        `chapter_id` populates. Tags are resolved in `create()`, AFTER the row
+        exists, because they need its pk. So a tags-only payload reaches
+        validate() with no subject at all.
+
+        Pinning this deliberately: the tempting "fix" is to make `subject`
+        optional, but it is the model's NOT NULL column and the anchor the
+        staffing guard checks. The caller must name it.
+        """
+        payload = {
+            "batch_id": str(self.batch_b.id),
+            "title": "Tags but no subject",
+            "due_date": (timezone.now() + timedelta(days=3)).isoformat(),
+            "chapter_tags": [{"chapter_id": str(self.chapter.id)}],
+        }
+        r = _teacher_client(self.teacher_b).post(
+            "/api/assignments/teacher/create/", payload, format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn("subject_id", r.data)
+
+    def test_the_real_screens_payload_shape_creates(self):
+        """`chapter_tags` + explicit `subject_id`, no `chapter_id` anywhere.
+
+        This is exactly what CreateAssignment.jsx puts on the wire now, and
+        what UploadMaterial.jsx has always sent. Kept alongside the negative
+        case above so the pair documents the whole contract.
+        """
+        r = self._create(chapter_tags=[{"chapter_id": str(self.chapter.id)}])
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+        self.assertEqual(assignment.subject_id, self.subject.id)
+        self.assertEqual(
+            [t.chapter_id for t in self._tags(assignment)], [self.chapter.id])
+
 
 class ChapterTagLegacyShimTest(AssignmentScopeFixtureMixin, TestCase):
     """The three live teacher screens still send `chapter_id` and
