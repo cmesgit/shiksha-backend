@@ -19,6 +19,8 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
+
+from .validators import validate_cms_image
 from django.db.models import Q
 from django.utils import timezone
 from django.utils.text import slugify
@@ -183,6 +185,7 @@ class BlogPost(PublishableModel):
     )
     cover = models.ImageField(
         upload_to="content/blog/%Y/%m/", blank=True, null=True,
+        validators=[validate_cms_image],
         help_text="Card thumbnail. ~800×450 recommended.",
     )
     body_html = models.TextField(
@@ -512,7 +515,10 @@ class ShowcaseCourse(TimeStampedModel):
         default="rgba(15,157,107,0.72),rgba(11,91,62,0.88)",
         help_text="Two rgba() stops for the thumbnail overlay.",
     )
-    image = models.ImageField(upload_to="content/showcase/", blank=True, null=True)
+    image = models.ImageField(
+        upload_to="content/showcase/", blank=True, null=True,
+        validators=[validate_cms_image],
+    )
     image_url = models.URLField(
         blank=True, default="",
         help_text="Used if no image file is uploaded.",
@@ -647,7 +653,10 @@ class HomeContentBlock(TimeStampedModel):
     cta_primary_href = models.CharField(max_length=200, blank=True, default="")
     cta_secondary_label = models.CharField(max_length=60, blank=True, default="")
     cta_secondary_href = models.CharField(max_length=200, blank=True, default="")
-    image = models.ImageField(upload_to="content/home/", blank=True, null=True)
+    image = models.ImageField(
+        upload_to="content/home/", blank=True, null=True,
+        validators=[validate_cms_image],
+    )
     image_url = models.URLField(
         blank=True, default="", help_text="Used if no image file is uploaded.",
     )
@@ -742,7 +751,10 @@ class HomeListItem(TimeStampedModel):
     # row, optional art on the Why-Choose cards) is editable in the CMS —
     # before this, those images were hardcoded frontend imports and could only
     # be changed with a deploy.
-    image = models.ImageField(upload_to="content/home/", blank=True, null=True)
+    image = models.ImageField(
+        upload_to="content/home/", blank=True, null=True,
+        validators=[validate_cms_image],
+    )
     image_url = models.URLField(
         blank=True, default="", help_text="Used if no image file is uploaded.",
     )
@@ -855,7 +867,10 @@ class ContentImage(TimeStampedModel):
     owned by any single BlogPost/HomeContentBlock — one post can embed
     several, and deleting the post shouldn't cascade-delete an image that
     might still be referenced elsewhere in its body_html_source history."""
-    file = models.ImageField(upload_to="content/editor/%Y/%m/")
+    file = models.ImageField(
+        upload_to="content/editor/%Y/%m/",
+        validators=[validate_cms_image],
+    )
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True,

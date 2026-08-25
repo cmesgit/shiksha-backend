@@ -501,3 +501,82 @@ class LocalizeShowcaseImagesCommandTests(TestCase):
         out, get = self._run(yes=True)
         get.assert_not_called()
         self.assertIn("not an http(s) URL", out)
+
+
+class CmsImageValidatorTests(TestCase):
+    """The About-hero field accepted a 4096x4096 / 12.7 MB PNG off a phone,
+    with nothing to reject or resize it. These pin the guard-rails."""
+
+    @staticmethod
+    def _image(width=800, height=400, fmt="PNG"):
+        from io import BytesIO
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+
+        buf = BytesIO()
+        Image.new("RGB", (width, height), (10, 120, 90)).save(buf, format=fmt)
+        buf.seek(0)
+        ext = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp", "BMP": "bmp"}[fmt]
+        return SimpleUploadedFile(f"t.{ext}", buf.read(), content_type=f"image/{ext}")
+
+    def test_accepts_a_reasonable_web_image(self):
+        from content.validators import validate_cms_image
+        validate_cms_image(self._image())  # must not raise
+
+    def test_rejects_an_over_large_dimension(self):
+        from django.core.exceptions import ValidationError
+
+        from content.validators import validate_cms_image
+        with self.assertRaises(ValidationError) as cm:
+            validate_cms_image(self._image(4096, 4096))
+        self.assertIn("4096x4096", " ".join(cm.exception.messages))
+
+    def test_rejects_a_disallowed_format(self):
+        from django.core.exceptions import ValidationError
+
+        from content.validators import validate_cms_image
+        with self.assertRaises(ValidationError) as cm:
+            validate_cms_image(self._image(fmt="BMP"))
+        self.assertIn("not accepted", " ".join(cm.exception.messages))
+
+    def test_rejects_a_file_over_the_byte_ceiling(self):
+        from django.core.exceptions import ValidationError
+
+        from content.validators import CmsImageValidator
+        tiny_ceiling = CmsImageValidator(max_bytes=200)
+        with self.assertRaises(ValidationError) as cm:
+            tiny_ceiling(self._image())
+        self.assertIn("the limit is", " ".join(cm.exception.messages))
+
+    def test_rejects_something_that_is_not_an_image(self):
+        from django.core.exceptions import ValidationError
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from content.validators import validate_cms_image
+        with self.assertRaises(ValidationError) as cm:
+            validate_cms_image(SimpleUploadedFile("x.png", b"not an image"))
+        self.assertIn("could not be read", " ".join(cm.exception.messages))
+
+    def test_leaves_the_file_readable_for_the_rest_of_the_save(self):
+        """The validator opens the upload to read its size; if it does not
+        rewind, whatever saves the file next writes zero bytes."""
+        from content.validators import validate_cms_image
+        f = self._image()
+        validate_cms_image(f)
+        self.assertEqual(f.tell(), 0)
+        self.assertTrue(f.read(8).startswith(b"\x89PNG"))
+
+    def test_the_field_actually_carries_the_validator(self):
+        """Guards against the validator existing but never being wired up."""
+        from content.validators import CmsImageValidator
+        for model, field in (
+            (HomeContentBlock, "image"),
+            (HomeListItem, "image"),
+            (ShowcaseCourse, "image"),
+        ):
+            vs = model._meta.get_field(field).validators
+            self.assertTrue(
+                any(isinstance(v, CmsImageValidator) for v in vs),
+                f"{model.__name__}.{field} is missing CmsImageValidator",
+            )

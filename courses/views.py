@@ -1380,7 +1380,12 @@ class AdminCourseCreateView(APIView):
             )
             .select_related("stream", "details", "board")
             .prefetch_related("categories")
-            .order_by("title")
+            # display_order first, matching Course.Meta.ordering, which this
+            # view was overriding with a plain alphabetical sort. The admin
+            # course tables now show that number, and a sequence column above
+            # an alphabetically-ordered list just reads as broken — you could
+            # set an order and see nothing move. Ties still fall back to title.
+            .order_by("display_order", "title")
         )
 
         search = request.query_params.get("search")
@@ -1411,6 +1416,12 @@ class AdminCourseCreateView(APIView):
                     if hasattr(c, "details") else None
                 ),
                 "is_featured": c.is_featured,
+                # This list is hand-rolled rather than serialized, so a field
+                # being editable on CourseSerializer does not mean it reaches
+                # this screen. `display_order` was writable in the course modal
+                # but absent here, so the admin course tables could not show the
+                # sequence an editor was typing numbers into.
+                "display_order": c.display_order,
                 "categories": [
                     {"id": cat.id, "slug": cat.slug, "name": cat.name, "group": cat.group}
                     for cat in c.categories.all()
