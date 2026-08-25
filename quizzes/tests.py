@@ -1364,7 +1364,7 @@ class StudentPracticeChaptersTest(TestCase):
         # A graded mock the learner sat: 1 of 2 right → 50%.
         cls.mock = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Algebra mock",
-            chapter=cls.chapter, quiz_type=Quiz.TYPE_MOCK, is_assigned=True)
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True)
         # Building the Quiz row directly skips QuizCreateSerializer, which is
         # what mirrors the chapter FK into a ContentChapterTag. Migration 0028
         # plus that mirror mean a chaptered quiz ALWAYS has a tag in
@@ -1410,8 +1410,9 @@ class StudentPracticeChaptersTest(TestCase):
         # same chapter, all correct — accuracy must stay at the graded 50%.
         practice = Quiz.objects.create(
             subject=self.subject, created_by=self.teacher,
-            title="Algebra practice", chapter=self.chapter,
+            title="Algebra practice",
             quiz_type=Quiz.TYPE_PRACTICE, is_assigned=True)
+        set_tags(practice, [(self.chapter, "", 0)])
         att = QuizAttempt.objects.create(
             quiz=practice, student=self.account, learner_profile=self.learner,
             status=QuizAttempt.STATUS_SUBMITTED,
@@ -1583,6 +1584,36 @@ class StudentPracticeChaptersTest(TestCase):
         self.assertEqual(row["accuracy"], 50)
         self.assertEqual(row["answered"], 2)
 
+    def test_a_quiz_tagged_to_two_chapters_supplies_both(self):
+        """The semantic change made when practice moved off the legacy FK.
+
+        The FK held ONE "primary" chapter, so a quiz spanning two chapters
+        only ever supplied questions to the first. Tags carry both, and
+        tagging a question set to two chapters is a statement that it belongs
+        to both — so each chapter offers those questions for practice.
+
+        Pinned because it is a deliberate behaviour change, not a refactor
+        side effect, and because the join it relies on is exactly the shape
+        that silently double-counts if the grouping is ever dropped: `total`
+        below must stay 2, not 4.
+        """
+        from courses.models import Chapter
+
+        second = Chapter.objects.create(
+            subject=self.subject, title="Quadratics", order=1)
+        set_tags(self.mock, [(self.chapter, "", 0), (second, "", 1)])
+
+        rows = {r["title"]: r for r in self._get().data}
+        self.assertEqual(rows["Algebra"]["available"], 2)
+        self.assertEqual(rows["Quadratics"]["available"], 2,
+                         "the second tagged chapter must supply the same set")
+        # Graded accuracy is per chapter and must NOT be inflated by the join:
+        # 2 answered questions stay 2 in each chapter, never 4.
+        self.assertEqual(rows["Algebra"]["answered"], 2)
+        self.assertEqual(rows["Quadratics"]["answered"], 2)
+        self.assertEqual(rows["Algebra"]["accuracy"], 50)
+        self.assertEqual(rows["Quadratics"]["accuracy"], 50)
+
     def test_a_chapter_from_a_course_the_learner_is_not_in_is_absent(self):
         from courses.models import Chapter
         other = Course.objects.create(title="Class 12")
@@ -1645,7 +1676,8 @@ class QuizChapterTagInvariantTest(TestCase):
         }, format="json")
         self.assertIn(r.status_code, (200, 201), r.content)
         quiz = Quiz.objects.get(id=r.json()["id"])
-        self.assertEqual(quiz.chapter_id, self.chapter.id)
+        # No FK to check any more (Phase 10, quizzes/0030) — the tag IS the
+        # placement, which is exactly what this test exists to pin.
         tags = self._tags_of(quiz)
         self.assertEqual(len(tags), 1,
                          "a chapter-only create must still produce one tag")
@@ -1729,7 +1761,7 @@ class QuizResultS3PayloadTest(TestCase):
         # A 4-mark paper; the learner answers only 2 of the 4 questions.
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Civics mock",
-            chapter=cls.chapter, quiz_type=Quiz.TYPE_MOCK,
+            quiz_type=Quiz.TYPE_MOCK,
             is_assigned=True, total_marks=4, time_limit_minutes=30)
         # S3 reads chapters from ContentChapterTag only — the legacy FK
         # fallback went in Phase 10. Building the row through the ORM skips
@@ -2322,8 +2354,9 @@ class QuizDraftChapterRoundTripTest(TestCase):
             subject=cls.subject, title="Algebra", order=0)
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Algebra unit test",
-            chapter=cls.chapter, chapter_note="revise identities first",
+            chapter_note="revise identities first",
         )
+        set_tags(cls.quiz, [(cls.chapter, "", 0)])
         set_tags(cls.quiz, [(cls.chapter, "", 0), (None, "Mixed revision", 1)])
 
     def _draft(self):
@@ -2527,7 +2560,10 @@ class QuizCreateBatchAndChapterTest(TestCase):
         self.assertEqual(r.status_code, 201, r.content)
         chapter = Chapter.objects.get(subject=self.subject, title="Laws of Motion")
         quiz = Quiz.objects.get(id=r.data["id"])
-        self.assertEqual(quiz.chapter_id, chapter.id)
+        # custom_chapter still creates a real Chapter; placement is recorded as
+        # a tag now rather than on a dropped FK.
+        self.assertEqual(
+            [t.chapter_id for t in quiz.chapter_tags.all()], [chapter.id])
         self.assertEqual(quiz.batch_id, self.batch.id)
 
     def test_batch_in_a_batch_the_teacher_does_not_teach_is_rejected(self):
@@ -2546,8 +2582,9 @@ class QuizCreateBatchAndChapterTest(TestCase):
         chapter = Chapter.objects.create(subject=self.subject, title="Optics")
         quiz = Quiz.objects.create(
             subject=self.subject, created_by=self.teacher, title="Original",
-            quiz_type=Quiz.TYPE_MOCK, batch=self.batch, chapter=chapter,
+            quiz_type=Quiz.TYPE_MOCK, batch=self.batch,
         )
+        set_tags(quiz, [(chapter, "", 0)])
         r = self._teacher_client().patch(
             f"/api/teacher/quizzes/{quiz.id}/", {"title": "Renamed"}, format="json",
         )
@@ -2555,7 +2592,9 @@ class QuizCreateBatchAndChapterTest(TestCase):
         quiz.refresh_from_db()
         self.assertEqual(quiz.title, "Renamed")
         self.assertEqual(quiz.batch_id, self.batch.id)
-        self.assertEqual(quiz.chapter_id, chapter.id)
+        # A title-only PATCH must not disturb the chapter tag.
+        self.assertEqual(
+            [t.chapter_id for t in quiz.chapter_tags.all()], [chapter.id])
 
 
 # =====================================================================

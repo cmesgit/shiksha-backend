@@ -92,9 +92,11 @@ class QuizV2FeatureFlagsTest(TestCase):
 
     URL = "/api/admin/settings/"
 
-    def test_both_flags_default_false_on_a_fresh_row(self):
+    def test_shipped_defaults_on_a_fresh_row(self):
+        # quiz_v2_enabled ON (Phase 10, migration 0008 — a record that v2 is
+        # live, not a gate); AI drafting still OFF and admin-controlled.
         gs = GlobalSettings.load()
-        self.assertFalse(gs.quiz_v2_enabled)
+        self.assertTrue(gs.quiz_v2_enabled)
         self.assertFalse(gs.ai_question_drafting_enabled)
 
     def _client(self, user):
@@ -134,6 +136,8 @@ class QuizV2FeatureFlagsTest(TestCase):
             format="json",
         )
         self.assertEqual(res.status_code, 403, res.content)
+        # Unchanged from the shipped defaults — the point is that a non-admin
+        # PATCH wrote nothing, not that the values are false.
         reloaded = GlobalSettings.objects.get(pk=1)
-        self.assertFalse(reloaded.quiz_v2_enabled)
+        self.assertTrue(reloaded.quiz_v2_enabled)
         self.assertFalse(reloaded.ai_question_drafting_enabled)

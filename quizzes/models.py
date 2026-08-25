@@ -90,25 +90,16 @@ class Quiz(models.Model):
         related_name="assigned_quizzes",
     )
 
-    # Curriculum placement, same role Chapter plays for Assignment/StudyMaterial.
-    # Optional: legacy quizzes and evergreen question banks may have none.
+    # Curriculum placement used to be a `chapter` FK here. Phase 10 removed it
+    # (migration 0030): placement lives ONLY in ContentChapterTag now, reached
+    # through the `chapter_tags` GenericRelation declared further down.
     #
-    # ⚠ NOT dropped by Phase 10, deliberately. Nothing READS it any more — the
-    # practice endpoints and S3 all go through `chapter_tags` below — but it is
-    # still WRITTEN by courses/chapter_tags.py's additive invariant
-    # (`instance.chapter = primary_chapter(...)`, chapter_tags.py:318), and that
-    # write is shared by five models across four apps. Assignment.chapter is
-    # required and its staffing-triangle check derives subject/course through
-    # it, so the mixin cannot simply stop writing the FK. Removing this column
-    # means making that shared write model-aware first — a change to shared
-    # infrastructure, not a cleanup. See migration 0029's docstring.
-    chapter = models.ForeignKey(
-        "courses.Chapter",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="quizzes",
-    )
+    # Two things went with it. The reverse accessor: anything that reached for
+    # `chapter.quizzes` has to query ContentChapterTag instead. And the shared
+    # additive invariant in courses/chapter_tags.py, which used to keep this FK
+    # in step — it is now guarded by has_chapter_fk(), because the four other
+    # taggable models still have theirs (Assignment's is required, with
+    # authorization derived through it).
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

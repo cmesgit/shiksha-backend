@@ -17,6 +17,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts.models import User, Role, UserRole, LearnerProfile
+from courses.chapter_tags import set_tags
 from courses.models import Course, Subject, Chapter
 from enrollments.models import Subscription
 from assignments.models import Assignment, AssignmentFile
@@ -1060,7 +1061,11 @@ class ChapterTagBackfillTest(TestCase):
         cls.material = StudyMaterial.objects.create(
             chapter=cls.chapter, title="Old notes", uploaded_by=cls.teacher)
         cls.quiz = Quiz.objects.create(
-            subject=cls.subject, chapter=cls.chapter, title="Old quiz")
+            subject=cls.subject, title="Old quiz")
+        # Quiz.chapter was dropped in Phase 10 (quizzes/0030); placement is a
+        # tag now. ORM-built rows must tag explicitly — QuizCreateSerializer is
+        # what does it for real traffic.
+        set_tags(cls.quiz, [(cls.chapter, "", 0)])
         cls.recording = SessionRecording.objects.create(
             subject=cls.subject, chapter=cls.chapter, title="Old recording",
             bunny_video_id="vid-1", uploaded_by=cls.teacher)
@@ -1079,7 +1084,12 @@ class ChapterTagBackfillTest(TestCase):
 
         forwards(global_apps, None)
 
-        for obj in (self.assignment, self.material, self.quiz, self.recording):
+        # Quiz is absent on purpose: Phase 10 dropped Quiz.chapter
+        # (quizzes/0030), so replaying this backfill against the CURRENT model
+        # registry can no longer produce a tag for it — the migration skips a
+        # source whose FK is gone. Real runs used the historical registry and
+        # did tag quizzes; 0028 then took over keeping them tagged.
+        for obj in (self.assignment, self.material, self.recording):
             tags = list(ContentChapterTag.objects.filter(
                 content_type=ContentType.objects.get_for_model(obj),
                 object_id=obj.pk,

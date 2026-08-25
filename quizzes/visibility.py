@@ -2,9 +2,12 @@
 
 Phase 1 of the quiz refactor decoupled "this quiz is live for my batches"
 (`Quiz.is_assigned`, teacher-controlled) from "an admin approved the
-questions" (`Quiz.review_status`, now purely informational). Before this,
-`is_published` was the gate and an admin had to approve a teacher's own quiz
-before that teacher's own class could take it.
+questions" (`Quiz.review_status`, now purely informational). Before this, a
+separate `is_published` flag was the gate and an admin had to approve a
+teacher's own quiz before that teacher's own class could take it. Phase 10
+dropped that column entirely (migration 0029) — `is_assigned` below is the
+only visibility gate there is, and nothing here has ever keyed on
+`review_status`.
 
 The rule, in full:
 

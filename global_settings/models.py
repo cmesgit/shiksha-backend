@@ -177,15 +177,28 @@ class GlobalSettings(models.Model):
     )
 
     # ── Quiz system v2 (design_handoff_quiz_system) ─────────────────────
-    # Phase 0 groundwork: both flags ship OFF and unused until the phases
-    # that consume them land. quiz_v2_enabled will gate the rebuilt teacher
-    # builder / student hub / results screens; ai_question_drafting_enabled
-    # separately gates the existing "Generate with AI" question-drafting code
-    # path, which stays in the codebase but becomes admin-controlled rather
-    # than always-on (see PROMPT.md non-negotiable #6 — the AI path itself is
-    # never removed, only fenced behind this switch).
+    # ai_question_drafting_enabled gates the existing "Generate with AI"
+    # question-drafting path, which stays in the codebase but is
+    # admin-controlled rather than always-on (PROMPT.md non-negotiable #6 —
+    # the AI path itself is never removed, only fenced behind this switch).
+    # It remains OFF by default, deliberately.
+    #
+    # quiz_v2_enabled is ON as of Phase 10 (migration 0008). ⚠ It gates
+    # NOTHING: the rebuilt teacher builder, student hub, attempt and results
+    # screens all shipped unconditionally, and the only mention of this flag
+    # outside admin settings is the default shape in each app's AuthContext.
+    # It is now a truthful record that v2 is the shipped system rather than a
+    # switch — leaving it False said "v2 is off" while v2 was live, which is
+    # worse than useless. Turning it off will NOT roll anything back; that
+    # takes a deploy. Remove the field once a release has passed with no need
+    # for it (BUILD_GUIDE Phase 10 item 3).
     quiz_v2_enabled = models.BooleanField(
-        default=False, help_text="Master switch for the redesigned quiz system UI/flows."
+        default=True,
+        help_text=(
+            "Records that the redesigned quiz system is live. Gates nothing — "
+            "the v2 screens ship unconditionally; turning this off does not "
+            "revert them."
+        ),
     )
     ai_question_drafting_enabled = models.BooleanField(
         default=False, help_text="Gate for the 'Generate with AI' question-drafting flow."

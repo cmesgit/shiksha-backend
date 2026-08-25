@@ -191,6 +191,20 @@ def resolve_tags(subject, tags, teacher=None, save_to_course=False):
     return resolved
 
 
+def has_chapter_fk(instance):
+    """Does this model still carry the legacy per-model `chapter` FK?
+
+    The taggable models retire it one at a time (Quiz's went in Phase 10,
+    Assignment's is load-bearing and staying), so every write to it has to be
+    guarded rather than assumed. Checks the concrete field list, not
+    `hasattr`, because a GenericRelation or a property could shadow the name.
+    """
+    return any(
+        f.name == "chapter" and f.concrete
+        for f in instance._meta.get_fields()
+    )
+
+
 def primary_chapter(resolved):
     """Which chapter the legacy per-model `chapter` FK should hold.
 
@@ -314,8 +328,16 @@ class ChapterTagWriteMixin:
         set_tags(instance, resolved)
 
         # The additive invariant — see primary_chapter()'s docstring.
-        chapter = primary_chapter(resolved)
-        if instance.chapter_id != (chapter.id if chapter else None):
-            instance.chapter = chapter
-            instance.save(update_fields=["chapter"])
+        #
+        # MODEL-AWARE. The five models this mixin serves retire their legacy
+        # `chapter` FK independently: Phase 10 dropped Quiz's, while
+        # Assignment's is required and its staffing-triangle check derives
+        # subject/course through it. Writing unconditionally would raise on
+        # any model that has already dropped the column, so the invariant only
+        # applies where there is still a column to hold it.
+        if has_chapter_fk(instance):
+            chapter = primary_chapter(resolved)
+            if instance.chapter_id != (chapter.id if chapter else None):
+                instance.chapter = chapter
+                instance.save(update_fields=["chapter"])
         return instance

@@ -26,13 +26,17 @@ class MeViewFeatureFlagsTest(TestCase):
         self.client_ = APIClient()
         self.client_.force_authenticate(user=self.user)
 
-    def test_feature_flags_present_with_both_keys_false_by_default(self):
+    def test_feature_flags_present_with_the_shipped_defaults(self):
+        # quiz_v2_enabled is ON as of Phase 10 (global_settings/0008): the v2
+        # screens shipped, so the flag records that rather than gating it.
+        # ai_question_drafting_enabled stays OFF — it is a real gate and
+        # PROMPT.md non-negotiable #6 requires it ship off.
         res = self.client_.get(self.URL)
         self.assertEqual(res.status_code, 200, res.content)
         flags = res.json()["feature_flags"]
         self.assertIn("quiz_v2_enabled", flags)
         self.assertIn("ai_question_drafting_enabled", flags)
-        self.assertFalse(flags["quiz_v2_enabled"])
+        self.assertTrue(flags["quiz_v2_enabled"])
         self.assertFalse(flags["ai_question_drafting_enabled"])
 
     def test_feature_flags_reflect_globalsettings_when_flipped(self):

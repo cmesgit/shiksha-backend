@@ -154,9 +154,13 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
     )
     # Existing chapter, or type a new one via custom_chapter — resolved in
     # validate() via resolve_or_create_chapter(), same as assignments/materials.
+    #
+    # NO `source="chapter"` any more: Phase 10 dropped Quiz.chapter, so this
+    # can no longer map onto a model field. It stays in the API because the
+    # live QuizBuilder still sends it — validate() resolves it and
+    # _apply_tags() writes it as a ContentChapterTag instead.
     chapter_id = serializers.PrimaryKeyRelatedField(
-        queryset=Chapter.objects.all(), source="chapter",
-        write_only=True, required=False,
+        queryset=Chapter.objects.all(), write_only=True, required=False,
     )
     custom_chapter = serializers.CharField(
         write_only=True, required=False, allow_blank=True,
@@ -208,7 +212,10 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
 
         subject = attrs.get("subject")
         batch = attrs.get("batch")
-        chapter = attrs.get("chapter")
+        # Popped, not read: `chapter_id` is no longer a model field (Phase 10
+        # dropped Quiz.chapter), so leaving it in attrs would have
+        # ModelSerializer try to setattr it on the Quiz.
+        chapter = attrs.pop("chapter_id", None)
         user = self.context["request"].user
 
         if subject and batch:
@@ -234,12 +241,14 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
                     subject, custom_title=custom_chapter,
                     created_by=self.context["request"].user,
                 )
-                attrs["chapter"] = chapter
         elif subject and chapter.subject_id != subject.id:
             raise ValidationError(
                 {"chapter_id": "Pick a chapter from this quiz's own subject."}
             )
 
+        # Stashed for _apply_tags(), which turns it into a tag. Cannot ride in
+        # attrs — there is no `chapter` column to receive it.
+        self._legacy_chapter = chapter
         self._tag_subject = subject
         return attrs
 
@@ -252,22 +261,19 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
             tags, save_to_course, present,
         )
 
-        # MIRROR THE FK WHEN THE CLIENT SENT NO TAGS.
+        # TURN THE LEGACY chapter_id / custom_chapter INPUT INTO A TAG.
         #
         # apply_chapter_tags() returns early when `present` is False, so the
-        # pre-Phase-3 path (chapter_id / custom_chapter, which the builder and
-        # every older client still use) sets `quiz.chapter` and writes no tag
-        # at all. That is how quizzes ended up with a chapter and zero tag
-        # rows, which made serialize_tags() come back empty on the S3 results
-        # screen and forced a fallback there.
+        # pre-Phase-3 path — which the live QuizBuilder and every older client
+        # still use — would otherwise record no chapter anywhere at all now
+        # that Quiz.chapter is gone. Before Phase 10 it at least landed in the
+        # FK, which is how quizzes ended up with a chapter and zero tag rows
+        # and made serialize_tags() come back empty on S3.
         #
-        # Migration 0028 repaired the existing rows; without this, every quiz
-        # created afterwards would reopen the same gap immediately and the
-        # legacy FK could never be retired. Deliberately NOT fixed inside the
-        # shared apply_chapter_tags mixin: that is used by five models across
-        # four apps and each has its own FK semantics to audit first.
-        if not present and quiz.chapter_id:
-            set_tags(quiz, [(quiz.chapter, "", 0)])
+        # Tags are the only representation left, so the legacy keys write one.
+        legacy = getattr(self, "_legacy_chapter", None)
+        if not present and legacy is not None:
+            set_tags(quiz, [(legacy, "", 0)])
         return quiz
 
     # Atomic for the same reason as the assignment serializer: _apply_tags

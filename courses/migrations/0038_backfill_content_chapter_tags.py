@@ -41,6 +41,20 @@ def forwards(apps, schema_editor):
     for app_label, model_name in SOURCES:
         Model = apps.get_model(app_label, model_name)
 
+        # Skip a source whose `chapter` FK no longer exists.
+        #
+        # A no-op for real migration runs: `apps` there is the HISTORICAL
+        # registry, where every model in SOURCES still has the column at this
+        # point in history, so the behaviour of this migration is unchanged.
+        # It matters when the function is called with the CURRENT registry —
+        # which the cross-model backfill test does — after a later migration
+        # has dropped one of these FKs. Phase 10 dropped quizzes.Quiz.chapter
+        # (quizzes/0030), and without this guard that call raises FieldError
+        # on a migration that has long since run everywhere.
+        if not any(f.name == "chapter" and f.concrete
+                   for f in Model._meta.get_fields()):
+            continue
+
         # get_or_create, not get: on a fresh database (a test run, or a new
         # deployment migrating from zero) the contenttypes rows for these
         # models may not have been created yet, since that happens in a
