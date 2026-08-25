@@ -49,31 +49,17 @@ class Quiz(models.Model):
         related_name="quizzes",
     )
 
-    # Delivery scope. NULL = evergreen (practice quizzes / question banks,
-    # visible to every batch of the course); set = scoped to one batch
-    # (e.g. "Batch A13 weekly test"). SET_NULL: deleting a batch demotes
-    # its quizzes to course-wide instead of destroying them.
+    # Delivery scope used to be a single `batch` FK here — the pre-Phase-2
+    # shim. Phase 10 removed it (migration 0032); `batches` below is the only
+    # scope there is. Two things to know if you go looking for it:
     #
-    # QuizCreateSerializer now sets this (batch-aware, same as assignments).
-    # StartQuizView/QuizDetailView/SubmitQuizView (quizzes/views.py) gate on
-    # it via _assert_learner_may_see_quiz(), the same
-    # Q(batch__isnull=True) | Q(batch_id=<learner's batch for this course>)
-    # rule materials/views.py's StudentSubjectMaterials uses.
-    #
-    # ⚠ LEGACY SINGLE-BATCH SHIM. Superseded by `batches` (M2M) below, but
-    # still WRITTEN by QuizCreateSerializer and by the assign endpoint, and
-    # still READ as a fallback by quizzes/visibility.py whenever `batches`
-    # is empty. It cannot be dropped before Phase 10: any writer that sets
-    # only this field (quiz create, duplicate) would otherwise produce a
-    # quiz with an empty `batches` set, which the new rule reads as
-    # "course-wide" — silently leaking a batch-scoped quiz to every batch.
-    batch = models.ForeignKey(
-        "courses.Batch",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="quizzes",
-    )
+    #   · quizzes/visibility.py lost its fallback clause with the column. An
+    #     empty `batches` set now unambiguously means "every batch of the
+    #     course", which is only safe because create and duplicate both
+    #     populate the M2M (migration 0031 backfilled the stragglers). Any new
+    #     writer MUST set `batches`, or its quiz silently goes course-wide.
+    #   · the reverse accessor `batch.quizzes` is gone; query `assigned_quizzes`
+    #     (the M2M's related_name) instead.
 
     # Delivery scope, multi-batch. EMPTY = every batch of the course, which
     # preserves exactly what `batch IS NULL` meant before this field existed;
@@ -251,10 +237,13 @@ class Quiz(models.Model):
         indexes = [
             models.Index(fields=["subject"]),
             models.Index(fields=["review_status"]),
-            # The is_published / (batch, is_published) pair went with the
-            # column in Phase 10. (batch, is_assigned) is the replacement and
-            # already existed — every student queryset filters on is_assigned.
-            models.Index(fields=["batch", "is_assigned"]),
+            # Phase 10 dropped is_published and then the `batch` shim, so the
+            # is_published, (batch, is_published) and (batch, is_assigned)
+            # indexes all went with their columns. `is_assigned` keeps its own
+            # db_index (declared on the field) — it is what every student
+            # queryset filters on, and batch scope is now an Exists() subquery
+            # over the M2M's own indexed join table, not a column on Quiz.
+            models.Index(fields=["is_assigned"]),
         ]
 
     def __str__(self):

@@ -22,7 +22,9 @@ from rest_framework.throttling import ScopedRateThrottle
 logger = logging.getLogger(__name__)
 
 from accounts.permissions import IsEmailVerified, IsAdmin, require_teacher_context, IsTeacherContext, _in_teacher_context
-from courses.chapter_tags import attach_chapter_tags, serialize_tags
+from courses.chapter_tags import (
+    attach_chapter_tags, serialize_tags, set_tags, tags_for,
+)
 from accounts.auth_flow import get_active_profile
 from enrollments.models import Enrollment
 from enrollments.services import active_batch_id
@@ -473,15 +475,16 @@ class TeacherQuizAssignView(APIView):
     submit-for-review/) is untouched and still only asks an admin to look at
     the questions.
 
-    Writes four things, in an order that matters:
+    Writes two things, in an order that matters:
 
-      1. `batches` (M2M) — the real scope.
-      2. `batch` (legacy FK) = batch_ids[0], or NULL. Old clients still read
-         this, and quizzes/visibility.py still falls back to it.
-      3. `is_assigned` — the gate every student queryset now reads.
+      1. `batches` (M2M) — the whole scope. An EMPTY set means every batch of
+         the course, so passing [] deliberately widens a quiz.
+      2. `is_assigned` — the gate every student queryset reads.
 
-    `is_published` used to be mirrored here for back-compat. Phase 10 dropped
-    it: nothing read it any more once the teacher UI moved to is_assigned.
+    Phase 10 removed two mirrors that used to be written here. `is_published`,
+    once the teacher UI moved to is_assigned and nothing read it; and the
+    `batch` legacy FK, once create and duplicate both populated the M2M so
+    quizzes/visibility.py no longer needed a fallback.
 
     The M2M is written BEFORE the save because activity/signals.py's
     `quiz_published` post_save receiver resolves the notify audience from the
@@ -510,8 +513,9 @@ class TeacherQuizAssignView(APIView):
 
         with transaction.atomic():
             if batches is not None:
+                # The M2M is the whole scope now — Phase 10 dropped the
+                # `batch` shim this used to mirror into.
                 quiz.batches.set(batches)
-                quiz.batch = batches[0] if batches else None
 
             # Backstop: whatever route a quiz took to get here, it must not go
             # live with a zero denominator — that is what silently blanks every
@@ -519,7 +523,7 @@ class TeacherQuizAssignView(APIView):
             recalc_total_marks(quiz)
 
             quiz.is_assigned = assign
-            quiz.save(update_fields=["batch", "is_assigned", "updated_at"])
+            quiz.save(update_fields=["is_assigned", "updated_at"])
 
         return Response(
             QuizDetailTeacherSerializer(quiz, context={"request": request}).data
@@ -708,13 +712,31 @@ class TeacherQuizDuplicateView(APIView):
 
         new_quiz = Quiz.objects.create(
             subject=quiz.subject,
-            batch=quiz.batch,
             created_by=request.user,
             title=f"{quiz.title} (copy)",
             description=quiz.description,
             time_limit_minutes=quiz.time_limit_minutes,
             quiz_type=quiz.quiz_type,
+            chapter_note=quiz.chapter_note,
+            no_specific_chapter=quiz.no_specific_chapter,
         )
+
+        # Copy the REAL delivery scope, not just the legacy single-batch FK.
+        #
+        # This only copied `batch`, so duplicating a multi-batch quiz produced
+        # a copy with an empty `batches` set. quizzes/visibility.py reads empty
+        # as "every batch of the course" and is currently saved only by its
+        # fallback to the legacy FK — so the copy silently narrowed to one
+        # batch, and would LEAK to every batch of the course the moment that
+        # FK is retired. Copying the M2M is what makes dropping it safe.
+        new_quiz.batches.set(quiz.batches.all())
+
+        # Curriculum placement. Copied neither before, so a duplicate lost its
+        # chapter outright — invisible, because the builder simply showed no
+        # chapter selected. Tags are the only representation since Phase 10.
+        tags = tags_for(quiz)
+        if tags:
+            set_tags(new_quiz, [(t.chapter, t.custom_label, t.order) for t in tags])
 
         for q in quiz.questions.all():
             new_q = Question.objects.create(

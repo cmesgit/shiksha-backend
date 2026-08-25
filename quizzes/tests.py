@@ -404,16 +404,21 @@ class QuizCourseScopingTest(TestCase):
             user=self.student, learner_profile=self.profile, course=self.course_a,
             batch=batch_mine, status=Enrollment.STATUS_ACTIVE,
         )
-        Quiz.objects.create(
+        evening = Quiz.objects.create(
             subject=self.subject_a, created_by=self.teacher, title="Evening-only test",
             quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
-            review_status=Quiz.REVIEW_APPROVED, batch=batch_other,
+            review_status=Quiz.REVIEW_APPROVED,
         )
+        # Scope lives in the M2M — the `batch` shim was dropped in Phase 10,
+        # and an empty batches set means "every batch of the course", which
+        # would make these isolation assertions vacuously pass.
+        evening.batches.set([batch_other])
         mine = Quiz.objects.create(
             subject=self.subject_a, created_by=self.teacher, title="Morning-only test",
             quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
-            review_status=Quiz.REVIEW_APPROVED, batch=batch_mine,
+            review_status=Quiz.REVIEW_APPROVED,
         )
+        mine.batches.set([batch_mine])
 
         c = self.client_as_student()
         titles = self._titles(c.get("/api/student/quizzes/", {"course": str(self.course_a.id)}))
@@ -1622,6 +1627,194 @@ class StudentPracticeChaptersTest(TestCase):
         self.assertNotIn("Genetics", [x["title"] for x in self._get().data])
 
 
+class BatchScopeHasNoLeakWithoutTheLegacyFKTest(TestCase):
+    """A batch-scoped quiz must never be visible to another batch.
+
+    This is the gate for retiring the `batch` shim. `batches` empty means
+    "every batch of the course", so any writer that sets only the shim leaves
+    a quiz that LOOKS course-wide to the M2M rule — the shim fallback in
+    quizzes/visibility.py is the only thing hiding that today. These tests
+    assert the outcome through the real student endpoint, so they hold whether
+    or not the fallback exists, and would fail loudly if dropping it ever
+    widened a quiz's audience.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Batch
+        from enrollments.models import Enrollment, Subscription
+
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="STUDENT")
+        cls.teacher = User.objects.create_user(
+            username="lk_t", email="lk_t@test.com", password="x", is_verified=True)
+        UserRole.objects.create(user=cls.teacher,
+                                role=Role.objects.get(name="TEACHER"),
+                                is_active=True, is_primary=True)
+        cls.course = Course.objects.create(title="Class 7")
+        cls.subject = Subject.objects.create(course=cls.course, name="Geo")
+        cls.mine = Batch.objects.create(
+            course=cls.course, name="7-A", code="7ALK")
+        cls.other = Batch.objects.create(
+            course=cls.course, name="7-B", code="7BLK")
+        TeachingAssignment.objects.create(
+            teacher=cls.teacher, subject=cls.subject, batch=cls.mine)
+
+        cls.account = User.objects.create_user(
+            username="lk_kid", email="lk_kid@test.com", password="x", is_verified=True)
+        UserRole.objects.create(user=cls.account,
+                                role=Role.objects.get(name="STUDENT"),
+                                is_active=True, is_primary=True)
+        cls.learner = LearnerProfile.objects.create(
+            account=cls.account, display_name="lk_kid", is_default=True)
+        now = timezone.now()
+        Subscription.objects.create(
+            user=cls.account, learner_profile=cls.learner, course=cls.course,
+            status=Subscription.STATUS_ACTIVE, starts_at=now,
+            expires_at=now + timedelta(days=30))
+        # The learner sits in `mine`.
+        Enrollment.objects.create(
+            user=cls.account, learner_profile=cls.learner, course=cls.course,
+            batch=cls.mine, status=Enrollment.STATUS_ACTIVE)
+
+    def _visible_titles(self):
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)})
+        r = c.get("/api/student/quizzes/", {"course": str(self.course.id)})
+        self.assertEqual(r.status_code, 200, r.content)
+        rows = r.json()
+        rows = rows["results"] if isinstance(rows, dict) and "results" in rows else rows
+        return {row["title"] for row in rows}
+
+    def _quiz(self, title, *, batches=(), batch=None):
+        q = Quiz.objects.create(
+            subject=self.subject, created_by=self.teacher, title=title,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True)
+        if batches:
+            q.batches.set(batches)
+        return q
+
+    def test_a_quiz_scoped_to_another_batch_via_the_m2m_is_hidden(self):
+        self._quiz("Other batch only", batches=[self.other])
+        self.assertNotIn("Other batch only", self._visible_titles())
+
+    def test_a_quiz_scoped_to_my_batch_via_the_m2m_is_visible(self):
+        self._quiz("My batch", batches=[self.mine])
+        self.assertIn("My batch", self._visible_titles())
+
+    def test_a_truly_course_wide_quiz_is_visible(self):
+        # No batch, no batches — the one case where empty legitimately means
+        # everyone, and the case the shim fallback must not be confused with.
+        self._quiz("Course wide")
+        self.assertIn("Course wide", self._visible_titles())
+
+    def test_the_create_endpoint_populates_the_m2m_so_no_shim_is_needed(self):
+        # The regression that would reopen the leak: create writing only the
+        # shim. Asserted through the API, not the model, so it covers the real
+        # serializer path the builder uses.
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = c.post("/api/teacher/quizzes/", {
+            "subject": str(self.subject.id),
+            "batch_id": str(self.mine.id),
+            "title": "Created scoped",
+        }, format="json")
+        self.assertIn(r.status_code, (200, 201), r.content)
+        quiz = Quiz.objects.get(id=r.json()["id"])
+        self.assertEqual(
+            set(quiz.batches.values_list("id", flat=True)), {self.mine.id},
+            "create must populate batches, or the shim can never be retired",
+        )
+
+
+class QuizDuplicateCarriesScopeAndChapterTest(TestCase):
+    """Duplicating a quiz must not quietly change who sees it, or lose where
+    it sits in the syllabus.
+
+    It copied only the legacy single-batch FK, so a multi-batch quiz's copy
+    had an EMPTY `batches` set — which quizzes/visibility.py reads as "every
+    batch of the course". Today the FK fallback masks that; the moment the FK
+    is retired the copy leaks to the whole course. Chapter tags were not
+    copied at all, which was invisible because the builder just showed no
+    chapter selected.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Batch, Chapter
+
+        Role.objects.get_or_create(name="TEACHER")
+        cls.teacher = User.objects.create_user(
+            username="dup_t", email="dup_t@test.com", password="x", is_verified=True)
+        UserRole.objects.create(user=cls.teacher,
+                                role=Role.objects.get(name="TEACHER"),
+                                is_active=True, is_primary=True)
+        cls.course = Course.objects.create(title="Class 12")
+        cls.subject = Subject.objects.create(course=cls.course, name="Maths")
+        cls.batch_a = Batch.objects.create(
+            course=cls.course, name="12-A", code="12ADUP")
+        cls.batch_b = Batch.objects.create(
+            course=cls.course, name="12-B", code="12BDUP")
+        cls.chapter = Chapter.objects.create(
+            subject=cls.subject, title="Integrals", order=0)
+        TeachingAssignment.objects.create(
+            teacher=cls.teacher, subject=cls.subject, batch=cls.batch_a)
+
+    def _duplicate(self, quiz):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = c.post(f"/api/teacher/quizzes/{quiz.id}/duplicate/")
+        self.assertEqual(r.status_code, 201, r.content)
+        return Quiz.objects.get(id=r.json()["id"])
+
+    def test_a_two_batch_quiz_copy_keeps_both_batches(self):
+        quiz = Quiz.objects.create(
+            subject=self.subject, created_by=self.teacher,
+            title="Two batch", quiz_type=Quiz.TYPE_MOCK)
+        quiz.batches.set([self.batch_a, self.batch_b])
+
+        copy = self._duplicate(quiz)
+        self.assertEqual(
+            set(copy.batches.values_list("id", flat=True)),
+            {self.batch_a.id, self.batch_b.id},
+            "an empty batches set on the copy reads as 'every batch of the course'",
+        )
+
+    def test_the_copy_keeps_its_chapter(self):
+        quiz = Quiz.objects.create(
+            subject=self.subject, created_by=self.teacher,
+            title="Placed", quiz_type=Quiz.TYPE_MOCK)
+        set_tags(quiz, [(self.chapter, "", 0)])
+
+        copy = self._duplicate(quiz)
+        self.assertEqual(
+            [t.chapter_id for t in copy.chapter_tags.all()], [self.chapter.id])
+
+    def test_a_free_text_tag_and_the_note_survive_the_copy(self):
+        quiz = Quiz.objects.create(
+            subject=self.subject, created_by=self.teacher,
+            title="Noted", quiz_type=Quiz.TYPE_MOCK,
+            chapter_note="Bring log tables.")
+        set_tags(quiz, [(None, "Revision week", 0)])
+
+        copy = self._duplicate(quiz)
+        tags = list(copy.chapter_tags.all())
+        self.assertEqual(len(tags), 1)
+        self.assertIsNone(tags[0].chapter_id)
+        self.assertEqual(tags[0].custom_label, "Revision week")
+        self.assertEqual(copy.chapter_note, "Bring log tables.")
+
+    def test_an_unscoped_quiz_copy_stays_unscoped(self):
+        # Empty in, empty out — the copy must not invent a scope either.
+        quiz = Quiz.objects.create(
+            subject=self.subject, created_by=self.teacher,
+            title="Course wide", quiz_type=Quiz.TYPE_MOCK)
+        copy = self._duplicate(quiz)
+        self.assertEqual(copy.batches.count(), 0)
+
+
 class QuizChapterTagInvariantTest(TestCase):
     """`Quiz.chapter` and ContentChapterTag must not disagree.
 
@@ -2460,17 +2653,20 @@ class QuizStudentEndpointBatchIsolationTest(TestCase):
         cls.quiz_mine = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="10-A test",
             quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
-            review_status=Quiz.REVIEW_APPROVED, batch=cls.batch_mine,
+            review_status=Quiz.REVIEW_APPROVED,
         )
+        cls.quiz_mine.batches.set([cls.batch_mine])
         cls.quiz_other = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="10-B test",
             quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
-            review_status=Quiz.REVIEW_APPROVED, batch=cls.batch_other,
+            review_status=Quiz.REVIEW_APPROVED,
         )
+        cls.quiz_other.batches.set([cls.batch_other])
+        # Left with NO batches on purpose: that is what course-wide means now.
         cls.quiz_course_wide = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Evergreen test",
             quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
-            review_status=Quiz.REVIEW_APPROVED, batch=None,
+            review_status=Quiz.REVIEW_APPROVED,
         )
 
     def client_as_student(self):
@@ -2564,7 +2760,8 @@ class QuizCreateBatchAndChapterTest(TestCase):
         # a tag now rather than on a dropped FK.
         self.assertEqual(
             [t.chapter_id for t in quiz.chapter_tags.all()], [chapter.id])
-        self.assertEqual(quiz.batch_id, self.batch.id)
+        self.assertEqual(
+            set(quiz.batches.values_list("id", flat=True)), {self.batch.id})
 
     def test_batch_in_a_batch_the_teacher_does_not_teach_is_rejected(self):
         from courses.models import Batch
@@ -2582,8 +2779,11 @@ class QuizCreateBatchAndChapterTest(TestCase):
         chapter = Chapter.objects.create(subject=self.subject, title="Optics")
         quiz = Quiz.objects.create(
             subject=self.subject, created_by=self.teacher, title="Original",
-            quiz_type=Quiz.TYPE_MOCK, batch=self.batch,
+            quiz_type=Quiz.TYPE_MOCK,
         )
+        # Give it a real scope and placement, so "a title-only PATCH disturbs
+        # neither" is actually being tested rather than comparing two empties.
+        quiz.batches.set([self.batch])
         set_tags(quiz, [(chapter, "", 0)])
         r = self._teacher_client().patch(
             f"/api/teacher/quizzes/{quiz.id}/", {"title": "Renamed"}, format="json",
@@ -2591,7 +2791,8 @@ class QuizCreateBatchAndChapterTest(TestCase):
         self.assertEqual(r.status_code, 200, r.content)
         quiz.refresh_from_db()
         self.assertEqual(quiz.title, "Renamed")
-        self.assertEqual(quiz.batch_id, self.batch.id)
+        self.assertEqual(
+            set(quiz.batches.values_list("id", flat=True)), {self.batch.id})
         # A title-only PATCH must not disturb the chapter tag.
         self.assertEqual(
             [t.chapter_id for t in quiz.chapter_tags.all()], [chapter.id])
@@ -2685,14 +2886,15 @@ class QuizAssignmentDecouplingTest(TestCase):
         return c
 
     def _make_quiz(self, title, *, assigned, review_status=Quiz.REVIEW_DRAFT,
-                   batches=(), legacy_batch=None, questions=0):
+                   batches=(), questions=0):
+        # No `legacy_batch` any more — Phase 10 dropped the shim (0032), so
+        # `batches` is the only scope a fixture can express.
         quiz = Quiz.objects.create(
             subject=self.subject, created_by=self.teacher, title=title,
             quiz_type=Quiz.TYPE_MOCK, is_assigned=assigned,
             # Deliberately NOT mirrored: these tests must prove visibility
             # keys off is_assigned alone.
             review_status=review_status,
-            batch=legacy_batch,
         )
         if batches:
             quiz.batches.set(batches)
@@ -2818,7 +3020,7 @@ class QuizAssignmentDecouplingTest(TestCase):
     def test_a_quiz_with_no_batches_is_visible_to_every_batch(self):
         """Empty M2M has to preserve what `batch IS NULL` meant, or every
         pre-existing course-wide quiz vanishes."""
-        self._make_quiz("Evergreen", assigned=True, batches=[], legacy_batch=None)
+        self._make_quiz("Evergreen", assigned=True, batches=[])
         for user, profile in (
             (self.student_a, self.profile_a),
             (self.student_b, self.profile_b),
@@ -2826,16 +3028,17 @@ class QuizAssignmentDecouplingTest(TestCase):
         ):
             self.assertIn("Evergreen", self._visible_titles(user, profile))
 
-    def test_a_legacy_fk_only_quiz_is_still_batch_scoped(self):
-        """QuizCreateSerializer still writes only the legacy `batch` FK. If the
-        rule read the M2M alone, such a quiz would have an empty `batches` set,
-        be read as course-wide, and leak to every batch in the course."""
-        self._make_quiz("Legacy FK A-only", assigned=True,
-                        batches=[], legacy_batch=self.batch_a)
-        self.assertIn("Legacy FK A-only",
-                      self._visible_titles(self.student_a, self.profile_a))
-        self.assertNotIn("Legacy FK A-only",
-                         self._visible_titles(self.student_b, self.profile_b))
+    # REMOVED: test_a_legacy_fk_only_quiz_is_still_batch_scoped.
+    #
+    # It asserted that a quiz with ONLY the legacy `batch` FK stayed
+    # batch-scoped, guarding the fallback in quizzes/visibility.py. Its premise
+    # — "QuizCreateSerializer still writes only the legacy FK" — is what Phase
+    # 10 fixed: create and duplicate both populate `batches`, 0031 backfilled
+    # the stragglers, and 0032 dropped the column, so the state it constructed
+    # can no longer exist. The invariant that replaces it is
+    # BatchScopeHasNoLeakWithoutTheLegacyFKTest, which asserts through the real
+    # student endpoint that another batch's quiz stays hidden and that create
+    # populates the M2M — the two facts that made removing the fallback safe.
 
     # ── 5 · cross-batch isolation, list AND StudentQuizAttemptsView ───────
 
@@ -2915,7 +3118,7 @@ class QuizAssignmentDecouplingTest(TestCase):
 
     # ── the assign endpoint's happy path + the legacy shims ──────────────
 
-    def test_assigning_makes_a_draft_quiz_live_and_mirrors_the_legacy_fields(self):
+    def test_assigning_makes_a_draft_quiz_live_and_sets_its_scope(self):
         quiz = self._make_quiz("Assign me", assigned=False, questions=2)
         r = self._teacher_client().patch(
             f"/api/teacher/quizzes/{quiz.id}/assign/",
@@ -2931,8 +3134,8 @@ class QuizAssignmentDecouplingTest(TestCase):
         # must not fake an admin verdict. (The is_published mirror this used to
         # assert was dropped in Phase 10.)
         self.assertEqual(quiz.review_status, Quiz.REVIEW_DRAFT)
-        # Legacy single-batch shim = the first submitted batch.
-        self.assertEqual(quiz.batch_id, self.batch_a.id)
+        # The M2M is the whole scope — the single-batch shim this used to
+        # mirror into was dropped in Phase 10 (0032).
         self.assertEqual(
             set(quiz.batches.values_list("id", flat=True)),
             {self.batch_a.id, self.batch_b.id},
@@ -2943,14 +3146,16 @@ class QuizAssignmentDecouplingTest(TestCase):
         self.assertNotIn("Assign me", self._visible_titles(self.student_c, self.profile_c))
 
     def test_assigning_with_an_empty_batch_list_is_course_wide(self):
-        quiz = self._make_quiz("Everyone", assigned=False, legacy_batch=self.batch_a)
+        quiz = self._make_quiz("Everyone", assigned=False,
+                               batches=[self.batch_a])
         r = self._teacher_client().patch(
             f"/api/teacher/quizzes/{quiz.id}/assign/",
             {"assign": True, "batch_ids": []}, format="json",
         )
         self.assertEqual(r.status_code, 200, r.content)
         quiz.refresh_from_db()
-        self.assertIsNone(quiz.batch_id)
+        # Empty means course-wide, and with the shim gone that is the ONLY
+        # thing empty can mean — no FK left to disagree.
         self.assertEqual(quiz.batches.count(), 0)
         self.assertIn("Everyone", self._visible_titles(self.student_c, self.profile_c))
 
@@ -3002,113 +3207,20 @@ class QuizAssignmentDecouplingTest(TestCase):
                          self._visible_titles(self.student_a, self.profile_a))
 
 
-class QuizBackfillInvariantTest(TestCase):
-    """Migration 0020/0021 must not cost any student access they had before.
+# REMOVED: QuizBackfillInvariantTest.
+#
+# It replayed Phase 1's migrations 0020 and 0021 against live model objects to
+# prove the backfills cost no student any access they had before. Both inputs
+# are gone: 0020 read `is_published` (dropped, 0029) and 0021 read the `batch`
+# shim (dropped, 0032), and the class fed them those values through the CURRENT
+# model registry — so it can no longer build its own pre-migration state.
+#
+# Both migrations ran in every environment long ago and their reasoning is
+# preserved in their own docstrings. The invariants they protected are now
+# covered by tests that assert OUTCOMES rather than replaying migrations:
+# QuizAssignmentDecouplingTest (visibility keys off is_assigned alone) and
+# BatchScopeHasNoLeakWithoutTheLegacyFKTest (batch scope holds with no shim).
 
-    The build guide said to backfill from `review_status="approved"`. Nothing
-    ever gated student visibility on review_status — `is_published` did — so
-    any row where the two diverge would silently lose its audience. These
-    tests run the real migration functions over rows built in the
-    pre-migration state and assert the visibility rule is preserved.
-
-    ⚠ Phase 10 (migration 0029) dropped `is_published`, and the two tests that
-    replayed 0020's is_assigned backfill went with it: they fed 0020 an
-    is_published value through the CURRENT model, which no longer has the
-    column, so they cannot construct their own pre-state any more. 0020 has
-    long since run in every environment and its reasoning is preserved in the
-    migration's own docstring. What remains here covers 0021, whose input is
-    the legacy `batch` FK — still present, still meaningful.
-    """
-
-    @classmethod
-    def setUpTestData(cls):
-        from courses.models import Batch
-        from enrollments.models import Enrollment
-
-        Role.objects.get_or_create(name="STUDENT")
-        Role.objects.get_or_create(name="TEACHER")
-
-        cls.teacher = User.objects.create_user(
-            username="bf_t", email="bf_t@test.com", password="x",
-        )
-        cls.student = User.objects.create_user(
-            username="bf_s", email="bf_s@test.com", password="x", is_verified=True,
-        )
-        UserRole.objects.create(
-            user=cls.student, role=Role.objects.get(name="STUDENT"),
-            is_active=True, is_primary=True,
-        )
-        cls.profile = LearnerProfile.objects.create(
-            account=cls.student, display_name="BF", is_default=True,
-        )
-
-        now = timezone.now()
-        cls.course = Course.objects.create(title="Class 8")
-        cls.subject = Subject.objects.create(course=cls.course, name="Biology")
-        cls.batch = Batch.objects.create(course=cls.course, name="8-A", code="8A")
-        cls.other_batch = Batch.objects.create(course=cls.course, name="8-B", code="8B")
-        Subscription.objects.create(
-            user=cls.student, learner_profile=cls.profile, course=cls.course,
-            status=Subscription.STATUS_ACTIVE,
-            starts_at=now, expires_at=now + timedelta(days=30),
-        )
-        Enrollment.objects.create(
-            user=cls.student, learner_profile=cls.profile, course=cls.course,
-            batch=cls.batch, status=Enrollment.STATUS_ACTIVE,
-        )
-
-    def _pre_migration_quiz(self, title, *, review_status, batch):
-        """A row as it existed before 0019: legacy batch FK, no M2M rows.
-
-        No is_published: Phase 10 dropped it (migration 0029), so the two
-        tests that replayed 0020's is_assigned backfill are gone with it —
-        see this class's docstring. What is left here exercises 0021, whose
-        input is the `batch` FK and which is still meaningful.
-        """
-        return Quiz.objects.create(
-            subject=self.subject, created_by=self.teacher, title=title,
-            quiz_type=Quiz.TYPE_MOCK,
-            review_status=review_status, batch=batch, is_assigned=False,
-        )
-
-    def test_batches_backfill_mirrors_the_fk_and_leaves_null_rows_course_wide(self):
-        from importlib import import_module
-        from django.apps import apps as real_apps
-
-        scoped = self._pre_migration_quiz(
-            "Scoped", review_status=Quiz.REVIEW_APPROVED, batch=self.batch)
-        course_wide = self._pre_migration_quiz(
-            "Course-wide", review_status=Quiz.REVIEW_APPROVED, batch=None)
-
-        import_module(
-            "quizzes.migrations.0021_backfill_quiz_batches"
-        ).backfill_batches(real_apps, None)
-
-        self.assertEqual(
-            set(scoped.batches.values_list("id", flat=True)), {self.batch.id},
-        )
-        # NULL must stay EMPTY, not be expanded to "every batch": expanding it
-        # would freeze the audience, so a batch created tomorrow would silently
-        # not see a quiz that is course-wide today.
-        self.assertEqual(course_wide.batches.count(), 0)
-
-    def test_the_backfill_is_idempotent(self):
-        from importlib import import_module
-        from django.apps import apps as real_apps
-
-        quiz = self._pre_migration_quiz(
-            "Rerun me", review_status=Quiz.REVIEW_APPROVED, batch=self.batch)
-
-        mod = import_module("quizzes.migrations.0021_backfill_quiz_batches")
-        mod.backfill_batches(real_apps, None)
-        mod.backfill_batches(real_apps, None)
-
-        self.assertEqual(quiz.batches.count(), 1)
-
-
-# =====================================================
-# PHASE 2 · question-level site-bank state
-# =====================================================
 
 class QuestionBankStateInvariantTest(TestCase):
     """Question.save()'s invariant: suggest_to_bank=False always forces

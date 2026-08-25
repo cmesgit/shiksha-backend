@@ -85,12 +85,16 @@ class LearnerDashboardScopingTest(TestCase):
 
         cls.q_mine = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Morning quiz",
-            is_assigned=True, batch=cls.morning,
+            is_assigned=True,
         )
+        # Scope via the M2M; the `batch` shim went in Phase 10 and empty means
+        # every batch, which would make the scoping assertion meaningless.
+        cls.q_mine.batches.set([cls.morning])
         cls.q_other = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Evening quiz",
-            is_assigned=True, batch=cls.evening,
+            is_assigned=True,
         )
+        cls.q_other.batches.set([cls.evening])
 
     def _dashboard(self, profile):
         c = APIClient()

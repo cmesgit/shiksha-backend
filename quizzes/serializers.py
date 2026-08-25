@@ -149,8 +149,13 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
     # (see validate()), matching how Assignment editing leaves batch alone.
 
     # Cohort-relative, like assignments: a batch is required on create.
+    #
+    # NO `source="batch"`: Phase 10 dropped the single-batch shim, so this maps
+    # onto no model field. It stays in the API because the builder sends it —
+    # validate() resolves it and create() writes it into the `batches` M2M,
+    # which is the only scope there is.
     batch_id = serializers.PrimaryKeyRelatedField(
-        queryset=Batch.objects.all(), source="batch", write_only=True,
+        queryset=Batch.objects.all(), write_only=True,
     )
     # Existing chapter, or type a new one via custom_chapter — resolved in
     # validate() via resolve_or_create_chapter(), same as assignments/materials.
@@ -211,7 +216,8 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
             return attrs
 
         subject = attrs.get("subject")
-        batch = attrs.get("batch")
+        # Popped: no `batch` column to receive it any more.
+        batch = attrs.pop("batch_id", None)
         # Popped, not read: `chapter_id` is no longer a model field (Phase 10
         # dropped Quiz.chapter), so leaving it in attrs would have
         # ModelSerializer try to setattr it on the Quiz.
@@ -246,9 +252,10 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
                 {"chapter_id": "Pick a chapter from this quiz's own subject."}
             )
 
-        # Stashed for _apply_tags(), which turns it into a tag. Cannot ride in
-        # attrs — there is no `chapter` column to receive it.
+        # Stashed for after the row exists. Neither can ride in attrs — there
+        # is no `chapter` and no `batch` column to receive them.
         self._legacy_chapter = chapter
+        self._batch = batch
         self._tag_subject = subject
         return attrs
 
@@ -301,10 +308,25 @@ class QuizCreateSerializer(ChapterTagWriteMixin, serializers.ModelSerializer):
             validated_data.setdefault("reveal_answers", Quiz.REVEAL_AFTER_SUBMIT)
             if "max_attempts" not in validated_data:
                 validated_data["max_attempts"] = 1
-        return self._apply_tags(Quiz.objects.create(
+        quiz = Quiz.objects.create(
             created_by=self.context["request"].user,
             **validated_data
-        ))
+        )
+
+        # SCOPE GOES STRAIGHT INTO THE M2M.
+        #
+        # This used to write only the pre-Phase-2 `batch` shim, leaving
+        # `batches` empty — which quizzes/visibility.py reads as "every batch
+        # of the course", and only its fallback to the shim kept that correct.
+        # Migration 0021 backfilled the M2M once and every create afterwards
+        # reintroduced the divergence. Writing the M2M here is what let the
+        # shim, and that fallback, be removed (migration 0032) without a
+        # batch-scoped quiz silently widening to the whole course.
+        batch = getattr(self, "_batch", None)
+        if batch is not None:
+            quiz.batches.set([batch])
+
+        return self._apply_tags(quiz)
 
     @transaction.atomic
     def update(self, instance, validated_data):

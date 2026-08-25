@@ -74,14 +74,17 @@ def batch_scope_q(batch_id):
     here rather than quietly "fixed", since changing it would move quizzes
     into or out of view for real unplaced learners.
     """
-    course_wide = ~Q(has_any_batch()) & Q(batch__isnull=True)
+    # `batches` empty IS course-wide. There used to be a second clause here
+    # falling back to the legacy single-batch `batch` FK, because writers that
+    # set only that shim left the M2M empty — which this rule would otherwise
+    # have read as "everyone", widening a batch-scoped quiz to the whole
+    # course. Phase 10 closed those writers (create and duplicate both
+    # populate the M2M now, and migration 0031 backfilled the stragglers) and
+    # dropped the column, so empty now unambiguously means course-wide.
+    course_wide = ~Q(has_any_batch())
     if batch_id is None:
         return course_wide
-    return (
-        Q(has_batch(batch_id))
-        | (~Q(has_any_batch()) & Q(batch_id=batch_id))
-        | course_wide
-    )
+    return Q(has_batch(batch_id)) | course_wide
 
 
 def visible_quiz_q(batch_id):
@@ -92,13 +95,11 @@ def visible_quiz_q(batch_id):
 def quiz_batch_ids(quiz):
     """Effective batch scope of `quiz` as a set of ids; empty = course-wide.
 
-    Python-side mirror of `batch_scope_q`'s three cases, for per-object checks
-    and for deciding who to notify.
+    Python-side mirror of `batch_scope_q`, for per-object checks and for
+    deciding who to notify. Two cases now, not three — the legacy `batch` FK
+    fallback went with the column in Phase 10.
     """
-    ids = set(quiz.batches.values_list("id", flat=True))
-    if ids:
-        return ids
-    return {quiz.batch_id} if quiz.batch_id is not None else set()
+    return set(quiz.batches.values_list("id", flat=True))
 
 
 def learner_may_see_quiz(learner, quiz):
