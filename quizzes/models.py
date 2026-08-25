@@ -92,6 +92,16 @@ class Quiz(models.Model):
 
     # Curriculum placement, same role Chapter plays for Assignment/StudyMaterial.
     # Optional: legacy quizzes and evergreen question banks may have none.
+    #
+    # ⚠ NOT dropped by Phase 10, deliberately. Nothing READS it any more — the
+    # practice endpoints and S3 all go through `chapter_tags` below — but it is
+    # still WRITTEN by courses/chapter_tags.py's additive invariant
+    # (`instance.chapter = primary_chapter(...)`, chapter_tags.py:318), and that
+    # write is shared by five models across four apps. Assignment.chapter is
+    # required and its staffing-triangle check derives subject/course through
+    # it, so the mixin cannot simply stop writing the FK. Removing this column
+    # means making that shared write model-aware first — a change to shared
+    # infrastructure, not a cleanup. See migration 0029's docstring.
     chapter = models.ForeignKey(
         "courses.Chapter",
         on_delete=models.SET_NULL,
@@ -112,7 +122,7 @@ class Quiz(models.Model):
     description = models.TextField(blank=True)
 
     # Quizzes never expire (product decision: a quiz stays attemptable for as
-    # long as it's published, gated only by is_published / review_status).
+    # long as the teacher has it assigned — gated by is_assigned alone).
     time_limit_minutes = models.PositiveIntegerField(null=True, blank=True)
 
     # ── The two reveal fields, and why there are two ──────────────────────
@@ -189,18 +199,16 @@ class Quiz(models.Model):
 
     total_marks = models.PositiveIntegerField(default=0)
 
-    # ⚠ LEGACY. Was the student-visibility gate; `is_assigned` is now. Still
-    # written (mirrored) by the assign endpoint and by AdminQuizReviewView so
-    # old clients reading it keep working. Retires in Phase 10.
-    is_published = models.BooleanField(default=False)
-
     # THE student-visibility gate. Teacher-controlled: this, plus batch
     # membership (see `batches`), is the whole rule. Deliberately independent
     # of `review_status` — a teacher must never need an admin to make their
-    # own quiz live for their own class. Backfilled from `is_published`, NOT
-    # from review_status: `is_published` is what every student queryset
-    # actually filtered on, so it is the only faithful source for "who could
-    # see this yesterday".
+    # own quiz live for their own class.
+    #
+    # Phase 1 backfilled it from the old `is_published` gate, NOT from
+    # review_status, because is_published is what every student queryset
+    # actually filtered on and so was the only faithful source for "who could
+    # see this yesterday". Phase 10 then dropped is_published (migration
+    # 0029); see quizzes/migrations/0020 for that backfill's reasoning.
     is_assigned = models.BooleanField(default=False, db_index=True)
 
     # --- Flexible chapter tagging (courses.models_chapter_tags) ---
@@ -251,9 +259,10 @@ class Quiz(models.Model):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["subject"]),
-            models.Index(fields=["is_published"]),
             models.Index(fields=["review_status"]),
-            models.Index(fields=["batch", "is_published"]),
+            # The is_published / (batch, is_published) pair went with the
+            # column in Phase 10. (batch, is_assigned) is the replacement and
+            # already existed — every student queryset filters on is_assigned.
             models.Index(fields=["batch", "is_assigned"]),
         ]
 

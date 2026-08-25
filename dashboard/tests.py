@@ -85,11 +85,11 @@ class LearnerDashboardScopingTest(TestCase):
 
         cls.q_mine = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Morning quiz",
-            is_published=True, is_assigned=True, batch=cls.morning,
+            is_assigned=True, batch=cls.morning,
         )
         cls.q_other = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Evening quiz",
-            is_published=True, is_assigned=True, batch=cls.evening,
+            is_assigned=True, batch=cls.evening,
         )
 
     def _dashboard(self, profile):

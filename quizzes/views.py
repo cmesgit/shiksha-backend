@@ -479,7 +479,9 @@ class TeacherQuizAssignView(APIView):
       2. `batch` (legacy FK) = batch_ids[0], or NULL. Old clients still read
          this, and quizzes/visibility.py still falls back to it.
       3. `is_assigned` — the gate every student queryset now reads.
-      4. `is_published` — mirrored for back-compat only. Retires in Phase 10.
+
+    `is_published` used to be mirrored here for back-compat. Phase 10 dropped
+    it: nothing read it any more once the teacher UI moved to is_assigned.
 
     The M2M is written BEFORE the save because activity/signals.py's
     `quiz_published` post_save receiver resolves the notify audience from the
@@ -517,10 +519,7 @@ class TeacherQuizAssignView(APIView):
             recalc_total_marks(quiz)
 
             quiz.is_assigned = assign
-            quiz.is_published = assign
-            quiz.save(update_fields=[
-                "batch", "is_assigned", "is_published", "updated_at",
-            ])
+            quiz.save(update_fields=["batch", "is_assigned", "updated_at"])
 
         return Response(
             QuizDetailTeacherSerializer(quiz, context={"request": request}).data
@@ -2038,22 +2037,10 @@ class QuizResultView(APIView):
         # Chapters come off the QUIZ (see the note on "chapters" below).
         attach_chapter_tags([quiz])
         chapters_payload = serialize_tags(quiz)
-        # Belt-and-braces fallback to the legacy `chapter` FK.
-        #
-        # Migration 0028 backfilled a tag for every chaptered quiz and
-        # QuizCreateSerializer mirrors the FK on create, so this should now be
-        # unreachable. Kept until the column is actually dropped, as the cheap
-        # half of a belt-and-braces pair on a screen a student sees.
-        # (TeacherQuizDuplicateView copies neither chapter nor tags, so a copy
-        # is consistently un-chaptered — losing the chapter on duplicate is a
-        # separate pre-existing question, not an invariant break.)
-        if not chapters_payload and quiz.chapter_id:
-            chapters_payload = [{
-                "chapter_id": str(quiz.chapter_id),
-                "label": quiz.chapter.title,
-                "is_custom": quiz.chapter.is_custom,
-                "order": 0,
-            }]
+        # The legacy `chapter` FK fallback that used to sit here went with the
+        # column in Phase 10. Tags are now the only representation: migration
+        # 0028 backfilled every chaptered quiz and QuizCreateSerializer writes
+        # a tag on create, so serialize_tags() is complete on its own.
 
         # `result_questions` is answered-only by design, so blanks are the
         # paper's size minus what was answered — a timer expiry can leave the
@@ -3404,18 +3391,20 @@ class AdminQuizReviewView(APIView):
         quiz.reviewed_by = request.user
         quiz.reviewed_at = timezone.now()
 
+        # No is_published write any more (Phase 10 dropped the column).
+        # Admin review has not gated student visibility since Phase 1 — a
+        # teacher assigning their own quiz is what makes it visible, and
+        # `is_assigned` carries that. Approving/rejecting only records the
+        # ShikshaCom-bank verdict, which is what review_status is for.
         if action == AdminQuizReviewActionSerializer.ACTION_APPROVE:
             quiz.review_status = Quiz.REVIEW_APPROVED
             quiz.review_note = reason
-            quiz.is_published = True
         else:
             quiz.review_status = Quiz.REVIEW_REJECTED
             quiz.review_note = reason
-            quiz.is_published = False
 
         quiz.save(update_fields=[
-            "review_status", "review_note", "is_published",
-            "reviewed_by", "reviewed_at",
+            "review_status", "review_note", "reviewed_by", "reviewed_at",
         ])
 
         return Response(AdminQuizDetailSerializer(quiz).data)

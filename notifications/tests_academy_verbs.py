@@ -164,7 +164,8 @@ class BatchScopingTest(AcademyVerbFixture):
 
 
 class QuizPostedTest(AcademyVerbFixture):
-    """Phase 1 repointed this lifecycle from is_published onto is_assigned.
+    """Phase 1 repointed this lifecycle from the old is_published gate onto
+    is_assigned (Phase 10 then dropped is_published entirely).
 
     These tests are the guard on activity/signals.py's repoint: assigning is
     now the moment a quiz becomes visible, so it must be the moment students
@@ -197,7 +198,7 @@ class QuizPostedTest(AcademyVerbFixture):
         self.assertEqual(Notification.objects.filter(verb="quiz.posted").count(), 0)
 
     def test_admin_approval_alone_notifies_nobody(self):
-        """review_status/is_published are informational after Phase 1.
+        """review_status is informational after Phase 1.
 
         An admin approving a quiz no longer makes it visible, so it must not
         claim to students that a quiz is available. Only the teacher assigning
@@ -209,7 +210,6 @@ class QuizPostedTest(AcademyVerbFixture):
                 subject=self.subject, title="Approved but unassigned",
                 created_by=self.teacher, is_assigned=False)
             quiz.review_status = Quiz.REVIEW_APPROVED
-            quiz.is_published = True
             quiz.save()
         self.assertEqual(Notification.objects.filter(verb="quiz.posted").count(), 0)
 

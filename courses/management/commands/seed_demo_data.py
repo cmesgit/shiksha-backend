@@ -352,7 +352,7 @@ class Command(BaseCommand):
                           # look like a real teacher-assigned, admin-approved
                           # quiz.
                           "is_assigned": True,
-                          "is_published": True, "review_status": Quiz.REVIEW_APPROVED,
+                          "review_status": Quiz.REVIEW_APPROVED,
                           "reviewed_by": faculty, "reviewed_at": timezone.now(),
                           "submitted_for_review_at": timezone.now()},
             )

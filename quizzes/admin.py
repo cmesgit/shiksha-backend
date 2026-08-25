@@ -22,13 +22,14 @@ class QuizAdmin(admin.ModelAdmin):
         "title",
         "subject",
         "created_by",
-        "is_published",
+        # is_assigned, not the dropped is_published mirror (Phase 10).
+        "is_assigned",
         "total_marks",
         "created_at",
     )
 
     list_filter = (
-        "is_published",
+        "is_assigned",
         "subject__course",
         "subject",
     )

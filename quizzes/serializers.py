@@ -376,7 +376,7 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
             # assigned row (README §S1); without it here the quote silently
             # never appears, because a missing key reads as "no note".
             "status", "score", "best_score", "last_attempt_at", "chapter_note",
-            "is_published", "attempts_count", "quiz_type",
+            "attempts_count", "quiz_type",
         ]
 
     def get_board_name(self, obj):
@@ -681,7 +681,7 @@ class QuizDetailTeacherSerializer(serializers.ModelSerializer):
             "id", "title", "description", "subject_id", "subject_name",
             "course_title", "board_name", "teacher_name", "created_at",
             "time_limit_minutes",
-            "is_published", "questions", "quiz_type", "review_status",
+            "questions", "quiz_type", "review_status",
             "review_note", "reviewed_at", "submitted_for_review_at",
             "is_editable", "is_assigned", "batch_ids",
             # Phase 4 mock-test settings, so the builder round-trips them.
@@ -854,7 +854,7 @@ class TeacherQuizAnalyticsSerializer(serializers.ModelSerializer):
         fields = [
             "id", "title", "created_at", "subject_name", "subject_id",
             "course_title", "board_name",
-            "is_published", "is_assigned", "questions_count",
+            "is_assigned", "questions_count",
             # total_marks is the DENOMINATOR for average/highest/lowest, which
             # are raw marks, not percentages. Without it the Quizzes card had
             # no way to turn "7.5" into "75%" and rendered the mark itself
@@ -989,7 +989,7 @@ class AdminQuizListSerializer(serializers.ModelSerializer):
         model = Quiz
         fields = [
             "id", "title", "subject_name", "course_title", "teacher_name",
-            "quiz_type", "review_status", "is_published", "is_assigned",
+            "quiz_type", "review_status", "is_assigned",
             "questions_count",
             "attempts_count", "total_marks", "created_at",
             "submitted_for_review_at", "reviewed_at",
@@ -1011,7 +1011,7 @@ class AdminQuizDetailSerializer(serializers.ModelSerializer):
         fields = [
             "id", "title", "description", "subject_name", "course_title",
             "teacher_name", "quiz_type", "review_status", "review_note",
-            "is_published", "is_assigned", "total_marks", "time_limit_minutes",
+            "is_assigned", "total_marks", "time_limit_minutes",
             "created_at", "submitted_for_review_at", "reviewed_at",
             "reviewed_by_name", "questions",
         ]

@@ -55,7 +55,7 @@ class QuizRetakeAndTimerTest(TestCase):
 
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Quick check",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, time_limit_minutes=10,
         )
         cls.question = Question.objects.create(
@@ -294,7 +294,7 @@ class DualRoleStudentQuizAccessTest(TestCase):
 
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.other_teacher, title="Cell structure",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True, review_status=Quiz.REVIEW_APPROVED,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True, review_status=Quiz.REVIEW_APPROVED,
         )
 
     def test_quiz_detail_accessible_to_dual_role_student_in_learner_context(self):
@@ -354,11 +354,11 @@ class QuizCourseScopingTest(TestCase):
 
         cls.quiz_a = Quiz.objects.create(
             subject=cls.subject_a, created_by=cls.teacher, title="Ledger basics",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True, review_status=Quiz.REVIEW_APPROVED,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True, review_status=Quiz.REVIEW_APPROVED,
         )
         cls.quiz_b = Quiz.objects.create(
             subject=cls.subject_b, created_by=cls.teacher, title="Fundamental rights",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True, review_status=Quiz.REVIEW_APPROVED,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True, review_status=Quiz.REVIEW_APPROVED,
         )
 
     def client_as_student(self):
@@ -406,12 +406,12 @@ class QuizCourseScopingTest(TestCase):
         )
         Quiz.objects.create(
             subject=self.subject_a, created_by=self.teacher, title="Evening-only test",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, batch=batch_other,
         )
         mine = Quiz.objects.create(
             subject=self.subject_a, created_by=self.teacher, title="Morning-only test",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, batch=batch_mine,
         )
 
@@ -476,7 +476,7 @@ class QuizAccidentalRetakeTest(TestCase):
         )
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Cells",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True, review_status=Quiz.REVIEW_APPROVED,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True, review_status=Quiz.REVIEW_APPROVED,
         )
         cls.question = Question.objects.create(quiz=cls.quiz, text="Powerhouse?", marks=1, order=0)
         cls.right = Choice.objects.create(question=cls.question, text="Mitochondria", is_correct=True)
@@ -793,7 +793,7 @@ class QuizResultTotalsTest(TestCase):
         )
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Mughals",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, total_marks=4,
         )
         cls.questions = []
@@ -890,7 +890,7 @@ class TeacherQuizRosterProfileSplitTest(TestCase):
         )
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Rivers",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, total_marks=2,
         )
         cls.question = Question.objects.create(
@@ -1002,7 +1002,7 @@ class TeacherAttemptDetailContextGateTest(TestCase):
         )
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Linear equations",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, total_marks=2,
         )
         cls.q1 = Question.objects.create(
@@ -1105,7 +1105,7 @@ class TeacherQuizCardStatsTest(TestCase):
         )
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Poetry",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, total_marks=10,
         )
 
@@ -1177,7 +1177,7 @@ class TeacherQuizDetailAnswerKeyTest(TestCase):
         cls.subject = Subject.objects.create(course=cls.course, name="Polity")
         cls.quiz = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Parliament",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED,
         )
         cls.question = Question.objects.create(
@@ -1731,6 +1731,11 @@ class QuizResultS3PayloadTest(TestCase):
             subject=cls.subject, created_by=cls.teacher, title="Civics mock",
             chapter=cls.chapter, quiz_type=Quiz.TYPE_MOCK,
             is_assigned=True, total_marks=4, time_limit_minutes=30)
+        # S3 reads chapters from ContentChapterTag only — the legacy FK
+        # fallback went in Phase 10. Building the row through the ORM skips
+        # QuizCreateSerializer's FK→tag mirror, so tag it explicitly (same
+        # note as StudentPracticeChaptersTest).
+        set_tags(cls.quiz, [(cls.chapter, "", 0)])
         cls.questions = []
         for i in range(4):
             q = Question.objects.create(
@@ -1801,7 +1806,8 @@ class QuizResultS3PayloadTest(TestCase):
         custom = Chapter.objects.create(
             subject=self.subject, title="Local governance drive",
             order=1, is_custom=True)
-        Quiz.objects.filter(id=self.quiz.id).update(chapter=custom)
+        # Re-tag, not just re-point the FK: the tag is what S3 reads.
+        set_tags(self.quiz, [(custom, "", 0)])
         self._attempt(1, right=1)
         chapters = self._result()["chapters"]
         self.assertEqual(chapters[0]["label"], "Local governance drive")
@@ -2420,17 +2426,17 @@ class QuizStudentEndpointBatchIsolationTest(TestCase):
 
         cls.quiz_mine = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="10-A test",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, batch=cls.batch_mine,
         )
         cls.quiz_other = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="10-B test",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, batch=cls.batch_other,
         )
         cls.quiz_course_wide = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Evergreen test",
-            quiz_type=Quiz.TYPE_MOCK, is_published=True, is_assigned=True,
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
             review_status=Quiz.REVIEW_APPROVED, batch=None,
         )
 
@@ -2646,7 +2652,7 @@ class QuizAssignmentDecouplingTest(TestCase):
             quiz_type=Quiz.TYPE_MOCK, is_assigned=assigned,
             # Deliberately NOT mirrored: these tests must prove visibility
             # keys off is_assigned alone.
-            is_published=False, review_status=review_status,
+            review_status=review_status,
             batch=legacy_batch,
         )
         if batches:
@@ -2882,8 +2888,9 @@ class QuizAssignmentDecouplingTest(TestCase):
 
         quiz.refresh_from_db()
         self.assertTrue(quiz.is_assigned)
-        # is_published mirrored for back-compat; review_status untouched.
-        self.assertTrue(quiz.is_published)
+        # review_status untouched — assigning is the teacher's own action and
+        # must not fake an admin verdict. (The is_published mirror this used to
+        # assert was dropped in Phase 10.)
         self.assertEqual(quiz.review_status, Quiz.REVIEW_DRAFT)
         # Legacy single-batch shim = the first submitted batch.
         self.assertEqual(quiz.batch_id, self.batch_a.id)
@@ -2917,7 +2924,6 @@ class QuizAssignmentDecouplingTest(TestCase):
         self.assertEqual(r.status_code, 200, r.content)
         quiz.refresh_from_db()
         self.assertFalse(quiz.is_assigned)
-        self.assertFalse(quiz.is_published)
         self.assertNotIn("Temporary", self._visible_titles(self.student_a, self.profile_a))
 
     def test_omitting_batch_ids_leaves_the_existing_scope_alone(self):
@@ -2965,6 +2971,14 @@ class QuizBackfillInvariantTest(TestCase):
     any row where the two diverge would silently lose its audience. These
     tests run the real migration functions over rows built in the
     pre-migration state and assert the visibility rule is preserved.
+
+    ⚠ Phase 10 (migration 0029) dropped `is_published`, and the two tests that
+    replayed 0020's is_assigned backfill went with it: they fed 0020 an
+    is_published value through the CURRENT model, which no longer has the
+    column, so they cannot construct their own pre-state any more. 0020 has
+    long since run in every environment and its reasoning is preserved in the
+    migration's own docstring. What remains here covers 0021, whose input is
+    the legacy `batch` FK — still present, still meaningful.
     """
 
     @classmethod
@@ -3004,103 +3018,28 @@ class QuizBackfillInvariantTest(TestCase):
             batch=cls.batch, status=Enrollment.STATUS_ACTIVE,
         )
 
-    def _pre_migration_quiz(self, title, *, is_published, review_status, batch):
-        """A row as it existed before 0019: is_assigned unset, no M2M rows."""
+    def _pre_migration_quiz(self, title, *, review_status, batch):
+        """A row as it existed before 0019: legacy batch FK, no M2M rows.
+
+        No is_published: Phase 10 dropped it (migration 0029), so the two
+        tests that replayed 0020's is_assigned backfill are gone with it —
+        see this class's docstring. What is left here exercises 0021, whose
+        input is the `batch` FK and which is still meaningful.
+        """
         return Quiz.objects.create(
             subject=self.subject, created_by=self.teacher, title=title,
-            quiz_type=Quiz.TYPE_MOCK, is_published=is_published,
+            quiz_type=Quiz.TYPE_MOCK,
             review_status=review_status, batch=batch, is_assigned=False,
         )
-
-    def test_is_assigned_is_backfilled_from_is_published_not_review_status(self):
-        from importlib import import_module
-        from django.apps import apps as real_apps
-
-        mod = import_module("quizzes.migrations.0020_backfill_quiz_is_assigned")
-
-        # The divergent rows are the whole point. A published-but-not-approved
-        # quiz WAS visible yesterday; approving-as-the-source would hide it.
-        divergent_visible = self._pre_migration_quiz(
-            "Published, never approved", is_published=True,
-            review_status=Quiz.REVIEW_DRAFT, batch=None,
-        )
-        # ...and an approved-but-unpublished quiz was NOT visible; the guide's
-        # rule would have made it appear out of nowhere.
-        divergent_hidden = self._pre_migration_quiz(
-            "Approved, not published", is_published=False,
-            review_status=Quiz.REVIEW_APPROVED, batch=None,
-        )
-        agreeing_visible = self._pre_migration_quiz(
-            "Normal live quiz", is_published=True,
-            review_status=Quiz.REVIEW_APPROVED, batch=None,
-        )
-
-        mod.backfill_is_assigned(real_apps, None)
-
-        for quiz, expected in (
-            (divergent_visible, True),
-            (divergent_hidden, False),
-            (agreeing_visible, True),
-        ):
-            quiz.refresh_from_db()
-            self.assertEqual(
-                quiz.is_assigned, expected,
-                f"{quiz.title}: is_assigned must equal is_published "
-                f"({quiz.is_published}), not review_status ({quiz.review_status})",
-            )
-
-    def test_nobody_loses_visibility_across_the_backfill(self):
-        from importlib import import_module
-        from django.apps import apps as real_apps
-
-        quizzes = [
-            self._pre_migration_quiz(
-                "Course-wide published", is_published=True,
-                review_status=Quiz.REVIEW_DRAFT, batch=None),
-            self._pre_migration_quiz(
-                "My batch published", is_published=True,
-                review_status=Quiz.REVIEW_APPROVED, batch=self.batch),
-            self._pre_migration_quiz(
-                "Other batch published", is_published=True,
-                review_status=Quiz.REVIEW_APPROVED, batch=self.other_batch),
-            self._pre_migration_quiz(
-                "Unpublished draft", is_published=False,
-                review_status=Quiz.REVIEW_DRAFT, batch=self.batch),
-        ]
-
-        # The OLD rule, computed before the backfill touches anything.
-        expected = {
-            q.title for q in quizzes
-            if q.is_published and q.batch_id in (None, self.batch.id)
-        }
-
-        import_module(
-            "quizzes.migrations.0020_backfill_quiz_is_assigned"
-        ).backfill_is_assigned(real_apps, None)
-        import_module(
-            "quizzes.migrations.0021_backfill_quiz_batches"
-        ).backfill_batches(real_apps, None)
-
-        c = APIClient()
-        c.force_authenticate(
-            user=self.student,
-            token={"context": "learner", "active_profile": str(self.profile.id)},
-        )
-        r = c.get(f"/api/student/quizzes/?course={self.course.id}")
-        self.assertEqual(r.status_code, 200, r.content)
-        rows = r.data["results"] if isinstance(r.data, dict) and "results" in r.data else r.data
-        self.assertEqual({row["title"] for row in rows}, expected)
 
     def test_batches_backfill_mirrors_the_fk_and_leaves_null_rows_course_wide(self):
         from importlib import import_module
         from django.apps import apps as real_apps
 
         scoped = self._pre_migration_quiz(
-            "Scoped", is_published=True,
-            review_status=Quiz.REVIEW_APPROVED, batch=self.batch)
+            "Scoped", review_status=Quiz.REVIEW_APPROVED, batch=self.batch)
         course_wide = self._pre_migration_quiz(
-            "Course-wide", is_published=True,
-            review_status=Quiz.REVIEW_APPROVED, batch=None)
+            "Course-wide", review_status=Quiz.REVIEW_APPROVED, batch=None)
 
         import_module(
             "quizzes.migrations.0021_backfill_quiz_batches"
@@ -3119,8 +3058,7 @@ class QuizBackfillInvariantTest(TestCase):
         from django.apps import apps as real_apps
 
         quiz = self._pre_migration_quiz(
-            "Rerun me", is_published=True,
-            review_status=Quiz.REVIEW_APPROVED, batch=self.batch)
+            "Rerun me", review_status=Quiz.REVIEW_APPROVED, batch=self.batch)
 
         mod = import_module("quizzes.migrations.0021_backfill_quiz_batches")
         mod.backfill_batches(real_apps, None)
