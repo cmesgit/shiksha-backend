@@ -162,7 +162,7 @@ class OtherEndpointTests(TestCase):
     def test_showcase_shape(self):
         ShowcaseCourse.objects.create(
             title="Class 10 Foundation", level_label="Foundation",
-            stars=5, review_count=214, price_label="1,500",
+            price_label="1,500",
             categories=["class8-12"], image_url="https://x/y.jpg",
         )
         res = self.client.get("/api/content/showcase/")
@@ -402,3 +402,102 @@ class SeedAboutImagesCommandTests(TestCase):
                 section=HomeSection.ABOUT_VISION).image.name,
             before,
         )
+
+
+class LocalizeShowcaseImagesCommandTests(TestCase):
+    """`localize_showcase_images` pulls externally-hosted card artwork into our
+    own media storage, so the homepage stops hotlinking third-party CDNs.
+
+    Every featured card on production resolved its thumbnail to an
+    images.unsplash.com URL that arrived with the seed data. These tests pin
+    the safety model (dry run by default, create-only, idempotent) and the
+    refusal paths, since the URLs come from the database.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.card = ShowcaseCourse.objects.create(
+            title="Class 10 Foundation", level_label="Foundation",
+            categories=["class8-12"],
+            image_url="https://images.unsplash.com/photo-123?w=800",
+        )
+
+    def _run(self, payload=b"\x89PNG\r\n\x1a\n" + b"0" * 64,
+             ctype="image/png", **kw):
+        """Run the command with the network stubbed out."""
+        from unittest import mock
+        from django.core.management import call_command
+
+        out = StringIO()
+
+        class FakeResp:
+            headers = {"Content-Type": ctype}
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, _n):
+                yield payload
+
+        with override_settings(MEDIA_ROOT=self.tmp), \
+                mock.patch("requests.get", return_value=FakeResp()) as get:
+            call_command("localize_showcase_images", stdout=out, stderr=out, **kw)
+        return out.getvalue(), get
+
+    def test_dry_run_writes_nothing_and_makes_no_request(self):
+        out, get = self._run()
+        self.card.refresh_from_db()
+        self.assertFalse(self.card.image)
+        self.assertTrue(self.card.image_url, "image_url must survive a dry run")
+        get.assert_not_called()
+        self.assertIn("Dry run", out)
+
+    def test_yes_downloads_attaches_and_clears_the_external_url(self):
+        out, get = self._run(yes=True)
+        self.card.refresh_from_db()
+        self.assertTrue(self.card.image, "expected an uploaded file")
+        self.assertIn("class-10-foundation", self.card.image.name)
+        self.assertEqual(
+            self.card.image_url, "",
+            "image_url must be cleared so the thumbnail chain uses card.image",
+        )
+        get.assert_called_once()
+
+    def test_is_idempotent(self):
+        self._run(yes=True)
+        name = ShowcaseCourse.objects.get(pk=self.card.pk).image.name
+        out, get = self._run(yes=True)
+        get.assert_not_called()
+        self.assertEqual(ShowcaseCourse.objects.get(pk=self.card.pk).image.name, name)
+        # A localized card now has BOTH an uploaded image and an empty
+        # image_url, so it is caught by the create-only guard before the
+        # "nothing to localize" branch. Either message means no re-download;
+        # assert the one that actually fires so this test would notice if the
+        # guard order ever changed.
+        self.assertIn("already has an uploaded image", out)
+
+    def test_existing_upload_is_never_clobbered(self):
+        from django.core.files.base import ContentFile
+        self.card.image.save("mine.png", ContentFile(b"editor upload"), save=True)
+        self.card.image_url = "https://images.unsplash.com/photo-123?w=800"
+        self.card.save()
+        out, get = self._run(yes=True)
+        get.assert_not_called()
+        self.assertIn("already has an uploaded image", out)
+        self.assertEqual(ShowcaseCourse.objects.get(pk=self.card.pk).image.read(),
+                         b"editor upload")
+
+    def test_non_image_content_type_is_refused_and_url_kept(self):
+        out, _ = self._run(ctype="text/html", yes=True)
+        self.card.refresh_from_db()
+        self.assertFalse(self.card.image)
+        self.assertTrue(self.card.image_url, "a failed card must keep rendering")
+        self.assertIn("not an image", out)
+
+    def test_non_http_url_is_skipped(self):
+        self.card.image_url = "file:///etc/passwd"
+        self.card.save()
+        out, get = self._run(yes=True)
+        get.assert_not_called()
+        self.assertIn("not an http(s) URL", out)

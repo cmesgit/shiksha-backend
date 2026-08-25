@@ -58,7 +58,7 @@ class FullCleanMixin:
     """Runs Model.full_clean() (custom `clean()` + constraint validation)
     during serializer validation, so:
       * Announcement's `clean()` (ends_at must be after starts_at)
-      * ShowcaseCourse's `clean()` (stars <= 5, categories must be a list)
+      * ShowcaseCourse's `clean()` (categories must be a list)
       * BlogPost's conditional UniqueConstraint on
         (class_level, subject, chapter_number) — DRF's automatic
         unique-together validators skip constraints that have a
@@ -227,7 +227,7 @@ class ShowcaseCourseAdminSerializer(FullCleanMixin, serializers.ModelSerializer)
     class Meta:
         model = ShowcaseCourse
         fields = [
-            "id", "title", "level_label", "ribbon", "stars", "review_count",
+            "id", "title", "level_label", "ribbon",
             "fact_line", "price_label", "tutor_name", "is_explore_card",
             "categories", "gradient_css", "image", "image_url", "icon",
             "link_path", "link_state", "course", "course_title", "board",

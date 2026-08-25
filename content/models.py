@@ -480,8 +480,11 @@ class ShowcaseCourse(TimeStampedModel):
         max_length=20, blank=True, default="",
         help_text='Optional corner ribbon, e.g. "Bestseller".',
     )
-    stars = models.PositiveSmallIntegerField(default=5)
-    review_count = models.PositiveIntegerField(default=0)
+    # NOTE: `stars` / `review_count` used to live here. They were never derived
+    # from anything — no review model references Course or ShowcaseCourse — so
+    # they rendered hand-typed numbers as if they were real social proof.
+    # Removed in migration 0017. Reintroduce only as an aggregate over a real
+    # review table, never as an editable column.
     fact_line = models.CharField(
         max_length=80, default="1 Year · Online · Full access",
     )
@@ -556,8 +559,6 @@ class ShowcaseCourse(TimeStampedModel):
 
     def clean(self):
         super().clean()
-        if self.stars > 5:
-            raise ValidationError({"stars": "Maximum is 5."})
         if not isinstance(self.categories, list):
             raise ValidationError({"categories": "Must be a JSON list."})
         else:

@@ -142,7 +142,7 @@ class ShowcaseCourseSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShowcaseCourse
         fields = [
-            "id", "title", "level_label", "ribbon", "stars", "review_count",
+            "id", "title", "level_label", "ribbon",
             "fact_line", "price_label", "tutor_name", "is_explore_card",
             "categories", "gradient_css", "img", "icon",
             "link_path", "link_state", "course", "board", "order",

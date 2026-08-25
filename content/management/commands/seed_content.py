@@ -88,8 +88,8 @@ class Command(BaseCommand):
         ShowcaseCourse.objects.get_or_create(
             title="Class 10 Foundation",
             defaults=dict(
-                level_label="Foundation", ribbon="Bestseller", stars=5,
-                review_count=214, price_label="1,500",
+                level_label="Foundation", ribbon="Bestseller",
+                price_label="1,500",
                 categories=["class8-12"],
                 gradient_css="rgba(255,178,29,0.72),rgba(242,140,15,0.88)",
                 image_url=(

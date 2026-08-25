@@ -2222,8 +2222,6 @@ class PublicFeaturedView(APIView):
                 "tutor_name": card.tutor_name,
                 "level_label": card.level_label,
                 "ribbon": card.ribbon,
-                "stars": card.stars,
-                "review_count": card.review_count,
                 "fact_line": card.fact_line,
                 "is_explore_card": card.is_explore_card,
                 "categories": card.categories,

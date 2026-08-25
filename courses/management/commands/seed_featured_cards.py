@@ -130,8 +130,6 @@ class Command(BaseCommand):
                 title=title[:120],
                 level_label=row.get("level_label", ""),
                 ribbon=row.get("ribbon", ""),
-                stars=row.get("stars", 5),
-                review_count=row.get("review_count", 0),
                 fact_line=row.get("fact_line", ""),
                 price_label="",  # derived server-side from the linked target
                 tutor_name=row.get("tutor_name", ""),
