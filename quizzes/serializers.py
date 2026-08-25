@@ -345,6 +345,7 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
     score = serializers.SerializerMethodField()
     attempts_count = serializers.SerializerMethodField()
     best_score = serializers.SerializerMethodField()
+    last_attempt_at = serializers.SerializerMethodField()
 
     class Meta:
         model = Quiz
@@ -352,7 +353,8 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
             "id", "title", "subject_id", "subject_name", "course_title",
             "board_name", "teacher_name",
             "created_at", "total_marks", "questions_count", "time_limit_minutes",
-            "status", "score", "best_score", "is_published", "attempts_count", "quiz_type",
+            "status", "score", "best_score", "last_attempt_at", "is_published",
+            "attempts_count", "quiz_type",
         ]
 
     def get_board_name(self, obj):
@@ -377,6 +379,21 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
         if not attempts:
             return None
         return attempts[0].score
+
+    def get_last_attempt_at(self, obj):
+        # When the learner last FINISHED this quiz, for S1's "Your last
+        # attempts" rail (design_handoff_quiz_system README §S1), which pairs
+        # each score tile with a "when". `score`/`best_score` above already
+        # read this same prefetch, so this adds no query.
+        #
+        # The prefetch is ordered by `-attempt_number`, not by time, so [0] is
+        # the highest-numbered attempt rather than the newest-submitted one.
+        # Those are normally the same row, but an older attempt auto-submitted
+        # late by the expiry sweep can carry a newer `submitted_at` — so take
+        # the max rather than trusting the ordering.
+        attempts = getattr(obj, "user_submitted_attempts", [])
+        stamps = [a.submitted_at for a in attempts if a.submitted_at]
+        return max(stamps) if stamps else None
 
     def get_attempts_count(self, obj):
         # Primary: prefetched

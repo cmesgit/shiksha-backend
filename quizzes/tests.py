@@ -1582,6 +1582,105 @@ class StudentPracticeChaptersTest(TestCase):
         self.assertNotIn("Genetics", [x["title"] for x in self._get().data])
 
 
+class StudentDashboardLastAttemptAtTest(TestCase):
+    """`last_attempt_at` on /student/quizzes/ — S1's "Your last attempts" rail.
+
+    The rail pairs each score tile with a "when", and QuizDashboardSerializer
+    exposed no timestamp at all before this.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Batch
+        from enrollments.models import Enrollment, Subscription
+
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="STUDENT")
+
+        cls.teacher = User.objects.create_user(
+            username="la_t", email="la_t@test.com", password="x", is_verified=True)
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+
+        cls.course = Course.objects.create(title="Class 9")
+        cls.subject = Subject.objects.create(course=cls.course, name="Physics")
+        batch = Batch.objects.create(course=cls.course, name="9-A", code="9A")
+
+        cls.account = User.objects.create_user(
+            username="la_kid", email="la_kid@test.com", password="x", is_verified=True)
+        UserRole.objects.create(
+            user=cls.account, role=Role.objects.get(name="STUDENT"),
+            is_active=True, is_primary=True)
+        cls.learner = LearnerProfile.objects.create(
+            account=cls.account, display_name="la_kid", is_default=True)
+
+        now = timezone.now()
+        Subscription.objects.create(
+            user=cls.account, learner_profile=cls.learner, course=cls.course,
+            status=Subscription.STATUS_ACTIVE, starts_at=now,
+            expires_at=now + timedelta(days=30))
+        Enrollment.objects.create(
+            user=cls.account, learner_profile=cls.learner, course=cls.course,
+            batch=batch, status=Enrollment.STATUS_ACTIVE)
+
+        # batch left NULL = "all batches" (see quizzes/migrations/0021).
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Motion",
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True, total_marks=2)
+        cls.question = Question.objects.create(
+            quiz=cls.quiz, text="q0", marks=1, order=0, explanation="e")
+        cls.choice = Choice.objects.create(
+            question=cls.question, text="right", is_correct=True)
+
+    def _rows(self):
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)},
+        )
+        r = c.get("/api/student/quizzes/", {"course": str(self.course.id)})
+        self.assertEqual(r.status_code, 200, r.content)
+        # .json(), not .data — `.data` holds the raw datetime the method
+        # field returned, and it is the RENDERED ISO string the rail parses.
+        return r.json()
+
+    def _submit(self, when, attempt_number, score=1):
+        # An attempt only counts as a real completion if it has >=1 answer —
+        # the dashboard's prefetch filters on that (see StudentDashboardView).
+        att = QuizAttempt.objects.create(
+            quiz=self.quiz, student=self.account, learner_profile=self.learner,
+            status=QuizAttempt.STATUS_SUBMITTED, submitted_at=when,
+            score=score, attempt_number=attempt_number)
+        StudentAnswer.objects.create(
+            attempt=att, question=self.question, is_correct=True,
+            selected_choice=self.choice)
+        return att
+
+    def test_null_before_any_attempt(self):
+        row = next(x for x in self._rows() if x["title"] == "Motion")
+        self.assertIn("last_attempt_at", row)
+        self.assertIsNone(row["last_attempt_at"])
+
+    def test_reports_the_submitted_time(self):
+        when = timezone.now() - timedelta(days=2)
+        self._submit(when, attempt_number=1)
+        row = next(x for x in self._rows() if x["title"] == "Motion")
+        self.assertIsNotNone(row["last_attempt_at"])
+        self.assertEqual(row["last_attempt_at"][:10], when.date().isoformat())
+
+    def test_takes_the_newest_time_not_the_highest_attempt_number(self):
+        # The prefetch is ordered by -attempt_number, so a naive [0] would
+        # answer with attempt 2's time. An earlier attempt auto-submitted
+        # late by the expiry sweep carries the NEWER submitted_at, and the
+        # rail's "when" must reflect when the learner last actually finished.
+        newest = timezone.now()
+        self._submit(newest - timedelta(days=5), attempt_number=2)
+        self._submit(newest, attempt_number=1)
+        row = next(x for x in self._rows() if x["title"] == "Motion")
+        self.assertEqual(row["last_attempt_at"][:10], newest.date().isoformat())
+
+
 class AdminQuestionBankReviewTest(TestCase):
     """A1 · the admin review queue (Phase 7).
 
