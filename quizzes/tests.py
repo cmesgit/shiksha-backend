@@ -22,6 +22,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from accounts.models import User, Role, UserRole, LearnerProfile
+from courses.chapter_tags import set_tags
 from courses.models import Course, Subject, TeachingAssignment
 from enrollments.models import Subscription
 from quizzes.models import (
@@ -1364,6 +1365,14 @@ class StudentPracticeChaptersTest(TestCase):
         cls.mock = Quiz.objects.create(
             subject=cls.subject, created_by=cls.teacher, title="Algebra mock",
             chapter=cls.chapter, quiz_type=Quiz.TYPE_MOCK, is_assigned=True)
+        # Building the Quiz row directly skips QuizCreateSerializer, which is
+        # what mirrors the chapter FK into a ContentChapterTag. Migration 0028
+        # plus that mirror mean a chaptered quiz ALWAYS has a tag in
+        # production, and the practice endpoints now read the tag — so a
+        # fixture with an FK and no tag is a state that cannot exist and would
+        # test the wrong thing. Any other ORM-level Quiz creation (management
+        # command, data import) has to do this too.
+        set_tags(cls.mock, [(cls.chapter, "", 0)])
         cls.attempt = QuizAttempt.objects.create(
             quiz=cls.mock, student=cls.account, learner_profile=cls.learner,
             status=QuizAttempt.STATUS_SUBMITTED, submitted_at=now, score=1)

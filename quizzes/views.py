@@ -1087,16 +1087,27 @@ class StudentPracticeChaptersView(APIView):
             "subject__name", "order", "title")
 
         # How many accepted bank questions exist per chapter, in one query.
+        #
+        # Grouped on the CHAPTER TAG rather than the legacy `quiz__chapter` FK
+        # (Phase 10 retires that FK; migration 0028 + QuizCreateSerializer's
+        # mirror guarantee every chaptered quiz has a matching tag, so this
+        # sees everything the FK did). Reaching the tag as a join needs the
+        # GenericRelation declared on Quiz.
+        #
+        # A quiz tagged to several chapters contributes its questions to EACH
+        # of them, which is what tagging a question set to two chapters means.
+        # That is a group-by over the join, so no row is double-counted WITHIN
+        # a chapter — the inflation trap only bites an ungrouped aggregate.
         bank_rows = (
             Question.objects
             .filter(
                 bank_state=Question.BANK_STATE_ACCEPTED,
-                quiz__chapter__in=chapters,
+                quiz__chapter_tags__chapter__in=chapters,
             )
-            .values("quiz__chapter")
-            .annotate(n=Count("id"))
+            .values("quiz__chapter_tags__chapter")
+            .annotate(n=Count("id", distinct=True))
         )
-        available = {r["quiz__chapter"]: r["n"] for r in bank_rows}
+        available = {r["quiz__chapter_tags__chapter"]: r["n"] for r in bank_rows}
 
         # Graded accuracy per chapter. Practice sets carry no chapter FK of
         # their own and are excluded by quiz_type anyway — stated explicitly
@@ -1106,14 +1117,18 @@ class StudentPracticeChaptersView(APIView):
             .filter(
                 attempt__learner_profile=learner,
                 attempt__status=QuizAttempt.STATUS_SUBMITTED,
-                question__quiz__chapter__in=chapters,
+                question__quiz__chapter_tags__chapter__in=chapters,
             )
             .exclude(question__quiz__quiz_type=Quiz.TYPE_PRACTICE)
-            .values("question__quiz__chapter")
-            .annotate(total=Count("id"), right=Count("id", filter=Q(is_correct=True)))
+            .values("question__quiz__chapter_tags__chapter")
+            .annotate(
+                total=Count("id", distinct=True),
+                right=Count("id", filter=Q(is_correct=True), distinct=True),
+            )
         )
         by_chapter = {
-            g["question__quiz__chapter"]: (g["total"], g["right"]) for g in graded
+            g["question__quiz__chapter_tags__chapter"]: (g["total"], g["right"])
+            for g in graded
         }
 
         out = []
@@ -1187,13 +1202,19 @@ class StudentPracticeStartView(APIView):
         except (TypeError, ValueError):
             count = 10
 
+        # Chapter TAG, not the legacy FK — same source the supply count above
+        # uses, so "N questions available" and what actually gets served can
+        # never disagree. distinct() because a quiz tagged to this chapter more
+        # than once (or joined via several tag rows) would otherwise repeat its
+        # questions in the pool and skew the random sample toward them.
         pool = list(
             Question.objects
             .filter(
                 bank_state=Question.BANK_STATE_ACCEPTED,
-                quiz__chapter=chapter,
+                quiz__chapter_tags__chapter=chapter,
             )
             .prefetch_related("choices")
+            .distinct()
         )
         if not pool:
             return Response(
@@ -2011,13 +2032,15 @@ class QuizResultView(APIView):
         # Chapters come off the QUIZ (see the note on "chapters" below).
         attach_chapter_tags([quiz])
         chapters_payload = serialize_tags(quiz)
-        # Fall back to the legacy `chapter` FK when there are no tag rows.
-        # This is not an edge case: QuizCreateSerializer and
-        # TeacherQuizDuplicateView still write ONLY the FK (Phase 3 kept
-        # chapters additive rather than migrating), so most real quizzes have
-        # a chapter and zero ContentChapterTag rows. Without this, S3's
-        # chapter section renders empty for them and looks like a quiz with
-        # no chapter rather than a missing fallback.
+        # Belt-and-braces fallback to the legacy `chapter` FK.
+        #
+        # Migration 0028 backfilled a tag for every chaptered quiz and
+        # QuizCreateSerializer mirrors the FK on create, so this should now be
+        # unreachable. Kept until the column is actually dropped, as the cheap
+        # half of a belt-and-braces pair on a screen a student sees.
+        # (TeacherQuizDuplicateView copies neither chapter nor tags, so a copy
+        # is consistently un-chaptered — losing the chapter on duplicate is a
+        # separate pre-existing question, not an invariant break.)
         if not chapters_payload and quiz.chapter_id:
             chapters_payload = [{
                 "chapter_id": str(quiz.chapter_id),
