@@ -48,10 +48,19 @@ from content.models import (
 
 SEED_DIR = Path(__file__).resolve().parent.parent.parent / "seed_assets" / "about"
 
-# section -> filename, for the two large photos that live on a content block.
+# section -> filename, for the large photos that live on a content block.
+#
+# Vision and Values were materialising images the page ALREADY showed. Mission
+# and Why are different: those two sections never had artwork at all, so these
+# two entries add a photo rather than make an existing one editable. About2.jsx
+# renders them through the optional .ap-sec-img banner, which stays absent when
+# no image is attached — so a section only gains a picture once this has run (or
+# an editor uploads one), and removing the row returns it to text-only.
 BLOCK_IMAGES = {
     HomeSection.ABOUT_VISION: "meet.jpeg",
     HomeSection.ABOUT_VALUES: "studio.jpeg",
+    HomeSection.ABOUT_MISSION: "teach4.jpeg",
+    HomeSection.ABOUT_WHY: "teach1.jpeg",
 }
 
 # The About hero's sticker row, in the order About2.jsx lists them. This is
