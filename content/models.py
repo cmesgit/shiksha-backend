@@ -623,6 +623,13 @@ class HomeSection(models.TextChoices):
     ABOUT_MISSION = "about_mission", "About — Our Mission"
     ABOUT_VALUES = "about_values", "About — Our Values"
     ABOUT_WHY = "about_why", "About — Why Choose ShikshaCom"
+    # The /contact page, same story as the About sections above: its
+    # heading, blurb and all four detail cards were hardcoded in
+    # Contact.jsx, so correcting a phone number meant a code change and a
+    # frontend deploy. One block for the header; the cards are list items
+    # on this section, so an office or number can be added or removed
+    # rather than being fixed at four.
+    CONTACT_HERO = "contact_hero", "Contact — Header & details"
 
 
 HOMEPAGE_SECTIONS = [
@@ -714,6 +721,7 @@ class HomeListVariant(models.TextChoices):
     # it carries no copy at all — the image *is* the content — so a row of
     # these is expected to have empty title/body.
     STICKER = "sticker", "Sticker (About — hero image row)"
+    CONTACT_CARD = "contact_card", "Contact card (Contact — details)"
 
 
 class HomeListItem(TimeStampedModel):

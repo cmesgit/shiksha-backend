@@ -580,3 +580,90 @@ class CmsImageValidatorTests(TestCase):
                 any(isinstance(v, CmsImageValidator) for v in vs),
                 f"{model.__name__}.{field} is missing CmsImageValidator",
             )
+
+
+class ContactPageCmsTests(TestCase):
+    """The /contact page's heading, blurb and four detail cards were hardcoded
+    in Contact.jsx, so a changed phone number needed a frontend deploy. They
+    are now a content block plus `contact_card` list items on the
+    `contact_hero` section."""
+
+    def setUp(self):
+        cache.clear()
+        self.block = HomeContentBlock.objects.create(
+            section=HomeSection.CONTACT_HERO,
+            heading="Contact ShikshaCom",
+            subhead="Get in touch with us!",
+            is_active=True,
+        )
+        for i, (icon, title, body) in enumerate([
+            ("location", "Head Office", "House No. 1<br />Gurgaon"),
+            ("email", "Email", "info@shikshacom.com"),
+            ("phone", "Phone", "+0124-4255138 (Haryana)"),
+        ]):
+            HomeListItem.objects.create(
+                section=HomeSection.CONTACT_HERO,
+                variant=HomeListVariant.CONTACT_CARD,
+                icon=icon, title=title, body=body, order=i, is_active=True,
+            )
+
+    def test_the_contact_section_is_a_valid_choice(self):
+        """Guards against the section existing in seed data but not the enum,
+        which would make every row fail validation."""
+        self.assertIn(
+            "contact_hero", dict(HomeSection.choices),
+        )
+        self.assertIn(
+            "contact_card", dict(HomeListVariant.choices),
+        )
+
+    def test_block_is_served_on_the_public_endpoint(self):
+        r = self.client.get("/api/content/home-content/", {"section": "contact_hero"})
+        self.assertEqual(r.status_code, 200)
+        rows = r.json()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["heading"], "Contact ShikshaCom")
+
+    def test_cards_are_served_in_order_with_their_line_breaks(self):
+        r = self.client.get("/api/content/home-list-items/", {"section": "contact_hero"})
+        self.assertEqual(r.status_code, 200)
+        rows = r.json()
+        self.assertEqual([x["title"] for x in rows], ["Head Office", "Email", "Phone"])
+        # <br> survives the restricted inline allowlist — an address needs it.
+        self.assertIn("<br", rows[0]["body"])
+
+    def test_a_card_can_be_added_without_a_deploy(self):
+        """The whole point of list items over four fixed slots."""
+        HomeListItem.objects.create(
+            section=HomeSection.CONTACT_HERO,
+            variant=HomeListVariant.CONTACT_CARD,
+            icon="location", title="Third Office", body="Shillong", order=3,
+            is_active=True,
+        )
+        cache.clear()
+        rows = self.client.get(
+            "/api/content/home-list-items/", {"section": "contact_hero"}
+        ).json()
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(rows[-1]["title"], "Third Office")
+
+    def test_an_inactive_card_is_not_served(self):
+        HomeListItem.objects.filter(title="Phone").update(is_active=False)
+        cache.clear()
+        rows = self.client.get(
+            "/api/content/home-list-items/", {"section": "contact_hero"}
+        ).json()
+        self.assertNotIn("Phone", [x["title"] for x in rows])
+
+    def test_seed_data_matches_what_the_frontend_hardcodes(self):
+        """The seeded copy must be the page's real current text, or seeding
+        would silently change the live page instead of just making it editable."""
+        from content.management.commands._homepage_seed_data import (
+            CONTACT_BLOCKS, CONTACT_LIST_ITEMS,
+        )
+        self.assertEqual(CONTACT_BLOCKS[0]["heading"], "Contact ShikshaCom")
+        titles = [i["title"] for i in CONTACT_LIST_ITEMS]
+        self.assertEqual(
+            titles, ["Head Office", "Regional Office Address", "Email", "Phone"],
+        )
+        self.assertTrue(all(i["variant"] == "contact_card" for i in CONTACT_LIST_ITEMS))

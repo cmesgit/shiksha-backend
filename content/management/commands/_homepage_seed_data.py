@@ -1326,3 +1326,89 @@ SHOWCASE = [   {   'title': 'Class 8 Foundation',
         'order': 17,
         'is_active': True}]
 
+
+
+# ── /contact ──────────────────────────────────────────────────────────────
+# Appended as separate constants rather than edited into the pprint-formatted
+# lists above, so this stays readable and diffable.
+#
+# These are the exact strings Contact.jsx hardcoded (its <h1>, its blurb, and
+# the four cards), lifted verbatim so seeding changes nothing visible — it just
+# moves them somewhere an editor can reach. Bodies keep their <br /> line breaks;
+# `br` is in the restricted inline allowlist both server-side
+# (content/sanitize.py) and client-side (utils/sanitizeInline.js).
+CONTACT_BLOCKS = [
+    {   'section': 'contact_hero',
+        'eyebrow': '',
+        'heading': 'Contact ShikshaCom',
+        'heading_secondary': '',
+        'subhead': 'Get in touch with us! Here is how you can reach ShikshaCom.',
+        'body': '',
+        'cta_primary_label': '',
+        'cta_primary_href': '',
+        'cta_secondary_label': '',
+        'cta_secondary_href': '',
+        'image_url': '',
+        'extra': {},
+        'is_active': True},
+]
+
+# One row per card. Being list items rather than four fixed slots is the point:
+# an office or a phone number can be added or retired without a deploy.
+CONTACT_LIST_ITEMS = [
+    {   'section': 'contact_hero',
+        'variant': 'contact_card',
+        'icon': 'location',
+        'title': 'Head Office',
+        'subtitle': '',
+        'body': 'House No. - 1473A<br />Maruti Vihar<br />Gurgaon, Haryana - 122002',
+        'pills': [],
+        'stat_text': '',
+        'cta_label': '',
+        'cta_href': '',
+        'tint': '',
+        'order': 0,
+        'is_active': True},
+    {   'section': 'contact_hero',
+        'variant': 'contact_card',
+        'icon': 'location',
+        'title': 'Regional Office Address',
+        'subtitle': '',
+        'body': 'Hualngohmun Vengchhak<br />Near World Bank Road<br />Aizawl , Mizoram - 796005',
+        'pills': [],
+        'stat_text': '',
+        'cta_label': '',
+        'cta_href': '',
+        'tint': '',
+        'order': 1,
+        'is_active': True},
+    {   'section': 'contact_hero',
+        'variant': 'contact_card',
+        'icon': 'email',
+        'title': 'Email',
+        'subtitle': '',
+        'body': 'info@shikshacom.com',
+        'pills': [],
+        'stat_text': '',
+        'cta_label': '',
+        'cta_href': '',
+        'tint': '',
+        'order': 2,
+        'is_active': True},
+    {   'section': 'contact_hero',
+        'variant': 'contact_card',
+        'icon': 'phone',
+        'title': 'Phone',
+        'subtitle': '',
+        'body': '+0124-4255138 (Haryana)<br />+0389-2300225 (Mizoram)<br />+91 3893570403 (Mizoram)',
+        'pills': [],
+        'stat_text': '',
+        'cta_label': '',
+        'cta_href': '',
+        'tint': '',
+        'order': 3,
+        'is_active': True},
+]
+
+BLOCKS = BLOCKS + CONTACT_BLOCKS
+LIST_ITEMS = LIST_ITEMS + CONTACT_LIST_ITEMS
