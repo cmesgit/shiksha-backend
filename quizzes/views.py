@@ -657,8 +657,14 @@ class TeacherDeleteQuizView(APIView):
 
         attempt_count = quiz.attempts.count()
 
-        # If published and has attempts, require explicit confirmation via ?force=true
-        if quiz.is_published and attempt_count > 0:
+        # If students can see it and it has attempts, require explicit
+        # confirmation via ?force=true.
+        #
+        # is_assigned, NOT the retiring is_published mirror — this is the
+        # guard that stops a teacher destroying real attempts by accident, so
+        # reading a field that is about to disappear (and would then be False
+        # for every quiz) would quietly remove the confirmation entirely.
+        if quiz.is_assigned and attempt_count > 0:
             force = request.query_params.get("force", "").lower() == "true"
             if not force:
                 return Response(

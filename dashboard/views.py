@@ -378,8 +378,13 @@ def _teacher_assignments(user, teacher_prefetch):
 
 
 def _teacher_quizzes(user):
+    # is_assigned, not is_published — Phase 1 moved student visibility onto
+    # is_assigned and Phase 10 retires the mirror. The two other quiz reads in
+    # this module were already switched (see the note above the completed-quiz
+    # query); this one was missed and would have silently returned nothing
+    # once the column goes.
     return list(
-        Quiz.objects.filter(created_by=user, is_published=True)
+        Quiz.objects.filter(created_by=user, is_assigned=True)
         .select_related("created_by", "subject__course__board")
         .order_by("-created_at")
     )
