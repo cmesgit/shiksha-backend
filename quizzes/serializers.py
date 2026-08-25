@@ -353,8 +353,12 @@ class QuizDashboardSerializer(serializers.ModelSerializer):
             "id", "title", "subject_id", "subject_name", "course_title",
             "board_name", "teacher_name",
             "created_at", "total_marks", "questions_count", "time_limit_minutes",
-            "status", "score", "best_score", "last_attempt_at", "is_published",
-            "attempts_count", "quiz_type",
+            # chapter_note is the teacher's free-text note for the quiz
+            # (quizzes/0024). S1 renders it as the quoted line under each
+            # assigned row (README §S1); without it here the quote silently
+            # never appears, because a missing key reads as "no note".
+            "status", "score", "best_score", "last_attempt_at", "chapter_note",
+            "is_published", "attempts_count", "quiz_type",
         ]
 
     def get_board_name(self, obj):

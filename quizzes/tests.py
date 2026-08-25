@@ -1657,6 +1657,17 @@ class StudentDashboardLastAttemptAtTest(TestCase):
             selected_choice=self.choice)
         return att
 
+    def test_carries_the_teacher_note_for_the_s1_quote(self):
+        # S1 renders chapter_note as the quoted line under an assigned row.
+        # A missing key is indistinguishable from "no note" in the UI, so
+        # this pins the key's presence, not just its value.
+        row = next(x for x in self._rows() if x["title"] == "Motion")
+        self.assertIn("chapter_note", row)
+        Quiz.objects.filter(id=self.quiz.id).update(
+            chapter_note="Revise section 3 before you start.")
+        row = next(x for x in self._rows() if x["title"] == "Motion")
+        self.assertEqual(row["chapter_note"], "Revise section 3 before you start.")
+
     def test_null_before_any_attempt(self):
         row = next(x for x in self._rows() if x["title"] == "Motion")
         self.assertIn("last_attempt_at", row)
