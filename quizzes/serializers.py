@@ -757,6 +757,22 @@ class QuizResultSerializer(serializers.Serializer):
     wrong_question_ids = serializers.ListField(
         child=serializers.UUIDField(), default=list)
 
+    # ── S3 · results screen (Phase 9) ───────────────────────────────────
+    # The quiz's chapter tags, each with is_custom so a teacher-created
+    # chapter can be marked and offered as chapter practice. QUIZ-level, not
+    # per-question — see the note at the call site in QuizResultView.
+    chapters = serializers.ListField(child=serializers.DictField(), default=list)
+    # Questions on the paper that were never answered. `questions` is
+    # answered-only, so this cannot be derived from it on the client.
+    blank_count = serializers.IntegerField(default=0)
+    marked_count = serializers.IntegerField(default=0)
+    # Wall-clock spent on the attempt, for "finished N minutes early".
+    time_taken_seconds = serializers.IntegerField(allow_null=True, default=None)
+    time_limit_minutes = serializers.IntegerField(allow_null=True, default=None)
+    # The previous submitted attempt's percent, or null on a first attempt —
+    # null must render as NO verdict, not as a 0-point improvement.
+    previous_percent = serializers.FloatField(allow_null=True, default=None)
+
 
 class TeacherQuizAttemptSerializer(serializers.ModelSerializer):
     student_id = serializers.UUIDField(source="student.id", read_only=True)

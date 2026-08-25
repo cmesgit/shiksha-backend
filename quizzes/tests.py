@@ -1582,6 +1582,139 @@ class StudentPracticeChaptersTest(TestCase):
         self.assertNotIn("Genetics", [x["title"] for x in self._get().data])
 
 
+class QuizResultS3PayloadTest(TestCase):
+    """S3's extra result fields (Phase 9).
+
+    The blank count and the first-attempt verdict are the two that fail
+    silently: a wrong blank count is a plausible-looking number, and a
+    first attempt reporting an improvement of 0 reads as "no progress"
+    rather than "nothing to compare to".
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Batch, Chapter
+        from enrollments.models import Enrollment, Subscription
+
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="STUDENT")
+        cls.teacher = User.objects.create_user(
+            username="s3_t", email="s3_t@test.com", password="x", is_verified=True)
+        UserRole.objects.create(user=cls.teacher,
+                                role=Role.objects.get(name="TEACHER"),
+                                is_active=True, is_primary=True)
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Civics")
+        cls.chapter = Chapter.objects.create(
+            subject=cls.subject, title="Federalism", order=0)
+        batch = Batch.objects.create(course=cls.course, name="10-A", code="10A2")
+
+        cls.account = User.objects.create_user(
+            username="s3_kid", email="s3_kid@test.com", password="x", is_verified=True)
+        UserRole.objects.create(user=cls.account,
+                                role=Role.objects.get(name="STUDENT"),
+                                is_active=True, is_primary=True)
+        cls.learner = LearnerProfile.objects.create(
+            account=cls.account, display_name="s3_kid", is_default=True)
+        now = timezone.now()
+        Subscription.objects.create(
+            user=cls.account, learner_profile=cls.learner, course=cls.course,
+            status=Subscription.STATUS_ACTIVE, starts_at=now,
+            expires_at=now + timedelta(days=30))
+        Enrollment.objects.create(
+            user=cls.account, learner_profile=cls.learner, course=cls.course,
+            batch=batch, status=Enrollment.STATUS_ACTIVE)
+
+        # A 4-mark paper; the learner answers only 2 of the 4 questions.
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Civics mock",
+            chapter=cls.chapter, quiz_type=Quiz.TYPE_MOCK,
+            is_assigned=True, total_marks=4, time_limit_minutes=30)
+        cls.questions = []
+        for i in range(4):
+            q = Question.objects.create(
+                quiz=cls.quiz, text=f"q{i}", marks=1, order=i, explanation="because")
+            Choice.objects.create(question=q, text="right", is_correct=True)
+            Choice.objects.create(question=q, text="wrong", is_correct=False)
+            cls.questions.append(q)
+
+    def _attempt(self, number, right, answered=2, marked=0):
+        att = QuizAttempt.objects.create(
+            quiz=self.quiz, student=self.account, learner_profile=self.learner,
+            status=QuizAttempt.STATUS_SUBMITTED,
+            submitted_at=timezone.now(), score=right, attempt_number=number)
+        for i in range(answered):
+            q = self.questions[i]
+            correct = i < right
+            StudentAnswer.objects.create(
+                attempt=att, question=q, is_correct=correct,
+                marked_for_review=(i < marked),
+                selected_choice=q.choices.filter(is_correct=correct).first())
+        return att
+
+    def _result(self):
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.learner.id)})
+        r = c.get(f"/api/quizzes/{self.quiz.id}/result/")
+        self.assertEqual(r.status_code, 200, r.content)
+        return r.json()
+
+    def test_blank_count_is_the_paper_minus_what_was_answered(self):
+        self._attempt(1, right=1, answered=2)
+        d = self._result()
+        self.assertEqual(d["questions_total"], 4)
+        self.assertEqual(len(d["questions"]), 2)
+        self.assertEqual(d["blank_count"], 2, "blanks must count unanswered questions")
+
+    def test_marked_count_reaches_the_filter_chip(self):
+        self._attempt(1, right=1, answered=2, marked=1)
+        self.assertEqual(self._result()["marked_count"], 1)
+
+    def test_first_attempt_has_no_previous_percent(self):
+        # Must be null, NOT 0 — "no improvement" and "nothing to compare to"
+        # are different statements and the hero renders them differently.
+        self._attempt(1, right=1)
+        self.assertIsNone(self._result()["previous_percent"])
+
+    def test_second_attempt_compares_against_the_previous_one(self):
+        self._attempt(1, right=1)          # 1/4 = 25%
+        self._attempt(2, right=3)          # 3/4 = 75%
+        self.assertEqual(self._result()["previous_percent"], 25.0)
+
+    def test_chapters_carry_is_custom_for_the_pencil_marker(self):
+        # This quiz has the legacy `chapter` FK and NO ContentChapterTag rows,
+        # which is what QuizCreateSerializer actually writes — so this also
+        # pins the FK fallback. Without it the section renders empty and looks
+        # like a quiz with no chapter.
+        self._attempt(1, right=1)
+        chapters = self._result()["chapters"]
+        self.assertTrue(chapters, "the quiz's chapters must reach S3")
+        self.assertEqual(chapters[0]["label"], "Federalism")
+        self.assertIs(chapters[0]["is_custom"], False)
+        self.assertEqual(chapters[0]["chapter_id"], str(self.chapter.id))
+
+    def test_a_teacher_created_chapter_is_flagged_custom(self):
+        from courses.models import Chapter
+        custom = Chapter.objects.create(
+            subject=self.subject, title="Local governance drive",
+            order=1, is_custom=True)
+        Quiz.objects.filter(id=self.quiz.id).update(chapter=custom)
+        self._attempt(1, right=1)
+        chapters = self._result()["chapters"]
+        self.assertEqual(chapters[0]["label"], "Local governance drive")
+        self.assertIs(chapters[0]["is_custom"], True,
+                      "S3 marks teacher-created chapters with a pencil")
+
+    def test_time_taken_and_limit_are_reported(self):
+        self._attempt(1, right=1)
+        d = self._result()
+        self.assertEqual(d["time_limit_minutes"], 30)
+        self.assertIsNotNone(d["time_taken_seconds"])
+        self.assertGreaterEqual(d["time_taken_seconds"], 0)
+
+
 class StudentDashboardLastAttemptAtTest(TestCase):
     """`last_attempt_at` on /student/quizzes/ — S1's "Your last attempts" rail.
 

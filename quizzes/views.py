@@ -2007,6 +2007,57 @@ class QuizResultView(APIView):
             key=lambda row: difficulty_order.get(row["difficulty"], 9),
         )
 
+        # ── S3 (Phase 9) extras ───────────────────────────────────────────
+        # Chapters come off the QUIZ (see the note on "chapters" below).
+        attach_chapter_tags([quiz])
+        chapters_payload = serialize_tags(quiz)
+        # Fall back to the legacy `chapter` FK when there are no tag rows.
+        # This is not an edge case: QuizCreateSerializer and
+        # TeacherQuizDuplicateView still write ONLY the FK (Phase 3 kept
+        # chapters additive rather than migrating), so most real quizzes have
+        # a chapter and zero ContentChapterTag rows. Without this, S3's
+        # chapter section renders empty for them and looks like a quiz with
+        # no chapter rather than a missing fallback.
+        if not chapters_payload and quiz.chapter_id:
+            chapters_payload = [{
+                "chapter_id": str(quiz.chapter_id),
+                "label": quiz.chapter.title,
+                "is_custom": quiz.chapter.is_custom,
+                "order": 0,
+            }]
+
+        # `result_questions` is answered-only by design, so blanks are the
+        # paper's size minus what was answered — a timer expiry can leave the
+        # whole paper blank, and S3's "Blank N" chip has to say so.
+        answered_total = len(result_questions)
+        blank_count = max(quiz.questions.count() - answered_total, 0)
+        marked_count = sum(
+            1 for row in result_questions if row.get("marked_for_review"))
+
+        # started_at is auto_now_add, so it is always set; submitted_at is not
+        # (an attempt still in progress cannot reach this view, but a row
+        # closed by the expiry sweep can have been saved oddly).
+        time_taken_seconds = None
+        if attempt.submitted_at and attempt.started_at:
+            time_taken_seconds = max(
+                int((attempt.submitted_at - attempt.started_at).total_seconds()), 0)
+
+        # The attempt immediately before this one, by attempt_number — NOT by
+        # submitted_at, which the expiry sweep can reorder (see
+        # get_last_attempt_at in serializers.py for the same trap).
+        previous_percent = None
+        if quiz.total_marks:
+            prev = (
+                QuizAttempt.objects
+                .filter(quiz=quiz, learner_profile=learner,
+                        status=QuizAttempt.STATUS_SUBMITTED,
+                        attempt_number__lt=attempt.attempt_number)
+                .order_by("-attempt_number")
+                .first()
+            )
+            if prev:
+                previous_percent = round(prev.score * 100.0 / quiz.total_marks, 1)
+
         # ── class average + percentile across all submitted attempts ──────
         all_scores = list(
             QuizAttempt.objects
@@ -2090,6 +2141,30 @@ class QuizResultView(APIView):
             "difficulty_breakdown": difficulty_breakdown,
             "score_trend": score_trend,
             "wrong_question_ids": wrong_question_ids,
+            # ── S3 (Phase 9) ────────────────────────────────────────────────
+            # The quiz's chapters, each carrying is_custom so the result screen
+            # can mark a teacher-created chapter and offer "Practise" straight
+            # into S1's chapter practice.
+            #
+            # These are QUIZ-level, not per-question: Phase 3 deliberately put
+            # chapter tagging on Quiz (see TeacherQuestionBankView.list's own
+            # note, and the user's Phase 3 decision to keep chapters additive).
+            # So every question in this attempt shares these chapters, and a
+            # per-question "which chapter did I lose marks in" split is NOT
+            # derivable from the model. `topic_breakdown` above is the real
+            # per-question grouping and is what the breakdown must be built on.
+            # Attributing marks per chapter would need chapter tags on
+            # Question, which is a Phase 3 schema decision, not a Phase 9 one.
+            "chapters": chapters_payload,
+            "blank_count": blank_count,
+            "marked_count": marked_count,
+            "time_taken_seconds": time_taken_seconds,
+            "time_limit_minutes": quiz.time_limit_minutes,
+            # Previous submitted attempt's percent, for the hero's
+            # "Better than last time — up N marks" verdict. None when this is
+            # the first attempt, which must render as no verdict rather than
+            # as a 0% improvement.
+            "previous_percent": previous_percent,
         }
 
         serializer = QuizResultSerializer(data=data)
