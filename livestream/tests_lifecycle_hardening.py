@@ -4,7 +4,7 @@
 # 6-12 month batch impractical. The comments say what the teacher or student
 # actually saw, because that is what these tests exist to prevent recurring.
 
-from datetime import timedelta
+from datetime import timedelta, timezone as dt_timezone
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -273,14 +273,28 @@ class ModerationTests(LiveBase):
 class RecurringSchedulingTests(LiveBase):
     """A 6-month batch previously meant ~50 trips through the create form."""
 
+    # `days_of_week` is IST, because that is the timezone the teacher picks
+    # them in (TIME_ZONE = Asia/Kolkata, and DRF parses start_time into it).
+    # Django hands datetimes back from the DB in UTC, so every assertion here
+    # goes through localtime() — comparing raw .weekday() compares UTC, which
+    # is a DIFFERENT DAY whenever the class sits between 00:00 and 05:30 IST.
+    @staticmethod
+    def _weekday(dt):
+        return timezone.localtime(dt).weekday()
+
     def _post(self, **over):
-        start = timezone.now() + timedelta(days=1)
+        # Anchored at 10:00 IST tomorrow rather than "now + 1 day": with a
+        # wall-clock time-of-day these tests passed or failed depending on the
+        # hour the suite happened to run (a 00:00-05:30 IST class is the
+        # previous day in UTC), which is a ~5.5-hour window of false failures.
+        start = (timezone.localtime(timezone.now()) + timedelta(days=1)).replace(
+            hour=10, minute=0, second=0, microsecond=0)
         body = {
             "title": "Weekly Bio",
             "subject_id": str(self.subject.id),
             "batch_id": str(self.batch.id),
-            "start_time": (start.replace(microsecond=0)).isoformat(),
-            "end_time": (start + timedelta(hours=1)).replace(microsecond=0).isoformat(),
+            "start_time": start.isoformat(),
+            "end_time": (start + timedelta(hours=1)).isoformat(),
             "repeat": "weekly",
             "count": 24,
         }
@@ -299,14 +313,35 @@ class RecurringSchedulingTests(LiveBase):
         r = self._post()
         rows = LiveSession.objects.filter(
             series_id=r.json()["series_id"]).order_by("start_time")
-        weekdays = {s.start_time.weekday() for s in rows}
+        weekdays = {self._weekday(s.start_time) for s in rows}
         self.assertEqual(len(weekdays), 1, "weekly series drifted across weekdays")
 
     def test_twice_weekly(self):
         r = self._post(days_of_week=[0, 3], count=10)
         self.assertEqual(r.status_code, 201, r.content)
         rows = LiveSession.objects.filter(series_id=r.json()["series_id"])
-        self.assertEqual({s.start_time.weekday() for s in rows}, {0, 3})
+        self.assertEqual({self._weekday(s.start_time) for s in rows}, {0, 3})
+
+    def test_the_weekday_a_teacher_picks_is_the_weekday_in_IST(self):
+        # The regression the two tests above were hiding. A class scheduled
+        # early enough in the IST morning is the PREVIOUS day in UTC, so
+        # asserting on raw .weekday() silently compared the wrong day and made
+        # this suite fail for ~5.5 hours out of every 24. Scheduling itself was
+        # always correct: _occurrence_starts filters on an IST-localised
+        # cursor. This pins the contract so the timezone can't drift back.
+        start = (timezone.localtime(timezone.now()) + timedelta(days=1)).replace(
+            hour=1, minute=0, second=0, microsecond=0)   # 01:00 IST = 19:30 UTC, previous day
+        r = self._post(
+            start_time=start.isoformat(),
+            end_time=(start + timedelta(hours=1)).isoformat(),
+            days_of_week=[0, 3], count=6)
+        self.assertEqual(r.status_code, 201, r.content)
+        rows = LiveSession.objects.filter(series_id=r.json()["series_id"])
+        self.assertTrue(rows.exists())
+        self.assertEqual({self._weekday(s.start_time) for s in rows}, {0, 3})
+        # And prove the trap is real: in UTC these same rows are NOT Mon/Thu.
+        self.assertEqual({s.start_time.astimezone(dt_timezone.utc).weekday()
+                          for s in rows}, {6, 2})
 
     def test_a_clash_skips_that_date_instead_of_failing_everything(self):
         first = self._post(count=3)
