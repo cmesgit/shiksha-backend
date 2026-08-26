@@ -336,6 +336,270 @@ class StudioSearchView(APIView):
         return Response({"results": results, "query": q, "count": len(results)})
 
 
+# ── Labels: tags and course categories on one screen ──────────────
+#
+# ⚠ The SCREEN is merged, not the tables. `content.ContentTag` and
+# `courses.CourseCategory` stay separate models, for two independent reasons:
+# merging them would touch the public blog filters, the navbar and the catalog
+# for a cosmetic win, and they live in different Django apps, so no single
+# migration owns both.
+#
+# ⚠ `CourseCategory.group` is load-bearing. The `competitive` group is what
+# puts the seven competitive exams in the navbar and on /courses. Merging or
+# deleting one silently un-lists every exam, so both operations guard on it.
+
+LABEL_TAG = "tag"
+LABEL_CATEGORY = "category"
+
+
+def _normalise(name):
+    return " ".join((name or "").split()).casefold()
+
+
+def _tag_usage(tag):
+    return tag.blog_posts.count() + tag.current_affairs.count()
+
+
+def _label_rows():
+    """Both kinds, annotated with how often each is actually used."""
+    from courses.models import CourseCategory
+
+    from .models import ContentTag
+
+    rows = []
+    for tag in ContentTag.objects.prefetch_related("blog_posts", "current_affairs"):
+        rows.append({
+            "id": tag.id, "kind": LABEL_TAG, "kind_label": "Blog tag",
+            "name": tag.name, "slug": tag.slug,
+            "usage_count": _tag_usage(tag),
+            "usage_label": "posts and articles",
+            "group": None,
+        })
+    for cat in CourseCategory.objects.prefetch_related("courses"):
+        rows.append({
+            "id": cat.id, "kind": LABEL_CATEGORY, "kind_label": "Course category",
+            "name": cat.name, "slug": cat.slug,
+            "usage_count": cat.courses.count(),
+            "usage_label": "courses",
+            "group": cat.group,
+            "group_label": cat.get_group_display(),
+        })
+    return rows
+
+
+def _mark_duplicates(rows):
+    """Duplicate detection is a query, not a stored field.
+
+    Two labels look like duplicates when their names match once case and
+    surrounding whitespace are ignored, or when their slugs match. Only labels
+    of the same kind are ever compared — a blog tag and a course category
+    sharing a name are not duplicates, they are two different things.
+    """
+    by_key = {}
+    for row in rows:
+        key = (row["kind"], _normalise(row["name"]))
+        by_key.setdefault(key, []).append(row)
+        slug_key = (row["kind"], "slug:" + (row["slug"] or "").casefold())
+        by_key.setdefault(slug_key, []).append(row)
+
+    for group in by_key.values():
+        seen = {r["id"]: r for r in group}
+        if len(seen) < 2:
+            continue
+        # The most-used one is the sensible merge target, so it is the one
+        # everything else is reported as a duplicate OF.
+        ordered = sorted(seen.values(), key=lambda r: (-r["usage_count"], r["id"]))
+        keeper = ordered[0]
+        for other in ordered[1:]:
+            other["duplicate_of"] = {"id": keeper["id"], "name": keeper["name"]}
+    return rows
+
+
+class LabelListView(APIView):
+    """GET /api/content/admin/labels/ — tags and categories in one list."""
+
+    permission_classes = [IsContentEditor]
+
+    def get(self, request):
+        rows = _mark_duplicates(_label_rows())
+
+        q = (request.query_params.get("q") or "").strip().casefold()
+        if q:
+            rows = [r for r in rows if q in r["name"].casefold()]
+
+        rows.sort(key=lambda r: (r["kind"], r["name"].casefold()))
+        return Response({
+            "results": rows,
+            "count": len(rows),
+            "duplicate_count": sum(1 for r in rows if r.get("duplicate_of")),
+        })
+
+
+class LabelMergeView(APIView):
+    """POST /api/content/admin/labels/merge/ — {from_id, into_id, kind}
+
+    Repoints every relation inside one transaction, then deletes the source.
+    Renaming and merging are the only safe operations here; nothing is ever
+    left half-pointed.
+    """
+
+    permission_classes = [IsContentEditor]
+
+    @transaction.atomic
+    def post(self, request):
+        from courses.models import CourseCategory
+
+        from .models import ContentTag
+
+        kind = request.data.get("kind")
+        from_id = request.data.get("from_id")
+        into_id = request.data.get("into_id")
+
+        if kind not in (LABEL_TAG, LABEL_CATEGORY):
+            return Response(
+                {"detail": "kind must be 'tag' or 'category'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if from_id is None or into_id is None:
+            return Response(
+                {"detail": "from_id and into_id are both required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if str(from_id) == str(into_id):
+            return Response(
+                {"detail": "A label can’t be merged into itself."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        model = ContentTag if kind == LABEL_TAG else CourseCategory
+        source = model.objects.filter(pk=from_id).first()
+        target = model.objects.filter(pk=into_id).first()
+        if source is None or target is None:
+            return Response(
+                {"detail": "One of those labels no longer exists."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        moved = 0
+        if kind == LABEL_TAG:
+            for post in source.blog_posts.all():
+                post.tags.add(target)
+                post.tags.remove(source)
+                moved += 1
+            for affair in source.current_affairs.all():
+                affair.tags.add(target)
+                affair.tags.remove(source)
+                moved += 1
+        else:
+            # ⚠ Merging across groups would move a course out of the group its
+            # discovery depends on — most sharply for `competitive`, which is
+            # what lists the seven exams at all.
+            if source.group != target.group:
+                return Response(
+                    {
+                        "detail": (
+                            f"“{source.name}” is in {source.get_group_display()} and "
+                            f"“{target.name}” is in {target.get_group_display()}. "
+                            "Merging across groups would move its courses out of "
+                            "the section visitors browse them in."
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            for course in source.courses.all():
+                course.categories.add(target)
+                course.categories.remove(source)
+                moved += 1
+
+        name = source.name
+        source.delete()
+        return Response({
+            "detail": f"Merged “{name}” into “{target.name}”.",
+            "moved": moved,
+            "into": {"id": target.id, "name": target.name},
+        })
+
+
+class LabelDetailView(APIView):
+    """PATCH (rename) and DELETE one label."""
+
+    permission_classes = [IsContentEditor]
+
+    def _resolve(self, kind, pk):
+        from courses.models import CourseCategory
+
+        from .models import ContentTag
+
+        model = ContentTag if kind == LABEL_TAG else CourseCategory
+        return model.objects.filter(pk=pk).first()
+
+    def patch(self, request, kind, pk):
+        obj = self._resolve(kind, pk)
+        if obj is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        name = (request.data.get("name") or "").strip()
+        if not name:
+            return Response(
+                {"detail": "Give the label a name."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        obj.name = name
+        obj.save()
+        return Response({"id": obj.id, "name": obj.name, "slug": obj.slug})
+
+    def delete(self, request, kind, pk):
+        obj = self._resolve(kind, pk)
+        if obj is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        if kind == LABEL_CATEGORY:
+            from courses.models import CourseCategory
+
+            used = obj.courses.count()
+            last_in_group = (
+                CourseCategory.objects.filter(group=obj.group).count() == 1
+            )
+            # Deleting the last competitive category doesn't just orphan its
+            # courses — it removes the group that makes them discoverable.
+            if last_in_group and used:
+                return Response(
+                    {
+                        "detail": (
+                            f"“{obj.name}” is the only category in "
+                            f"{obj.get_group_display()}, and "
+                            + (
+                                "1 course relies on it. Deleting it would "
+                                "remove it from the site’s browsing."
+                                if used == 1 else
+                                f"{used} courses rely on it. Deleting it "
+                                "would remove them from the site’s browsing."
+                            )
+                        ),
+                        "used_by": used,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+        else:
+            used = _tag_usage(obj)
+
+        if used:
+            return Response(
+                {
+                    "detail": (
+                        f"“{obj.name}” is still used {used} time"
+                        f"{'' if used == 1 else 's'}. Merge it into another "
+                        "label instead, so nothing loses its label."
+                    ),
+                    "used_by": used,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        name = obj.name
+        obj.delete()
+        return Response({"detail": f"Deleted “{name}”."})
+
+
 # ── Publish checklist ─────────────────────────────────────────────
 # Levels: "block" cannot be published past, "warn" publishes behind a confirm,
 # "ok" is informational. Every check is phrased as what a reader would notice,

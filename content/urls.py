@@ -57,6 +57,12 @@ urlpatterns += [
         studio_views.PageChecklistView.as_view(), name="studio-page-checklist",
     ),
     path("admin/link-targets/", studio_views.LinkTargetsView.as_view(), name="studio-link-targets"),
+    path("admin/labels/", studio_views.LabelListView.as_view(), name="studio-labels"),
+    path("admin/labels/merge/", studio_views.LabelMergeView.as_view(), name="studio-labels-merge"),
+    path(
+        "admin/labels/<slug:kind>/<int:pk>/",
+        studio_views.LabelDetailView.as_view(), name="studio-label-detail",
+    ),
     path("admin/media/", studio_views.MediaListView.as_view(), name="studio-media"),
     path("admin/media/<int:pk>/", studio_views.MediaDetailView.as_view(), name="studio-media-detail"),
     path("admin/inbox/", studio_views.InboxView.as_view(), name="studio-inbox"),
