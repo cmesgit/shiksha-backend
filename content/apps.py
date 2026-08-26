@@ -22,4 +22,11 @@ class ContentConfig(AppConfig):
         # cache version, so list endpoints invalidate instantly on edit.
         from . import cache  # noqa: F401
 
+        # Keeps MediaUsage correct on every write path (Phase 4). Unlike
+        # ContentRevision, this is derived data — see media_signals.py for why
+        # a signal is right here and wrong there.
+        from . import media_signals
+
+        media_signals.connect()
+
         post_migrate.connect(_sync_content_editors_group, sender=self)

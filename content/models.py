@@ -16,6 +16,8 @@ import re
 import uuid
 
 from django.conf import settings
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
@@ -51,6 +53,14 @@ class TimeStampedModel(models.Model):
 
 class PublishStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
+    # design_handoff_content_studio Phase 1. The review step the Content Studio
+    # workflow needs, added to the EXISTING vocabulary rather than as a second
+    # one. The handoff spec asked for draft/review/live/hidden on a separate set
+    # of models; that would have meant two status vocabularies in one app where
+    # "published" and "live" mean the same thing and "archived" and "hidden"
+    # mean the same thing — the same three-names-for-one-concept trap already
+    # recorded for COACHING/competitive/Competitive. One vocabulary, four values.
+    REVIEW = "review", "In review"
     PUBLISHED = "published", "Published"
     ARCHIVED = "archived", "Archived"
 
@@ -92,6 +102,114 @@ class PublishableModel(TimeStampedModel):
             self.status == PublishStatus.PUBLISHED
             and self.publish_at <= timezone.now()
         )
+
+
+class StatusedContentModel(TimeStampedModel):
+    """Draft/review state for the CMS rows that only ever had ``is_active``.
+
+    design_handoff_content_studio Phase 1. ``is_active`` conflates "not
+    finished yet" with "deliberately taken down", and the difference between
+    those two is the entire review workflow. ``status`` splits them.
+
+    ⚠ ``is_active`` deliberately stays a REAL, WRITABLE COLUMN rather than
+    becoming a property computed from ``status``. The handoff spec asked for a
+    property; that would take the process down at boot, verified by running
+    Django's own checks:
+
+        admin.E116  list_filter[0] refers to 'is_active', which does not
+                    refer to a Field
+        admin.E121  list_editable[0] refers to 'is_active', which is not a
+                    field of 'content.FAQItem'
+
+    ``content/admin.py`` uses ``is_active`` in ``list_filter`` and
+    ``list_editable`` on five ModelAdmins, and it sits in six writable DRF
+    serializer field lists. ``manage.py check`` failing means the process
+    refuses to start, so the column stays and ``save()`` keeps it in step with
+    ``status``. Phase 9 migrates the read sites and drops it.
+
+    Subclasses keep their own ``objects`` manager — this base deliberately does
+    NOT set one, because ``Announcement`` relies on ``AnnouncementQuerySet``.
+    """
+
+    status = models.CharField(
+        max_length=12,
+        choices=PublishStatus.choices,
+        default=PublishStatus.PUBLISHED,
+        db_index=True,
+        help_text=(
+            "Draft and In review are invisible to the public. Published is "
+            "live. Archived is deliberately taken down."
+        ),
+    )
+
+    class Meta:
+        abstract = True
+
+    @property
+    def is_live(self):
+        return self.status == PublishStatus.PUBLISHED
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Snapshot so save() can tell WHICH of the two the caller touched.
+        # Without this, syncing one direction unconditionally would clobber the
+        # other — in particular the Django admin's is_active list_editable
+        # toggle, which does `obj.is_active = False; obj.save()` and never
+        # mentions status.
+        self._initial_status = self.status
+        self._initial_is_active = self.is_active
+
+    def _reconcile_status_and_is_active(self):
+        """Return the field names that had to be changed to agree."""
+        status_changed = self.status != self._initial_status
+        active_changed = self.is_active != self._initial_is_active
+        implied = self.status == PublishStatus.PUBLISHED
+
+        if status_changed:
+            # status wins, including when both moved
+            if self.is_active != implied:
+                self.is_active = implied
+                return ("is_active",)
+            return ()
+        if active_changed:
+            # Legacy write path (admin toggle, old serializer, old code).
+            # Ticking is_active on a draft or an in-review row must NOT publish
+            # it — that would turn the admin's checkbox into a publish button
+            # that skips review. Refuse the promotion and correct is_active
+            # back, rather than leaving the row active-but-unpublished.
+            if self.is_active and self.status in (
+                PublishStatus.DRAFT, PublishStatus.REVIEW,
+            ):
+                self.is_active = False
+                return ("is_active",)
+
+            wanted = (
+                PublishStatus.PUBLISHED if self.is_active
+                else PublishStatus.ARCHIVED
+            )
+            if self.status != wanted:
+                self.status = wanted
+                return ("status",)
+            return ()
+        # Neither touched (e.g. a fresh unsaved row): make them agree anyway.
+        if self.is_active != implied:
+            self.is_active = implied
+            return ("is_active",)
+        return ()
+
+    def save(self, *args, **kwargs):
+        extra = self._reconcile_status_and_is_active()
+
+        # A caller passing update_fields=["status"] would otherwise persist the
+        # status and silently drop the is_active it implies, leaving the public
+        # site reading a stale boolean.
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and extra:
+            kwargs["update_fields"] = tuple(set(update_fields) | set(extra))
+
+        super().save(*args, **kwargs)
+        self._initial_status = self.status
+        self._initial_is_active = self.is_active
 
 
 class ContentTag(models.Model):
@@ -394,7 +512,7 @@ class FAQPage(models.TextChoices):
     GENERAL = "general", "General / FAQ page"
 
 
-class FAQItem(TimeStampedModel):
+class FAQItem(StatusedContentModel):
     page = models.CharField(
         max_length=20, choices=FAQPage.choices,
         default=FAQPage.GENERAL, db_index=True,
@@ -434,7 +552,7 @@ class AnnouncementQuerySet(models.QuerySet):
         )
 
 
-class Announcement(TimeStampedModel):
+class Announcement(StatusedContentModel):
     message = models.CharField(max_length=300)
     link_url = models.CharField(
         max_length=300, blank=True, default="",
@@ -470,7 +588,7 @@ class Announcement(TimeStampedModel):
 #  Homepage showcase cards ("Featured courses" grid)
 # ─────────────────────────────────────────────────────────────────
 
-class ShowcaseCourse(TimeStampedModel):
+class ShowcaseCourse(StatusedContentModel):
     """One card in the homepage 'Featured courses' grid. Field names mirror
     the frontend's homeData.js entries so the section can render straight
     from this endpoint."""
@@ -641,7 +759,7 @@ HOMEPAGE_SECTIONS = [
    # render order exactly; HomeSectionOrder's seed migration uses this list.
 
 
-class HomeContentBlock(TimeStampedModel):
+class HomeContentBlock(StatusedContentModel):
     """One row per homepage section — its heading/copy/CTA/hero image.
     `section` is unique: this is a singleton-per-section table, not a list."""
 
@@ -724,7 +842,7 @@ class HomeListVariant(models.TextChoices):
     CONTACT_CARD = "contact_card", "Contact card (Contact — details)"
 
 
-class HomeListItem(TimeStampedModel):
+class HomeListItem(StatusedContentModel):
     """A repeatable card/chip within a homepage section (e.g. WhyShiksha's
     feature cards, BrowseCategories' category cards, Collaborate's marquee
     chips and stat chips — distinguished by `variant`)."""
@@ -786,7 +904,7 @@ class HomeListItem(TimeStampedModel):
         return f"[{self.get_section_display()}] {self.title or self.stat_text or self.pk}"
 
 
-class HomeFloater(TimeStampedModel):
+class HomeFloater(StatusedContentModel):
     """A decorative floating badge/icon anchored to one of a section's
     pre-tested CSS slots. `slot` is deliberately constrained per-section
     (see SLOT_CHOICES_BY_SECTION) and unique per section so two floaters can
@@ -885,6 +1003,10 @@ class ContentImage(TimeStampedModel):
     )
     alt_text = models.CharField(max_length=255, blank=True, default="")
     title = models.CharField(max_length=255, blank=True, default="")
+    # design_handoff_content_studio Phase 4. The filename as the person who
+    # uploaded it knows it — `file.name` is the storage path, which is
+    # timestamped and useless for recognising a picture in a grid.
+    original_name = models.CharField(max_length=200, blank=True, default="")
     width = models.PositiveIntegerField(null=True, blank=True)
     height = models.PositiveIntegerField(null=True, blank=True)
     # Crop/thumbnail focal point as a fraction of image width/height
@@ -901,3 +1023,162 @@ class ContentImage(TimeStampedModel):
         if self.file and (self.width is None or self.height is None):
             self.width, self.height = self.file.width, self.file.height
             super().save(update_fields=["width", "height"])
+
+
+# ─────────────────────────────────────────────────────────────────
+#  Content Studio: revision history + per-author drafts
+#  (design_handoff_content_studio Phase 1)
+# ─────────────────────────────────────────────────────────────────
+
+
+class ContentRevision(models.Model):
+    """A snapshot of a CMS row taken immediately BEFORE a change is applied.
+
+    Generic across every content model, which is what lets the History screen
+    and its Undo work from one feed instead of one feed per table.
+
+    ⚠ Distinct from ``BlogRevision`` above, deliberately. That one is
+    blog-only, body-only, written from ``BlogPostAdminViewSet.perform_update``,
+    and its docstring states its unbounded retention is intentional. Do not
+    fold the two together: the block editor and its legacy-HTML importer both
+    depend on ``BlogRevision``'s exact shape, and the pruning policy here would
+    silently start deleting hand-authored chapter history.
+
+    ⚠ Written by ``content.revisions.record_revision``, called explicitly from
+    the admin views — NEVER from a ``post_save`` signal. A signal fires during
+    migrations, during ``seed_content`` / ``_homepage_seed_data`` (~150 rows in
+    one run), and on the public site's own writes, which would fill the History
+    screen with entries no human caused.
+    """
+
+    RETENTION_PER_OBJECT = 50
+
+    ACTION_CREATED = "created"
+    ACTION_UPDATED = "updated"
+    ACTION_PUBLISHED = "published"
+    ACTION_HIDDEN = "hidden"
+    ACTION_DELETED = "deleted"
+    ACTION_RESTORED = "restored"
+    ACTION_CHOICES = [
+        (ACTION_CREATED, "Created"),
+        (ACTION_UPDATED, "Updated"),
+        (ACTION_PUBLISHED, "Published"),
+        (ACTION_HIDDEN, "Hidden"),
+        (ACTION_DELETED, "Deleted"),
+        (ACTION_RESTORED, "Restored"),
+    ]
+
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    target = GenericForeignKey("content_type", "object_id")
+
+    # The row as it was BEFORE this change. Restore re-applies this.
+    snapshot = models.JSONField(default=dict, blank=True)
+    action = models.CharField(max_length=16, choices=ACTION_CHOICES)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="content_revisions",
+    )
+    # Free text shown in the feed, e.g. "Restored the 12 Aug version".
+    note = models.CharField(max_length=200, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["content_type", "object_id", "-created_at"]),
+        ]
+        verbose_name = "Content revision"
+
+    def __str__(self):
+        return f"{self.action} {self.content_type.model}#{self.object_id}"
+
+
+class ContentDraft(models.Model):
+    """Unpublished edits sitting on top of a live row.
+
+    Keyed per (object, author) so two people editing the homepage at once do
+    not silently overwrite each other — each sees their own pending changes
+    and publishes them independently.
+
+    ``payload`` holds ONLY the changed fields, not the whole row. That matters:
+    publishing applies the payload onto whatever the row looks like at publish
+    time, so a field someone else changed in the meantime survives instead of
+    being reverted by a stale full-row copy.
+    """
+
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    target = GenericForeignKey("content_type", "object_id")
+
+    payload = models.JSONField(default=dict, blank=True)
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="content_drafts",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["content_type", "object_id", "author"],
+                name="uniq_contentdraft_object_author",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["content_type", "object_id"]),
+        ]
+        ordering = ["-updated_at"]
+        verbose_name = "Content draft"
+
+    def __str__(self):
+        who = self.author_id or "anonymous"
+        return f"draft on {self.content_type.model}#{self.object_id} by {who}"
+
+    @property
+    def change_count(self):
+        """Powers the '3 unpublished edits' chip in the publish bar."""
+        return len(self.payload or {})
+
+
+class MediaUsage(models.Model):
+    """Where one library picture is actually used.
+
+    design_handoff_content_studio Phase 4. This is the entire point of the
+    Pictures screen: "used on 2 pages" is a fact nobody could establish before,
+    because an image lived on the row that owned it and nothing recorded the
+    reverse direction.
+
+    It is also what makes deletion safe — a delete that would blank a live page
+    is refused with the list of pages using it, rather than silently breaking
+    them.
+
+    Kept generic rather than a reverse FK per owner because the owners span
+    four models today (``BlogPost.cover``, ``ShowcaseCourse.image``,
+    ``HomeContentBlock.image``, ``HomeListItem.image``) and will span more.
+    """
+
+    asset = models.ForeignKey(
+        ContentImage, on_delete=models.CASCADE, related_name="usages",
+    )
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    target = GenericForeignKey("content_type", "object_id")
+    # Which field on the owner points at this picture. Part of the key, so one
+    # row using the same image in two fields counts as two usages.
+    field_name = models.CharField(max_length=60)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["asset", "content_type", "object_id", "field_name"],
+                name="uniq_mediausage_asset_target_field",
+            ),
+        ]
+        indexes = [models.Index(fields=["content_type", "object_id"])]
+        verbose_name = "Picture usage"
+
+    def __str__(self):
+        return f"{self.asset_id} on {self.content_type.model}#{self.object_id}.{self.field_name}"

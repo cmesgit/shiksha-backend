@@ -37,6 +37,7 @@ except ImportError:  # fallback: big monospace textarea
 
 STATUS_COLORS = {
     PublishStatus.DRAFT: "#b45309",
+    PublishStatus.REVIEW: "#2563eb",
     PublishStatus.PUBLISHED: "#0f9d6b",
     PublishStatus.ARCHIVED: "#6b7280",
 }

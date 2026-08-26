@@ -9,7 +9,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from . import admin_views, ai_views, views
+from . import admin_views, ai_views, studio_views, views
 
 app_name = "content"
 
@@ -46,3 +46,33 @@ admin_router.register("admin/home-floaters", admin_views.HomeFloaterAdminViewSet
 admin_router.register("admin/home-section-order", admin_views.HomeSectionOrderAdminViewSet, basename="admin-home-section-order")
 admin_router.register("admin/editor-images", admin_views.ContentImageAdminViewSet, basename="admin-editor-image")
 urlpatterns += admin_router.urls
+
+# ── Content Studio workflow (content/studio_views.py) ──────────────
+# design_handoff_content_studio Phase 1b. These sit alongside the CRUD router
+# above, so the full paths are /api/content/admin/… — the handoff spec's
+# /admin/content/… is wrong on every row.
+urlpatterns += [
+    path(
+        "admin/pages/<slug:key>/checklist/",
+        studio_views.PageChecklistView.as_view(), name="studio-page-checklist",
+    ),
+    path("admin/link-targets/", studio_views.LinkTargetsView.as_view(), name="studio-link-targets"),
+    path("admin/media/", studio_views.MediaListView.as_view(), name="studio-media"),
+    path("admin/media/<int:pk>/", studio_views.MediaDetailView.as_view(), name="studio-media-detail"),
+    path("admin/inbox/", studio_views.InboxView.as_view(), name="studio-inbox"),
+    path("admin/calendar/", studio_views.CalendarView.as_view(), name="studio-calendar"),
+    path("admin/search/", studio_views.StudioSearchView.as_view(), name="studio-search"),
+    path("admin/activity/", studio_views.ActivityFeedView.as_view(), name="studio-activity"),
+    path(
+        "admin/revisions/<int:pk>/restore/",
+        studio_views.RevisionRestoreView.as_view(), name="studio-revision-restore",
+    ),
+    path(
+        "admin/pages/<slug:key>/draft/",
+        studio_views.PageDraftView.as_view(), name="studio-page-draft",
+    ),
+    path(
+        "admin/pages/<slug:key>/publish/",
+        studio_views.PagePublishView.as_view(), name="studio-page-publish",
+    ),
+]

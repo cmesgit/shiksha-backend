@@ -1,0 +1,944 @@
+"""Content Studio API — history, per-author drafts, and publishing.
+
+design_handoff_content_studio Phase 1b. Kept out of ``admin_views.py`` because
+that file is already 460 lines of straightforward CRUD and none of this is
+CRUD: these are the workflow endpoints the split page editor needs.
+
+Mounted under the app's existing prefix, so the real paths are
+``/api/content/admin/…`` — NOT ``/admin/content/…`` as the handoff spec and all
+five of its scaffolds assume.
+
+A "page" is not a model. The homepage is a set of ``HomeContentBlock`` rows
+keyed by ``HomeSection``, so a page-level draft is really one ``ContentDraft``
+per section row per author, aggregated on read. ``PAGES`` below is the only
+place that mapping lives.
+"""
+from datetime import datetime, timedelta
+
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
+from django.db.models import Q
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from django.contrib.contenttypes.models import ContentType
+
+from .admin_serializers import HomeContentBlockAdminSerializer
+from .models import (
+    ContentDraft, ContentRevision, HomeContentBlock, HomeSection,
+    HomeSectionOrder, PublishStatus,
+)
+from .permissions import IsContentEditor
+from .revisions import record_revision, restore_revision, snapshot_of
+
+# ── The page registry ─────────────────────────────────────────────
+# Only the homepage today. Other pages follow the same shape: a section enum
+# plus the model whose rows carry each section's copy.
+PAGES = {
+    "home": {
+        "label": "Home page",
+        "url": "/",
+        "sections": HomeSection,
+        "model": HomeContentBlock,
+    },
+}
+
+
+def _page_or_404(key):
+    page = PAGES.get(key)
+    if page is None:
+        from django.http import Http404
+        raise Http404(f"No page named {key!r}")
+    return page
+
+
+def _editable_fields(model):
+    """Field names a draft payload may set.
+
+    Whitelisted from the admin serializer rather than the model, so a draft can
+    never write a field the admin API itself refuses to expose (ids, timestamps,
+    and anything deliberately read-only).
+    """
+    ser = HomeContentBlockAdminSerializer()
+    return {
+        name for name, field in ser.fields.items()
+        if not field.read_only and hasattr(model, name)
+    }
+
+
+class StudioPagination(PageNumberPagination):
+    page_size = 30
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+# ── What the inbox and calendar look at ───────────────────────────
+# Only two models carry `publish_at` (they inherit PublishableModel), so only
+# those two can be *scheduled*. The six StatusedContentModel models have status
+# but no publish time — they can be drafts or in review, never "publishing on
+# Tuesday". Keeping that distinction explicit here stops the calendar from
+# quietly pretending a homepage section has a publish date.
+STALE_DRAFT_DAYS = 7
+
+
+def _schedulable():
+    from .models import BlogPost, CurrentAffair
+    return [
+        (BlogPost, "post", "Post", lambda o: f"/content/blogs/{o.id}"),
+        (CurrentAffair, "affair", "Current affair", lambda o: "/content?tab=affairs"),
+    ]
+
+
+def _reviewable():
+    """Everything that can sit in draft or review, schedulable or not."""
+    from .models import (
+        Announcement, BlogPost, CurrentAffair, FAQItem, HomeContentBlock,
+        HomeFloater, HomeListItem, ShowcaseCourse,
+    )
+    return [
+        (BlogPost, "post", "Post", lambda o: f"/content/blogs/{o.id}", "title"),
+        (CurrentAffair, "affair", "Current affair", lambda o: "/content?tab=affairs", "title"),
+        (FAQItem, "answer", "Answer", lambda o: "/content?tab=faqs", "question"),
+        (Announcement, "notice", "Notice", lambda o: "/content?tab=announcements", "message"),
+        (ShowcaseCourse, "card", "Course card", lambda o: "/content?tab=showcase", "title"),
+        (HomeContentBlock, "page", "Page section", lambda o: "/content?tab=home", "heading"),
+        (HomeListItem, "page", "Page list item", lambda o: "/content?tab=home", "title"),
+        (HomeFloater, "page", "Page floater", lambda o: "/content?tab=home", "label"),
+    ]
+
+
+def _title_of(obj, field):
+    return (getattr(obj, field, "") or "").strip() or str(obj)[:80]
+
+
+class InboxView(APIView):
+    """GET /api/content/admin/inbox/ — the home screen's "Needs you" card.
+
+    Three sources, each a different kind of waiting work:
+      * publishing_today — scheduled to go live before midnight
+      * awaiting_you     — sitting in review
+      * stale_drafts     — a draft nobody has touched in a week
+
+    Every item carries a deep link, because a to-do you cannot click is just
+    a reminder.
+    """
+
+    permission_classes = [IsContentEditor]
+
+    def get(self, request):
+        now = timezone.now()
+        local = timezone.localtime(now)
+        day_start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        stale_before = now - timedelta(days=STALE_DRAFT_DAYS)
+
+        publishing_today = []
+        for model, kind, label, link in _schedulable():
+            for obj in model.objects.filter(
+                status=PublishStatus.PUBLISHED,
+                publish_at__gte=day_start, publish_at__lt=day_end,
+            )[:10]:
+                publishing_today.append({
+                    "kind": kind, "kind_label": label,
+                    "title": _title_of(obj, "title"),
+                    "reason": f"Goes live at {timezone.localtime(obj.publish_at):%-I:%M %p}",
+                    "state": "scheduled",
+                    "url": link(obj),
+                    "at": obj.publish_at,
+                })
+
+        awaiting_you, stale_drafts = [], []
+        for model, kind, label, link, title_field in _reviewable():
+            for obj in model.objects.filter(status=PublishStatus.REVIEW)[:10]:
+                awaiting_you.append({
+                    "kind": kind, "kind_label": label,
+                    "title": _title_of(obj, title_field),
+                    "reason": "Someone asked you to look at this",
+                    "state": "review",
+                    "url": link(obj),
+                    "at": obj.updated_at,
+                })
+            for obj in model.objects.filter(
+                status=PublishStatus.DRAFT, updated_at__lt=stale_before,
+            )[:10]:
+                days = (now - obj.updated_at).days
+                stale_drafts.append({
+                    "kind": kind, "kind_label": label,
+                    "title": _title_of(obj, title_field),
+                    "reason": f"Draft, untouched for {days} days",
+                    "state": "stale",
+                    "url": link(obj),
+                    "at": obj.updated_at,
+                })
+
+        groups = [
+            {"key": "publishing_today", "label": "Publishing today", "items": publishing_today},
+            {"key": "awaiting_you", "label": "Someone asked you", "items": awaiting_you},
+            {"key": "stale_drafts", "label": "Forgotten drafts", "items": stale_drafts},
+        ]
+        return Response({
+            "groups": groups,
+            "total": sum(len(g["items"]) for g in groups),
+            "stale_after_days": STALE_DRAFT_DAYS,
+        })
+
+
+class CalendarView(APIView):
+    """GET /api/content/admin/calendar/?from=&to= — the "This week" grid.
+
+    Only the two schedulable models appear. A date with nothing on it still
+    comes back, so the client renders seven cells without inventing the gaps.
+    """
+
+    permission_classes = [IsContentEditor]
+
+    def get(self, request):
+        today = timezone.localtime(timezone.now()).date()
+        start = _parse_date(request.query_params.get("from")) or (
+            today - timedelta(days=today.weekday())
+        )
+        end = _parse_date(request.query_params.get("to")) or (start + timedelta(days=6))
+        if end < start:
+            start, end = end, start
+        # A runaway range would scan the whole table; a quarter is plenty for
+        # any calendar the screen can draw.
+        end = min(end, start + timedelta(days=92))
+
+        by_day = {
+            (start + timedelta(days=i)).isoformat(): []
+            for i in range((end - start).days + 1)
+        }
+
+        for model, kind, label, link in _schedulable():
+            for obj in model.objects.filter(
+                publish_at__date__gte=start, publish_at__date__lte=end,
+            )[:200]:
+                day = timezone.localtime(obj.publish_at).date().isoformat()
+                if day in by_day:
+                    by_day[day].append({
+                        "kind": kind, "kind_label": label,
+                        "title": _title_of(obj, "title"),
+                        "status": obj.status,
+                        "url": link(obj),
+                        "at": obj.publish_at,
+                    })
+
+        return Response({
+            "from": start.isoformat(),
+            "to": end.isoformat(),
+            "today": today.isoformat(),
+            "days": [
+                {"date": d, "items": by_day[d]} for d in sorted(by_day)
+            ],
+        })
+
+
+def _parse_date(raw):
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+# ── ⌘K search ─────────────────────────────────────────────────────
+
+class StudioSearchView(APIView):
+    """GET /api/content/admin/search/?q= — one box across every content type.
+
+    Returns a flat list of ``{kind, title, where, url}`` because the palette
+    renders one ranked list, not per-type sections. ``url`` is an admin-app
+    route, not an API path — the palette navigates straight there.
+
+    Deliberately spans two Django apps: labels are ``content.ContentTag`` AND
+    ``courses.CourseCategory``, which is the merge the Labels screen makes
+    visible in Phase 7. The category half is what puts the seven competitive
+    exams in the navbar, so it belongs in a CMS search box.
+    """
+
+    permission_classes = [IsContentEditor]
+    PER_KIND = 5
+
+    def get(self, request):
+        from courses.models import CourseCategory
+
+        from .models import BlogPost, ContentImage, ContentTag, FAQItem
+
+        q = (request.query_params.get("q") or "").strip()
+        if len(q) < 2:
+            return Response({"results": [], "query": q})
+
+        results = []
+
+        for post in BlogPost.objects.filter(title__icontains=q)[:self.PER_KIND]:
+            results.append({
+                "kind": "post", "kind_label": "Post",
+                "title": post.title,
+                "where": f"/{post.slug}",
+                "url": f"/content/blogs/{post.id}",
+                "status": post.status,
+            })
+
+        for faq in FAQItem.objects.filter(question__icontains=q)[:self.PER_KIND]:
+            results.append({
+                "kind": "answer", "kind_label": "Answer",
+                "title": faq.question,
+                # Several FAQPage labels already end in "page" ("General / FAQ
+                # page"), so appending it unconditionally reads "… page page".
+                "where": faq.get_page_display(),
+                "url": "/content?tab=faqs",
+                "status": faq.status,
+            })
+
+        for block in HomeContentBlock.objects.filter(
+            heading__icontains=q
+        )[:self.PER_KIND]:
+            results.append({
+                "kind": "page", "kind_label": "Page section",
+                "title": block.heading or block.get_section_display(),
+                "where": f"Home page · {block.get_section_display()}",
+                "url": "/content?tab=home",
+                "status": block.status,
+            })
+
+        for tag in ContentTag.objects.filter(name__icontains=q)[:self.PER_KIND]:
+            results.append({
+                "kind": "label", "kind_label": "Label",
+                "title": tag.name,
+                "where": "Blog tag",
+                "url": "/content?tab=tags",
+            })
+
+        for cat in CourseCategory.objects.filter(name__icontains=q)[:self.PER_KIND]:
+            results.append({
+                "kind": "label", "kind_label": "Label",
+                "title": cat.name,
+                "where": f"Course category · {cat.get_group_display()}",
+                "url": "/content?tab=categories",
+            })
+
+        for img in ContentImage.objects.filter(
+            file__icontains=q
+        )[:self.PER_KIND]:
+            results.append({
+                "kind": "picture", "kind_label": "Picture",
+                "title": img.title or img.file.name.rsplit("/", 1)[-1],
+                "where": f"{img.width or '?'} × {img.height or '?'}",
+                "url": "/content",
+            })
+
+        return Response({"results": results, "query": q, "count": len(results)})
+
+
+# ── Publish checklist ─────────────────────────────────────────────
+# Levels: "block" cannot be published past, "warn" publishes behind a confirm,
+# "ok" is informational. Every check is phrased as what a reader would notice,
+# not as a field constraint — "The heading is empty, so this section has no
+# title on the page" rather than "heading: required".
+HEADING_MIN, HEADING_MAX = 12, 70
+
+
+def _checklist_for_block(block, draft_payload):
+    """Run the checks against the DRAFT view of a section, not the live row.
+
+    Checking the live row would pass a section whose pending edit empties the
+    heading, which is exactly the mistake the checklist exists to catch.
+    """
+    def value(field):
+        if draft_payload and field in draft_payload:
+            return draft_payload[field]
+        return getattr(block, field, "") or ""
+
+    checks = []
+    heading = str(value("heading")).strip()
+    if not heading:
+        checks.append({
+            "id": "heading", "level": "block",
+            "label": "This section has no heading",
+            "note": "Visitors would see the section with no title on it.",
+        })
+    elif len(heading) > HEADING_MAX:
+        checks.append({
+            "id": "heading", "level": "warn",
+            "label": "The heading is quite long",
+            "note": f"{len(heading)} characters. Long headings wrap awkwardly on a phone.",
+        })
+    elif len(heading) < HEADING_MIN:
+        checks.append({
+            "id": "heading", "level": "warn",
+            "label": "The heading is very short",
+            "note": f"{len(heading)} characters.",
+        })
+    else:
+        checks.append({
+            "id": "heading", "level": "ok",
+            "label": "The heading reads well", "note": "",
+        })
+
+    # A button with words but nowhere to go is the single most common way a
+    # homepage edit ships broken, so it blocks rather than warns.
+    for which, label_field, href_field in (
+        ("main", "cta_primary_label", "cta_primary_href"),
+        ("second", "cta_secondary_label", "cta_secondary_href"),
+    ):
+        text = str(value(label_field)).strip()
+        href = str(value(href_field)).strip()
+        if text and not href:
+            checks.append({
+                "id": f"cta_{which}", "level": "block",
+                "label": f"The {which} button has no destination",
+                "note": f"“{text}” would do nothing when clicked.",
+            })
+        elif href and not text:
+            checks.append({
+                "id": f"cta_{which}", "level": "warn",
+                "label": f"The {which} button has a destination but no words",
+                "note": "It will not appear on the page.",
+            })
+
+    has_picture = bool(value("image") or str(value("image_url")).strip())
+    if has_picture:
+        checks.append({
+            "id": "picture", "level": "ok",
+            "label": "The picture is set", "note": "",
+        })
+
+    if block.status != PublishStatus.PUBLISHED:
+        checks.append({
+            "id": "visibility", "level": "warn",
+            "label": "This section is hidden from visitors",
+            "note": "Publishing saves your changes but the section still won’t show.",
+        })
+
+    return checks
+
+
+class PageChecklistView(APIView):
+    """GET /api/content/admin/pages/<key>/checklist/
+
+    Everything the Publish button needs to decide whether it can be pressed.
+    Runs over this author's draft, section by section.
+    """
+
+    permission_classes = [IsContentEditor]
+
+    def get(self, request, key):
+        page = _page_or_404(key)
+        model = page["model"]
+        ct = ContentType.objects.get_for_model(model)
+        blocks = {b.section: b for b in model.objects.all()}
+        drafts = {
+            d.object_id: d.payload for d in ContentDraft.objects.filter(
+                content_type=ct,
+                object_id__in=[b.id for b in blocks.values()],
+                author=request.user,
+            )
+        }
+
+        sections, blocking, warning = [], 0, 0
+        for value_, label in page["sections"].choices:
+            block = blocks.get(value_)
+            if block is None:
+                continue
+            payload = drafts.get(block.id)
+            # Only check sections the author has actually touched — otherwise
+            # a pre-existing problem elsewhere on the page blocks an unrelated
+            # edit, and the button can never be pressed.
+            if not payload:
+                continue
+            checks = _checklist_for_block(block, payload)
+            blocking += sum(1 for c in checks if c["level"] == "block")
+            warning += sum(1 for c in checks if c["level"] == "warn")
+            sections.append({"key": value_, "label": label, "checks": checks})
+
+        return Response({
+            "sections": sections,
+            "blocking": blocking,
+            "warnings": warning,
+            "can_publish": blocking == 0 and bool(sections),
+            "nothing_to_publish": not sections,
+        })
+
+
+class LinkTargetsView(APIView):
+    """GET /api/content/admin/link-targets/
+
+    Real destinations for a button, so the editor offers a dropdown of pages
+    instead of a URL box nobody can fill in correctly. A hand-typed href is
+    how a homepage button ends up pointing at a 404.
+    """
+
+    permission_classes = [IsContentEditor]
+
+    def get(self, request):
+        groups = [{
+            "label": "Site pages",
+            "options": [
+                {"value": "/", "label": "Home"},
+                {"value": "/courses", "label": "All courses"},
+                {"value": "/about", "label": "About"},
+                {"value": "/contact", "label": "Contact"},
+                {"value": "/blogs", "label": "Blog"},
+                {"value": "/live", "label": "Live sessions"},
+            ],
+        }]
+
+        try:
+            from courses.models import CourseCategory
+            cats = [
+                {"value": f"/courses?category={c.slug}", "label": c.name}
+                for c in CourseCategory.objects.filter(is_active=True)[:40]
+            ]
+            if cats:
+                groups.append({"label": "Course categories", "options": cats})
+        except Exception:  # noqa: BLE001 — a missing catalog must not break the editor
+            pass
+
+        return Response({"groups": groups})
+
+
+# ── Media library ─────────────────────────────────────────────────
+
+class MediaListView(APIView):
+    """GET/POST /api/content/admin/media/ — the Pictures screen.
+
+    The list carries ``usage_count`` and ``used_in[]``, which is the whole
+    point of the screen: before this, nobody could tell where a picture was
+    used, or whether deleting it would blank a live page.
+
+    ⚠ This does NOT replace ``admin/editor-images``. That route still resolves
+    and the blog block editor still uploads through it — they are two views
+    over one ``ContentImage`` table, not two libraries.
+    """
+
+    permission_classes = [IsContentEditor]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request):
+        from .media import usage_payload
+        from .models import ContentImage
+
+        qs = ContentImage.objects.all().prefetch_related(
+            "usages__content_type"
+        ).order_by("-created_at")
+
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(
+                Q(original_name__icontains=q) | Q(title__icontains=q)
+                | Q(alt_text__icontains=q) | Q(file__icontains=q)
+            )
+
+        assets = []
+        for asset in qs[:200]:
+            used_in = usage_payload(asset)
+            assets.append({
+                "id": asset.id,
+                "url": asset.file.url if asset.file else "",
+                "name": asset.original_name or (
+                    asset.file.name.rsplit("/", 1)[-1] if asset.file else ""
+                ),
+                "alt_text": asset.alt_text,
+                "width": asset.width,
+                "height": asset.height,
+                "created_at": asset.created_at,
+                "usage_count": len(used_in),
+                "used_in": used_in,
+            })
+        return Response({"results": assets, "count": len(assets)})
+
+    def post(self, request):
+        from .models import ContentImage
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response(
+                {"detail": "Choose a picture to upload."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        asset = ContentImage(
+            file=upload,
+            original_name=(getattr(upload, "name", "") or "")[:200],
+            alt_text=request.data.get("alt_text", "") or "",
+            uploaded_by=request.user if request.user.is_authenticated else None,
+        )
+        try:
+            asset.full_clean(exclude=["uploaded_by"])
+        except DjangoValidationError as exc:
+            return Response(
+                {"detail": "; ".join(sum(exc.message_dict.values(), []))},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        asset.save()
+        return Response(
+            {
+                "id": asset.id,
+                "url": asset.file.url,
+                "name": asset.original_name,
+                "width": asset.width,
+                "height": asset.height,
+                "usage_count": 0,
+                "used_in": [],
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class MediaDetailView(APIView):
+    """DELETE /api/content/admin/media/<id>/ — refused while in use.
+
+    409 with ``used_in[]`` rather than a bare error, so the screen can name the
+    pages that would break and offer to open the first one.
+    """
+
+    permission_classes = [IsContentEditor]
+
+    def delete(self, request, pk):
+        from .media import usage_payload
+        from .models import ContentImage
+
+        asset = get_object_or_404(ContentImage, pk=pk)
+        used_in = usage_payload(asset)
+        if used_in:
+            where = used_in[0]["title"]
+            more = len(used_in) - 1
+            return Response(
+                {
+                    "detail": (
+                        f"This picture is still used on “{where}”"
+                        + (f" and {more} other place{'' if more == 1 else 's'}" if more else "")
+                        + ". Remove it there first."
+                    ),
+                    "used_in": used_in,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        asset.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ── History ───────────────────────────────────────────────────────
+
+class ActivityFeedView(APIView):
+    """GET /api/content/admin/activity/ — the History screen's feed.
+
+    Grouped by day, because that is how the screen renders it; doing the
+    grouping here keeps the client from having to re-derive local dates from
+    timestamps and getting the boundaries wrong.
+    """
+
+    permission_classes = [IsContentEditor]
+
+    def get(self, request):
+        try:
+            limit = min(int(request.query_params.get("limit", 50)), 200)
+        except (TypeError, ValueError):
+            limit = 50
+
+        revisions = (
+            ContentRevision.objects
+            .select_related("content_type", "actor")
+            .all()[:limit]
+        )
+
+        groups, order = {}, []
+        for rev in revisions:
+            local = timezone.localtime(rev.created_at)
+            day = local.date().isoformat()
+            if day not in groups:
+                groups[day] = []
+                order.append(day)
+            groups[day].append({
+                "id": rev.id,
+                "action": rev.action,
+                "note": rev.note,
+                "kind": rev.content_type.model,
+                "kind_label": rev.content_type.name,
+                "object_id": rev.object_id,
+                "actor": (
+                    rev.actor.get_full_name() or rev.actor.email
+                ) if rev.actor else None,
+                "actor_id": rev.actor_id,
+                "at": rev.created_at,
+                # The feed offers Undo on every row; restoring a snapshot of a
+                # row that has since been deleted is a no-op, so say so here
+                # rather than letting the click fail.
+                "can_restore": bool(rev.snapshot),
+            })
+
+        return Response({
+            "days": [{"date": d, "items": groups[d]} for d in order],
+            "count": len(revisions),
+        })
+
+
+class RevisionRestoreView(APIView):
+    """POST /api/content/admin/revisions/<id>/restore/ — the feed's Undo.
+
+    Restoring records a further revision rather than deleting one, so undo of
+    an undo works and history is never destroyed.
+    """
+
+    permission_classes = [IsContentEditor]
+
+    def post(self, request, pk):
+        revision = get_object_or_404(ContentRevision, pk=pk)
+        obj = restore_revision(revision, actor=request.user)
+        if obj is None:
+            return Response(
+                {"detail": "The item this change belonged to no longer exists."},
+                status=status.HTTP_410_GONE,
+            )
+        return Response({
+            "detail": "Restored.",
+            "object_id": obj.pk,
+            "kind": revision.content_type.model,
+        })
+
+
+# ── Drafts ────────────────────────────────────────────────────────
+
+class PageDraftView(APIView):
+    """GET/PUT /api/content/admin/pages/<key>/draft/
+
+    The draft is per author. Two editors on the homepage keep separate pending
+    changes instead of silently overwriting one another.
+    """
+
+    permission_classes = [IsContentEditor]
+
+    def _blocks(self, page):
+        return {b.section: b for b in page["model"].objects.all()}
+
+    def _drafts(self, page, user):
+        ct = ContentType.objects.get_for_model(page["model"])
+        rows = ContentDraft.objects.filter(
+            content_type=ct,
+            object_id__in=page["model"].objects.values_list("id", flat=True),
+            author=user,
+        )
+        by_object = {d.object_id: d for d in rows}
+        return ct, by_object
+
+    def get(self, request, key):
+        page = _page_or_404(key)
+        blocks = self._blocks(page)
+        _, drafts = self._drafts(page, request.user)
+        order = {
+            o.section: o for o in HomeSectionOrder.objects.all()
+        } if page["model"] is HomeContentBlock else {}
+
+        sections, payload, changed = [], {}, 0
+        for value, label in page["sections"].choices:
+            block = blocks.get(value)
+            draft = drafts.get(block.id) if block else None
+            dirty = sorted((draft.payload or {}).keys()) if draft else []
+            changed += len(dirty)
+            if dirty:
+                payload[value] = draft.payload
+            o = order.get(value)
+            # The live field values, so the editor can show what is currently
+            # on the page under any pending edit. Without these the fields
+            # column has nothing to render and every input looks empty.
+            values = {}
+            if block is not None:
+                for name in sorted(_editable_fields(page["model"])):
+                    raw = getattr(block, name, "")
+                    values[name] = raw if isinstance(raw, (str, int, bool)) else (
+                        raw.name if hasattr(raw, "name") else ""
+                    )
+                values["img"] = block.image.url if block.image else (
+                    block.image_url or ""
+                )
+
+            sections.append({
+                "key": value,
+                "label": label,
+                "has_content": block is not None,
+                "status": block.status if block else None,
+                "values": values,
+                # Drives the section list's amber edited-dot. Derived from the
+                # draft's keys, never stored as a flag.
+                "edited_fields": dirty,
+                "order": o.order if o else None,
+                "is_visible": o.is_visible if o else True,
+            })
+
+        return Response({
+            "page": {"key": key, "label": page["label"], "url": page["url"]},
+            # Sorted the way visitors actually see the page, not in enum
+            # declaration order. The section list's own footnote promises
+            # "the order here is the order visitors see", and it has to be
+            # true before drag-to-reorder can mean anything. Sections with no
+            # HomeSectionOrder row have no place on the page yet, so they sort
+            # last, keeping their declaration order among themselves.
+            "sections": sorted(
+                sections,
+                key=lambda s: (s["order"] is None, s["order"] or 0),
+            ),
+            "draft": payload,
+            "change_count": changed,
+        })
+
+    @transaction.atomic
+    def put(self, request, key):
+        page = _page_or_404(key)
+        blocks = self._blocks(page)
+        ct = ContentType.objects.get_for_model(page["model"])
+        allowed = _editable_fields(page["model"])
+
+        incoming = request.data.get("sections")
+        if not isinstance(incoming, dict):
+            return Response(
+                {"detail": "Expected an object under 'sections'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        rejected, saved = {}, 0
+        for section_key, fields in incoming.items():
+            block = blocks.get(section_key)
+            if block is None:
+                rejected[section_key] = "no content block for this section"
+                continue
+            if not isinstance(fields, dict):
+                rejected[section_key] = "expected an object of field values"
+                continue
+
+            clean = {k: v for k, v in fields.items() if k in allowed}
+            bad = sorted(set(fields) - allowed)
+            if bad:
+                rejected[section_key] = f"not editable: {', '.join(bad)}"
+
+            draft, _ = ContentDraft.objects.get_or_create(
+                content_type=ct, object_id=block.id, author=request.user,
+                defaults={"payload": {}},
+            )
+            merged = dict(draft.payload or {})
+            merged.update(clean)
+            # A field edited back to the live value stops being an edit —
+            # otherwise the "unpublished edits" count never returns to zero.
+            live = snapshot_of(block)
+            merged = {
+                k: v for k, v in merged.items()
+                if k not in live or live[k] != v
+            }
+            if merged:
+                draft.payload = merged
+                draft.save(update_fields=["payload", "updated_at"])
+                saved += len(merged)
+            else:
+                draft.delete()
+
+        body = self.get(request, key).data
+        body["saved_fields"] = saved
+        if rejected:
+            body["rejected"] = rejected
+        return Response(body)
+
+    @transaction.atomic
+    def delete(self, request, key):
+        """Discard this author's pending edits for the page."""
+        page = _page_or_404(key)
+        ct = ContentType.objects.get_for_model(page["model"])
+        deleted, _ = ContentDraft.objects.filter(
+            content_type=ct,
+            object_id__in=page["model"].objects.values_list("id", flat=True),
+            author=request.user,
+        ).delete()
+        return Response({"detail": "Pending edits discarded.", "deleted": deleted})
+
+
+class PagePublishView(APIView):
+    """POST /api/content/admin/pages/<key>/publish/
+
+    Applies this author's drafts onto the live rows inside one transaction and
+    deletes them. The payload holds only changed fields, so a field someone
+    else edited meanwhile survives instead of being reverted by a stale copy.
+    """
+
+    permission_classes = [IsContentEditor]
+
+    @transaction.atomic
+    def post(self, request, key):
+        page = _page_or_404(key)
+        ct = ContentType.objects.get_for_model(page["model"])
+        blocks = {b.id: b for b in page["model"].objects.all()}
+        drafts = list(
+            ContentDraft.objects
+            .select_for_update()
+            .filter(content_type=ct, object_id__in=blocks.keys(), author=request.user)
+        )
+
+        if not drafts:
+            return Response(
+                {"detail": "There are no unpublished edits to publish."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Run the checklist before touching anything. A blocking failure means
+        # publishing would put something visibly broken on the live site, so
+        # the write never starts — the transaction is not the safety net here,
+        # refusing is.
+        blocking = []
+        for draft in drafts:
+            block = blocks.get(draft.object_id)
+            if block is None:
+                continue
+            for check in _checklist_for_block(block, draft.payload):
+                if check["level"] == "block":
+                    blocking.append({**check, "section": block.section})
+        if blocking:
+            return Response(
+                {
+                    "detail": (
+                        "This can’t go live yet — "
+                        + blocking[0]["label"].lower() + "."
+                    ),
+                    "blocking": blocking,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        allowed = _editable_fields(page["model"])
+        published = []
+        for draft in drafts:
+            block = blocks.get(draft.object_id)
+            if block is None:
+                draft.delete()
+                continue
+
+            before = snapshot_of(block)
+            applied = []
+            for field, value in (draft.payload or {}).items():
+                if field not in allowed:
+                    continue
+                setattr(block, field, value)
+                applied.append(field)
+
+            if not applied:
+                draft.delete()
+                continue
+
+            block.status = PublishStatus.PUBLISHED
+            block.save()
+            record_revision(
+                block,
+                ContentRevision.ACTION_PUBLISHED,
+                actor=request.user,
+                note=f"Published {len(applied)} change{'' if len(applied) == 1 else 's'}",
+                snapshot=before,
+            )
+            published.append({"section": block.section, "fields": sorted(applied)})
+            draft.delete()
+
+        return Response({
+            "detail": "Published.",
+            "published": published,
+            "section_count": len(published),
+        })
