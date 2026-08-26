@@ -25,7 +25,7 @@ from django.core.cache import cache
 from .models import (
     Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
     HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
-    Locale, ShowcaseCourse,
+    Locale, PublishStatus, ShowcaseCourse,
 )
 from .serializers import (
     AnnouncementSerializer, BlogPostDetailSerializer, BlogPostListSerializer,
@@ -183,7 +183,7 @@ class FAQListView(CachedListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        qs = FAQItem.objects.filter(is_active=True)
+        qs = FAQItem.objects.filter(status=PublishStatus.PUBLISHED)
         page_key = self.request.query_params.get("page_key")
         if page_key:
             qs = qs.filter(page=page_key)
@@ -207,7 +207,7 @@ class ShowcaseListView(CachedListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        return ShowcaseCourse.objects.filter(is_active=True)
+        return ShowcaseCourse.objects.filter(status=PublishStatus.PUBLISHED)
 
 
 # ── Homepage content ───────────────────────────────────────────────
@@ -219,7 +219,7 @@ class HomeContentListView(CachedListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        qs = HomeContentBlock.objects.filter(is_active=True)
+        qs = HomeContentBlock.objects.filter(status=PublishStatus.PUBLISHED)
         section = self.request.query_params.get("section")
         if section:
             qs = qs.filter(section=section)
@@ -233,7 +233,7 @@ class HomeListItemListView(CachedListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        qs = HomeListItem.objects.filter(is_active=True)
+        qs = HomeListItem.objects.filter(status=PublishStatus.PUBLISHED)
         p = self.request.query_params
         if p.get("section"):
             qs = qs.filter(section=p["section"])
@@ -249,7 +249,7 @@ class HomeFloaterListView(CachedListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        qs = HomeFloater.objects.filter(is_active=True)
+        qs = HomeFloater.objects.filter(status=PublishStatus.PUBLISHED)
         section = self.request.query_params.get("section")
         if section:
             qs = qs.filter(section=section)

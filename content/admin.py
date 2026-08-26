@@ -167,33 +167,33 @@ class CurrentAffairAdmin(PublishableAdminMixin, admin.ModelAdmin):
 
 @admin.register(FAQItem)
 class FAQItemAdmin(admin.ModelAdmin):
-    list_display = ("question", "page", "order", "is_active")
-    list_filter = ("page", "is_active")
-    list_editable = ("order", "is_active")
+    list_display = ("question", "page", "order", "status")
+    list_filter = ("page", "status")
+    list_editable = ("order", "status")
     search_fields = ("question", "answer_html")
 
 
 @admin.register(Announcement)
 class AnnouncementAdmin(admin.ModelAdmin):
     list_display = ("message", "level", "starts_at", "ends_at",
-                    "is_active", "live_now")
-    list_filter = ("level", "is_active")
-    list_editable = ("is_active",)
+                    "status", "live_now")
+    list_filter = ("level", "status")
+    list_editable = ("status",)
     search_fields = ("message",)
 
     @admin.display(boolean=True, description="Live now")
     def live_now(self, obj):
         now = timezone.now()
-        return (obj.is_active and obj.starts_at <= now
+        return (obj.status == PublishStatus.PUBLISHED and obj.starts_at <= now
                 and (obj.ends_at is None or obj.ends_at >= now))
 
 
 @admin.register(ShowcaseCourse)
 class ShowcaseCourseAdmin(admin.ModelAdmin):
     list_display = ("title", "level_label", "ribbon", "price_label",
-                    "order", "is_active")
-    list_editable = ("order", "is_active")
-    list_filter = ("is_active",)
+                    "order", "status")
+    list_editable = ("order", "status")
+    list_filter = ("status",)
     search_fields = ("title",)
 
 
@@ -208,21 +208,21 @@ class ContentTagAdmin(admin.ModelAdmin):
 
 @admin.register(HomeContentBlock)
 class HomeContentBlockAdmin(admin.ModelAdmin):
-    list_display = ("section", "heading", "is_active", "updated_at")
-    list_filter = ("section", "is_active")
+    list_display = ("section", "heading", "status", "updated_at")
+    list_filter = ("section", "status")
     search_fields = ("heading", "subhead", "body")
 
 
 @admin.register(HomeListItem)
 class HomeListItemAdmin(admin.ModelAdmin):
-    list_display = ("section", "variant", "title", "order", "is_active")
-    list_filter = ("section", "variant", "is_active")
-    list_editable = ("order", "is_active")
+    list_display = ("section", "variant", "title", "order", "status")
+    list_filter = ("section", "variant", "status")
+    list_editable = ("order", "status")
     search_fields = ("title", "subtitle", "body")
 
 
 @admin.register(HomeFloater)
 class HomeFloaterAdmin(admin.ModelAdmin):
-    list_display = ("section", "slot", "label", "is_active")
-    list_filter = ("section", "is_active")
+    list_display = ("section", "slot", "label", "status")
+    list_filter = ("section", "status")
     search_fields = ("label", "sublabel")

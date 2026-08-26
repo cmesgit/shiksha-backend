@@ -547,7 +547,13 @@ class AnnouncementLevel(models.TextChoices):
 class AnnouncementQuerySet(models.QuerySet):
     def live(self):
         now = timezone.now()
-        return self.filter(is_active=True, starts_at__lte=now).filter(
+        # Reads `status`, not `is_active`. The two are kept in step by
+        # StatusedContentModel.save(), but a queryset .update() bypasses save()
+        # entirely — so the public site should read the field the CMS actually
+        # writes rather than the boolean mirroring it.
+        return self.filter(
+            status=PublishStatus.PUBLISHED, starts_at__lte=now,
+        ).filter(
             Q(ends_at__isnull=True) | Q(ends_at__gte=now)
         )
 
