@@ -336,6 +336,125 @@ class StudioSearchView(APIView):
         return Response({"results": results, "query": q, "count": len(results)})
 
 
+# ── Competitive exam readiness ────────────────────────────────────
+#
+# ⚠ An exam is a COURSE, not a board. Two representations exist:
+# `Course.kind="COACHING"` + a CourseCategory whose group is "competitive"
+# (real), and `Board.board_type=COMPETITIVE` (zero rows, dead capability).
+# This builds on the first.
+#
+# ⚠ The competitive check is `content.admin_serializers._is_competitive`,
+# reused rather than reimplemented. It tests BOTH signals because they can
+# disagree — `create_competitive_courses` skips the category link with a
+# warning when categories were never seeded, yielding a COACHING course with
+# no group. Keying on either alone misses exactly the misfiled ones.
+
+# The pipeline the screen draws. Each step is "done" purely from a count, so
+# the screen can never claim progress the data doesn't support.
+EXAM_STEPS = ["has_card", "subject_count", "chapter_count", "material_count", "quiz_count"]
+EXAM_STEP_LABELS = ["Card", "Subjects", "Chapters", "Material", "Tests"]
+
+
+class ExamReadinessView(APIView):
+    """GET /api/content/admin/exams/readiness/
+
+    How far each competitive exam has actually got. Every number is a real
+    count — if it says zero subjects, there are zero subjects.
+    """
+
+    permission_classes = [IsContentEditor]
+
+    def get(self, request):
+        from django.db.models import Count
+
+        from courses.models import Course
+
+        from .admin_serializers import _is_competitive
+        from .models import ShowcaseCourse
+
+        # Widen, then filter with the shared check — `kind` alone would miss a
+        # course linked only by category, and vice versa.
+        candidates = (
+            Course.objects.filter(
+                Q(kind="COACHING") | Q(categories__group="competitive")
+            )
+            .distinct()
+            .prefetch_related("categories")
+            .annotate(
+                n_subjects=Count("subjects", distinct=True),
+                n_chapters=Count("subjects__chapters", distinct=True),
+            )
+        )
+
+        carded = set(
+            ShowcaseCourse.objects.filter(course__isnull=False)
+            .values_list("course_id", flat=True)
+        )
+
+        exams = []
+        for course in candidates:
+            if not _is_competitive(course):
+                continue
+
+            # Materials and quizzes live in other apps; counting them in the
+            # same annotate() would multiply the joins and inflate every number.
+            from materials.models import StudyMaterial
+            from quizzes.models import Quiz
+            material_count = StudyMaterial.objects.filter(subject__course=course).count()
+            quiz_count = Quiz.objects.filter(subject__course=course).count()
+
+            counts = {
+                "has_card": 1 if course.id in carded else 0,
+                "subject_count": course.n_subjects,
+                "chapter_count": course.n_chapters,
+                "material_count": material_count,
+                "quiz_count": quiz_count,
+            }
+            # Derived server-side, never stored: a stored flag would drift the
+            # moment someone added a subject through the course editor.
+            state = (
+                "live"
+                if counts["subject_count"] > 0 and counts["material_count"] > 0
+                else "coming_soon"
+            )
+            exams.append({
+                "id": str(course.id),
+                "slug": getattr(course, "slug", ""),
+                "name": course.title,
+                "blurb": (getattr(course, "short_description", "") or "")[:160],
+                **counts,
+                "steps": [
+                    {"key": k, "label": lbl, "done": counts[k] > 0,
+                     "count": counts[k]}
+                    for k, lbl in zip(EXAM_STEPS, EXAM_STEP_LABELS)
+                ],
+                "state": state,
+                "edit_url": f"/courses?course={course.id}",
+            })
+
+        exams.sort(key=lambda e: (-sum(1 for s in e["steps"] if s["done"]), e["name"]))
+
+        live = sum(1 for e in exams if e["state"] == "live")
+        # The one worth finishing first: furthest along but not yet live.
+        suggested = next((e["id"] for e in exams if e["state"] != "live"), None)
+
+        return Response({
+            "exams": exams,
+            "pipeline": EXAM_STEP_LABELS,
+            "summary": {
+                "total": len(exams),
+                "with_subjects": sum(1 for e in exams if e["subject_count"] > 0),
+                "coming_soon": len(exams) - live,
+                "live": live,
+            },
+            "suggested_id": suggested,
+            # Quiz scheduling does not exist — Quiz has no start/availability
+            # date at all. The setup rail marks that step blocked rather than
+            # inviting someone to do something impossible.
+            "scheduling_available": False,
+        })
+
+
 # ── Labels: tags and course categories on one screen ──────────────
 #
 # ⚠ The SCREEN is merged, not the tables. `content.ContentTag` and

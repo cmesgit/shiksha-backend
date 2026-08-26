@@ -57,6 +57,10 @@ urlpatterns += [
         studio_views.PageChecklistView.as_view(), name="studio-page-checklist",
     ),
     path("admin/link-targets/", studio_views.LinkTargetsView.as_view(), name="studio-link-targets"),
+    path(
+        "admin/exams/readiness/",
+        studio_views.ExamReadinessView.as_view(), name="studio-exam-readiness",
+    ),
     path("admin/labels/", studio_views.LabelListView.as_view(), name="studio-labels"),
     path("admin/labels/merge/", studio_views.LabelMergeView.as_view(), name="studio-labels-merge"),
     path(
