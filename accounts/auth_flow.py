@@ -771,6 +771,7 @@ class MeView(APIView):
             "feature_flags": {
                 "quiz_v2_enabled": gs.quiz_v2_enabled,
                 "ai_question_drafting_enabled": gs.ai_question_drafting_enabled,
+                "content_studio_enabled": gs.content_studio_enabled,
             },
         })
 

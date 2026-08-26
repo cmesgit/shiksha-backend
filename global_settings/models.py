@@ -204,6 +204,22 @@ class GlobalSettings(models.Model):
         default=False, help_text="Gate for the 'Generate with AI' question-drafting flow."
     )
 
+    # ── Content Studio (design_handoff_content_studio) ──────────────────
+    # Gates the restructured admin CMS — the four-group nav, the home
+    # screen, the split page editor, Labels, Pictures and Exams — while it
+    # is built out phase by phase (BUILD_GUIDE Phase 0 item 2). Unlike
+    # quiz_v2_enabled above, this one is a REAL gate: every Content Studio
+    # screen checks it, and with it OFF the existing eight-tab CMS is what
+    # renders. It ships OFF and stays OFF until Phase 9 flips the default,
+    # so a half-built Studio never reaches an admin mid-rebuild.
+    content_studio_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Master switch for the restructured Content Studio CMS. While OFF, "
+            "the existing eight-tab Content panel is shown instead."
+        ),
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

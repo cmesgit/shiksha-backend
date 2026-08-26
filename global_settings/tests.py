@@ -141,3 +141,51 @@ class QuizV2FeatureFlagsTest(TestCase):
         reloaded = GlobalSettings.objects.get(pk=1)
         self.assertTrue(reloaded.quiz_v2_enabled)
         self.assertFalse(reloaded.ai_question_drafting_enabled)
+
+
+class ContentStudioFeatureFlagTest(TestCase):
+    """design_handoff_content_studio Phase 0 groundwork — the restructured CMS
+    ships behind one admin-controlled flag, OFF, and nothing consumes it yet.
+
+    Unlike quiz_v2_enabled (which ended up recording a shipped state rather
+    than gating anything), this one is a REAL gate: Phases 2-8 each check it,
+    and Phase 9 flips the default. Pinning that here so a later phase can't
+    quietly ship the Studio on by default mid-rebuild.
+    """
+
+    URL = "/api/admin/settings/"
+
+    def _client(self, user):
+        from rest_framework.test import APIClient
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def test_ships_off_on_a_fresh_row(self):
+        self.assertFalse(GlobalSettings.load().content_studio_enabled)
+
+    def test_admin_can_flip_it_via_patch(self):
+        from accounts.models import User
+
+        admin = User.objects.create_user(
+            username="admin2", email="admin2@example.com", password="x", is_staff=True,
+        )
+        res = self._client(admin).patch(
+            self.URL, {"content_studio_enabled": True}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertTrue(res.json()["content_studio_enabled"])
+        self.assertTrue(GlobalSettings.objects.get(pk=1).content_studio_enabled)
+
+    def test_non_admin_cannot_turn_it_on(self):
+        from accounts.models import User
+
+        GlobalSettings.load()
+        student = User.objects.create_user(
+            username="student2", email="student2@example.com", password="x",
+        )
+        res = self._client(student).patch(
+            self.URL, {"content_studio_enabled": True}, format="json",
+        )
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertFalse(GlobalSettings.objects.get(pk=1).content_studio_enabled)

@@ -39,15 +39,26 @@ class MeViewFeatureFlagsTest(TestCase):
         self.assertTrue(flags["quiz_v2_enabled"])
         self.assertFalse(flags["ai_question_drafting_enabled"])
 
+        # design_handoff_content_studio Phase 0 — content_studio_enabled is a
+        # REAL gate (unlike quiz_v2_enabled) and must ship OFF, so a
+        # half-built Studio never reaches an admin mid-rebuild.
+        self.assertIn("content_studio_enabled", flags)
+        self.assertFalse(flags["content_studio_enabled"])
+
     def test_feature_flags_reflect_globalsettings_when_flipped(self):
         from global_settings.models import GlobalSettings
 
         gs = GlobalSettings.load()
         gs.quiz_v2_enabled = True
         gs.ai_question_drafting_enabled = True
-        gs.save(update_fields=["quiz_v2_enabled", "ai_question_drafting_enabled"])
+        gs.content_studio_enabled = True
+        gs.save(update_fields=[
+            "quiz_v2_enabled", "ai_question_drafting_enabled",
+            "content_studio_enabled",
+        ])
 
         res = self.client_.get(self.URL)
         flags = res.json()["feature_flags"]
         self.assertTrue(flags["quiz_v2_enabled"])
         self.assertTrue(flags["ai_question_drafting_enabled"])
+        self.assertTrue(flags["content_studio_enabled"])
