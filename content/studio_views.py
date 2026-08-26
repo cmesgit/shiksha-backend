@@ -391,17 +391,45 @@ class ExamReadinessView(APIView):
             .values_list("course_id", flat=True)
         )
 
+        course_ids = [c.id for c in candidates]
+
+        # Materials and quizzes live in other apps, so they can't join into the
+        # annotate() above without multiplying its rows. Counting them per
+        # course would be an N+1 — two extra queries per exam. One grouped
+        # query each instead, regardless of how many exams there are.
+        from materials.models import StudyMaterial
+        from quizzes.models import Quiz
+
+        materials_by_course = dict(
+            StudyMaterial.objects
+            .filter(subject__course_id__in=course_ids)
+            .values_list("subject__course_id")
+            .annotate(n=Count("id"))
+        )
+        quizzes_by_course = dict(
+            Quiz.objects
+            .filter(subject__course_id__in=course_ids)
+            .values_list("subject__course_id")
+            .annotate(n=Count("id"))
+        )
+
+        # `_is_competitive` queries `course.categories` when `kind` isn't
+        # COACHING, which is another per-exam query. Resolve that half here in
+        # one go; the helper stays the authority for the rest and short-circuits
+        # on `kind` without touching the database.
+        competitive_ids = set(
+            Course.objects.filter(
+                id__in=course_ids, categories__group="competitive",
+            ).values_list("id", flat=True)
+        )
+
         exams = []
         for course in candidates:
-            if not _is_competitive(course):
+            if course.id not in competitive_ids and not _is_competitive(course):
                 continue
 
-            # Materials and quizzes live in other apps; counting them in the
-            # same annotate() would multiply the joins and inflate every number.
-            from materials.models import StudyMaterial
-            from quizzes.models import Quiz
-            material_count = StudyMaterial.objects.filter(subject__course=course).count()
-            quiz_count = Quiz.objects.filter(subject__course=course).count()
+            material_count = materials_by_course.get(course.id, 0)
+            quiz_count = quizzes_by_course.get(course.id, 0)
 
             counts = {
                 "has_card": 1 if course.id in carded else 0,
@@ -421,7 +449,10 @@ class ExamReadinessView(APIView):
                 "id": str(course.id),
                 "slug": getattr(course, "slug", ""),
                 "name": course.title,
-                "blurb": (getattr(course, "short_description", "") or "")[:160],
+                # Course.description, not short_description — the latter does
+                # not exist, so getattr's default made every blurb blank while
+                # the screen looked fine. (`blurb` belongs to CourseCategory.)
+                "blurb": (getattr(course, "description", "") or "").strip()[:160],
                 **counts,
                 "steps": [
                     {"key": k, "label": lbl, "done": counts[k] > 0,

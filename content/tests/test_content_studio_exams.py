@@ -161,3 +161,41 @@ class ExamReadinessTest(TestCase):
 
     def test_non_staff_is_refused(self):
         self.assertEqual(self.client_for(self.outsider).get(URL).status_code, 403)
+
+
+class ExamReadinessQueryCountTest(ExamReadinessTest):
+    """The screen loads every exam at once, so a per-exam query is an N+1 that
+    grows with the product. It was 3 queries per exam before this was pinned:
+    two count() calls plus _is_competitive's category lookup."""
+
+    def test_query_count_does_not_grow_with_the_number_of_exams(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        for i in range(3):
+            self.exam(f"Exam {i}")
+        with CaptureQueriesContext(connection) as few:
+            self.client_for(self.editor).get(URL)
+
+        for i in range(3, 15):
+            self.exam(f"Exam {i}")
+        with CaptureQueriesContext(connection) as many:
+            body = self.client_for(self.editor).get(URL).json()
+
+        self.assertEqual(len(body["exams"]), 15)
+        self.assertEqual(
+            len(many), len(few),
+            f"query count grew from {len(few)} to {len(many)} as exams went "
+            f"3 -> 15; something is querying per exam again",
+        )
+
+    def test_blurb_reads_the_field_that_exists(self):
+        """Course.description, not short_description. getattr's default made
+        every blurb silently blank while the screen looked fine."""
+        course = self.exam("UPSC Prelims")
+        course.description = "The civil services preliminary examination."
+        course.save()
+        self.assertEqual(
+            self.body()["exams"][0]["blurb"],
+            "The civil services preliminary examination.",
+        )
