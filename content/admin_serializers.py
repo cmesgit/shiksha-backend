@@ -208,6 +208,21 @@ class AnnouncementAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
         ]
 
 
+def _is_competitive(course):
+    """A competitive course, by the discriminator the live surfaces use.
+
+    Checks BOTH signals because they can disagree: `kind` is written on create
+    and read by almost nothing, while the nav menu and catalog key on a linked
+    CourseCategory whose group is "competitive". create_competitive_courses
+    skips the category link (with a warning) when the categories were never
+    seeded, which yields a COACHING course with no group — so keying on the
+    group alone would miss exactly the courses most likely to be misfiled.
+    """
+    if getattr(course, "kind", None) == "COACHING":
+        return True
+    return course.categories.filter(group="competitive").exists()
+
+
 class ShowcaseCourseAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
     # `categories` is `JSONField(default=list)` *without* `blank=True` on
     # the model (unlike the sibling `link_state = JSONField(default=dict,
@@ -243,13 +258,26 @@ class ShowcaseCourseAdminSerializer(FullCleanMixin, serializers.ModelSerializer)
         if "course" in attrs and attrs["course"] is not None:
             course = attrs["course"]
             attrs["link_path"] = "/courses"
-            attrs["link_state"] = (
-                {
+            if course.board:
+                attrs["link_state"] = {
                     "selectedBoardGroup": course.board.board_type.lower(),
-                    "selectedBoard": course.board.name.lower(),
+                    # The SLUG, not the lowercased name. The catalog resolves
+                    # this with `boards.find(b => b.slug === value)`, and the
+                    # two only coincide for single-word boards: "BSE Odisha"
+                    # lowercases to "bse odisha" and never matches its slug
+                    # "bseodisha", so the deep link silently fell through to
+                    # the default board.
+                    "selectedBoard": course.board.slug,
                 }
-                if course.board else {}
-            )
+            elif _is_competitive(course):
+                # Was `{}` — an empty state dropped the visitor on the catalog
+                # with no filter, and until the catalog gained a competitive
+                # axis it could not have shown the course at all. Send them to
+                # that axis; Courses.jsx resolves this group specially because
+                # "competitive" is a category group, not a board_type.
+                attrs["link_state"] = {"selectedBoardGroup": "competitive"}
+            else:
+                attrs["link_state"] = {}
         return super().validate(attrs)
 
 

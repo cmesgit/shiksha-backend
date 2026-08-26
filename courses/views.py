@@ -1429,6 +1429,16 @@ class AdminCourseCreateView(APIView):
                 "seo_title": c.seo_title,
                 "board_id": str(c.board_id) if c.board_id else None,
                 "board_name": c.board.name if c.board else None,
+                # Same omission as `display_order` above, with a worse
+                # symptom. A competitive course has board = NULL, so it shows
+                # in this flat list with a BLANK board cell and nothing else
+                # to distinguish it — indistinguishable from an academic
+                # course whose board was never set. Without `kind` the screen
+                # cannot label it, and this list is the only place a
+                # competitive course is reachable at all (it appears in no
+                # board's drill-down, by definition).
+                "kind": c.kind,
+                "class_level": c.class_level,
             }
             for c in courses
         ])

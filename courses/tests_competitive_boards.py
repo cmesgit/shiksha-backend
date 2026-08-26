@@ -167,3 +167,70 @@ class CompetitiveCoursesAreReachableFromThePublicCatalogTests(TestCase):
         academic = next(c for c in self._catalog() if c["title"] == "Class 10 Science")
         self.assertEqual(academic["kind"], "ACADEMIC")
         self.assertEqual(academic["category_groups"], [])
+
+
+class ShowcaseCardLinkStateTests(TestCase):
+    """A homepage showcase card must deep-link somewhere that can show it.
+
+    Two bugs, both silent:
+      * a competitive course got link_state = {}, dumping the visitor on the
+        catalog with no filter — and until the catalog gained a competitive
+        axis, that catalog could not display the course at all;
+      * a board-linked card sent the board's LOWERCASED NAME where the catalog
+        resolves on SLUG, so any multi-word board ("BSE Odisha" -> "bse
+        odisha" vs slug "bseodisha") silently fell through to the default.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Course, CourseCategory
+        from content.models import ShowcaseCourse
+
+        cls.ShowcaseCourse = ShowcaseCourse
+        cls.multiword_board = Board.objects.create(
+            name="BSE Odisha", slug="bseodisha", board_type=Board.TYPE_STATE,
+        )
+        cls.academic = Course.objects.create(
+            title="Class 10", price=0, board=cls.multiword_board, class_level=10,
+        )
+        cat = CourseCategory.objects.create(
+            name="NEET", slug="neet", group=CourseCategory.GROUP_COMPETITIVE,
+        )
+        cls.competitive = Course.objects.create(
+            title="NEET Preparation", price=0, kind=Course.KIND_COACHING, board=None,
+        )
+        cls.competitive.categories.add(cat)
+        # No category link at all — the state create_competitive_courses
+        # produces when the categories were never seeded.
+        cls.orphan_coaching = Course.objects.create(
+            title="Orphan Coaching", price=0, kind=Course.KIND_COACHING, board=None,
+        )
+
+    def _link_state(self, course):
+        from content.admin_serializers import ShowcaseCourseAdminSerializer
+        s = ShowcaseCourseAdminSerializer(data={
+            "title": course.title, "level_label": "Class 10",
+            "categories": ["competitive"], "course": str(course.id),
+        })
+        self.assertTrue(s.is_valid(), s.errors)
+        return s.validated_data["link_state"]
+
+    def test_board_linked_card_sends_the_slug_not_the_name(self):
+        state = self._link_state(self.academic)
+        self.assertEqual(state["selectedBoard"], "bseodisha")
+        self.assertNotEqual(state["selectedBoard"], "bse odisha")
+        self.assertEqual(state["selectedBoardGroup"], "state")
+
+    def test_competitive_card_deep_links_to_the_competitive_axis(self):
+        self.assertEqual(
+            self._link_state(self.competitive),
+            {"selectedBoardGroup": "competitive"},
+        )
+
+    def test_a_coaching_course_with_no_category_still_resolves(self):
+        """Keying on the category group alone would miss exactly the courses
+        most likely to be misfiled."""
+        self.assertEqual(
+            self._link_state(self.orphan_coaching),
+            {"selectedBoardGroup": "competitive"},
+        )
