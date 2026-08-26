@@ -196,7 +196,7 @@ class CurrentAffairAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
 class FAQItemAdminSerializer(serializers.ModelSerializer):
     class Meta:
         model = FAQItem
-        fields = ["id", "page", "question", "answer_html", "order", "is_active", "status"]
+        fields = ["id", "page", "question", "answer_html", "order", "status"]
 
 
 class AnnouncementAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
@@ -204,7 +204,7 @@ class AnnouncementAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
         model = Announcement
         fields = [
             "id", "message", "link_url", "link_label", "level",
-            "starts_at", "ends_at", "is_active", "status", "order",
+            "starts_at", "ends_at", "status", "order",
         ]
 
 
@@ -246,7 +246,7 @@ class ShowcaseCourseAdminSerializer(FullCleanMixin, serializers.ModelSerializer)
             "fact_line", "price_label", "tutor_name", "is_explore_card",
             "categories", "gradient_css", "image", "image_url", "icon",
             "link_path", "link_state", "course", "course_title", "board",
-            "order", "is_active", "status",
+            "order", "status",
             "created_at", "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]
@@ -326,7 +326,7 @@ class HomeContentBlockAdminSerializer(
             "id", "section", "eyebrow", "heading", "heading_secondary",
             "subhead", "body", "cta_primary_label", "cta_primary_href",
             "cta_secondary_label", "cta_secondary_href", "image", "image_url",
-            "img", "extra", "is_active", "status", "created_at", "updated_at",
+            "img", "extra", "status", "created_at", "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]
 
@@ -341,7 +341,7 @@ class HomeListItemAdminSerializer(
         fields = [
             "id", "section", "variant", "icon", "title", "subtitle", "body",
             "pills", "stat_text", "cta_label", "cta_href", "tint", "image",
-            "image_url", "img", "order", "is_active", "status", "created_at",
+            "image_url", "img", "order", "status", "created_at",
             "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]
@@ -351,7 +351,7 @@ class HomeFloaterAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
     class Meta:
         model = HomeFloater
         fields = [
-            "id", "section", "slot", "icon", "label", "sublabel", "is_active", "status",
+            "id", "section", "slot", "icon", "label", "sublabel", "status",
             "created_at", "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]

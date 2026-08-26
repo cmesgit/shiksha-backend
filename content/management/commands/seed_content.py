@@ -76,13 +76,13 @@ class Command(BaseCommand):
         ]):
             FAQItem.objects.get_or_create(
                 page="home", question=q,
-                defaults=dict(answer_html=a, order=i, is_active=True),
+                defaults=dict(answer_html=a, order=i, status='published'),
             )
 
         Announcement.objects.get_or_create(
             message="Admissions open for the new academic session — enroll today!",
             defaults=dict(link_url="/courses", link_label="Browse courses",
-                          level="info", is_active=True),
+                          level="info", status='published'),
         )
 
         ShowcaseCourse.objects.get_or_create(
@@ -99,7 +99,7 @@ class Command(BaseCommand):
                 icon="book", link_path="/courses",
                 link_state={"selectedBoardGroup": "central",
                             "selectedBoard": "cbse"},
-                order=0, is_active=True,
+                order=0, status='published',
             ),
         )
 

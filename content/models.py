@@ -105,27 +105,19 @@ class PublishableModel(TimeStampedModel):
 
 
 class StatusedContentModel(TimeStampedModel):
-    """Draft/review state for the CMS rows that only ever had ``is_active``.
+    """Draft/review state for the CMS rows that used to have only ``is_active``.
 
-    design_handoff_content_studio Phase 1. ``is_active`` conflates "not
+    design_handoff_content_studio Phases 1 and 9. ``is_active`` conflated "not
     finished yet" with "deliberately taken down", and the difference between
     those two is the entire review workflow. ``status`` splits them.
 
-    ⚠ ``is_active`` deliberately stays a REAL, WRITABLE COLUMN rather than
-    becoming a property computed from ``status``. The handoff spec asked for a
-    property; that would take the process down at boot, verified by running
-    Django's own checks:
-
-        admin.E116  list_filter[0] refers to 'is_active', which does not
-                    refer to a Field
-        admin.E121  list_editable[0] refers to 'is_active', which is not a
-                    field of 'content.FAQItem'
-
-    ``content/admin.py`` uses ``is_active`` in ``list_filter`` and
-    ``list_editable`` on five ModelAdmins, and it sits in six writable DRF
-    serializer field lists. ``manage.py check`` failing means the process
-    refuses to start, so the column stays and ``save()`` keeps it in step with
-    ``status``. Phase 9 migrates the read sites and drops it.
+    The boolean is gone as of ``content/0024``. Between Phase 1 and Phase 9 it
+    lived on as a real column kept in step by ``save()`` — deliberately a
+    column and never a property, because ``content/admin.py`` used it in
+    ``list_filter`` and ``list_editable``, and a property there raises
+    ``admin.E116``/``admin.E121`` and stops the process booting. Everything now
+    reads and writes ``status`` directly, so the compatibility layer went with
+    the column.
 
     Subclasses keep their own ``objects`` manager — this base deliberately does
     NOT set one, because ``Announcement`` relies on ``AnnouncementQuerySet``.
@@ -148,68 +140,6 @@ class StatusedContentModel(TimeStampedModel):
     @property
     def is_live(self):
         return self.status == PublishStatus.PUBLISHED
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Snapshot so save() can tell WHICH of the two the caller touched.
-        # Without this, syncing one direction unconditionally would clobber the
-        # other — in particular the Django admin's is_active list_editable
-        # toggle, which does `obj.is_active = False; obj.save()` and never
-        # mentions status.
-        self._initial_status = self.status
-        self._initial_is_active = self.is_active
-
-    def _reconcile_status_and_is_active(self):
-        """Return the field names that had to be changed to agree."""
-        status_changed = self.status != self._initial_status
-        active_changed = self.is_active != self._initial_is_active
-        implied = self.status == PublishStatus.PUBLISHED
-
-        if status_changed:
-            # status wins, including when both moved
-            if self.is_active != implied:
-                self.is_active = implied
-                return ("is_active",)
-            return ()
-        if active_changed:
-            # Legacy write path (admin toggle, old serializer, old code).
-            # Ticking is_active on a draft or an in-review row must NOT publish
-            # it — that would turn the admin's checkbox into a publish button
-            # that skips review. Refuse the promotion and correct is_active
-            # back, rather than leaving the row active-but-unpublished.
-            if self.is_active and self.status in (
-                PublishStatus.DRAFT, PublishStatus.REVIEW,
-            ):
-                self.is_active = False
-                return ("is_active",)
-
-            wanted = (
-                PublishStatus.PUBLISHED if self.is_active
-                else PublishStatus.ARCHIVED
-            )
-            if self.status != wanted:
-                self.status = wanted
-                return ("status",)
-            return ()
-        # Neither touched (e.g. a fresh unsaved row): make them agree anyway.
-        if self.is_active != implied:
-            self.is_active = implied
-            return ("is_active",)
-        return ()
-
-    def save(self, *args, **kwargs):
-        extra = self._reconcile_status_and_is_active()
-
-        # A caller passing update_fields=["status"] would otherwise persist the
-        # status and silently drop the is_active it implies, leaving the public
-        # site reading a stale boolean.
-        update_fields = kwargs.get("update_fields")
-        if update_fields is not None and extra:
-            kwargs["update_fields"] = tuple(set(update_fields) | set(extra))
-
-        super().save(*args, **kwargs)
-        self._initial_status = self.status
-        self._initial_is_active = self.is_active
 
 
 class ContentTag(models.Model):
@@ -520,7 +450,6 @@ class FAQItem(StatusedContentModel):
     question = models.CharField(max_length=300)
     answer_html = models.TextField()
     order = models.PositiveSmallIntegerField(default=0)
-    is_active = models.BooleanField(default=True, db_index=True)
 
     class Meta:
         ordering = ["page", "order", "id"]
@@ -547,10 +476,8 @@ class AnnouncementLevel(models.TextChoices):
 class AnnouncementQuerySet(models.QuerySet):
     def live(self):
         now = timezone.now()
-        # Reads `status`, not `is_active`. The two are kept in step by
-        # StatusedContentModel.save(), but a queryset .update() bypasses save()
-        # entirely — so the public site should read the field the CMS actually
-        # writes rather than the boolean mirroring it.
+        # Reads `status`. The `is_active` boolean this used to filter on was
+        # dropped in content/0024.
         return self.filter(
             status=PublishStatus.PUBLISHED, starts_at__lte=now,
         ).filter(
@@ -573,7 +500,6 @@ class Announcement(StatusedContentModel):
     ends_at = models.DateTimeField(
         null=True, blank=True, help_text="Leave empty to run indefinitely.",
     )
-    is_active = models.BooleanField(default=True, db_index=True)
     order = models.PositiveSmallIntegerField(default=0)
 
     objects = AnnouncementQuerySet.as_manager()
@@ -682,7 +608,6 @@ class ShowcaseCourse(StatusedContentModel):
         related_name="showcase_cards",
     )
     order = models.PositiveSmallIntegerField(default=0)
-    is_active = models.BooleanField(default=True, db_index=True)
 
     class Meta:
         ordering = ["order", "id"]
@@ -796,7 +721,6 @@ class HomeContentBlock(StatusedContentModel):
         help_text="Rare escape valve for a section-specific single value that "
                   "doesn't warrant its own column. Should normally be empty.",
     )
-    is_active = models.BooleanField(default=True, db_index=True)
 
     class Meta:
         ordering = ["section"]
@@ -891,7 +815,6 @@ class HomeListItem(StatusedContentModel):
         blank=True, default="", help_text="Used if no image file is uploaded.",
     )
     order = models.PositiveSmallIntegerField(default=0)
-    is_active = models.BooleanField(default=True, db_index=True)
 
     class Meta:
         ordering = ["section", "order", "id"]
@@ -924,7 +847,6 @@ class HomeFloater(StatusedContentModel):
     icon = models.CharField(max_length=40, blank=True, default="")
     label = models.CharField(max_length=60, blank=True, default="")
     sublabel = models.CharField(max_length=80, blank=True, default="")
-    is_active = models.BooleanField(default=True, db_index=True)
 
     SLOT_CHOICES_BY_SECTION = {
         HomeSection.HERO: ["cap", "book", "play"],

@@ -39,11 +39,11 @@ class MeViewFeatureFlagsTest(TestCase):
         self.assertTrue(flags["quiz_v2_enabled"])
         self.assertFalse(flags["ai_question_drafting_enabled"])
 
-        # design_handoff_content_studio Phase 0 — content_studio_enabled is a
-        # REAL gate (unlike quiz_v2_enabled) and must ship OFF, so a
-        # half-built Studio never reaches an admin mid-rebuild.
+        # content_studio_enabled shipped OFF through the rebuild and was
+        # turned ON in Phase 9 (global_settings/0010), once the Studio covered
+        # everything the screens it replaced could do.
         self.assertIn("content_studio_enabled", flags)
-        self.assertFalse(flags["content_studio_enabled"])
+        self.assertTrue(flags["content_studio_enabled"])
 
     def test_feature_flags_reflect_globalsettings_when_flipped(self):
         from global_settings.models import GlobalSettings

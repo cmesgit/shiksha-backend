@@ -161,8 +161,10 @@ class ContentStudioFeatureFlagTest(TestCase):
         c.force_authenticate(user=user)
         return c
 
-    def test_ships_off_on_a_fresh_row(self):
-        self.assertFalse(GlobalSettings.load().content_studio_enabled)
+    def test_is_on_by_default_since_phase_9(self):
+        """It shipped OFF through the rebuild; Phase 9 turned it on once the
+        Studio covered everything the retired screens could do."""
+        self.assertTrue(GlobalSettings.load().content_studio_enabled)
 
     def test_admin_can_flip_it_via_patch(self):
         from accounts.models import User
@@ -184,6 +186,7 @@ class ContentStudioFeatureFlagTest(TestCase):
         student = User.objects.create_user(
             username="student2", email="student2@example.com", password="x",
         )
+        GlobalSettings.objects.filter(pk=1).update(content_studio_enabled=False)
         res = self._client(student).patch(
             self.URL, {"content_studio_enabled": True}, format="json",
         )

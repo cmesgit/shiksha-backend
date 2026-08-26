@@ -1,8 +1,9 @@
-"""Content Studio Phase 1a — status/is_active coexistence, revisions, drafts.
+"""Content Studio — status, revisions and drafts.
 
-The point of these tests is the compatibility window: `status` is the new
-truth, `is_active` is still a real writable column that the public views, the
-Django admin and six serializers all read. They must never drift.
+`is_active` was dropped in content/0024, so the tests that policed the two
+fields agreeing went with it. What remains is what still matters: status is
+readable and writable everywhere the UI needs it, revisions record and restore,
+and drafts are per-author.
 """
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
@@ -20,104 +21,29 @@ User = get_user_model()
 
 
 class StatusIsActiveSyncTest(TestCase):
-    """`status` and `is_active` must agree no matter which one is written."""
+    """Status behaves as the single source of truth for visibility."""
 
     def _faq(self, **kw):
         return FAQItem.objects.create(
             question="How do I enrol?", answer_html="<p>Click enrol.</p>", **kw
         )
 
-    def test_new_row_defaults_to_published_and_active(self):
+    def test_new_row_defaults_to_published(self):
         faq = self._faq()
         self.assertEqual(faq.status, PublishStatus.PUBLISHED)
-        self.assertTrue(faq.is_active)
         self.assertTrue(faq.is_live)
 
-    def test_setting_status_updates_is_active(self):
-        faq = self._faq()
-        faq.status = PublishStatus.DRAFT
-        faq.save()
-        faq.refresh_from_db()
-        self.assertFalse(faq.is_active, "a draft must not be publicly active")
-
-    def test_setting_is_active_false_updates_status(self):
-        """The Django admin's list_editable toggle writes is_active directly.
-
-        This is the case the first implementation got wrong: syncing
-        status -> is_active unconditionally silently reverted the toggle.
-        """
-        faq = self._faq()
-        faq.is_active = False
-        faq.save()
-        faq.refresh_from_db()
-        self.assertEqual(faq.status, PublishStatus.ARCHIVED)
-        self.assertFalse(faq.is_active)
-
-    def test_reactivating_via_is_active_publishes(self):
-        faq = self._faq(status=PublishStatus.ARCHIVED)
-        faq.refresh_from_db()
-        self.assertFalse(faq.is_active)
-
-        faq.is_active = True
-        faq.save()
-        faq.refresh_from_db()
-        self.assertEqual(faq.status, PublishStatus.PUBLISHED)
-
-    def test_is_active_true_does_not_promote_a_draft(self):
-        """A draft is not "published" just because someone ticked is_active.
-
-        Without this guard, the admin's is_active checkbox would become a
-        publish button that skips review entirely.
-        """
-        faq = self._faq(status=PublishStatus.DRAFT)
-        faq.refresh_from_db()
-        faq.is_active = True
-        faq.save()
-        faq.refresh_from_db()
-        self.assertEqual(faq.status, PublishStatus.DRAFT)
-        self.assertFalse(
-            faq.is_active, "the draft stays hidden; is_active is corrected back"
-        )
-
-    def test_update_fields_status_also_persists_is_active(self):
-        """save(update_fields=["status"]) must not drop the implied is_active.
-
-        If it did, the row would be a draft while the public site still read
-        is_active=True and kept showing it.
-        """
-        faq = self._faq()
-        faq.status = PublishStatus.DRAFT
-        faq.save(update_fields=["status"])
-        faq.refresh_from_db()
-        self.assertEqual(faq.status, PublishStatus.DRAFT)
-        self.assertFalse(faq.is_active)
-
-    def test_review_is_not_publicly_active(self):
+    def test_review_is_not_live(self):
         faq = self._faq()
         faq.status = PublishStatus.REVIEW
         faq.save()
         faq.refresh_from_db()
-        self.assertFalse(faq.is_active)
         self.assertFalse(faq.is_live)
 
-    def test_applies_to_every_migrated_model(self):
-        """All six, not just the one that's convenient to construct."""
-        rows = [
-            self._faq(),
-            Announcement.objects.create(message="Fees due Friday"),
-            ShowcaseCourse.objects.create(title="Class 9", level_label="Foundation"),
-            HomeListItem.objects.create(section="why_shiksha", title="Live classes"),
-        ]
-        for row in rows:
-            with self.subTest(model=type(row).__name__):
-                row.status = PublishStatus.DRAFT
-                row.save()
-                row.refresh_from_db()
-                self.assertFalse(row.is_active)
 
 
 class PublicQuerysetsStillWorkTest(TestCase):
-    """The public site reads is_active. Phase 1 must not change what it sees."""
+    """The public site reads `status`. These pin what visitors get."""
 
     def test_archived_rows_leave_the_public_faq_list(self):
         live = FAQItem.objects.create(question="A?", answer_html="<p>a</p>")
@@ -125,7 +51,7 @@ class PublicQuerysetsStillWorkTest(TestCase):
         hidden.status = PublishStatus.ARCHIVED
         hidden.save()
 
-        visible = list(FAQItem.objects.filter(is_active=True))
+        visible = list(FAQItem.objects.filter(status=PublishStatus.PUBLISHED))
         self.assertIn(live, visible)
         self.assertNotIn(hidden, visible)
 
@@ -141,7 +67,7 @@ class PublicQuerysetsStillWorkTest(TestCase):
         hidden.save()
         self.assertEqual(
             Announcement.objects.live().count(), 1,
-            "a draft announcement must drop out of live() via is_active",
+            "a draft announcement must drop out of live()",
         )
 
 
@@ -320,11 +246,12 @@ class ContentDraftTest(TestCase):
 
 
 class BackfillMigrationTest(TestCase):
-    """0021's is_active -> status backfill, exercised against real rows.
+    """0021's backfill list, pinned.
 
-    A fresh test database has no pre-existing rows, so migrating it proves
-    nothing about the backfill. This drives the migration's own functions
-    directly, which is where the logic actually lives.
+    The forward/reverse functions used to be exercised against live models —
+    a shortcut that stopped working when `is_active` was dropped in 0024. What
+    still matters, and is still checkable, is that the migration named every
+    model: one left out would have silently gone live on deploy.
     """
 
     def _migration(self):
@@ -332,40 +259,6 @@ class BackfillMigrationTest(TestCase):
         return import_module(
             "content.migrations.0021_backfill_status_from_is_active"
         )
-
-    def test_forward_maps_is_active_to_status(self):
-        from django.apps import apps as real_apps
-
-        live = FAQItem.objects.create(question="L?", answer_html="<p>l</p>")
-        hidden = FAQItem.objects.create(question="H?", answer_html="<p>h</p>")
-        # Put the rows in the state 0020 leaves behind: everything "published",
-        # including the one that was deliberately switched off.
-        FAQItem.objects.filter(pk=hidden.pk).update(
-            is_active=False, status=PublishStatus.PUBLISHED,
-        )
-
-        self._migration().is_active_to_status(real_apps, None)
-
-        live.refresh_from_db()
-        hidden.refresh_from_db()
-        self.assertEqual(live.status, PublishStatus.PUBLISHED)
-        self.assertEqual(
-            hidden.status, PublishStatus.ARCHIVED,
-            "a row an editor had taken down must not come back live",
-        )
-
-    def test_reverse_restores_is_active(self):
-        from django.apps import apps as real_apps
-
-        row = ShowcaseCourse.objects.create(title="C", level_label="Foundation")
-        ShowcaseCourse.objects.filter(pk=row.pk).update(
-            status=PublishStatus.DRAFT, is_active=True,
-        )
-
-        self._migration().status_to_is_active(real_apps, None)
-
-        row.refresh_from_db()
-        self.assertFalse(row.is_active, "only 'published' stays active")
 
     def test_forward_covers_every_migrated_model(self):
         """If a model gains status but is left out of MODELS, its hidden rows

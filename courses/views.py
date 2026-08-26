@@ -22,7 +22,7 @@ from assignments.models import Assignment
 from courses.progress_stats import average_quiz_score_pct
 from .board_display import board_name_for
 from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream, BoardNotifyRequest, CourseNotifyRequest
-from content.models import ShowcaseCourse
+from content.models import ShowcaseCourse, PublishStatus
 from .serializers import (
     CourseSerializer, SubjectSerializer, BoardSerializer, CourseDetailSerializer,
     CourseCategorySerializer,
@@ -2202,7 +2202,7 @@ class PublicFeaturedView(APIView):
             return Response(cached)
 
         cards_qs = (
-            ShowcaseCourse.objects.filter(is_active=True)
+            ShowcaseCourse.objects.filter(status=PublishStatus.PUBLISHED)
             .select_related("course", "board")
             .order_by("order")
         )

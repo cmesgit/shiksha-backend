@@ -213,10 +213,10 @@ class GlobalSettings(models.Model):
     # renders. It ships OFF and stays OFF until Phase 9 flips the default,
     # so a half-built Studio never reaches an admin mid-rebuild.
     content_studio_enabled = models.BooleanField(
-        default=False,
+        default=True,
         help_text=(
             "Master switch for the restructured Content Studio CMS. While OFF, "
-            "the existing eight-tab Content panel is shown instead."
+            "the remaining Content panel tabs are shown instead."
         ),
     )
 

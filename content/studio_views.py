@@ -431,6 +431,15 @@ class ExamReadinessView(APIView):
             material_count = materials_by_course.get(course.id, 0)
             quiz_count = quizzes_by_course.get(course.id, 0)
 
+            # ⚠ A DRAFT or ARCHIVED course is not in the navbar, whatever its
+            # kind says. Prod carries two such rows ("hy", a stray "NEET"), and
+            # counting them as live made the screen claim nine exams were
+            # published when seven were. Reporting it beats deleting the rows:
+            # both turned out to own real related data (a Batch, a CourseDetail).
+            published = course.status in (
+                Course.STATUS_PUBLISHED, Course.STATUS_COMING_SOON,
+            )
+
             counts = {
                 "has_card": 1 if course.id in carded else 0,
                 "subject_count": course.n_subjects,
@@ -447,6 +456,8 @@ class ExamReadinessView(APIView):
             )
             exams.append({
                 "id": str(course.id),
+                "course_status": course.status,
+                "in_navbar": published,
                 "slug": getattr(course, "slug", ""),
                 "name": course.title,
                 # Course.description, not short_description — the latter does
@@ -466,16 +477,28 @@ class ExamReadinessView(APIView):
         exams.sort(key=lambda e: (-sum(1 for s in e["steps"] if s["done"]), e["name"]))
 
         live = sum(1 for e in exams if e["state"] == "live")
+        in_navbar = sum(1 for e in exams if e["in_navbar"])
+        hidden = [e for e in exams if not e["in_navbar"]]
         # The one worth finishing first: furthest along but not yet live.
-        suggested = next((e["id"] for e in exams if e["state"] != "live"), None)
+        suggested = next(
+            (e["id"] for e in exams if e["state"] != "live" and e["in_navbar"]),
+            None,
+        )
 
         return Response({
             "exams": exams,
             "pipeline": EXAM_STEP_LABELS,
             "summary": {
                 "total": len(exams),
+                "in_navbar": in_navbar,
+                "not_published": len(hidden),
                 "with_subjects": sum(1 for e in exams if e["subject_count"] > 0),
-                "coming_soon": len(exams) - live,
+                # Scoped to what a visitor can actually reach. Counting the
+                # unpublished rows here said "12 showing Coming soon" while
+                # only 10 were on the site.
+                "coming_soon": sum(
+                    1 for e in exams if e["in_navbar"] and e["state"] != "live"
+                ),
                 "live": live,
             },
             "suggested_id": suggested,

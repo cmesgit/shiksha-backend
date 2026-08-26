@@ -34,8 +34,15 @@ class ExamReadinessTest(TestCase):
         c.force_authenticate(user=user)
         return c
 
-    def exam(self, title, *, kind=None, categorised=True):
-        course = Course.objects.create(title=title, **({"kind": kind} if kind else {}))
+    def exam(self, title, *, kind=None, categorised=True, status=None):
+        # Course.status defaults to DRAFT, which now means "not in the navbar".
+        # A real competitive exam is COMING_SOON, so that is the default here;
+        # the visibility tests pass an explicit status.
+        course = Course.objects.create(
+            title=title,
+            status=status or Course.STATUS_COMING_SOON,
+            **({"kind": kind} if kind else {}),
+        )
         if categorised:
             course.categories.add(self.competitive)
         return course
@@ -199,3 +206,61 @@ class ExamReadinessQueryCountTest(ExamReadinessTest):
             self.body()["exams"][0]["blurb"],
             "The civil services preliminary examination.",
         )
+
+
+class ExamNavbarVisibilityTest(ExamReadinessTest):
+    """A DRAFT or ARCHIVED course is not in the navbar, whatever its kind says.
+
+    Prod carries two such rows — a stray "hy" and a duplicate "NEET" — and
+    counting them as live made the screen claim nine published exams when
+    seven were. Reporting it is the fix; deleting the rows is not, because both
+    turned out to own real related data.
+    """
+
+    def test_a_draft_exam_is_not_counted_as_in_the_navbar(self):
+        live = self.exam("UPSC Prelims")
+        live.status = Course.STATUS_COMING_SOON
+        live.save()
+        junk = self.exam("hy")
+        junk.status = Course.STATUS_DRAFT
+        junk.save()
+
+        body = self.body()
+        self.assertEqual(body["summary"]["total"], 2)
+        self.assertEqual(body["summary"]["in_navbar"], 1)
+        self.assertEqual(body["summary"]["not_published"], 1)
+
+        by_name = {e["name"]: e for e in body["exams"]}
+        self.assertTrue(by_name["UPSC Prelims"]["in_navbar"])
+        self.assertFalse(by_name["hy"]["in_navbar"])
+
+    def test_an_archived_duplicate_is_listed_but_not_as_live(self):
+        dupe = self.exam("NEET")
+        dupe.status = Course.STATUS_ARCHIVED
+        dupe.save()
+        body = self.body()
+        self.assertEqual([e["name"] for e in body["exams"]], ["NEET"])
+        self.assertFalse(body["exams"][0]["in_navbar"])
+        self.assertEqual(body["exams"][0]["course_status"], Course.STATUS_ARCHIVED)
+
+    def test_an_unpublished_exam_is_never_the_suggested_one(self):
+        """Sending someone to finish an exam nobody can reach is wasted work."""
+        junk = self.exam("hy")
+        junk.status = Course.STATUS_DRAFT
+        junk.save()
+        self.assertIsNone(self.body()["suggested_id"])
+
+        real = self.exam("UPSC Prelims")
+        real.status = Course.STATUS_COMING_SOON
+        real.save()
+        self.assertEqual(self.body()["suggested_id"], str(real.id))
+
+    def test_coming_soon_counts_only_what_visitors_can_reach(self):
+        """Counting unpublished rows here claimed 12 exams said "Coming soon"
+        while only 10 were on the site."""
+        self.exam("UPSC Prelims")
+        junk = self.exam("hy", status=Course.STATUS_DRAFT)
+        body = self.body()
+        self.assertEqual(body["summary"]["total"], 2)
+        self.assertEqual(body["summary"]["coming_soon"], 1)
+        self.assertEqual(body["summary"]["in_navbar"], 1)

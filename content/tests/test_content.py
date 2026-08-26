@@ -594,7 +594,7 @@ class ContactPageCmsTests(TestCase):
             section=HomeSection.CONTACT_HERO,
             heading="Contact ShikshaCom",
             subhead="Get in touch with us!",
-            is_active=True,
+            status=PublishStatus.PUBLISHED,
         )
         for i, (icon, title, body) in enumerate([
             ("location", "Head Office", "House No. 1<br />Gurgaon"),
@@ -604,7 +604,8 @@ class ContactPageCmsTests(TestCase):
             HomeListItem.objects.create(
                 section=HomeSection.CONTACT_HERO,
                 variant=HomeListVariant.CONTACT_CARD,
-                icon=icon, title=title, body=body, order=i, is_active=True,
+                icon=icon, title=title, body=body, order=i,
+                status=PublishStatus.PUBLISHED,
             )
 
     def test_the_contact_section_is_a_valid_choice(self):
@@ -638,7 +639,7 @@ class ContactPageCmsTests(TestCase):
             section=HomeSection.CONTACT_HERO,
             variant=HomeListVariant.CONTACT_CARD,
             icon="location", title="Third Office", body="Shillong", order=3,
-            is_active=True,
+            status=PublishStatus.PUBLISHED,
         )
         cache.clear()
         rows = self.client.get(
@@ -656,25 +657,6 @@ class ContactPageCmsTests(TestCase):
             "/api/content/home-list-items/", {"section": "contact_hero"}
         ).json()
         self.assertNotIn("Phone", [x["title"] for x in rows])
-
-    def test_a_queryset_update_on_is_active_no_longer_hides_a_card(self):
-        """⚠ The public views read `status` now, not `is_active`.
-
-        StatusedContentModel.save() keeps the two in step, but a queryset
-        .update() bypasses save() entirely — so writing is_active that way
-        leaves status untouched and the card stays visible. This is not a bug
-        to fix by re-reading is_active; it is the reason the read sites moved.
-        Nothing in the codebase writes is_active this way except this test.
-        """
-        HomeListItem.objects.filter(title="Phone").update(is_active=False)
-        cache.clear()
-        rows = self.client.get(
-            "/api/content/home-list-items/", {"section": "contact_hero"}
-        ).json()
-        self.assertIn(
-            "Phone", [x["title"] for x in rows],
-            "a .update() that skips save() must not be expected to hide a card",
-        )
 
     def test_seed_data_matches_what_the_frontend_hardcodes(self):
         """The seeded copy must be the page's real current text, or seeding
