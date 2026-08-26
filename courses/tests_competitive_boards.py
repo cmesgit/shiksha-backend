@@ -91,3 +91,79 @@ class CompetitiveCourseAdminWorkflowTests(TestCase):
         # ACADEMIC the first time anyone opens and saves it.
         self.assertEqual(r.json()["kind"], "COACHING")
         self.assertIsNone(r.json()["class_level"])
+
+
+class CompetitiveCoursesAreReachableFromThePublicCatalogTests(TestCase):
+    """A competitive course must be findable at /courses, not just in the nav.
+
+    The catalog is board-scoped: competitive courses are created with
+    board=NULL (see create_competitive_courses), so every board-filtered query
+    excludes them by construction. The public catalog endpoint already
+    accepted ?group= and ?kind=, but nothing sent them and the response
+    omitted both fields, so a client could not tell a competitive row apart
+    from an academic one even if it got one back.
+
+    These pin the contract the rebuilt catalog depends on.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Course, CourseCategory
+
+        cls.competitive_cat = CourseCategory.objects.create(
+            name="UPSC", slug="upsc", group=CourseCategory.GROUP_COMPETITIVE,
+        )
+        cls.board = Board.objects.create(name="CBSE", board_type=Board.TYPE_CENTRAL)
+
+        cls.competitive = Course.objects.create(
+            title="UPSC Civil Services", price=0,
+            kind=Course.KIND_COACHING,
+            status=Course.STATUS_COMING_SOON,
+            board=None, class_level=None,
+        )
+        cls.competitive.categories.add(cls.competitive_cat)
+
+        cls.academic = Course.objects.create(
+            title="Class 10 Science", price=0,
+            kind=Course.KIND_ACADEMIC,
+            status=Course.STATUS_PUBLISHED,
+            board=cls.board, class_level=10,
+        )
+
+    def _catalog(self, **params):
+        r = APIClient().get("/api/courses/public/catalog/", params)
+        self.assertEqual(r.status_code, 200, r.content)
+        return r.json()
+
+    def test_a_boardless_query_returns_the_competitive_course(self):
+        """The frontend used to hard-return [] without a board id, so this
+        shape was never exercised. It is the ONLY way a board=NULL course can
+        reach the catalog page."""
+        titles = [c["title"] for c in self._catalog()]
+        self.assertIn("UPSC Civil Services", titles)
+        self.assertIn("Class 10 Science", titles)
+
+    def test_filtering_by_group_returns_only_competitive(self):
+        rows = self._catalog(group="competitive")
+        self.assertEqual([c["title"] for c in rows], ["UPSC Civil Services"])
+
+    def test_filtering_by_board_still_excludes_competitive(self):
+        """Not a bug to fix — this is why competitive needs its own axis
+        rather than a board chip."""
+        titles = [c["title"] for c in self._catalog(board=str(self.board.id))]
+        self.assertEqual(titles, ["Class 10 Science"])
+
+    def test_the_row_carries_kind_and_category_groups(self):
+        """Both, deliberately: they can disagree. A COACHING course with no
+        category link is invisible to the nav, and this is the only place a
+        client can see that."""
+        row = next(c for c in self._catalog() if c["title"] == "UPSC Civil Services")
+        self.assertEqual(row["kind"], "COACHING")
+        self.assertEqual(row["category_groups"], ["competitive"])
+        self.assertIsNone(row["board"])
+        self.assertIsNone(row["class_level"])
+        self.assertTrue(row["is_coming_soon"])
+
+        academic = next(c for c in self._catalog() if c["title"] == "Class 10 Science")
+        self.assertEqual(academic["kind"], "ACADEMIC")
+        self.assertEqual(academic["category_groups"], [])

@@ -2039,6 +2039,26 @@ class PublicCourseCatalogView(APIView):
                 ),
                 "stream_name": c.stream.name if c.stream else None,
                 "category_slugs": [cat.slug for cat in c.categories.all()],
+                # `kind` and `category_groups` are what let a client tell a
+                # competitive course apart from an academic one.
+                #
+                # Neither was emitted before, and this dict is hand-rolled
+                # rather than serialized — so `kind` being on CourseSerializer
+                # did NOT mean it reached any list screen. It reached none of
+                # them (see the same note on AdminCourseCreateView.get).
+                #
+                # Both are sent deliberately, because they do not agree:
+                # `kind` is COACHING/ACADEMIC and is currently written on
+                # create and read by nothing, while the discriminator every
+                # live surface actually uses is a linked CourseCategory whose
+                # group is "competitive". A course can have one without the
+                # other — create_competitive_courses skips the category link
+                # with a warning if the categories were never seeded, which
+                # yields a COACHING course invisible to the nav AND the
+                # catalog. Exposing both makes that divergence visible to the
+                # client instead of silently mis-filing the course.
+                "kind": c.kind,
+                "category_groups": sorted({cat.group for cat in c.categories.all()}),
                 "subject_count": c.subject_count,
                 "duration_weeks": getattr(getattr(c, "details", None), "duration_weeks", None) or None,
                 "seats_left": _catalog_seats_left(c),
