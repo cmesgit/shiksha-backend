@@ -584,6 +584,67 @@ class LabelListView(APIView):
             "duplicate_count": sum(1 for r in rows if r.get("duplicate_of")),
         })
 
+    def post(self, request):
+        """Create a label of either kind.
+
+        Closes the last thing `Tags.jsx` / `Categories.jsx` could still do that
+        this screen could not, which is what keeps those two screens alive.
+        """
+        from courses.models import CourseCategory
+
+        from .models import ContentTag
+
+        kind = request.data.get("kind")
+        name = (request.data.get("name") or "").strip()
+        if kind not in (LABEL_TAG, LABEL_CATEGORY):
+            return Response(
+                {"detail": "kind must be 'tag' or 'category'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not name:
+            return Response(
+                {"detail": "Give the label a name."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if kind == LABEL_TAG:
+            # ContentTag.slug is unique and slugified from the name, so a
+            # case/whitespace variant would raise IntegrityError. Say so in
+            # words instead of letting a 500 through.
+            existing = next(
+                (t for t in ContentTag.objects.all()
+                 if _normalise(t.name) == _normalise(name)),
+                None,
+            )
+            if existing is not None:
+                return Response(
+                    {
+                        "detail": (
+                            f"“{existing.name}” already exists — the same label "
+                            "with different capitalisation is the same label."
+                        ),
+                        "existing_id": existing.id,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            obj = ContentTag.objects.create(name=name)
+            payload = {"id": obj.id, "kind": LABEL_TAG, "name": obj.name}
+        else:
+            group = request.data.get("group")
+            valid = {g for g, _ in CourseCategory.GROUP_CHOICES}
+            if group not in valid:
+                return Response(
+                    {"detail": f"group must be one of: {', '.join(sorted(valid))}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            obj = CourseCategory.objects.create(name=name, group=group)
+            payload = {
+                "id": obj.id, "kind": LABEL_CATEGORY, "name": obj.name,
+                "group": obj.group,
+            }
+
+        return Response(payload, status=status.HTTP_201_CREATED)
+
 
 class LabelMergeView(APIView):
     """POST /api/content/admin/labels/merge/ — {from_id, into_id, kind}

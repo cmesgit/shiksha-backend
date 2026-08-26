@@ -253,3 +253,58 @@ class LabelRenameDeleteTest(LabelTestCase):
             Course.objects.create(title=t).categories.add(cat)
         res = self.client_for(self.editor).delete(self.url("category", cat.id))
         self.assertIn("2 courses rely on it", res.json()["detail"])
+
+
+class LabelCreateTest(LabelTestCase):
+    """Creating a label was the last thing Tags.jsx / Categories.jsx could do
+    that the Labels screen could not — which is what kept them alive."""
+
+    def test_creates_a_tag(self):
+        res = self.client_for(self.editor).post(
+            LABELS_URL, {"kind": "tag", "name": "Photosynthesis"}, format="json",
+        )
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertTrue(ContentTag.objects.filter(name="Photosynthesis").exists())
+
+    def test_creates_a_category_in_a_group(self):
+        res = self.client_for(self.editor).post(
+            LABELS_URL,
+            {"kind": "category", "name": "Class 10", "group": "class8-12"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(
+            CourseCategory.objects.get(name="Class 10").group, "class8-12",
+        )
+
+    def test_a_case_variant_tag_is_a_readable_409_not_a_500(self):
+        """ContentTag.slug is unique and slugified from the name, so this would
+        otherwise surface as an IntegrityError."""
+        ContentTag.objects.create(name="Biology")
+        res = self.client_for(self.editor).post(
+            LABELS_URL, {"kind": "tag", "name": "  biology "}, format="json",
+        )
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertIn("already exists", res.json()["detail"])
+        self.assertEqual(ContentTag.objects.count(), 1)
+
+    def test_a_category_needs_a_valid_group(self):
+        res = self.client_for(self.editor).post(
+            LABELS_URL, {"kind": "category", "name": "X", "group": "nonsense"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(CourseCategory.objects.filter(name="X").count(), 0)
+
+    def test_a_nameless_label_is_refused(self):
+        res = self.client_for(self.editor).post(
+            LABELS_URL, {"kind": "tag", "name": "   "}, format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_non_staff_cannot_create(self):
+        res = self.client_for(self.outsider).post(
+            LABELS_URL, {"kind": "tag", "name": "sneaky"}, format="json",
+        )
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(ContentTag.objects.count(), 0)
