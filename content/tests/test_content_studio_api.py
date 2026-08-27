@@ -708,6 +708,51 @@ class DraftValidationTest(StudioApiTestCase):
         self.assertEqual(hero["values"]["extra"], {"foo": "bar"})
 
 
+class ListItemCapabilityTest(StudioApiTestCase):
+    """The editor must only offer the list panel where rows are actually shown.
+
+    Five sections' public components take only the content block and never read
+    `items`, so a row saved against them was accepted, reported as saved, and
+    then invisible on the live site forever.
+    """
+
+    def _sections(self):
+        body = self.client_for(self.editor).get(DRAFT_URL).json()
+        return {s["key"]: s for s in body["sections"]}
+
+    def test_sections_that_render_rows_support_them(self):
+        sections = self._sections()
+        for key in ("why_shiksha", "browse_categories", "collaborate",
+                    "contact_hero", "about_values"):
+            with self.subTest(section=key):
+                self.assertTrue(sections[key]["supports_list_items"])
+
+    def test_sections_that_ignore_rows_do_not(self):
+        sections = self._sections()
+        for key in ("hero", "featured_courses", "faq", "cta", "courses_hero"):
+            with self.subTest(section=key):
+                self.assertFalse(sections[key]["supports_list_items"])
+
+    def test_the_two_with_content_elsewhere_say_where(self):
+        sections = self._sections()
+        self.assertEqual(
+            sections["featured_courses"]["list_source"]["url"], "/content/cards",
+        )
+        self.assertEqual(
+            sections["faq"]["list_source"]["url"], "/content/questions",
+        )
+        # Hero genuinely has no repeatable content anywhere — no pointer.
+        self.assertIsNone(sections["hero"]["list_source"])
+
+    def test_every_section_carries_the_flag(self):
+        """A missing key would make the editor treat it as falsey and silently
+        hide a panel that should be there."""
+        for key, s in self._sections().items():
+            with self.subTest(section=key):
+                self.assertIn("supports_list_items", s)
+                self.assertIsInstance(s["supports_list_items"], bool)
+
+
 class PublishStatusIntentTest(StudioApiTestCase):
     """Publishing must not un-hide a section the editor deliberately hid.
 

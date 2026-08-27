@@ -690,6 +690,52 @@ HOMEPAGE_SECTIONS = [
    # render order exactly; HomeSectionOrder's seed migration uses this list.
 
 
+# Sections whose public component actually RENDERS HomeListItem rows.
+#
+# Verified one by one against shiksha-frontend: each of these destructures
+# `items` from useHomeContent(section). The five that do not — HERO,
+# FEATURED_COURSES, FAQ, CTA, COURSES_HERO — take only `block`, so a list item
+# saved against them is invisible on the live site forever. Both CMS editors
+# used to offer the list panel on every section regardless, so editors filled
+# it in, saw it save, and nothing ever appeared.
+#
+# If a frontend section starts rendering `items`, add it here — this set is
+# what the editors gate the panel on.
+SECTIONS_WITH_LIST_ITEMS = frozenset({
+    HomeSection.WHY_SHIKSHA,        # WhyShiksha.jsx
+    HomeSection.TEACHERS_STUDENTS,  # TeachersStudents.jsx
+    HomeSection.BROWSE_CATEGORIES,  # BrowseCategories.jsx
+    HomeSection.WHY_CHOOSE,         # WhyChooseShiksha.jsx
+    HomeSection.RESOURCES,          # Resources.jsx
+    HomeSection.COLLABORATE,        # Collaborate.jsx
+    HomeSection.CONTACT_HERO,       # Contact.jsx — the detail cards
+    HomeSection.ABOUT_HERO,         # About2.jsx — stickers
+    HomeSection.ABOUT_VISION,       # About2.jsx — bullets
+    HomeSection.ABOUT_MISSION,      # About2.jsx — pillars
+    HomeSection.ABOUT_VALUES,       # About2.jsx — core + digital
+    HomeSection.ABOUT_WHY,          # About2.jsx — numbered
+})
+
+
+# Two of those five DO have repeatable content on the page — it just lives in
+# another model, edited on another screen. Saying so beats silently hiding the
+# panel and leaving the editor to wonder where the cards come from.
+LIST_CONTENT_ELSEWHERE = {
+    HomeSection.FEATURED_COURSES: {
+        "label": "Course cards",
+        "url": "/content/cards",
+        "note": "The cards in this section come from your courses, not from a "
+                "list here. Add or reorder them on the Course cards screen.",
+    },
+    HomeSection.FAQ: {
+        "label": "Answers",
+        "url": "/content/questions",
+        "note": "The questions in this section come from your answers, not "
+                "from a list here. Edit them on the Questions & notices screen.",
+    },
+}
+
+
 class HomeContentBlock(StatusedContentModel):
     """One row per homepage section — its heading/copy/CTA/hero image.
     `section` is unique: this is a singleton-per-section table, not a list."""

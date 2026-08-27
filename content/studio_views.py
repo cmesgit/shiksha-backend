@@ -31,6 +31,7 @@ from django.contrib.contenttypes.models import ContentType
 
 from .admin_serializers import HomeContentBlockAdminSerializer
 from .models import (
+    LIST_CONTENT_ELSEWHERE, SECTIONS_WITH_LIST_ITEMS,
     ContentDraft, ContentRevision, HomeContentBlock, HomeSection,
     HomeSectionOrder, PublishStatus,
 )
@@ -1368,6 +1369,15 @@ class PageDraftView(APIView):
                 "edited_fields": dirty,
                 "order": o.order if o else None,
                 "is_visible": o.is_visible if o else True,
+                # Whether the public component for this section actually
+                # renders HomeListItem rows. The editor offered the list panel
+                # on every section, so rows saved against a section that
+                # ignores them were invisible on the site forever.
+                "supports_list_items": value in SECTIONS_WITH_LIST_ITEMS,
+                # …and where that content really lives, for the two sections
+                # whose repeatable content is a different model on another
+                # screen (cards from courses, questions from answers).
+                "list_source": LIST_CONTENT_ELSEWHERE.get(value),
             })
 
         return Response({
