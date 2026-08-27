@@ -30,17 +30,100 @@ from .admin_serializers import (
     ShowcaseCourseAdminSerializer,
 )
 from .models import (
-    Announcement, BlogPost, BlogRevision, ContentImage, ContentTag,
+    Announcement, BlogPost, BlogRevision, ContentImage, ContentRevision,
+    ContentTag,
     CurrentAffair, FAQItem, HomeContentBlock, HomeFloater, HomeListItem,
     HomeSectionOrder, Locale, PublishStatus, ShowcaseCourse,
 )
 from .permissions import IsContentEditor
+from .revisions import (
+    record_deletion, record_revision, snapshot_before, snapshot_of,
+)
 
 
 class AdminPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = "page_size"
     max_page_size = 50
+
+
+class RecordsRevisions:
+    """Write a ContentRevision for every change a person makes through the API.
+
+    Mixed into the admin viewsets rather than wired to ``post_save`` — see
+    ``ContentRevision``'s own docstring for why a signal is wrong here (it
+    would fire during migrations and during ``seed_content``'s ~150-row run,
+    filling the History screen with entries nobody caused).
+
+    Until this existed, ``record_revision`` had exactly ONE production call
+    site — the page-editor publish — so editing an FAQ, a notice, a card, an
+    affair, a list item, a badge or a tag wrote no history at all, the History
+    feed and the Studio home's recent-changes panel stayed empty, and four of
+    the six declared actions were dead constants.
+
+    A status change gets its own verb (published / hidden) instead of a flat
+    "updated", because that is the distinction an editor scanning the feed
+    actually cares about.
+
+    Note for BlogPost: this coexists with ``BlogRevision`` and does not replace
+    it. That one is body-only with deliberately unbounded retention and the
+    block editor depends on its shape; this one is the cross-model feed.
+    """
+
+    def _revision_actor(self):
+        user = getattr(self.request, "user", None)
+        return user if (user is not None and user.is_authenticated) else None
+
+    @staticmethod
+    def _action_for(before, after):
+        """`published` / `hidden` when the status moved, else `updated`."""
+        was, now = (before or {}).get("status"), getattr(after, "status", None)
+        if now == was:
+            return ContentRevision.ACTION_UPDATED
+        if now == PublishStatus.PUBLISHED:
+            return ContentRevision.ACTION_PUBLISHED
+        if now in (PublishStatus.DRAFT, PublishStatus.ARCHIVED):
+            return ContentRevision.ACTION_HIDDEN
+        return ContentRevision.ACTION_UPDATED
+
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        record_revision(
+            serializer.instance,
+            ContentRevision.ACTION_CREATED,
+            actor=self._revision_actor(),
+        )
+
+    def perform_update(self, serializer):
+        # Snapshot from a fresh query, not serializer.instance: FullCleanMixin
+        # setattr()s the incoming payload onto that same object during
+        # is_valid(), which DRF runs before this method, so the in-memory copy
+        # already holds the NEW values. Same trap BlogPostAdminViewSet
+        # documents at length for BlogRevision.
+        before = snapshot_before(serializer.instance)
+        super().perform_update(serializer)
+        record_revision(
+            serializer.instance,
+            self._action_for(before, serializer.instance),
+            actor=self._revision_actor(),
+            snapshot=before,
+        )
+
+    def perform_destroy(self, instance):
+        model, pk = instance.__class__, instance.pk
+        before = snapshot_of(instance)
+        super().perform_destroy(instance)
+        record_deletion(model, pk, before, actor=self._revision_actor())
+
+    def _record_status_action(self, obj, before):
+        """For the publish/unpublish @actions, which set status and save()
+        directly and so never reach perform_update."""
+        record_revision(
+            obj,
+            self._action_for(before, obj),
+            actor=self._revision_actor(),
+            snapshot=before,
+        )
 
 
 def _sync_tags(instance, tag_names):
@@ -57,7 +140,7 @@ def _sync_tags(instance, tag_names):
 
 # ── Tags ──────────────────────────────────────────────────────────
 
-class TagAdminViewSet(viewsets.ModelViewSet):
+class TagAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
     queryset = ContentTag.objects.all()
     serializer_class = ContentTagSerializer
     permission_classes = [IsContentEditor]
@@ -73,7 +156,7 @@ class TagAdminViewSet(viewsets.ModelViewSet):
 
 # ── FAQ ───────────────────────────────────────────────────────────
 
-class FAQItemAdminViewSet(viewsets.ModelViewSet):
+class FAQItemAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
     queryset = FAQItem.objects.all()
     serializer_class = FAQItemAdminSerializer
     permission_classes = [IsContentEditor]
@@ -94,7 +177,7 @@ class FAQItemAdminViewSet(viewsets.ModelViewSet):
 
 # ── Announcements ─────────────────────────────────────────────────
 
-class AnnouncementAdminViewSet(viewsets.ModelViewSet):
+class AnnouncementAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
     queryset = Announcement.objects.all()
     serializer_class = AnnouncementAdminSerializer
     permission_classes = [IsContentEditor]
@@ -103,7 +186,7 @@ class AnnouncementAdminViewSet(viewsets.ModelViewSet):
 
 # ── Showcase courses ──────────────────────────────────────────────
 
-class ShowcaseCourseAdminViewSet(viewsets.ModelViewSet):
+class ShowcaseCourseAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
     queryset = ShowcaseCourse.objects.all()
     serializer_class = ShowcaseCourseAdminSerializer
     permission_classes = [IsContentEditor]
@@ -143,7 +226,7 @@ class ContentImageAdminViewSet(viewsets.ModelViewSet):
 
 # ── Homepage content ──────────────────────────────────────────────
 
-class HomeContentBlockAdminViewSet(viewsets.ModelViewSet):
+class HomeContentBlockAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
     queryset = HomeContentBlock.objects.all()
     serializer_class = HomeContentBlockAdminSerializer
     permission_classes = [IsContentEditor]
@@ -158,7 +241,7 @@ class HomeContentBlockAdminViewSet(viewsets.ModelViewSet):
         return qs
 
 
-class HomeListItemAdminViewSet(viewsets.ModelViewSet):
+class HomeListItemAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
     queryset = HomeListItem.objects.all()
     serializer_class = HomeListItemAdminSerializer
     permission_classes = [IsContentEditor]
@@ -175,7 +258,7 @@ class HomeListItemAdminViewSet(viewsets.ModelViewSet):
         return qs
 
 
-class HomeFloaterAdminViewSet(viewsets.ModelViewSet):
+class HomeFloaterAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
     queryset = HomeFloater.objects.all()
     serializer_class = HomeFloaterAdminSerializer
     permission_classes = [IsContentEditor]
@@ -234,7 +317,7 @@ class HomeSectionOrderAdminViewSet(
 
 # ── Blog posts ────────────────────────────────────────────────────
 
-class BlogPostAdminViewSet(viewsets.ModelViewSet):
+class BlogPostAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
     queryset = BlogPost.objects.all()
     serializer_class = BlogPostAdminSerializer
     permission_classes = [IsContentEditor]
@@ -267,7 +350,8 @@ class BlogPostAdminViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         tags = serializer.validated_data.pop("tags", None)
-        instance = serializer.save()
+        super().perform_create(serializer)          # saves + records
+        instance = serializer.instance
         if not instance.author_id:
             instance.author = self.request.user
             instance.save(update_fields=["author"])
@@ -302,22 +386,26 @@ class BlogPostAdminViewSet(viewsets.ModelViewSet):
             reason=self.request.data.get("revision_reason", ""),
         )
         tags = serializer.validated_data.pop("tags", None)
-        instance = serializer.save()
-        _sync_tags(instance, tags)
+        super().perform_update(serializer)          # saves + records
+        _sync_tags(serializer.instance, tags)
 
     @action(detail=True, methods=["post"])
     def publish(self, request, pk=None):
         post = self.get_object()
+        before = snapshot_of(post)
         post.status = PublishStatus.PUBLISHED
         post.publish_at = timezone.now()
         post.save()
+        self._record_status_action(post, before)
         return Response(self.get_serializer(post).data)
 
     @action(detail=True, methods=["post"])
     def unpublish(self, request, pk=None):
         post = self.get_object()
+        before = snapshot_of(post)
         post.status = PublishStatus.DRAFT
         post.save()
+        self._record_status_action(post, before)
         return Response(self.get_serializer(post).data)
 
     # `translation_group`/`locale` on the new row are assigned HERE,
@@ -414,7 +502,7 @@ class BlogPostAdminViewSet(viewsets.ModelViewSet):
 
 # ── Current affairs ───────────────────────────────────────────────
 
-class CurrentAffairAdminViewSet(viewsets.ModelViewSet):
+class CurrentAffairAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
     queryset = CurrentAffair.objects.all()
     serializer_class = CurrentAffairAdminSerializer
     permission_classes = [IsContentEditor]
@@ -438,25 +526,29 @@ class CurrentAffairAdminViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         tags = serializer.validated_data.pop("tags", None)
-        instance = serializer.save()
-        _sync_tags(instance, tags)
+        super().perform_create(serializer)          # saves + records
+        _sync_tags(serializer.instance, tags)
 
     def perform_update(self, serializer):
         tags = serializer.validated_data.pop("tags", None)
-        instance = serializer.save()
-        _sync_tags(instance, tags)
+        super().perform_update(serializer)          # saves + records
+        _sync_tags(serializer.instance, tags)
 
     @action(detail=True, methods=["post"])
     def publish(self, request, pk=None):
         obj = self.get_object()
+        before = snapshot_of(obj)
         obj.status = PublishStatus.PUBLISHED
         obj.publish_at = timezone.now()
         obj.save()
+        self._record_status_action(obj, before)
         return Response(self.get_serializer(obj).data)
 
     @action(detail=True, methods=["post"])
     def unpublish(self, request, pk=None):
         obj = self.get_object()
+        before = snapshot_of(obj)
         obj.status = PublishStatus.DRAFT
         obj.save()
+        self._record_status_action(obj, before)
         return Response(self.get_serializer(obj).data)

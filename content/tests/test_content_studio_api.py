@@ -865,3 +865,145 @@ class PublishStatusIntentTest(StudioApiTestCase):
         c.post(PUBLISH_URL, {}, format="json")
         self.hero.refresh_from_db()
         self.assertEqual(self.hero.status, PublishStatus.PUBLISHED)
+
+
+class RevisionRecordingTest(StudioApiTestCase):
+    """Every write a person makes through the admin API leaves history.
+
+    Before this, `record_revision` had ONE production call site — the page
+    editor's publish — so editing an FAQ, notice, card, affair, list item,
+    badge or tag wrote nothing, the History feed stayed empty, and
+    ACTION_CREATED/UPDATED/HIDDEN/DELETED were dead constants.
+    """
+
+    def _revisions_for(self, obj):
+        from django.contrib.contenttypes.models import ContentType
+        return ContentRevision.objects.filter(
+            content_type=ContentType.objects.get_for_model(obj.__class__),
+            object_id=obj.pk,
+        ).order_by("id")
+
+    def test_creating_an_answer_is_recorded(self):
+        res = self.client_for(self.editor).post(
+            "/api/content/admin/faqs/",
+            {"question": "Is it recorded?", "answer_html": "<p>Yes.</p>",
+             "page": "general"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201, res.content)
+
+        from content.models import FAQItem
+        faq = FAQItem.objects.get(pk=res.json()["id"])
+        revs = self._revisions_for(faq)
+        self.assertEqual([r.action for r in revs], [ContentRevision.ACTION_CREATED])
+        self.assertEqual(revs[0].actor, self.editor)
+
+    def test_editing_an_answer_records_the_previous_state(self):
+        from content.models import FAQItem
+        faq = FAQItem.objects.create(
+            question="Before", answer_html="<p>Old.</p>", page="general",
+        )
+        res = self.client_for(self.editor).patch(
+            f"/api/content/admin/faqs/{faq.pk}/", {"question": "After"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+
+        revs = self._revisions_for(faq)
+        self.assertEqual([r.action for r in revs], [ContentRevision.ACTION_UPDATED])
+        # the snapshot is the state BEFORE the edit — that is what makes undo work
+        self.assertEqual(revs[0].snapshot["question"], "Before")
+
+    def test_a_status_change_reads_as_published_or_hidden_not_updated(self):
+        from content.models import FAQItem
+        faq = FAQItem.objects.create(
+            question="Q", answer_html="<p>A</p>", page="general",
+            status=PublishStatus.DRAFT,
+        )
+        c = self.client_for(self.editor)
+        c.patch(f"/api/content/admin/faqs/{faq.pk}/",
+                {"status": PublishStatus.PUBLISHED}, format="json")
+        c.patch(f"/api/content/admin/faqs/{faq.pk}/",
+                {"status": PublishStatus.ARCHIVED}, format="json")
+
+        self.assertEqual(
+            [r.action for r in self._revisions_for(faq)],
+            [ContentRevision.ACTION_PUBLISHED, ContentRevision.ACTION_HIDDEN],
+        )
+
+    def test_deleting_is_recorded_with_its_last_state(self):
+        from content.models import FAQItem
+        faq = FAQItem.objects.create(
+            question="Doomed", answer_html="<p>A</p>", page="general",
+        )
+        pk = faq.pk
+        res = self.client_for(self.editor).delete(
+            f"/api/content/admin/faqs/{pk}/",
+        )
+        self.assertEqual(res.status_code, 204, res.content)
+        self.assertFalse(FAQItem.objects.filter(pk=pk).exists())
+
+        from django.contrib.contenttypes.models import ContentType
+        rev = ContentRevision.objects.get(
+            content_type=ContentType.objects.get_for_model(FAQItem),
+            object_id=pk,
+        )
+        self.assertEqual(rev.action, ContentRevision.ACTION_DELETED)
+        self.assertEqual(rev.snapshot["question"], "Doomed")
+
+    def test_seeding_directly_writes_no_history(self):
+        """The whole reason this is not a post_save signal: a migration or
+        seed run must not fill the feed with entries nobody caused."""
+        from content.models import FAQItem
+        faq = FAQItem.objects.create(
+            question="Seeded", answer_html="<p>A</p>", page="general",
+        )
+        self.assertEqual(self._revisions_for(faq).count(), 0)
+
+
+class RestoreKeepsRelationsTest(StudioApiTestCase):
+    def test_restoring_a_post_brings_its_tags_back(self):
+        """`concrete_fields` excludes M2M, so undo used to restore a post's
+        text and permanently lose its tags — while the snapshot held them
+        the whole time."""
+        from content.models import BlogPost, ContentTag
+        from content.revisions import restore_revision, snapshot_of
+
+        tag = ContentTag.objects.create(name="ncert")
+        post = BlogPost.objects.create(title="With tags")
+        post.tags.set([tag])
+
+        snapshot = snapshot_of(post)
+        self.assertIn("tags", snapshot, "the serializer should capture M2M")
+
+        rev = record_revision(
+            post, ContentRevision.ACTION_UPDATED, actor=self.editor,
+            snapshot=snapshot,
+        )
+
+        post.tags.clear()
+        post.title = "Stripped"
+        post.save()
+
+        restored = restore_revision(rev, actor=self.editor)
+        self.assertEqual(restored.title, "With tags")
+        self.assertEqual([t.name for t in restored.tags.all()], ["ncert"])
+
+    def test_a_tag_deleted_since_the_snapshot_does_not_break_the_restore(self):
+        from content.models import BlogPost, ContentTag
+        from content.revisions import restore_revision, snapshot_of
+
+        keep = ContentTag.objects.create(name="keep")
+        gone = ContentTag.objects.create(name="gone")
+        post = BlogPost.objects.create(title="Two tags")
+        post.tags.set([keep, gone])
+
+        rev = record_revision(
+            post, ContentRevision.ACTION_UPDATED, actor=self.editor,
+            snapshot=snapshot_of(post),
+        )
+        gone.delete()
+        post.tags.clear()
+
+        restored = restore_revision(rev, actor=self.editor)
+        self.assertEqual([t.name for t in restored.tags.all()], ["keep"])

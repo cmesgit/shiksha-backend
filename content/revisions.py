@@ -58,6 +58,29 @@ def record_revision(obj, action, actor=None, note="", snapshot=None):
     return rev
 
 
+def record_deletion(model, pk, snapshot, actor=None, note=""):
+    """Record that a row was deleted, after it is already gone.
+
+    ``record_revision`` reads ``obj.pk``, which is unusable here — the row no
+    longer exists and Django may have cleared the attribute. The content
+    type and id are passed explicitly so the feed can still say what was
+    deleted and show its last state. ``restore_revision`` deliberately returns
+    ``None`` for these: re-creating a deleted row would resurrect it under a
+    new id and silently break anything that referenced the old one.
+    """
+    ct = ContentType.objects.get_for_model(model)
+    rev = ContentRevision.objects.create(
+        content_type=ct,
+        object_id=pk,
+        snapshot=snapshot or {},
+        action=ContentRevision.ACTION_DELETED,
+        actor=actor if (actor and actor.is_authenticated) else None,
+        note=note or "",
+    )
+    _prune(ct, pk)
+    return rev
+
+
 def snapshot_before(obj):
     """Capture a snapshot to hand to ``record_revision`` after mutating ``obj``.
 
@@ -110,6 +133,23 @@ def restore_revision(revision, actor=None):
         setattr(obj, field.attname if field.is_relation else name, value)
 
     obj.save()
+
+    # M2M separately, and after the save: ``concrete_fields`` above excludes
+    # them, so a restore brought back a post's text and silently dropped its
+    # tags. ``snapshot_of`` does capture them — Django's serializer emits a list
+    # of pks — so the data was there all along and nothing read it.
+    for field in model._meta.many_to_many:
+        if field.name not in (revision.snapshot or {}):
+            continue
+        wanted = revision.snapshot[field.name] or []
+        # A related row may have been deleted since the snapshot. Restoring the
+        # survivors beats raising and abandoning the whole restore; the feed
+        # still records what was re-applied.
+        alive = list(
+            field.remote_field.model.objects
+            .filter(pk__in=wanted).values_list("pk", flat=True)
+        )
+        getattr(obj, field.name).set(alive)
 
     record_revision(
         obj,
