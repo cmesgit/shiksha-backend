@@ -10,7 +10,7 @@ from django.contrib import admin
 from django.utils import timezone
 
 from .models import (
-    SkillCategory, ExpertProfile, TeacherApplication, SkillSession,
+    SkillCategory, ExpertProfile, SkillSession,
 )
 from .course_models import (
     SkillCourse, SkillCourseSection, SkillCourseLecture,
@@ -112,13 +112,6 @@ class SkillPaymentRequestAdmin(admin.ModelAdmin):
 # ─────────────────────────────────────────────────────────────────────────
 # Lightweight registrations for visibility
 # ─────────────────────────────────────────────────────────────────────────
-
-@admin.register(TeacherApplication)
-class TeacherApplicationAdmin(admin.ModelAdmin):
-    list_display = ("user", "skill_name", "track", "status", "created_at")
-    list_filter = ("status", "track")
-    search_fields = ("skill_name", "user__email")
-
 
 admin.site.register(SkillCategory)
 admin.site.register(ExpertProfile)

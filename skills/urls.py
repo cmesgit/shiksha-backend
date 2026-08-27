@@ -18,9 +18,9 @@ from .admin_views import (
 )
 from .views import (
     CategoryListView, ExpertDetailView, StudentRegisterView,
-    TeacherApplicationCreateView, InterviewSlotListView, ScheduleInterviewView,
-    ReviewQueueView, SubmitEvaluationView, SessionRequestView, CreateOrderView,
-    AdminExpertListView, AdminExpertDetailView, AdminExpertSuspendView,   # NEW
+    SessionRequestView, CreateOrderView,
+    AdminExpertListView, AdminExpertDetailView, AdminExpertSuspendView,
+    AdminExpertListTeacherView,
     MarketingBlockListView,                                              # NEW — SkillDev CMS
     AdminSkillCategoryListView, AdminSkillCategoryDetailView,             # NEW — SkillDev CMS
     AdminSkillMarketingBlockListView, AdminSkillMarketingBlockDetailView, # NEW — SkillDev CMS
@@ -116,9 +116,6 @@ urlpatterns = [
     path("payments/create-order/",                   CreateOrderView.as_view()),
 
     # ── Teacher application + screening ──────────────────────────────────────
-    path("teacher-applications/",                                TeacherApplicationCreateView.as_view()),
-    path("teacher-applications/<uuid:application_id>/schedule/", ScheduleInterviewView.as_view()),
-    path("interview-slots/",                                     InterviewSlotListView.as_view()),
 
     # ── Teacher — skill courses ───────────────────────────────────────────────
     path("teacher/courses/",                              TeacherCourseListCreateView.as_view()),
@@ -170,13 +167,13 @@ urlpatterns = [
     path("subscription/submit-payment/",  ExpertSubscriptionSubmitPaymentView.as_view()),
 
     # ── Admin ─────────────────────────────────────────────────────────────────
-    path("admin/interview-queue/",                               ReviewQueueView.as_view()),
     path("admin/sessions/",                                      AdminSessionListView.as_view()),
     path("admin/experts/",                                       AdminExpertListView.as_view()),
+    # Not a uuid, so it can't collide with <uuid:expert_id> below.
+    path("admin/experts/list-teacher/",                          AdminExpertListTeacherView.as_view()),
     path("admin/experts/<uuid:expert_id>/",                      AdminExpertDetailView.as_view()),
     path("admin/experts/<uuid:expert_id>/suspend/",              AdminExpertSuspendView.as_view()),
     path("admin/users/<uuid:user_id>/skill-profile/",            AdminUserSkillProfileView.as_view()),
-    path("admin/interviews/<uuid:application_id>/evaluation/",   SubmitEvaluationView.as_view()),
     path("admin/courses/",                                       AdminSkillCourseQueueView.as_view()),
     path("admin/courses/<uuid:course_id>/review/",               AdminSkillCourseReviewView.as_view()),
     path("admin/courses/<uuid:course_id>/media/",                AdminSkillCourseMediaView.as_view()),

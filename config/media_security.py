@@ -72,19 +72,14 @@ def _check_teacher_application_doc(request, name):
     ).exists())
 
 
-def _check_teacher_application_video(request, name):
-    """skills/applications/videos/ — TeacherApplication.intro_video, the
-    guest-expert application clip. Unreviewed at submission time, so
-    private like the other application documents above (skill_experts/ is
-    the separate, already-public post-approval directory photo)."""
-    from skills.models import TeacherApplication
-
-    user = request.user
-    if not user.is_authenticated:
-        return False
-    return _staff_or(
-        user, TeacherApplication.objects.filter(user=user, intro_video=name).exists()
-    )
+# NOTE: there is deliberately no rule for "skills/applications/videos/".
+# It used to map to a checker reading TeacherApplication.intro_video, but the
+# skill screening pipeline was removed (experts are now listed directly, with
+# no application or interview), so no model owns those files any more. With the
+# model gone there is nobody to check ownership against, and `is_authorized`
+# is deny-by-default: an unmapped prefix resolves to staff-only, which is the
+# right answer for orphaned clips. Do NOT "fix" this by adding a permissive
+# rule — any files still on disk are unreviewed submissions from real people.
 
 
 def _check_learner_photo(request, name):
@@ -411,7 +406,6 @@ _RULES = (
     ("teachers/agreements/", _check_teacher_application_doc),
     ("teachers/skills/videos/", _check_teacher_application_doc),
     ("teachers/skills/files/", _check_teacher_application_doc),
-    ("skills/applications/videos/", _check_teacher_application_video),
     ("learners/photos/", _check_learner_photo),
     ("learners/avatar/", _check_learner_photo),
     ("enrollment_receipts/", _check_enrollment_receipt),

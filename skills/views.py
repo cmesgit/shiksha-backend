@@ -36,10 +36,6 @@ from .notifications import push_skill_bell
 from .models import (
     SkillCategory,
     ExpertProfile,
-    TeacherApplication,
-    InterviewSlot,
-    Interview,
-    Evaluation,
     SkillSession,
 )
 from .marketing_models import SkillMarketingBlock
@@ -49,10 +45,6 @@ from .serializers import (
     SkillMarketingBlockSerializer,
     SkillMarketingBlockAdminSerializer,
     ExpertCardSerializer,
-    TeacherApplicationCreateSerializer,
-    InterviewSlotSerializer,
-    ReviewQueueSerializer,
-    EvaluationSerializer,
     SkillSessionSerializer,
 )
 
@@ -239,189 +231,9 @@ class StudentRegisterView(APIView):
 # TEACHER APPLICATION + SCREENING
 # =====================================================
 
-class TeacherApplicationCreateView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        serializer = TeacherApplicationCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        application = serializer.save(
-            user=request.user,
-            status=TeacherApplication.STATUS_SUBMITTED,
-        )
-        return Response(
-            {"ok": True, "applicationId": str(application.id), "status": application.status},
-            status=status.HTTP_201_CREATED,
-        )
-
-
-class InterviewSlotListView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        qs = [s for s in InterviewSlot.objects.filter(is_active=True) if s.is_open]
-        return Response(InterviewSlotSerializer(qs, many=True).data)
-
-
-class ScheduleInterviewView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, application_id):
-        application = (
-            TeacherApplication.objects
-            .filter(id=application_id, user=request.user)
-            .first()
-        )
-        if not application:
-            raise NotFound("Application not found.")
-
-        slot_id = request.data.get("slot")
-        slot = None
-        scheduled_for = None
-        if slot_id:
-            # Early un-locked pre-check for a clean error; the authoritative
-            # capacity check happens under a row lock inside the transaction.
-            slot = InterviewSlot.objects.filter(id=slot_id, is_active=True).first()
-            if not slot or not slot.is_open:
-                raise ValidationError({"slot": "That slot is no longer available."})
-            scheduled_for = slot.starts_at
-        else:
-            scheduled_for = request.data.get("scheduled_for")
-            if not scheduled_for:
-                raise ValidationError("A slot or scheduled_for is required.")
-
-        with transaction.atomic():
-            if slot:
-                # Lock the slot row so a capacity check + booked_count increment
-                # is atomic. Without this, two applicants both read
-                # booked_count < capacity and both increment, over-booking a
-                # capped slot past its capacity.
-                slot = InterviewSlot.objects.select_for_update().get(id=slot.id)
-                if not slot.is_open:
-                    raise ValidationError({"slot": "That slot is no longer available."})
-            interview, _ = Interview.objects.update_or_create(
-                application=application,
-                defaults={"slot": slot, "scheduled_for": scheduled_for},
-            )
-            if slot:
-                slot.booked_count += 1
-                slot.save(update_fields=["booked_count"])
-            application.status = TeacherApplication.STATUS_INTERVIEW_SCHEDULED
-            application.save(update_fields=["status", "updated_at"])
-
-        return Response({"ok": True, "scheduled_for": interview.scheduled_for})
-
-
 # =====================================================
 # ADMIN: reviewer queue + evaluation
 # =====================================================
-
-class ReviewQueueView(APIView):
-    permission_classes = [IsAuthenticated, IsAdmin]
-
-    def get(self, request):
-        qs = (
-            TeacherApplication.objects
-            .exclude(status=TeacherApplication.STATUS_REJECTED)
-            .select_related("category", "user", "interview")
-            .order_by("-created_at")
-        )
-        st = request.query_params.get("status")
-        if st:
-            qs = qs.filter(status=st)
-        return Response(ReviewQueueSerializer(qs, many=True, context={"request": request}).data)
-
-
-class SubmitEvaluationView(APIView):
-    permission_classes = [IsAuthenticated, IsAdmin]
-
-    @transaction.atomic
-    def post(self, request, application_id):
-        application = (
-            TeacherApplication.objects
-            .select_related("user")
-            .filter(id=application_id)
-            .first()
-        )
-        if not application:
-            raise NotFound("Application not found.")
-
-        interview = getattr(application, "interview", None)
-        if not interview:
-            interview = Interview.objects.create(
-                application=application, scheduled_for=timezone.now(),
-                status=Interview.STATUS_COMPLETED,
-            )
-
-        serializer = EvaluationSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        evaluation = serializer.save(interview=interview, evaluator=request.user)
-
-        decision = evaluation.decision
-        if decision == Evaluation.DECISION_APPROVE:
-            application.status = TeacherApplication.STATUS_APPROVED
-            self._approve_expert(application, evaluation)
-        elif decision == Evaluation.DECISION_HOLD:
-            application.status = TeacherApplication.STATUS_HOLD
-        else:
-            application.status = TeacherApplication.STATUS_REJECTED
-
-        application.reviewed_by = request.user
-        application.decided_at = timezone.now()
-        application.save(update_fields=["status", "reviewed_by", "decided_at", "updated_at"])
-        interview.status = Interview.STATUS_COMPLETED
-        interview.save(update_fields=["status"])
-
-        return Response({"ok": True, "status": application.status})
-
-    def _approve_expert(self, application, evaluation):
-        user = application.user
-        tp = getattr(user, "teacher_profile", None)
-        if tp is None:
-            raise ValidationError(
-                "Applicant has no TeacherProfile; complete teacher onboarding first."
-            )
-
-        tp.is_approved = True
-        if evaluation.recommended_tier:
-            tp.tier = evaluation.recommended_tier
-        TP = tp.__class__
-        # Approving the SKILL track means setting skill_status, not just
-        # is_approved. TeacherContextView and the dashboard's TrackSwitcher
-        # both gate on tracks.skill == "approved" (i.e. skill_status), so
-        # without this the admin saw a success response while the expert
-        # stayed track_locked and could never open the dashboard they were
-        # just granted. See academy-vs-skill gating: is_approved is derived
-        # from the track statuses, never the other way round.
-        tp.set_track_status(TP.TRACK_SKILL, TP.TRACK_APPROVED)
-        if tp.teacher_type == TP.TYPE_FACULTY:
-            tp.teacher_type = TP.TYPE_BOTH
-        elif not tp.teacher_type:
-            tp.teacher_type = TP.TYPE_GUEST
-        tp.save(update_fields=["is_approved", "tier", "teacher_type", "skill_status"])
-
-        rate_band = {
-            Evaluation.TIER_STANDARD: 40000,
-            Evaluation.TIER_SENIOR:   50000,
-            Evaluation.TIER_EXPERT:   60000,
-        }
-        ExpertProfile.objects.update_or_create(
-            teacher_profile=tp,
-            defaults={
-                "category":     application.category,
-                "headline":     application.headline or application.skill_name,
-                "skill_tags":   application.skill_tags or [],
-                "bio":          tp.bio or application.method_note,
-                "hourly_rate":  rate_band.get(evaluation.recommended_tier, 35000),
-                "is_listed":    True,
-            },
-        )
-
-        teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
-        ur, _ = UserRole.objects.get_or_create(user=user, role=teacher_role)
-        if not ur.is_active:
-            ur.approve(self.request.user)
-
 
 # =====================================================
 # SESSIONS + PAYMENT
@@ -637,6 +449,121 @@ def _absolute_url(field_file, request=None):
     if not field_file:
         return None
     return request.build_absolute_uri(field_file.url) if request else field_file.url
+
+
+# Paise (₹350). The old evaluation path banded the rate by interview tier and
+# fell back to this when no tier was recommended; with screening gone there is
+# no tier, so this is simply the starting rate an admin can edit afterwards.
+DEFAULT_EXPERT_HOURLY_RATE = 35000
+
+
+class AdminExpertListTeacherView(APIView):
+    """POST /skill/admin/experts/list-teacher/  { teacher_profile_id | email, … }
+
+    List an existing teacher as a skill expert, directly.
+
+    The Skill track has no screening step — no application to review, no
+    interview to schedule. This endpoint is the whole onboarding path, and it
+    exists because ``SubmitEvaluationView`` used to be the *only* code in the
+    codebase able to produce a listed expert. Deleting that without this would
+    have left the marketplace with no way to onboard anyone at all.
+
+    Three things must happen together, and all three are load-bearing:
+
+    * ``skill_status`` → approved. ``TeacherContextView`` and the dashboard's
+      TrackSwitcher both gate on ``tracks.skill``, so without this the expert
+      stays track_locked and can never open the dashboard they were just
+      granted. ``is_approved`` is derived from the track statuses, never the
+      other way round.
+    * an ``ExpertProfile`` with ``is_listed=True`` — what actually puts them in
+      the marketplace. Booking requires ``is_listed``.
+    * the TEACHER role, approved.
+    """
+
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    @transaction.atomic
+    def post(self, request):
+        from accounts.models import TeacherProfile
+
+        pk = request.data.get("teacher_profile_id")
+        email = (request.data.get("email") or "").strip()
+        if pk:
+            tp = TeacherProfile.objects.filter(pk=pk).select_related("user").first()
+        elif email:
+            tp = (
+                TeacherProfile.objects
+                .filter(user__email__iexact=email).select_related("user").first()
+            )
+        else:
+            raise ValidationError("Give a teacher_profile_id or an email.")
+        if tp is None:
+            raise NotFound("No teacher profile for that id or email.")
+
+        category = None
+        category_id = request.data.get("category_id")
+        if category_id:
+            category = SkillCategory.objects.filter(id=category_id).first()
+            if category is None:
+                raise ValidationError("That skill category does not exist.")
+
+        headline = (request.data.get("headline") or "").strip()
+        if not headline:
+            # Never blank: `headline` is max_length=160 and non-blank on the
+            # model, and it is what the marketplace card shows.
+            headline = category.label if category else tp.user.get_full_name() or "Skill expert"
+
+        tags = request.data.get("skill_tags") or []
+        if not isinstance(tags, list):
+            raise ValidationError("skill_tags must be a list.")
+
+        try:
+            rate = int(request.data.get("hourly_rate") or DEFAULT_EXPERT_HOURLY_RATE)
+        except (TypeError, ValueError):
+            raise ValidationError("hourly_rate must be a whole number of paise.")
+        if rate < 0:
+            raise ValidationError("hourly_rate cannot be negative.")
+
+        TP = tp.__class__
+        tp.is_approved = True
+        tp.set_track_status(TP.TRACK_SKILL, TP.TRACK_APPROVED)
+        if tp.teacher_type == TP.TYPE_FACULTY:
+            tp.teacher_type = TP.TYPE_BOTH
+        elif not tp.teacher_type:
+            tp.teacher_type = TP.TYPE_GUEST
+        tp.save(update_fields=[
+            "is_approved", "teacher_type", "skill_status",
+        ])
+
+        ep, created = ExpertProfile.objects.update_or_create(
+            teacher_profile=tp,
+            defaults={
+                "category":  category,
+                "headline":  headline,
+                "bio":       tp.bio or "",
+                "is_listed": True,
+            },
+        )
+        if tags:
+            ep.skill_tags = tags
+            ep.save(update_fields=["skill_tags"])
+        if created:
+            ep.hourly_rate = rate
+            ep.save(update_fields=["hourly_rate"])
+        if category is not None:
+            ep.categories.add(category)
+
+        teacher_role, _ = Role.objects.get_or_create(name=Role.TEACHER)
+        ur, _ = UserRole.objects.get_or_create(user=tp.user, role=teacher_role)
+        if not ur.is_active:
+            ur.approve(request.user)
+
+        row = _admin_expert_row(ep, request)
+        row["created"] = created
+        return Response(
+            row,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 class AdminExpertListView(APIView):

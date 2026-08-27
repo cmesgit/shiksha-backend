@@ -1303,3 +1303,119 @@ class IntroVideoSignedUploadUrlOwnershipTest(TestCase):
             self.PendingIntroVideoUpload.objects.filter(
                 video_id="vid-new", created_by=self.expert_a_user).exists()
         )
+
+
+class ListTeacherAsExpertTests(TestCase):
+    """POST /skill/admin/experts/list-teacher/
+
+    This endpoint replaced the screening pipeline (TeacherApplication ->
+    Interview -> Evaluation), which was the ONLY code able to produce a listed
+    expert. Skill experts now get direct access with no application or
+    interview, so these tests pin the three things that must happen together —
+    miss any one and the expert is either invisible in the marketplace or
+    locked out of the dashboard they were just granted.
+    """
+
+    URL = "/api/skill/admin/experts/list-teacher/"
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_user(
+            username="adm", email="adm@test.com", password="x",
+            is_staff=True, is_superuser=True,
+        )
+        cls.teacher_user = User.objects.create_user(
+            username="t1", email="t1@test.com", password="x",
+        )
+        cls.tp = TeacherProfile.objects.create(user=cls.teacher_user)
+        cls.outsider = User.objects.create_user(
+            username="o1", email="o1@test.com", password="x",
+        )
+
+    def client_for(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def test_listing_a_teacher_makes_them_a_listed_expert(self):
+        res = self.client_for(self.admin).post(
+            self.URL,
+            {"teacher_profile_id": self.tp.pk, "headline": "Guitar teacher"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertTrue(res.json()["is_listed"])
+
+        ep = ExpertProfile.objects.get(teacher_profile=self.tp)
+        self.assertTrue(ep.is_listed)
+        self.assertEqual(ep.headline, "Guitar teacher")
+
+    def test_the_skill_track_is_approved_not_just_is_approved(self):
+        """The dashboard's TrackSwitcher and TeacherContextView gate on
+        tracks.skill. Setting only `is_approved` left the expert track_locked
+        and unable to open the dashboard they were just granted."""
+        self.client_for(self.admin).post(
+            self.URL, {"teacher_profile_id": self.tp.pk}, format="json",
+        )
+        self.tp.refresh_from_db()
+        self.assertEqual(self.tp.skill_status, TeacherProfile.TRACK_APPROVED)
+        self.assertTrue(self.tp.is_approved)
+
+    def test_the_teacher_role_is_granted_and_active(self):
+        self.client_for(self.admin).post(
+            self.URL, {"teacher_profile_id": self.tp.pk}, format="json",
+        )
+        ur = UserRole.objects.filter(
+            user=self.teacher_user, role__name=Role.TEACHER,
+        ).first()
+        self.assertIsNotNone(ur)
+        self.assertTrue(ur.is_active)
+
+    def test_it_can_be_resolved_by_email(self):
+        res = self.client_for(self.admin).post(
+            self.URL, {"email": "T1@TEST.COM"}, format="json",
+        )
+        self.assertEqual(res.status_code, 201, res.content)
+
+    def test_listing_twice_relists_instead_of_erroring(self):
+        c = self.client_for(self.admin)
+        first = c.post(self.URL, {"teacher_profile_id": self.tp.pk}, format="json")
+        self.assertEqual(first.status_code, 201, first.content)
+
+        ep = ExpertProfile.objects.get(teacher_profile=self.tp)
+        ep.is_listed = False
+        ep.save(update_fields=["is_listed"])
+
+        again = c.post(self.URL, {"teacher_profile_id": self.tp.pk}, format="json")
+        self.assertEqual(again.status_code, 200, again.content)
+        self.assertFalse(again.json()["created"])
+        ep.refresh_from_db()
+        self.assertTrue(ep.is_listed)
+        self.assertEqual(ExpertProfile.objects.filter(teacher_profile=self.tp).count(), 1)
+
+    def test_a_headline_is_never_blank(self):
+        """`headline` is max_length=160 and non-blank, and it is what the
+        marketplace card shows."""
+        self.client_for(self.admin).post(
+            self.URL, {"teacher_profile_id": self.tp.pk}, format="json",
+        )
+        self.assertTrue(
+            ExpertProfile.objects.get(teacher_profile=self.tp).headline.strip()
+        )
+
+    def test_an_unknown_teacher_is_404(self):
+        res = self.client_for(self.admin).post(
+            self.URL, {"email": "nobody@test.com"}, format="json",
+        )
+        self.assertEqual(res.status_code, 404, res.content)
+
+    def test_neither_id_nor_email_is_400(self):
+        res = self.client_for(self.admin).post(self.URL, {}, format="json")
+        self.assertEqual(res.status_code, 400, res.content)
+
+    def test_a_non_admin_cannot_list_anyone(self):
+        res = self.client_for(self.outsider).post(
+            self.URL, {"teacher_profile_id": self.tp.pk}, format="json",
+        )
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertFalse(ExpertProfile.objects.filter(teacher_profile=self.tp).exists())

@@ -18,9 +18,6 @@ from rest_framework import serializers
 from .models import (
     SkillCategory,
     ExpertProfile,
-    TeacherApplication,
-    InterviewSlot,
-    Evaluation,
     SkillSession,
 )
 from .marketing_models import SkillMarketingBlock
@@ -256,77 +253,6 @@ class ExpertCardSerializer(serializers.ModelSerializer):
         if url and request is not None:
             return request.build_absolute_uri(url)
         return url
-
-
-class TeacherApplicationCreateSerializer(serializers.ModelSerializer):
-    category = serializers.SlugRelatedField(
-        slug_field="slug", queryset=SkillCategory.objects.all(),
-        required=False, allow_null=True,
-    )
-
-    class Meta:
-        model = TeacherApplication
-        fields = [
-            "id", "track", "category", "skill_name", "headline",
-            "experience", "method_note", "skill_tags", "intro_video", "status",
-        ]
-        read_only_fields = ["id", "status"]
-
-
-class InterviewSlotSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = InterviewSlot
-        fields = ["id", "starts_at", "duration_mins"]
-
-
-class ReviewQueueSerializer(serializers.ModelSerializer):
-    """Matches a CANDIDATES[] entry from data.js."""
-    name  = serializers.SerializerMethodField()
-    skill = serializers.CharField(source="skill_name")
-    cat   = serializers.SerializerMethodField()
-    exp   = serializers.CharField(source="experience")
-    img   = serializers.SerializerMethodField()
-    time  = serializers.SerializerMethodField()
-    stage = serializers.CharField(read_only=True)
-
-    class Meta:
-        model = TeacherApplication
-        fields = ["id", "name", "skill", "cat", "exp", "img", "time", "status", "stage"]
-
-    def get_name(self, obj):
-        # SELF only — this names the APPLICANT. Falling back to any profile
-        # could label an application with a dependant's name.
-        lp = obj.user.self_learner_profile()
-        if lp:
-            name = f"{lp.first_name} {lp.last_name}".strip() or lp.full_name or lp.display_name
-            if name:
-                return name
-        return obj.user.username or obj.user.email
-
-    def get_cat(self, obj):
-        return obj.category.label if obj.category_id else ""
-
-    def get_img(self, obj):
-        request = self.context.get("request")
-        # SELF only — same reason as get_name above.
-        lp = obj.user.self_learner_profile()
-        if lp and lp.profile_photo:
-            url = lp.profile_photo.url
-            return request.build_absolute_uri(url) if request else url
-        return None
-
-    def get_time(self, obj):
-        interview = getattr(obj, "interview", None)
-        return interview.scheduled_for if interview else None
-
-
-class EvaluationSerializer(serializers.ModelSerializer):
-    tier = serializers.CharField(source="recommended_tier", required=False, allow_blank=True)
-
-    class Meta:
-        model = Evaluation
-        fields = ["id", "scores", "decision", "tier", "feedback", "created_at"]
-        read_only_fields = ["id", "created_at"]
 
 
 class SkillSessionSerializer(serializers.ModelSerializer):
