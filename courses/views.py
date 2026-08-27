@@ -2297,14 +2297,23 @@ class PublicNavMenuView(APIView):
     permission_classes = [AllowAny]
 
     @staticmethod
-    def _class_links(board, group_key, prefix=False):
+    def _class_links(board, group_key):
         """One nav link per class this board actually offers.
 
         Labels come from `class_level`/`stream` rather than the course title,
-        so the menu reads "Class 11 · Science" regardless of how a given course
-        happens to be titled in the catalog. Courses with no class_level (the
-        coaching/competitive rows) are skipped — they belong to the separate
-        "competitive" category below, not under a board."""
+        so the menu reads "Class 11 · Science · CBSE" regardless of how a given
+        course happens to be titled in the catalog. Courses with no class_level
+        (the coaching/competitive rows) are skipped — they belong to the
+        separate "competitive" category below, not under a board.
+
+        The board name is ALWAYS appended — never conditionally. The mobile
+        drawer flattens every tab into one list (Navbar.jsx does
+        `cat.tabs.flatMap(t => t.links)`), so on prod, where CBSE and MBSE each
+        offer the same nine classes, the flattened list carried nine duplicated
+        labels: "Class 9" twice over with nothing to tell the boards apart, and
+        colliding React keys behind it. A qualifier applied only when one TAB
+        holds several boards cannot fix that — the ambiguity is created ACROSS
+        tabs, downstream of this payload."""
         courses = (
             Course.objects
             .filter(board=board, status__in=PUBLIC_COURSE_STATUSES,
@@ -2317,8 +2326,7 @@ class PublicNavMenuView(APIView):
             label = f"Class {c.class_level}"
             if c.stream and c.stream.name:
                 label += f" · {c.stream.name.title()}"
-            if prefix:
-                label = f"{board.name} · {label}"
+            label = f"{label} · {board.name}"
             if c.status == Course.STATUS_COMING_SOON:
                 links.append({"label": label, "soon": True})
             else:
@@ -2345,10 +2353,6 @@ class PublicNavMenuView(APIView):
             disp = type_display.get(board_type, board_type.title())
             label = f"{disp} Boards"
             group_boards = [b for b in boards if b.board_type == board_type]
-            # Prefix class labels with the board name only when the tab holds
-            # more than one active board — otherwise every label would read
-            # "CBSE · Class 9" in a tab that already says "Central Boards".
-            multi = sum(1 for b in group_boards if b.is_active) > 1
 
             links = []
             for b in group_boards:
@@ -2365,7 +2369,7 @@ class PublicNavMenuView(APIView):
                 # regression the frontend can't paper over: mergeLiveNavMenu()
                 # replaces its static tabs wholesale as soon as this endpoint
                 # answers, so anything omitted here simply vanishes from the nav.
-                links.extend(self._class_links(b, group_key, prefix=multi))
+                links.extend(self._class_links(b, group_key))
             tabs.append({
                 "id": group_key,
                 "label": label,
