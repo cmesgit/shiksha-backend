@@ -31,8 +31,8 @@ from django.contrib.contenttypes.models import ContentType
 
 from .admin_serializers import HomeContentBlockAdminSerializer
 from .models import (
-    LIST_CONTENT_ELSEWHERE, SECTIONS_WITH_LIST_ITEMS,
-    ContentDraft, ContentRevision, HomeContentBlock, HomeSection,
+    LIST_CONTENT_ELSEWHERE, SECTION_WITH_CARD_CAP, SECTIONS_WITH_LIST_ITEMS,
+    ContentDraft, ContentRevision, HomeContentBlock, HomeFloater, HomeSection,
     HomeSectionOrder, PublishStatus,
 )
 from .permissions import IsContentEditor
@@ -1369,6 +1369,14 @@ class PageDraftView(APIView):
                 "edited_fields": dirty,
                 "order": o.order if o else None,
                 "is_visible": o.is_visible if o else True,
+                # The HomeSectionOrder row's id, so the editor can toggle
+                # is_visible. Without it the editor could only *display* the
+                # hidden state (an eye icon) and not change it, which is what
+                # kept the legacy Homepage Content tab alive. Note this is a
+                # different kind of hiding from the block's own `status`:
+                # is_visible drops the section from the homepage sequence,
+                # status is the content's publish state.
+                "order_id": o.id if o else None,
                 # Whether the public component for this section actually
                 # renders HomeListItem rows. The editor offered the list panel
                 # on every section, so rows saved against a section that
@@ -1378,6 +1386,14 @@ class PageDraftView(APIView):
                 # whose repeatable content is a different model on another
                 # screen (cards from courses, questions from answers).
                 "list_source": LIST_CONTENT_ELSEWHERE.get(value),
+                # The decorative badges pinned to this section, if it has any.
+                # Sent as the slot list rather than a boolean so the editor
+                # doesn't keep its own copy of the backend's slot table — a
+                # slot maps 1:1 to a pre-tested CSS position on the public
+                # site, so an invented one would render nowhere.
+                "floater_slots": HomeFloater.SLOT_CHOICES_BY_SECTION.get(value, []),
+                # Only Featured Courses caps how many showcase cards render.
+                "has_card_cap": value == SECTION_WITH_CARD_CAP,
             })
 
         return Response({

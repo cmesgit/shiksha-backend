@@ -753,6 +753,77 @@ class ListItemCapabilityTest(StudioApiTestCase):
                 self.assertIsInstance(s["supports_list_items"], bool)
 
 
+class SectionCapabilityTest(StudioApiTestCase):
+    """Everything the editor needs to reach parity with the legacy tab.
+
+    Each of these was owned only by the old Homepage Content screen, which is
+    what kept it alive: badge slots, the card-count cap, and the id needed to
+    toggle a section's place on the page.
+    """
+
+    def _sections(self):
+        body = self.client_for(self.editor).get(DRAFT_URL).json()
+        return {s["key"]: s for s in body["sections"]}
+
+    def test_only_three_sections_have_badge_slots(self):
+        sections = self._sections()
+        self.assertEqual(sections["hero"]["floater_slots"], ["cap", "book", "play"])
+        self.assertEqual(sections["collaborate"]["floater_slots"], ["top", "bottom"])
+        self.assertEqual(
+            sections["why_choose"]["floater_slots"], ["b_tl", "b_tr", "b_bl"],
+        )
+        # everything else has none, so the panel renders nothing
+        for key in ("why_shiksha", "featured_courses", "faq", "contact_hero"):
+            with self.subTest(section=key):
+                self.assertEqual(sections[key]["floater_slots"], [])
+
+    def test_slots_come_from_the_model_not_a_frontend_copy(self):
+        """A slot maps 1:1 to a pre-tested CSS position, so an invented one
+        renders nowhere. The editor must not keep its own list."""
+        from content.models import HomeFloater
+
+        for key, s in self._sections().items():
+            with self.subTest(section=key):
+                self.assertEqual(
+                    s["floater_slots"],
+                    HomeFloater.SLOT_CHOICES_BY_SECTION.get(key, []),
+                )
+
+    def test_only_featured_courses_caps_its_cards(self):
+        sections = self._sections()
+        self.assertTrue(sections["featured_courses"]["has_card_cap"])
+        for key in ("hero", "why_shiksha", "faq", "cta"):
+            with self.subTest(section=key):
+                self.assertFalse(sections[key]["has_card_cap"])
+
+    def test_the_cap_round_trips_through_the_draft_as_a_dict(self):
+        """It lives in `extra`, a JSONField. Flattening that to "" made the
+        editor unable to carry it at all."""
+        # The cap lives on this section's own block, so it has to exist.
+        HomeContentBlock.objects.create(
+            section="featured_courses", heading="Explore our",
+        )
+        c = self.client_for(self.editor)
+        res = c.put(
+            DRAFT_URL,
+            {"sections": {"featured_courses": {"extra": {"max_cards": 0}}}},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertNotIn("rejected", res.json())
+        self.assertEqual(
+            res.json()["draft"]["featured_courses"]["extra"], {"max_cards": 0},
+        )
+
+    def test_placed_sections_carry_the_order_row_id(self):
+        """Without it the editor could show the hidden state but not change
+        it, which is what kept the legacy tab alive."""
+        hero = self._sections()["hero"]
+        self.assertIsNotNone(hero["order_id"])
+        self.assertEqual(hero["order_id"], HomeSectionOrder.objects.get(
+            section="hero").id)
+
+
 class PublishStatusIntentTest(StudioApiTestCase):
     """Publishing must not un-hide a section the editor deliberately hid.
 

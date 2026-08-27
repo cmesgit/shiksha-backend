@@ -717,6 +717,13 @@ SECTIONS_WITH_LIST_ITEMS = frozenset({
 })
 
 
+# The one section whose content block also carries a cap on how many showcase
+# cards the homepage grid renders, stored as `extra.max_cards` and read by
+# shiksha-frontend's FeaturedCourses.jsx. Blank means 6; 0 means show every
+# published card. Named here rather than in the editors so both agree.
+SECTION_WITH_CARD_CAP = HomeSection.FEATURED_COURSES
+
+
 # Two of those five DO have repeatable content on the page — it just lives in
 # another model, edited on another screen. Saying so beats silently hiding the
 # panel and leaving the editor to wonder where the cards come from.
