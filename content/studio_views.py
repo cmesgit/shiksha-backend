@@ -1362,6 +1362,11 @@ class PageDraftView(APIView):
                 "key": value,
                 "label": label,
                 "has_content": block is not None,
+                # So the editor can delete a section's copy outright — the last
+                # thing the legacy Homepage Content tab could do that this one
+                # couldn't. Distinct from hiding: this removes the row, and the
+                # public site falls back to its own default copy.
+                "block_id": block.id if block else None,
                 "status": block.status if block else None,
                 "values": values,
                 # Drives the section list's amber edited-dot. Derived from the
