@@ -647,3 +647,105 @@ class SectionOrderTest(StudioApiTestCase):
         body = self.client_for(self.editor).get(DRAFT_URL).json()
         ordered = [s["key"] for s in body["sections"] if s["order"] is not None]
         self.assertEqual(ordered[:2], flipped[:2])
+
+
+class DraftValidationTest(StudioApiTestCase):
+    """A draft may not carry a value the column can't hold.
+
+    sqlite truncates silently; prod is Postgres, which raises DataError from
+    inside the atomic publish. The rollback takes `draft.delete()` with it, so
+    the bad draft survives and every later publish fails the same way — the
+    page becomes permanently unpublishable. These tests pin the refusal.
+    """
+
+    def test_over_length_value_is_rejected_at_draft_time(self):
+        c = self.client_for(self.editor)
+        res = c.put(
+            DRAFT_URL,
+            {"sections": {"hero": {"eyebrow": "z" * 500}}},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        self.assertIn("hero", body.get("rejected", {}))
+        self.assertIn("eyebrow", body["rejected"]["hero"])
+        # and nothing was stored
+        self.assertEqual(body["change_count"], 0)
+        self.assertFalse(ContentDraft.objects.exists())
+
+    def test_publish_refuses_a_bad_value_with_400_not_500(self):
+        """A draft written before this guard existed must not 500 forever."""
+        from django.contrib.contenttypes.models import ContentType
+
+        ContentDraft.objects.create(
+            content_type=ContentType.objects.get_for_model(HomeContentBlock),
+            object_id=self.hero.id,
+            author=self.editor,
+            payload={"eyebrow": "z" * 500},
+        )
+        res = self.client_for(self.editor).post(PUBLISH_URL, {}, format="json")
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertIn("eyebrow", res.json()["invalid"]["hero"])
+        self.hero.refresh_from_db()
+        self.assertEqual(self.hero.eyebrow, "")
+
+    def test_section_is_not_draft_editable(self):
+        """`section` is UNIQUE — a draft that sets it locks publishing."""
+        res = self.client_for(self.editor).put(
+            DRAFT_URL,
+            {"sections": {"hero": {"section": "why_shiksha"}}},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertIn("not editable", res.json()["rejected"]["hero"])
+        self.assertEqual(res.json()["change_count"], 0)
+
+    def test_json_field_round_trips_instead_of_flattening_to_empty_string(self):
+        self.hero.extra = {"foo": "bar"}
+        self.hero.save(update_fields=["extra"])
+        body = self.client_for(self.editor).get(DRAFT_URL).json()
+        hero = next(s for s in body["sections"] if s["key"] == "hero")
+        self.assertEqual(hero["values"]["extra"], {"foo": "bar"})
+
+
+class PublishStatusIntentTest(StudioApiTestCase):
+    """Publishing must not un-hide a section the editor deliberately hid.
+
+    The checklist tells the editor "Publishing saves your changes but the
+    section still won't show". Force-setting PUBLISHED made that copy a lie.
+    """
+
+    def test_archived_section_stays_archived_through_a_publish(self):
+        self.hero.status = PublishStatus.ARCHIVED
+        self.hero.save(update_fields=["status"])
+
+        c = self.client_for(self.editor)
+        c.put(DRAFT_URL, {"sections": {"hero": {"subhead": "typo fixed"}}},
+              format="json")
+        res = c.post(PUBLISH_URL, {}, format="json")
+
+        self.assertEqual(res.status_code, 200, res.content)
+        self.hero.refresh_from_db()
+        self.assertEqual(self.hero.subhead, "typo fixed")
+        self.assertEqual(self.hero.status, PublishStatus.ARCHIVED)
+
+    def test_a_drafted_status_is_honoured(self):
+        c = self.client_for(self.editor)
+        c.put(DRAFT_URL,
+              {"sections": {"hero": {"status": PublishStatus.ARCHIVED}}},
+              format="json")
+        res = c.post(PUBLISH_URL, {}, format="json")
+
+        self.assertEqual(res.status_code, 200, res.content)
+        self.hero.refresh_from_db()
+        self.assertEqual(self.hero.status, PublishStatus.ARCHIVED)
+
+    def test_publish_still_defaults_to_published(self):
+        self.hero.status = PublishStatus.DRAFT
+        self.hero.save(update_fields=["status"])
+        c = self.client_for(self.editor)
+        c.put(DRAFT_URL, {"sections": {"hero": {"subhead": "live now"}}},
+              format="json")
+        c.post(PUBLISH_URL, {}, format="json")
+        self.hero.refresh_from_db()
+        self.assertEqual(self.hero.status, PublishStatus.PUBLISHED)

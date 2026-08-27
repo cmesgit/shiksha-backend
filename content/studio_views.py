@@ -15,6 +15,7 @@ place that mapping lives.
 """
 from datetime import datetime, timedelta
 
+from django.core.exceptions import FieldDoesNotExist
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
@@ -57,6 +58,16 @@ def _page_or_404(key):
     return page
 
 
+# `section` is the row's identity, not its content, and it is UNIQUE. A draft
+# that sets it passes the whitelist, then raises IntegrityError inside the
+# atomic publish — and because the rollback takes `draft.delete()` with it, the
+# draft survives and every later publish fails identically. The page becomes
+# permanently unpublishable until someone deletes the row by hand. Excluded
+# explicitly rather than inherited from the CRUD serializer, which has every
+# reason to expose `section` and no reason to know about drafts.
+_DRAFT_PROTECTED_FIELDS = {"section"}
+
+
 def _editable_fields(model):
     """Field names a draft payload may set.
 
@@ -68,7 +79,33 @@ def _editable_fields(model):
     return {
         name for name, field in ser.fields.items()
         if not field.read_only and hasattr(model, name)
+        and name not in _DRAFT_PROTECTED_FIELDS
     }
+
+
+def _field_errors(instance, values):
+    """Validate draft values against the model's own field validators.
+
+    Returns ``{field: message}`` for anything that would not survive a save.
+
+    This runs on both the draft PUT and the publish. Without it an over-length
+    or malformed value is accepted happily, then reaches ``block.save()``:
+    sqlite shrugs, but prod is Postgres, which raises ``DataError`` from inside
+    the atomic publish. Same permanent-lock consequence as a bad `section`
+    above, so the value is refused at the point the editor can still see which
+    field they broke.
+    """
+    errors = {}
+    for name, value in values.items():
+        try:
+            field = instance._meta.get_field(name)
+        except FieldDoesNotExist:
+            continue
+        try:
+            field.clean(value, instance)
+        except DjangoValidationError as exc:
+            errors[name] = " ".join(exc.messages)
+    return errors
 
 
 class StudioPagination(PageNumberPagination):
@@ -103,11 +140,13 @@ def _reviewable():
     return [
         (BlogPost, "post", "Post", lambda o: f"/content/blogs/{o.id}", "title"),
         (CurrentAffair, "affair", "Current affair", lambda o: "/content?tab=affairs", "title"),
-        (FAQItem, "answer", "Answer", lambda o: "/content?tab=faqs", "question"),
-        (Announcement, "notice", "Notice", lambda o: "/content?tab=announcements", "message"),
-        (ShowcaseCourse, "card", "Course card", lambda o: "/content?tab=showcase", "title"),
-        (HomeContentBlock, "page", "Page section", lambda o: "/content?tab=home", "heading"),
-        (HomeListItem, "page", "Page list item", lambda o: "/content?tab=home", "title"),
+        (FAQItem, "answer", "Answer", lambda o: "/content/questions", "question"),
+        (Announcement, "notice", "Notice", lambda o: "/content/questions?tab=notices", "message"),
+        # /content?tab=showcase is not in ContentPanel's tab list and not in its
+        # redirect map either, so it silently fell through to Blog Posts.
+        (ShowcaseCourse, "card", "Course card", lambda o: "/content/cards", "title"),
+        (HomeContentBlock, "page", "Page section", lambda o: "/content/pages/home", "heading"),
+        (HomeListItem, "page", "Page list item", lambda o: "/content/pages/home", "title"),
         (HomeFloater, "page", "Page floater", lambda o: "/content?tab=home", "label"),
     ]
 
@@ -292,7 +331,7 @@ class StudioSearchView(APIView):
                 # Several FAQPage labels already end in "page" ("General / FAQ
                 # page"), so appending it unconditionally reads "… page page".
                 "where": faq.get_page_display(),
-                "url": "/content?tab=faqs",
+                "url": "/content/questions",
                 "status": faq.status,
             })
 
@@ -303,7 +342,7 @@ class StudioSearchView(APIView):
                 "kind": "page", "kind_label": "Page section",
                 "title": block.heading or block.get_section_display(),
                 "where": f"Home page · {block.get_section_display()}",
-                "url": "/content?tab=home",
+                "url": "/content/pages/home",
                 "status": block.status,
             })
 
@@ -312,7 +351,7 @@ class StudioSearchView(APIView):
                 "kind": "label", "kind_label": "Label",
                 "title": tag.name,
                 "where": "Blog tag",
-                "url": "/content?tab=tags",
+                "url": "/content/labels",
             })
 
         for cat in CourseCategory.objects.filter(name__icontains=q)[:self.PER_KIND]:
@@ -320,17 +359,18 @@ class StudioSearchView(APIView):
                 "kind": "label", "kind_label": "Label",
                 "title": cat.name,
                 "where": f"Course category · {cat.get_group_display()}",
-                "url": "/content?tab=categories",
+                "url": "/content/labels",
             })
 
         for img in ContentImage.objects.filter(
-            file__icontains=q
+            Q(original_name__icontains=q) | Q(title__icontains=q)
+            | Q(alt_text__icontains=q) | Q(file__icontains=q)
         )[:self.PER_KIND]:
             results.append({
                 "kind": "picture", "kind_label": "Picture",
                 "title": img.title or img.file.name.rsplit("/", 1)[-1],
                 "where": f"{img.width or '?'} × {img.height or '?'}",
-                "url": "/content",
+                "url": "/content/pictures",
             })
 
         return Response({"results": results, "query": q, "count": len(results)})
@@ -764,6 +804,11 @@ class LabelDetailView(APIView):
 
         from .models import ContentTag
 
+        # Unlike the create and merge views, this one used to accept any string
+        # as `kind` and silently treat everything that wasn't "tag" as a
+        # category — so /labels/banana/1/ happily renamed a CourseCategory.
+        if kind not in (LABEL_TAG, LABEL_CATEGORY):
+            return None
         model = ContentTag if kind == LABEL_TAG else CourseCategory
         return model.objects.filter(pk=pk).first()
 
@@ -777,6 +822,28 @@ class LabelDetailView(APIView):
                 {"detail": "Give the label a name."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # The create path already answers a duplicate with a friendly 409; the
+        # rename path used to let the UNIQUE constraint surface as a 500.
+        # Checked only where the column really is unique — `ContentTag.name` is,
+        # `CourseCategory.name` is not (its save() appends "-2" instead).
+        if type(obj)._meta.get_field("name").unique:
+            clash = (
+                type(obj).objects
+                .filter(name__iexact=name).exclude(pk=obj.pk).first()
+            )
+            if clash is not None:
+                return Response(
+                    {
+                        "detail": (
+                            f"“{clash.name}” already exists. Rename this one "
+                            "something else, or merge the two labels."
+                        ),
+                        "existing": {"id": clash.id, "name": clash.name},
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
         obj.name = name
         obj.save()
         return Response({"id": obj.id, "name": obj.name, "slug": obj.slug})
@@ -1022,8 +1089,13 @@ class MediaListView(APIView):
         from .media import usage_payload
         from .models import ContentImage
 
+        # `usages__target` prefetches the GenericForeignKey too. Without it
+        # usage_payload's `usage.target` was one query per usage, and its
+        # `.select_related("content_type")` built a fresh queryset that ignored
+        # the prefetch cache entirely — a strict +2 queries per asset, ~403 on a
+        # full page of the library.
         qs = ContentImage.objects.all().prefetch_related(
-            "usages__content_type"
+            "usages__content_type", "usages__target"
         ).order_by("-created_at")
 
         q = (request.query_params.get("q") or "").strip()
@@ -1033,8 +1105,23 @@ class MediaListView(APIView):
                 | Q(alt_text__icontains=q) | Q(file__icontains=q)
             )
 
+        # `count` used to be len(results) after a hard qs[:200] slice, so the
+        # library presented itself as complete at exactly 200 and everything
+        # past that was unreachable and undeletable through the UI.
+        total = qs.count()
+
+        def _int(name, default, cap):
+            try:
+                return max(1, min(int(request.query_params.get(name) or default), cap))
+            except (TypeError, ValueError):
+                return default
+
+        page_size = _int("page_size", 60, 200)
+        page = _int("page", 1, 10_000)
+        start = (page - 1) * page_size
+
         assets = []
-        for asset in qs[:200]:
+        for asset in qs[start:start + page_size]:
             used_in = usage_payload(asset)
             assets.append({
                 "id": asset.id,
@@ -1049,7 +1136,13 @@ class MediaListView(APIView):
                 "usage_count": len(used_in),
                 "used_in": used_in,
             })
-        return Response({"results": assets, "count": len(assets)})
+        return Response({
+            "results": assets,
+            "count": total,
+            "page": page,
+            "page_size": page_size,
+            "has_more": start + len(assets) < total,
+        })
 
     def post(self, request):
         from .models import ContentImage
@@ -1232,6 +1325,9 @@ class PageDraftView(APIView):
             o.section: o for o in HomeSectionOrder.objects.all()
         } if page["model"] is HomeContentBlock else {}
 
+        # Once, not once per section — it instantiates a serializer, and the
+        # loop below runs for all 17 sections on every request.
+        editable = sorted(_editable_fields(page["model"]))
         sections, payload, changed = [], {}, 0
         for value, label in page["sections"].choices:
             block = blocks.get(value)
@@ -1246,11 +1342,17 @@ class PageDraftView(APIView):
             # column has nothing to render and every input looks empty.
             values = {}
             if block is not None:
-                for name in sorted(_editable_fields(page["model"])):
+                for name in editable:
                     raw = getattr(block, name, "")
-                    values[name] = raw if isinstance(raw, (str, int, bool)) else (
-                        raw.name if hasattr(raw, "name") else ""
-                    )
+                    # dict/list pass through intact. Flattening them to "" meant
+                    # a client that round-tripped what it was handed wrote a
+                    # string into `extra`, a JSONField(default=dict).
+                    if raw is None:
+                        values[name] = ""
+                    elif isinstance(raw, (str, int, bool, dict, list)):
+                        values[name] = raw
+                    else:
+                        values[name] = raw.name if hasattr(raw, "name") else ""
                 values["img"] = block.image.url if block.image else (
                     block.image_url or ""
                 )
@@ -1312,6 +1414,17 @@ class PageDraftView(APIView):
             bad = sorted(set(fields) - allowed)
             if bad:
                 rejected[section_key] = f"not editable: {', '.join(bad)}"
+
+            # Refuse a value the column could never hold, here rather than at
+            # publish — the editor is still looking at the field they broke.
+            invalid = _field_errors(block, clean)
+            if invalid:
+                detail = "; ".join(f"{k}: {v}" for k, v in sorted(invalid.items()))
+                rejected[section_key] = (
+                    f"{rejected[section_key]}; {detail}"
+                    if section_key in rejected else detail
+                )
+                clean = {k: v for k, v in clean.items() if k not in invalid}
 
             draft, _ = ContentDraft.objects.get_or_create(
                 content_type=ct, object_id=block.id, author=request.user,
@@ -1412,10 +1525,28 @@ class PagePublishView(APIView):
                 continue
 
             before = snapshot_of(block)
+            payload = {
+                field: value for field, value in (draft.payload or {}).items()
+                if field in allowed
+            }
+
+            invalid = _field_errors(block, payload)
+            if invalid:
+                first = sorted(invalid)[0]
+                return Response(
+                    {
+                        "detail": (
+                            "This can’t go live yet — "
+                            f"“{block.get_section_display()}” has a value that "
+                            f"won’t fit ({first}). Fix it and publish again."
+                        ),
+                        "invalid": {block.section: invalid},
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             applied = []
-            for field, value in (draft.payload or {}).items():
-                if field not in allowed:
-                    continue
+            for field, value in payload.items():
                 setattr(block, field, value)
                 applied.append(field)
 
@@ -1423,8 +1554,27 @@ class PagePublishView(APIView):
                 draft.delete()
                 continue
 
-            block.status = PublishStatus.PUBLISHED
-            block.save()
+            # A drafted `status` is the editor's explicit show/hide choice, so
+            # it wins. Only default to PUBLISHED when they didn't say one way or
+            # the other: the checklist promises that publishing a hidden section
+            # "still won't show", and force-setting PUBLISHED here broke that
+            # promise — a typo fix on a deliberately-archived section silently
+            # pushed it onto the live homepage.
+            if "status" in applied:
+                pass  # the editor said explicitly; their choice wins
+            elif block.status != PublishStatus.ARCHIVED:
+                block.status = PublishStatus.PUBLISHED
+                applied.append("status")
+
+            # Only the columns this publish actually touched. A full-row UPDATE
+            # writes back every field from a snapshot read before the
+            # transaction started, reverting a concurrent author's edit to a
+            # field this draft never mentioned — which is exactly what the
+            # class docstring above promises cannot happen.
+            written = set(applied)
+            if any(f.name == "updated_at" for f in block._meta.fields):
+                written.add("updated_at")
+            block.save(update_fields=sorted(written))
             record_revision(
                 block,
                 ContentRevision.ACTION_PUBLISHED,

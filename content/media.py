@@ -87,10 +87,23 @@ def sync_usages_for(obj, field_names=None):
         )
 
 
+# Where to go to remove the picture, per model. The refusal dialog used to
+# offer one hardcoded destination (the homepage tab) for every usage, so a
+# picture used as a blog cover sent the editor to a screen the post isn't on.
+_USAGE_URLS = {
+    "blogpost": lambda usage: f"/content/blogs/{usage.object_id}",
+    "showcasecourse": lambda usage: "/content/cards",
+    "homecontentblock": lambda usage: "/content/pages/home",
+    "homelistitem": lambda usage: "/content/pages/home",
+}
+
+
 def usage_payload(asset):
     """``used_in[]`` — what a delete would break, in words a person can act on."""
     out = []
-    for usage in asset.usages.select_related("content_type"):
+    # `.all()`, not `.select_related(...)` — the latter builds a new queryset
+    # that ignores the caller's prefetch cache, costing a query per usage.
+    for usage in asset.usages.all():
         target = usage.target
         label = usage.content_type.name
         title = ""
@@ -106,5 +119,6 @@ def usage_payload(asset):
             "title": title or f"{label} #{usage.object_id}",
             "field": usage.field_name,
             "object_id": usage.object_id,
+            "url": _USAGE_URLS.get(usage.content_type.model, lambda u: "")(usage),
         })
     return out

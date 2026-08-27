@@ -221,6 +221,45 @@ class LabelRenameDeleteTest(LabelTestCase):
         )
         self.assertEqual(res.status_code, 400)
 
+    def test_renaming_onto_an_existing_name_answers_409_not_500(self):
+        """`ContentTag.name` is unique. The create path already 409s here; the
+        rename path used to let IntegrityError surface as a 500."""
+        ContentTag.objects.create(name="Biology")
+        physics = ContentTag.objects.create(name="Physics")
+
+        res = self.client_for(self.editor).patch(
+            self.url("tag", physics.id), {"name": "Biology"}, format="json",
+        )
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json()["existing"]["name"], "Biology")
+        physics.refresh_from_db()
+        self.assertEqual(physics.name, "Physics")
+
+    def test_a_duplicate_category_name_is_still_allowed(self):
+        """`CourseCategory.name` is NOT unique — its save() appends "-2".
+        The 409 above must not start refusing something that used to work."""
+        first = CourseCategory.objects.create(name="Science", group="stream")
+        second = CourseCategory.objects.create(name="Arts", group="stream")
+
+        res = self.client_for(self.editor).patch(
+            self.url("category", second.id), {"name": "Science"}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        second.refresh_from_db()
+        self.assertEqual(second.name, "Science")
+        self.assertNotEqual(second.slug, first.slug)
+
+    def test_an_unknown_kind_is_404_not_a_silent_category_edit(self):
+        """`kind` used to fall through: anything that wasn't "tag" was treated
+        as a category, so /labels/banana/<id>/ renamed a CourseCategory."""
+        cat = CourseCategory.objects.create(name="Commerce", group="stream")
+        res = self.client_for(self.editor).patch(
+            self.url("banana", cat.id), {"name": "Hacked"}, format="json",
+        )
+        self.assertEqual(res.status_code, 404, res.content)
+        cat.refresh_from_db()
+        self.assertEqual(cat.name, "Commerce")
+
     def test_an_unused_label_can_be_deleted(self):
         tag = ContentTag.objects.create(name="orphan")
         res = self.client_for(self.editor).delete(self.url("tag", tag.id))

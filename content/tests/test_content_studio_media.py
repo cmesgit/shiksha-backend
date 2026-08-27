@@ -200,3 +200,60 @@ class BackfillMigrationTest(MediaTestCase):
         names = [f for (_, m, f) in self._migration().OWNED_IMAGE_FIELDS if m == "BlogPost"]
         self.assertEqual(names, ["cover"])
         self.assertTrue(hasattr(BlogPost, "cover"))
+
+
+class MediaPaginationTest(MediaTestCase):
+    """`count` used to be len(results) after a hard qs[:200] slice, so the
+    library presented itself as complete at exactly 200 and everything past
+    that was unreachable — and undeletable — through the UI."""
+
+    def test_count_is_the_real_total_not_the_page_length(self):
+        for i in range(7):
+            ContentImage.objects.create(file=an_image(), original_name=f"{i}.png")
+
+        body = self.client_for(self.editor).get(
+            MEDIA_URL, {"page_size": 3},
+        ).json()
+
+        self.assertEqual(len(body["results"]), 3)
+        self.assertEqual(body["count"], 7)
+        self.assertTrue(body["has_more"])
+
+    def test_later_pages_are_reachable(self):
+        for i in range(7):
+            ContentImage.objects.create(file=an_image(), original_name=f"{i}.png")
+        c = self.client_for(self.editor)
+
+        seen = []
+        for page in (1, 2, 3):
+            body = c.get(MEDIA_URL, {"page_size": 3, "page": page}).json()
+            seen += [a["id"] for a in body["results"]]
+
+        self.assertEqual(len(seen), 7)
+        self.assertEqual(len(set(seen)), 7, "pages overlapped")
+        self.assertFalse(
+            c.get(MEDIA_URL, {"page_size": 3, "page": 3}).json()["has_more"],
+        )
+
+    def test_a_junk_page_param_does_not_500(self):
+        ContentImage.objects.create(file=an_image(), original_name="a.png")
+        res = self.client_for(self.editor).get(
+            MEDIA_URL, {"page": "banana", "page_size": "-4"},
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()["count"], 1)
+
+
+class UsageLinkTest(MediaTestCase):
+    def test_each_usage_carries_a_link_to_where_it_is_used(self):
+        """The refusal dialog had one hardcoded destination for every usage, so
+        a picture used as a blog cover sent the editor to the homepage tab."""
+        from content.models import BlogPost
+
+        asset = ContentImage.objects.create(file=an_image(), original_name="c.png")
+        post = BlogPost.objects.create(title="A post", cover=asset.file.name)
+
+        body = self.client_for(self.editor).get(MEDIA_URL).json()
+        row = next(a for a in body["results"] if a["id"] == asset.id)
+        self.assertEqual(row["usage_count"], 1)
+        self.assertEqual(row["used_in"][0]["url"], f"/content/blogs/{post.id}")
