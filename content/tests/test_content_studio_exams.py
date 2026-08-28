@@ -19,6 +19,13 @@ URL = "/api/content/admin/exams/readiness/"
 
 class ExamReadinessTest(TestCase):
     def setUp(self):
+        # The Studio permission caches content_studio_enabled. Django rolls the
+        # DB back between tests but NOT the cache, so a test that flips the flag
+        # off would otherwise leak a cached False into every test after it.
+        from django.core.cache import cache
+
+        from content.permissions import IsStudioEditor
+        cache.delete(IsStudioEditor.CACHE_KEY)
         self.editor = User.objects.create_user(
             username="ed", email="ed@example.com", password="x", is_staff=True,
         )
@@ -181,6 +188,13 @@ class ExamReadinessQueryCountTest(ExamReadinessTest):
 
         for i in range(3):
             self.exam(f"Exam {i}")
+
+        # One warm-up request first. IsStudioEditor reads content_studio_enabled
+        # and caches it, so the very first request of the process pays an extra
+        # query the second does not — a one-off constant, not per-exam growth,
+        # but enough to make the two samples below incomparable.
+        self.client_for(self.editor).get(URL)
+
         with CaptureQueriesContext(connection) as few:
             self.client_for(self.editor).get(URL)
 

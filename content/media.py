@@ -12,7 +12,13 @@ the reverse direction.
 ⚠ The owning field on a post is ``BlogPost.cover``, NOT ``cover_image`` as the
 spec says. Getting that wrong makes the backfill silently find nothing.
 """
+import json
+import re
+from urllib.parse import unquote, urlsplit
+
+from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
+from django.db.models import Q
 
 from .models import ContentImage, MediaUsage
 
@@ -25,6 +31,56 @@ OWNED_IMAGE_FIELDS = [
     ("content", "HomeContentBlock", "image"),
     ("content", "HomeListItem", "image"),
 ]
+
+# Fields whose *content* embeds pictures by URL rather than owning one in a
+# FileField. A picture referenced only here used to report "used on 0 pages"
+# and delete cleanly, leaving a broken image on a live post — which is both the
+# exact breakage the 409 guard exists to prevent and, per ContentImage's own
+# docstring, the main thing the library is for.
+EMBEDDING_FIELDS = [
+    ("content", "BlogPost", "body_html"),
+    ("content", "BlogPost", "body_blocks"),
+]
+
+# Matches both HTML attributes (src="…") and JSON keys ("src": "…") — the
+# block editor stores its bodies as JSON, where the key carries a closing quote
+# before the colon.
+_SRC_RE = re.compile(r'(?:src|href|url)["\']?\s*[=:]\s*["\']([^"\']+)["\']', re.I)
+
+
+def _storage_name(url):
+    """Turn a URL as written in a body into a stored file path.
+
+    Handles absolute CDN URLs, site-relative /media/ paths and bare paths.
+    """
+    path = urlsplit(url or "").path
+    media = getattr(settings, "MEDIA_URL", "") or "/media/"
+    if media and media in path:
+        path = path.split(media, 1)[1]
+    return unquote(path).lstrip("/")
+
+
+def assets_referenced_in(value, apps=None):
+    """Every library row a body field points at.
+
+    Matches on the exact stored path first, then falls back to the basename —
+    Bunny rewrites the prefix, so an absolute CDN URL shares only the filename
+    with what ``ContentImage.file`` holds. The fallback can over-match if two
+    uploads share a basename, and that is the right direction to err: a
+    spurious usage blocks a delete, a missed one breaks a published page.
+    """
+    if not value:
+        return []
+    text = value if isinstance(value, str) else json.dumps(value)
+    names = {n for n in (_storage_name(u) for u in _SRC_RE.findall(text)) if n}
+    if not names:
+        return []
+
+    model = apps.get_model("content", "ContentImage") if apps else ContentImage
+    query = Q()
+    for name in names:
+        query |= Q(file=name) | Q(file__endswith="/" + name.rsplit("/", 1)[-1])
+    return list(model.objects.filter(query).distinct())
 
 
 def _iter_owners(apps=None):
@@ -63,14 +119,21 @@ def sync_usages_for(obj, field_names=None):
     leave the old one reporting a usage that no longer exists, and it could
     never be deleted.
     """
+    cls_name = obj.__class__.__name__
     fields = field_names or [
-        f for (_, model_name, f) in OWNED_IMAGE_FIELDS
-        if model_name == obj.__class__.__name__
+        f for (_, model_name, f) in OWNED_IMAGE_FIELDS if model_name == cls_name
     ]
-    if not fields:
+    embedding = [
+        f for (_, model_name, f) in EMBEDDING_FIELDS
+        if model_name == cls_name and (field_names is None or f in field_names)
+    ]
+    if not fields and not embedding:
         return
 
     ct = ContentType.objects.get_for_model(obj.__class__)
+    for field in embedding:
+        _sync_embedded(obj, field, ct)
+
     for field in fields:
         stored = getattr(obj, field, None)
         name = getattr(stored, "name", None) or ""
@@ -82,6 +145,26 @@ def sync_usages_for(obj, field_names=None):
             continue
         asset, _ = asset_for_file(name)
         existing.exclude(asset=asset).delete()
+        MediaUsage.objects.get_or_create(
+            asset=asset, content_type=ct, object_id=obj.pk, field_name=field,
+        )
+
+
+def _sync_embedded(obj, field, ct):
+    """Usages for one body field, which can reference many pictures at once.
+
+    ``field_name`` is part of MediaUsage's unique key alongside the asset, so
+    several assets sharing one field is a normal shape, not a collision.
+    """
+    referenced = assets_referenced_in(getattr(obj, field, None))
+    keep = {a.pk for a in referenced}
+    rows = MediaUsage.objects.filter(
+        content_type=ct, object_id=obj.pk, field_name=field,
+    )
+    # Removing the stale half matters as much as adding: deleting an image from
+    # a post must release it, or it can never be deleted from the library.
+    rows.exclude(asset_id__in=keep).delete()
+    for asset in referenced:
         MediaUsage.objects.get_or_create(
             asset=asset, content_type=ct, object_id=obj.pk, field_name=field,
         )

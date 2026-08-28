@@ -33,6 +33,13 @@ def an_image(name="pic.png"):
 
 class MediaTestCase(TestCase):
     def setUp(self):
+        # The Studio permission caches content_studio_enabled. Django rolls the
+        # DB back between tests but NOT the cache, so a test that flips the flag
+        # off would otherwise leak a cached False into every test after it.
+        from django.core.cache import cache
+
+        from content.permissions import IsStudioEditor
+        cache.delete(IsStudioEditor.CACHE_KEY)
         self.editor = User.objects.create_user(
             username="ed", email="ed@example.com", password="x", is_staff=True,
         )
@@ -257,3 +264,97 @@ class UsageLinkTest(MediaTestCase):
         row = next(a for a in body["results"] if a["id"] == asset.id)
         self.assertEqual(row["usage_count"], 1)
         self.assertEqual(row["used_in"][0]["url"], f"/content/blogs/{post.id}")
+
+
+class EmbeddedPictureUsageTest(MediaTestCase):
+    """A picture used only inside a post's body still counts as used.
+
+    Before this, MediaUsage tracked the four cover/hero FileFields only, so a
+    picture embedded in body_html reported "used on 0 pages" and deleted
+    cleanly — leaving a broken image on a published post, which is the exact
+    breakage the delete guard exists to prevent.
+    """
+
+    def _asset(self, name="diagram.png"):
+        return ContentImage.objects.create(file=an_image(name), original_name=name)
+
+    def test_a_picture_in_the_body_is_counted_as_used(self):
+        from content.models import BlogPost
+
+        asset = self._asset()
+        BlogPost.objects.create(
+            title="Uses it inline",
+            body_html=f'<p>See this</p><img src="/media/{asset.file.name}">',
+        )
+        asset.refresh_from_db()
+        self.assertEqual(asset.usages.count(), 1)
+        self.assertEqual(asset.usages.first().field_name, "body_html")
+
+    def test_deleting_it_is_refused_and_names_the_post(self):
+        from content.models import BlogPost
+
+        asset = self._asset()
+        BlogPost.objects.create(
+            title="A published post",
+            status=PublishStatus.PUBLISHED,
+            body_html=f'<img src="/media/{asset.file.name}">',
+        )
+        res = self.client_for(self.editor).delete(f"{MEDIA_URL}{asset.pk}/")
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json()["used_in"][0]["title"], "A published post")
+
+    def test_removing_it_from_the_body_releases_it(self):
+        """Without the stale-removal half, a picture could never be deleted
+        again once it had been embedded even briefly."""
+        from content.models import BlogPost
+
+        asset = self._asset()
+        post = BlogPost.objects.create(
+            title="Briefly", body_html=f'<img src="/media/{asset.file.name}">',
+        )
+        self.assertEqual(asset.usages.count(), 1)
+
+        post.body_html = "<p>The picture is gone now.</p>"
+        post.save()
+
+        self.assertEqual(asset.usages.count(), 0)
+        res = self.client_for(self.editor).delete(f"{MEDIA_URL}{asset.pk}/")
+        self.assertEqual(res.status_code, 204, res.content)
+
+    def test_an_absolute_cdn_url_still_matches(self):
+        """Bunny rewrites the prefix, so the stored path and the URL in the
+        body share only the filename."""
+        from content.models import BlogPost
+
+        asset = self._asset("photosynthesis.png")
+        base = asset.file.name.rsplit("/", 1)[-1]
+        BlogPost.objects.create(
+            title="From the CDN",
+            body_html=f'<img src="https://cdn.example.net/whatever/{base}">',
+        )
+        self.assertEqual(asset.usages.count(), 1)
+
+    def test_block_bodies_are_scanned_too(self):
+        from content.models import BlogPost
+
+        asset = self._asset()
+        BlogPost.objects.create(
+            title="Block editor post",
+            body_blocks=[{"type": "image", "src": f"/media/{asset.file.name}"}],
+        )
+        self.assertEqual(
+            asset.usages.filter(field_name="body_blocks").count(), 1,
+        )
+
+    def test_an_unknown_url_creates_nothing(self):
+        """An external or hand-written URL is not a library picture, and
+        inventing a row for it would put files nobody uploaded into the
+        Pictures screen."""
+        from content.models import BlogPost, ContentImage
+
+        before = ContentImage.objects.count()
+        BlogPost.objects.create(
+            title="External image",
+            body_html='<img src="https://example.com/not-ours.png">',
+        )
+        self.assertEqual(ContentImage.objects.count(), before)

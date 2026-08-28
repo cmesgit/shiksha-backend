@@ -73,6 +73,13 @@ class PublicQuerysetsStillWorkTest(TestCase):
 
 class RecordRevisionTest(TestCase):
     def setUp(self):
+        # The Studio permission caches content_studio_enabled. Django rolls the
+        # DB back between tests but NOT the cache, so a test that flips the flag
+        # off would otherwise leak a cached False into every test after it.
+        from django.core.cache import cache
+
+        from content.permissions import IsStudioEditor
+        cache.delete(IsStudioEditor.CACHE_KEY)
         self.user = User.objects.create_user(
             username="ed", email="ed@example.com", password="x",
         )

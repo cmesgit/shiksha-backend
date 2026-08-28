@@ -29,6 +29,16 @@ class AdminGlobalSettingsView(APIView):
         serializer = GlobalSettingsSerializer(obj, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+
+        # content.permissions.IsStudioEditor caches content_studio_enabled for a
+        # minute, since it is read on every Studio request. Drop it here so an
+        # admin who just flipped the switch sees it take effect immediately
+        # rather than at the next TTL boundary.
+        from django.core.cache import cache
+
+        from content.permissions import IsStudioEditor
+        cache.delete(IsStudioEditor.CACHE_KEY)
+
         # Re-serialize from the saved row so effective_mode/flags are fresh.
         return Response(GlobalSettingsSerializer(GlobalSettings.load()).data,
                         status=status.HTTP_200_OK)

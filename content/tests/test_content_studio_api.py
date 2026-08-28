@@ -25,6 +25,13 @@ ACTIVITY_URL = "/api/content/admin/activity/"
 
 class StudioApiTestCase(TestCase):
     def setUp(self):
+        # See the note in the exams tests: the Studio permission caches the
+        # feature flag, and the cache does not roll back between tests.
+        from django.core.cache import cache
+
+        from content.permissions import IsStudioEditor
+        cache.delete(IsStudioEditor.CACHE_KEY)
+
         self.editor = User.objects.create_user(
             username="ed", email="ed@example.com", password="x", is_staff=True,
         )
@@ -1007,3 +1014,67 @@ class RestoreKeepsRelationsTest(StudioApiTestCase):
 
         restored = restore_revision(rev, actor=self.editor)
         self.assertEqual([t.name for t in restored.tags.all()], ["keep"])
+
+
+class StudioFlagGateTest(StudioApiTestCase):
+    """`content_studio_enabled` has to actually gate something.
+
+    It was described as a real gate from the start, but nothing enforced it:
+    turning it off hid the Studio nav while leaving every Studio endpoint open
+    to any staff user. A flag that only hides its own front door is not a gate.
+    """
+
+    STUDIO_URLS = [
+        DRAFT_URL,
+        ACTIVITY_URL,
+        "/api/content/admin/media/",
+        "/api/content/admin/labels/",
+        "/api/content/admin/inbox/",
+        "/api/content/admin/calendar/",
+        "/api/content/admin/exams/readiness/",
+    ]
+
+    def _set_flag(self, value):
+        from django.core.cache import cache
+        from global_settings.models import GlobalSettings
+
+        from content.permissions import IsStudioEditor
+
+        gs = GlobalSettings.load()
+        gs.content_studio_enabled = value
+        gs.save(update_fields=["content_studio_enabled"])
+        # The permission caches the flag for a minute; a test flipping it wants
+        # the change now, not on the next TTL boundary.
+        cache.delete(IsStudioEditor.CACHE_KEY)
+
+    def test_studio_endpoints_answer_normally_when_the_flag_is_on(self):
+        self._set_flag(True)
+        c = self.client_for(self.editor)
+        for url in self.STUDIO_URLS:
+            with self.subTest(url=url):
+                self.assertEqual(c.get(url).status_code, 200, url)
+
+    def test_every_studio_endpoint_is_refused_when_the_flag_is_off(self):
+        self._set_flag(False)
+        c = self.client_for(self.editor)
+        for url in self.STUDIO_URLS:
+            with self.subTest(url=url):
+                self.assertEqual(c.get(url).status_code, 403, url)
+
+    def test_the_flag_does_not_switch_off_the_rest_of_the_cms(self):
+        """Blog Posts still runs on the older admin viewsets. The flag governs
+        the Studio, not the whole CMS."""
+        self._set_flag(False)
+        c = self.client_for(self.editor)
+        self.assertEqual(c.get("/api/content/admin/blogs/").status_code, 200)
+        self.assertEqual(c.get("/api/content/admin/faqs/").status_code, 200)
+
+    def test_writes_are_gated_too_not_just_reads(self):
+        self._set_flag(False)
+        res = self.client_for(self.editor).put(
+            DRAFT_URL, {"sections": {"hero": {"heading": "Sneaky"}}},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 403, res.content)
+        self.hero.refresh_from_db()
+        self.assertEqual(self.hero.heading, "Learn with ShikshaCom")

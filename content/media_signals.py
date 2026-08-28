@@ -23,10 +23,14 @@ from django.dispatch import receiver
 def _owner_models():
     from django.apps import apps as global_apps
 
-    from .media import OWNED_IMAGE_FIELDS
+    from .media import EMBEDDING_FIELDS, OWNED_IMAGE_FIELDS
 
+    # Both lists: a model that only EMBEDS pictures (never owns one in a
+    # FileField) still has to be watched, or its body edits never update the
+    # usage table. BlogPost happens to be in both today, so leaving embedding
+    # out would have worked by accident and broken on the next model added.
     out = []
-    for app_label, model_name, _field in OWNED_IMAGE_FIELDS:
+    for app_label, model_name, _field in [*OWNED_IMAGE_FIELDS, *EMBEDDING_FIELDS]:
         try:
             model = global_apps.get_model(app_label, model_name)
         except LookupError:

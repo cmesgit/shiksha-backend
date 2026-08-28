@@ -35,7 +35,7 @@ from .models import (
     ContentDraft, ContentRevision, HomeContentBlock, HomeFloater, HomeSection,
     HomeSectionOrder, PublishStatus,
 )
-from .permissions import IsContentEditor
+from .permissions import IsStudioEditor
 from .revisions import record_revision, restore_revision, snapshot_of
 
 # ── The page registry ─────────────────────────────────────────────
@@ -168,7 +168,7 @@ class InboxView(APIView):
     a reminder.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     def get(self, request):
         now = timezone.now()
@@ -235,7 +235,7 @@ class CalendarView(APIView):
     comes back, so the client renders seven cells without inventing the gaps.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     def get(self, request):
         today = timezone.localtime(timezone.now()).date()
@@ -302,7 +302,7 @@ class StudioSearchView(APIView):
     exams in the navbar, so it belongs in a CMS search box.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
     PER_KIND = 5
 
     def get(self, request):
@@ -403,7 +403,7 @@ class ExamReadinessView(APIView):
     count — if it says zero subjects, there are zero subjects.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     def get(self, request):
         from django.db.models import Count
@@ -632,7 +632,7 @@ def _mark_duplicates(rows):
 class LabelListView(APIView):
     """GET /api/content/admin/labels/ — tags and categories in one list."""
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     def get(self, request):
         rows = _mark_duplicates(_label_rows())
@@ -718,7 +718,7 @@ class LabelMergeView(APIView):
     left half-pointed.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     @transaction.atomic
     def post(self, request):
@@ -798,7 +798,7 @@ class LabelMergeView(APIView):
 class LabelDetailView(APIView):
     """PATCH (rename) and DELETE one label."""
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     def _resolve(self, kind, pk):
         from courses.models import CourseCategory
@@ -992,7 +992,7 @@ class PageChecklistView(APIView):
     Runs over this author's draft, section by section.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     def get(self, request, key):
         page = _page_or_404(key)
@@ -1040,7 +1040,7 @@ class LinkTargetsView(APIView):
     how a homepage button ends up pointing at a 404.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     def get(self, request):
         groups = [{
@@ -1083,7 +1083,7 @@ class MediaListView(APIView):
     over one ``ContentImage`` table, not two libraries.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
@@ -1189,7 +1189,7 @@ class MediaDetailView(APIView):
     pages that would break and offer to open the first one.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     def delete(self, request, pk):
         from .media import usage_payload
@@ -1225,7 +1225,7 @@ class ActivityFeedView(APIView):
     timestamps and getting the boundaries wrong.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     def get(self, request):
         try:
@@ -1277,7 +1277,7 @@ class RevisionRestoreView(APIView):
     an undo works and history is never destroyed.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     def post(self, request, pk):
         revision = get_object_or_404(ContentRevision, pk=pk)
@@ -1303,7 +1303,7 @@ class PageDraftView(APIView):
     changes instead of silently overwriting one another.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     def _blocks(self, page):
         return {b.section: b for b in page["model"].objects.all()}
@@ -1504,7 +1504,7 @@ class PagePublishView(APIView):
     else edited meanwhile survives instead of being reverted by a stale copy.
     """
 
-    permission_classes = [IsContentEditor]
+    permission_classes = [IsStudioEditor]
 
     @transaction.atomic
     def post(self, request, key):
