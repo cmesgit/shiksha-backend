@@ -440,6 +440,116 @@ class MaterialsBatchValidationTest(TestCase):
         )
 
 
+class UnplacedLearnerBatchScopeTest(TestCase):
+    """A learner with no batch was NOTIFIED about batch-scoped material and
+    then structurally unable to see it.
+
+    activity/signals.py's `_enrollments_for_batches` deliberately notifies
+    enrollments with `batch IS NULL` about batch-scoped items — an unplaced
+    learner gets "New study material: X". But both material readers built
+    their filter as an unconditional
+
+        Q(batch__isnull=True) | Q(batch_id=batch_id)
+
+    and with batch_id None the right side compiles to `batch_id IS NULL`,
+    identical to the left, so the OR collapsed to "course-wide only" and X
+    could never appear. The learner clicked the notification and landed on
+    "No material for this subject".
+
+    assignments/views.py:322-326 already guarded this with
+    `if batch_id is not None`; materials never copied it. These tests pin the
+    two readers to the notifier's behaviour.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.utils import timezone
+        from datetime import timedelta
+        from enrollments.models import Subscription, Enrollment
+        from courses.models import Batch, TeachingAssignment
+
+        Role.objects.create(name="TEACHER")
+        student_role = Role.objects.create(name="STUDENT")
+
+        cls.teacher = User.objects.create_user(
+            username="ub_t", email="ub_t@t.com", password="x")
+
+        cls.account = User.objects.create_user(
+            username="ub_s", email="ub_s@t.com", password="x")
+        UserRole.objects.create(
+            user=cls.account, role=student_role, is_active=True, is_primary=True)
+        cls.profile = LearnerProfile.objects.create(
+            account=cls.account, display_name="Unplaced", is_default=True)
+
+        cls.course = Course.objects.create(title="Class 12 Science")
+        cls.subject = Subject.objects.create(course=cls.course, name="Mathematics")
+        cls.chapter = Chapter.objects.create(subject=cls.subject, title="Calculus")
+        cls.batch = Batch.objects.create(
+            course=cls.course, name="Morning", code="MB1")
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, batch=None, is_active=True)
+
+        # The material the learner was notified about: scoped to a batch.
+        cls.batch_material = StudyMaterial.objects.create(
+            chapter=cls.chapter, subject=cls.subject, batch=cls.batch,
+            title="cx dsv", uploaded_by=cls.teacher)
+        # A course-wide one, which was always visible.
+        cls.open_material = StudyMaterial.objects.create(
+            chapter=cls.chapter, subject=cls.subject, batch=None,
+            title="Course-wide notes", uploaded_by=cls.teacher)
+
+        # Enrolled and paying, but never PLACED in a batch (batch=None) —
+        # exactly what a self-enrolment produces before an admin sorts cohorts.
+        Enrollment.objects.create(
+            user=cls.account, learner_profile=cls.profile, course=cls.course,
+            batch=None, status=Enrollment.STATUS_ACTIVE)
+        Subscription.objects.create(
+            user=cls.account, learner_profile=cls.profile, course=cls.course,
+            status=Subscription.STATUS_ACTIVE,
+            starts_at=timezone.now(),
+            expires_at=timezone.now() + timedelta(days=30))
+
+    def _client(self):
+        c = APIClient()
+        c.force_authenticate(
+            user=self.account,
+            token={"context": "learner", "active_profile": str(self.profile.id)})
+        return c
+
+    def test_unplaced_learner_sees_batch_scoped_material_in_the_course_list(self):
+        res = self._client().get(
+            f"/api/materials/student/courses/{self.course.id}/materials/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.content)
+        titles = {row["title"] for row in res.data}
+        self.assertIn(
+            "cx dsv", titles,
+            "the learner was notified about this material — it must be readable",
+        )
+        self.assertIn("Course-wide notes", titles)
+
+    def test_unplaced_learner_sees_batch_scoped_material_in_the_subject_list(self):
+        res = self._client().get(
+            f"/api/materials/subjects/{self.subject.id}/materials/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.content)
+        self.assertIn("cx dsv", {row["title"] for row in res.data})
+
+    def test_a_placed_learner_still_cannot_read_another_batchs_material(self):
+        """The fix must not become "batch scoping is off for everyone"."""
+        from enrollments.models import Enrollment
+        from courses.models import Batch
+
+        other = Batch.objects.create(
+            course=self.course, name="Evening", code="EB1")
+        Enrollment.objects.filter(learner_profile=self.profile).update(batch=other)
+
+        res = self._client().get(
+            f"/api/materials/student/courses/{self.course.id}/materials/")
+        self.assertEqual(res.status_code, status.HTTP_200_OK, res.content)
+        titles = {row["title"] for row in res.data}
+        self.assertNotIn("cx dsv", titles, "Morning batch material must stay hidden")
+        self.assertIn("Course-wide notes", titles)
+
+
 class MaterialsCustomChapterTest(TestCase):
     """UploadStudyMaterial's custom_chapter branch used to do a bare
     Chapter.objects.create(subject=subject, title=custom_chapter) — a second

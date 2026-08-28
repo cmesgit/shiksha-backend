@@ -926,3 +926,52 @@ class CourseCatalogVisibilityTest(TestCase):
             subject=subject, teacher=teacher, batch=batch, is_active=True)
         self.assertEqual(
             self._titles(self.child_a)["Class 10"]["lead_teacher"], teacher.username)
+
+    def test_deleted_teacher_does_not_500_the_whole_catalog(self):
+        """A hard-deleted teacher used to take Browse Courses down platform-wide.
+
+        TeachingAssignment.teacher is SET_NULL, and the admin soft-end path
+        only flips is_active — so deleting a teacher ACCOUNT leaves an active
+        row with teacher_id NULL. The catalog then called
+        `link.teacher.default_learner_profile()` on None, DRF let the
+        AttributeError through, and every learner got Django's bare
+        "Server Error (500)" HTML page instead of the shop.
+        """
+        teacher = User.objects.create_user(
+            username="doomed", email="doomed@t.com", password="x")
+        subject = Subject.objects.create(course=self.no_batch, name="Physics")
+        TeachingAssignment.objects.create(
+            subject=subject, teacher=teacher, is_active=True)
+        teacher.delete()
+
+        self.assertTrue(
+            TeachingAssignment.objects.filter(
+                subject=subject, teacher__isnull=True, is_active=True).exists(),
+            "precondition: deletion must leave an ACTIVE row with a NULL teacher",
+        )
+
+        rows = self._titles(self.child_a)          # asserts 200, not 500
+        self.assertIsNone(rows["Class 9"]["lead_teacher"])
+
+    def test_a_live_substitute_is_named_even_if_the_lead_was_deleted(self):
+        """Skipping the NULL row inside the loop would not have been enough.
+
+        The loop keeps the FIRST row per course and `continue`s past the rest,
+        with PRIMARY ordered first — so a deleted lead would have shadowed a
+        perfectly good substitute and the card would show no teacher at all.
+        Excluding NULL rows in the QUERY is what makes the substitute surface.
+        """
+        lead = User.objects.create_user(
+            username="lead", email="lead@t.com", password="x")
+        sub = User.objects.create_user(
+            username="sub", email="sub@t.com", password="x")
+        subject = Subject.objects.create(course=self.no_batch, name="Chemistry")
+        TeachingAssignment.objects.create(
+            subject=subject, teacher=lead, is_active=True,
+            role=TeachingAssignment.ROLE_PRIMARY, order=1)
+        TeachingAssignment.objects.create(
+            subject=subject, teacher=sub, is_active=True,
+            role=TeachingAssignment.ROLE_ASSISTANT, order=2)
+        lead.delete()
+
+        self.assertEqual(self._titles(self.child_a)["Class 9"]["lead_teacher"], "sub")

@@ -48,6 +48,10 @@ class ActivitySerializer(serializers.ModelSerializer):
     # delivery path, so both agree.
     is_skill_session = serializers.SerializerMethodField()
 
+    # Which model `object_id` points at ("assignment", "quiz", "studymaterial",
+    # …). See get_object_type for why the bell needs it.
+    object_type = serializers.SerializerMethodField()
+
     # Which product track this row belongs to, using the same vocabulary as
     # notifications.tracks ("academy" / "skill"). The bell scopes itself to
     # the track the user is currently in, so a Skill Dev booking never
@@ -77,6 +81,12 @@ class ActivitySerializer(serializers.ModelSerializer):
             "subject_name",
             "subject",
             "object_id",
+            "object_type",
+            # Server-authored click target. Both bells already prefer this
+            # over their own type-based routing, so shipping it is what makes
+            # them stop re-deriving routes by hand. Blank on pre-migration
+            # rows, which is exactly the "fall through" case they handle.
+            "link_url",
             "is_skill_session",
             "track",
         ]
@@ -112,6 +122,27 @@ class ActivitySerializer(serializers.ModelSerializer):
             return obj.content_type.model == "skillsession"
         except Exception:
             return False
+
+    def get_object_type(self, obj):
+        """Lowercase model name of whatever `object_id` points at.
+
+        The bell has to route a SUBMISSION row, and `type` alone cannot tell
+        it whether the parent is an Assignment (→ the submissions page) or a
+        Quiz (→ the quizzes page): both are Activity.TYPE_SUBMISSION. The
+        backend does mark quiz submissions with a `subtype` discriminator,
+        but only via `extra=` — which `_ws_payload` merges into the ephemeral
+        WebSocket frame and nothing ever persists. So a quiz submission read
+        back from THIS feed (page load, or "See all") arrived with no
+        discriminator at all and fell through to the assignment branch.
+
+        content_type is already stored on every row, so this needs no
+        migration and cannot drift from the object it describes — unlike a
+        duplicated `subtype` column would.
+        """
+        try:
+            return obj.content_type.model
+        except Exception:
+            return ""
 
     def get_track(self, obj):
         # Derived from the same content_type probe as is_skill_session so

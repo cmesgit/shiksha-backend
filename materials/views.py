@@ -74,6 +74,36 @@ def _parse_chapter_tags(request):
 TEACHER_UNRESTRICTED = object()
 
 
+def _batch_scope_q(batch_id):
+    """Batch isolation for a learner's material reads.
+
+    A placed learner sees course-wide material (batch IS NULL) plus their own
+    batch's. An UNPLACED learner (batch_id None — self-enrolled, not yet put
+    in a cohort by an admin) sees everything in the course.
+
+    That last clause is the whole point of this helper. The naive form,
+
+        Q(batch__isnull=True) | Q(batch_id=batch_id)
+
+    looks like it degrades safely, but with batch_id None the right-hand side
+    compiles to `batch_id IS NULL` — identical to the left — so the OR
+    collapses to "course-wide only" and every batch-scoped material becomes
+    invisible. Meanwhile activity/signals.py's `_enrollments_for_batches`
+    deliberately NOTIFIES unplaced learners about batch-scoped material. The
+    two halves disagreed: the student got "New study material: X", clicked it,
+    and landed on a list that structurally could not contain X.
+
+    assignments/views.py:322-326 already had this right ("show every
+    assignment in the course rather than only the course-wide ones, which
+    would otherwise hide every batch-scoped assignment from most students").
+    Materials just never copied the guard. This keeps the two readers honest
+    with each other and with the notifier.
+    """
+    if batch_id is None:
+        return Q()
+    return Q(batch__isnull=True) | Q(batch_id=batch_id)
+
+
 def _authorize_subject_materials(request, subject):
     """Gate material reads on the same rule the Student* views already
     enforce: a teacher assigned to the subject, or a learner profile with an
@@ -81,10 +111,14 @@ def _authorize_subject_materials(request, subject):
 
     Returns (allowed, batch_id). batch_id is TEACHER_UNRESTRICTED for a
     teacher (sees every batch's material); for a student it is their
-    enrollment's batch id, or None if they have no batch assigned yet (in
-    which case callers must filter to Q(batch__isnull=True) | Q(batch_id=
-    batch_id) — which correctly degrades to "course-wide material only",
-    not "every batch's material").
+    enrollment's batch id, or None if they have no batch assigned yet.
+
+    Callers must build the filter with `_batch_scope_q(batch_id)` — never by
+    hand. This docstring used to claim the hand-written form "correctly
+    degrades to course-wide material only" for a batch-less student; that was
+    the bug, not the design. The notifier tells an unplaced learner about
+    batch-scoped material, so a reader that hides it leaves them staring at
+    an empty list they have a notification for. See `_batch_scope_q`.
     """
     if teaches_subject(request.user, subject):
         return True, TEACHER_UNRESTRICTED
@@ -115,7 +149,7 @@ class ChapterMaterials(APIView):
             raise PermissionDenied("No active subscription for this course.")
         materials = StudyMaterial.objects.filter(chapter=chapter)
         if batch_id is not TEACHER_UNRESTRICTED:
-            materials = materials.filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
+            materials = materials.filter(_batch_scope_q(batch_id))
         materials = (
             materials
             # subject: the serializer reports subject_id/subject_name.
@@ -296,7 +330,18 @@ class UploadStudyMaterial(APIView):
             subject.name,
             extra={"chapter": chapter.title if chapter else None},
             verb="materials.uploaded",
-            link_url=f"/study-material/list/{subject.id}",
+            # ?course= is not decoration. The learner app's Study Material
+            # list fetches strictly the ACTIVE course from CourseContext, but
+            # nothing in the notification-click path ever sets the active
+            # course. A learner enrolled in two courses whose active course is
+            # "Class 12 Science" would click a Class 10 material notification,
+            # get the Class 12 list filtered to a Class 10 subject id, and see
+            # "No material for this subject" — the material is real, the
+            # screen is just looking at the wrong course. Carrying the course
+            # id lets the screen switch first, then filter.
+            link_url=(
+                f"/study-material/list/{subject.id}?course={course.id}"
+            ),
         )
 
         serializer = StudyMaterialSerializer(
@@ -363,7 +408,7 @@ class SubjectMaterials(APIView):
             raise PermissionDenied("No active subscription for this course.")
         materials = StudyMaterial.objects.filter(subject=subject)
         if batch_id is not TEACHER_UNRESTRICTED:
-            materials = materials.filter(Q(batch__isnull=True) | Q(batch_id=batch_id))
+            materials = materials.filter(_batch_scope_q(batch_id))
         materials = (
             materials
             # subject: the serializer reports subject_id/subject_name.
@@ -402,7 +447,7 @@ class StudentSubjectMaterials(APIView):
         else:
             # Batch isolation: course-wide materials (batch IS NULL) + this
             # student's own batch's. Scoped to the ACTIVE PROFILE.
-            batch_q = Q(batch__isnull=True) | Q(batch_id=batch_id)
+            batch_q = _batch_scope_q(batch_id)
         materials = (
             StudyMaterial.objects
             .filter(subject=subject)
@@ -497,9 +542,7 @@ class StudentCourseMaterials(APIView):
         # A teacher of the course sees every batch's material, matching
         # _authorize_subject_materials' TEACHER_UNRESTRICTED branch.
         batch_id = active_batch_id(learner_profile=profile, course_id=course_id)
-        batch_q = Q() if is_teacher else (
-            Q(batch__isnull=True) | Q(batch_id=batch_id)
-        )
+        batch_q = Q() if is_teacher else _batch_scope_q(batch_id)
 
         materials = (
             StudyMaterial.objects

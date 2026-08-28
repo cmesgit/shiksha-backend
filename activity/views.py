@@ -110,6 +110,11 @@ class ActivityFeedView(APIView):
         now = timezone.now()
         qs = (
             _scoped_qs(request.user, audience, profile)
+            # ActivitySerializer reads obj.content_type for THREE fields now
+            # (is_skill_session, track, object_type). Django's ContentType
+            # manager caches per-process so this was never a real N+1, but
+            # a cold worker paid one query per distinct model per request.
+            .select_related("content_type")
             .exclude(
                 type__in=[
                     Activity.TYPE_SESSION,
