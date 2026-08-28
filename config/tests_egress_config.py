@@ -115,6 +115,23 @@ class EgressEndpointTest(SimpleTestCase):
                     f"{region}-s3.storage.bunnycdn.com",
                 )
 
+    def test_region_is_lowercased_for_sigv4(self):
+        """Bunny's own APIs disagree on casing: the zone-creation API and the
+        dashboard both say "SG", the S3 API signs with "sg". Pasting the
+        dashboard's value must not break signing."""
+        mod = _reload({**FULL_ENV, "BUNNY_EGRESS_REGION": "SG"})
+        self.assertEqual(mod.BUNNY_EGRESS_REGION, "sg")
+        self.assertEqual(
+            mod.BUNNY_EGRESS_S3_HOST, "sg-s3.storage.bunnycdn.com",
+        )
+
+    def test_region_tolerates_stray_whitespace(self):
+        mod = _reload({**FULL_ENV, "BUNNY_EGRESS_REGION": " sg\n"})
+        self.assertEqual(mod.BUNNY_EGRESS_REGION, "sg")
+        self.assertEqual(
+            mod.BUNNY_EGRESS_S3_HOST, "sg-s3.storage.bunnycdn.com",
+        )
+
     def test_explicit_host_overrides_the_derived_one(self):
         mod = _reload({
             **FULL_ENV,

@@ -336,7 +336,14 @@ BUNNY_EGRESS_API_KEY = os.getenv("BUNNY_EGRESS_API_KEY", "")
 # subdomain, so it is stored once and the host derived from it below — the
 # two disagreeing is a silent misconfiguration that surfaces only as an
 # opaque signature error on the first real recording.
-BUNNY_EGRESS_REGION = os.getenv("BUNNY_EGRESS_REGION", "de")
+#
+# Lower-cased deliberately. Bunny's two APIs disagree on the casing of their
+# own region codes: the zone-creation API takes "SG" and the dashboard
+# displays "SG", but the S3 API signs with "sg". DNS would forgive the
+# hostname, SigV4 will not, so copying the code straight off the dashboard
+# into this variable produced a signature failure with nothing in the message
+# to suggest capitalisation was the cause.
+BUNNY_EGRESS_REGION = os.getenv("BUNNY_EGRESS_REGION", "de").strip().lower()
 # S3-compatible endpoint host. NOTE this is NOT the same host as the native
 # Edge Storage API that config/bunny_storage.py talks to
 # (storage.bunnycdn.com): the S3 API answers on
