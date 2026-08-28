@@ -7,6 +7,7 @@ from rest_framework import status
 from django.shortcuts import get_object_or_404
 
 from .models_recordings import SessionRecording, RecordingNote, PendingVideoUpload
+from .services_recordings import refresh_from_bunny
 from .serializers_recordings import SessionRecordingSerializer, RecordingNoteSerializer
 from .models import Subject, Batch
 from .services import teaches_subject
@@ -375,59 +376,12 @@ class CheckVideoStatusView(APIView):
         )
         _require_recording_viewer(request, recording)
 
-        # Finished AND we already know how long it is → nothing left to ask
-        # Bunny. The duration half of that condition is load-bearing: this
-        # early return used to fire on status alone, which meant every
-        # recording that reached READY before duration capture existed could
-        # never acquire one, because no other code path fetches it either.
-        if recording.status == 4 and recording.duration_seconds:
-            return Response(SessionRecordingSerializer(recording).data)
-
-        url = (
-            f"https://video.bunnycdn.com/library/"
-            f"{settings.BUNNY_LIBRARY_ID}/videos/{recording.bunny_video_id}"
-        )
-
-        try:
-            r = requests.get(
-                url, headers={"AccessKey": settings.BUNNY_API_KEY}, timeout=(5, 30))
-            if r.status_code == 200:
-                data = r.json()
-                new_status = data.get("status", 0)
-                recording.status = new_status
-
-                # DURATION. This is the only place the app ever sees Bunny's
-                # `length` (seconds), and it used to throw it away — nothing
-                # in the codebase wrote duration_seconds, so it stayed NULL
-                # forever. Downstream, that made
-                # GetVideoProgressView.percent_complete permanently null (the
-                # student's progress bar pinned at 0% and the card printed no
-                # duration) and made SaveVideoProgressView's auto-complete
-                # branch unreachable, because both are computed from it.
-                length = data.get("length")
-                try:
-                    length = int(length)
-                except (TypeError, ValueError):
-                    length = 0
-                if length > 0:
-                    recording.duration_seconds = length
-
-                if new_status == 4 and not recording.thumbnail_url:
-                    thumb_file = data.get("thumbnailFileName", "")
-                    cdn_host = getattr(settings, "BUNNY_CDN_HOST", "")
-                    if thumb_file and cdn_host:
-                        recording.thumbnail_url = (
-                            f"https://{cdn_host}/{recording.bunny_video_id}/{thumb_file}"
-                        )
-
-                recording.save(
-                    update_fields=["status", "thumbnail_url", "duration_seconds"]
-                )
-
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Bunny status check failed: %s", e)
+        # The whole Bunny round trip — early return, status, duration and
+        # thumbnail — now lives in courses/services_recordings.py, shared with
+        # the automatic-recording sweep in livestream/tasks.py. It used to be
+        # inline here and was the only implementation; two copies would have
+        # meant two subtly different duration-capture rules.
+        refresh_from_bunny(recording)
 
         return Response(SessionRecordingSerializer(recording).data)
 

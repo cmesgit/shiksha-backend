@@ -301,3 +301,24 @@ def fetch_egress_recording(self, egress_pk):
     except Exception as exc:
         logger.exception("fetch_egress_recording failed for %s", egress_pk)
         raise self.retry(exc=exc)
+
+
+@app.task
+def sweep_egress_recordings():
+    """Every 2 min: advance in-flight automatic class recordings (phase 4).
+
+    Drains the Bunny Stream fetch queue (the backstop for a lost egress_ended
+    webhook), polls Bunny for recordings still transcoding, then publishes and
+    purges the ones that finished. All logic in
+    livestream/services/egress.py::sweep_recordings.
+
+    No retry: this runs every couple of minutes anyway, so a transient failure
+    is picked up by the next tick rather than by a retry storm.
+    """
+    from livestream.services.egress import sweep_recordings
+
+    try:
+        return sweep_recordings()
+    except Exception:
+        logger.exception("sweep_egress_recordings failed")
+        return None

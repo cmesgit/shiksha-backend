@@ -540,3 +540,167 @@ def hand_off_to_stream(egress_pk):
         row.pk, row.storage_key, guid, recording.pk,
     )
     return recording
+
+
+# ── Finishing a recording ──────────────────────────────────────────────────
+# Phase 4. Bunny has transcoded; publish the recording, tell the students, and
+# get the raw mp4 off the public pull zone.
+
+# How far back the sweep looks. Beyond this an attempt needs a human, not
+# another retry, and an unbounded scan would grow with every class ever held.
+SWEEP_WINDOW_DAYS = 7
+
+
+def _notify_recording_available(recording):
+    """Tell the students who can actually see this recording that it exists.
+
+    Deliberately here and not at fetch time: until Bunny reports status 4 the
+    video cannot play, so notifying earlier promises something the recording
+    cannot yet deliver. Reuses the exact path SaveRecordingView uses for a
+    manual upload, so an automatic recording produces the same bell, Activity
+    row and WS frame as a teacher's own.
+
+    Best-effort: a notification backend hiccup must not stop the recording
+    being published or the raw file being purged.
+    """
+    try:
+        from activity.models import Activity
+        from activity.signals import _bulk_notify_students, _enrollments_for
+
+        subject = recording.subject
+        _bulk_notify_students(
+            _enrollments_for(subject.course, recording.batch_id),
+            recording,
+            Activity.TYPE_RECORDING,
+            f"New recording: {recording.title}",
+            None,
+            subject.id,
+            subject.name,
+            verb="recording.uploaded",
+            link_url=f"/subjects/recordings/{subject.id}",
+        )
+    except Exception as e:
+        logger.warning(
+            "Recording notification failed for %s: %s", recording.pk, e)
+
+
+def finish_recording(row):
+    """Publish a transcoded recording and purge its raw mp4.
+
+    Split from the sweep so it is callable directly (an admin retry, a test)
+    and so the sweep's loop stays readable. Returns True when the recording
+    reached its final published state on this call.
+    """
+    from django.utils import timezone as dj_tz
+    from livestream.services import bunny_stream
+
+    recording = row.recording
+    if recording is None:
+        return False
+
+    if recording.status != 4:
+        return False
+
+    newly_published = not recording.is_published
+    if newly_published:
+        recording.is_published = True
+        recording.save(update_fields=["is_published"])
+        logger.info("Published automatic recording %s", recording.pk)
+        _notify_recording_available(recording)
+
+    # Purge last, and independently of publishing: if the delete fails the
+    # recording is still watchable, and raw_deleted_at staying NULL means the
+    # next sweep tries again. The reverse order would risk a published
+    # recording whose source was deleted before Stream had really ingested it.
+    if row.raw_deleted_at is None and row.storage_key:
+        try:
+            bunny_stream.delete_raw_object(row.storage_key)
+        except Exception as exc:
+            logger.exception(
+                "Could not purge raw object for egress %s", row.pk)
+            row.error = str(exc)[:2000]
+            row.save(update_fields=["error"])
+            return newly_published
+        row.raw_deleted_at = dj_tz.now()
+        row.save(update_fields=["raw_deleted_at"])
+
+    return newly_published
+
+
+def sweep_recordings():
+    """Advance every in-flight automatic recording. Safe to run repeatedly.
+
+    Three jobs, in the order they matter:
+
+    1. Drain the Bunny Stream fetch queue. This is the backstop for a LOST
+       egress_ended webhook — without it the mp4 would sit in Storage forever,
+       publicly readable, because the webhook is otherwise the only trigger.
+    2. Poll Bunny for recordings still transcoding. Nothing else does: a
+       teacher's upload has a browser polling CheckVideoStatusView, an
+       automatic recording has nobody watching it.
+    3. Publish and purge whatever has finished.
+
+    Returns a small counts dict, which is what the Celery result and the logs
+    show — a sweep that silently does nothing is indistinguishable from a
+    sweep that is not running.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone as dj_tz
+
+    from courses.services_recordings import refresh_from_bunny
+    from livestream.models import LiveSessionEgress
+
+    since = dj_tz.now() - timedelta(days=SWEEP_WINDOW_DAYS)
+    counts = {"fetched": 0, "polled": 0, "finished": 0}
+
+    # 1. Missed-webhook backstop.
+    stalled = (
+        LiveSessionEgress.objects
+        .filter(
+            status=LiveSessionEgress.STATUS_COMPLETE,
+            recording__isnull=True,
+            requested_at__gte=since,
+            fetch_attempts__lt=MAX_FETCH_ATTEMPTS,
+        )
+        .exclude(storage_key="")
+    )
+    for row in stalled:
+        if hand_off_to_stream(row.pk) is not None:
+            counts["fetched"] += 1
+
+    # 2 & 3. Poll and finish.
+    pending = (
+        LiveSessionEgress.objects
+        .select_related("recording", "recording__subject",
+                        "recording__subject__course")
+        .filter(recording__isnull=False, requested_at__gte=since)
+        .exclude(recording__status__in=[4, 5])
+    )
+    for row in pending:
+        try:
+            if refresh_from_bunny(row.recording):
+                counts["polled"] += 1
+            if finish_recording(row):
+                counts["finished"] += 1
+        except Exception:
+            # One bad recording must not abort the sweep for the others.
+            logger.exception("Sweep failed for egress %s", row.pk)
+
+    # A recording that reached status 4 in an earlier sweep but whose purge
+    # failed is excluded by the status filter above, so it is picked up here.
+    for row in (
+        LiveSessionEgress.objects
+        .select_related("recording", "recording__subject")
+        .filter(recording__isnull=False, recording__status=4,
+                raw_deleted_at__isnull=True, requested_at__gte=since)
+        .exclude(storage_key="")
+    ):
+        try:
+            finish_recording(row)
+        except Exception:
+            logger.exception("Purge retry failed for egress %s", row.pk)
+
+    if any(counts.values()):
+        logger.info("Egress sweep: %s", counts)
+    return counts

@@ -336,9 +336,44 @@ Non-obvious things already paid for, do not re-derive:
   `--verify` does a real S3 round trip. `StorageZoneType=1` is what enables
   S3 on a Bunny zone; a zone without it has no S3 endpoint at all.
 
-**Known gap, deliberate:** if an `egress_ended` webhook is ever LOST, the mp4
-sits in Storage forever — nothing sweeps for `awaiting_stream_fetch` rows yet.
-Phase 4's beat task should drain that queue as well as poll transcode status.
+### Phase 4 landed (2026-08-28) — the feature is now complete end to end
+
+`sweep_egress_recordings`, a beat task every 2 min (`config/celery.py`), does
+three things: drains the Bunny Stream fetch queue, polls Bunny for recordings
+still transcoding, then publishes and purges the ones that finished. It closes
+the phase-3 gap above — a LOST `egress_ended` webhook no longer leaves the mp4
+public in Storage forever.
+
+- **The status/duration/thumbnail block was EXTRACTED, not copied**, into
+  `courses/services_recordings.py`, shared by `CheckVideoStatusView` and the
+  sweep. Its early-return condition is `status == 4 AND duration_seconds`, not
+  status alone — on status alone a recording that reached READY before
+  duration capture existed could never acquire one, which pinned
+  `VideoProgress.percent_complete` at null. Do not "simplify" that back.
+- **Students are notified at publish, not at fetch.** Until Bunny reports
+  status 4 the video cannot play, so the bell would promise something that
+  does not work. Same `_bulk_notify_students` path a manual upload uses.
+- **Publishing and purging are independent, in that order.** A failed purge
+  leaves `raw_deleted_at` NULL so the next sweep retries; the recording is
+  already watchable. Recording the object as deleted while it is still
+  publicly readable is the one outcome this design cannot tolerate.
+- **`BUNNY_EGRESS_STORAGE_HOST` is a THIRD host** — the native Edge Storage
+  API, used only for the purge (`{region}.storage.bunnycdn.com`, and bare
+  `storage.bunnycdn.com` for `de`). Not `BUNNY_EGRESS_S3_HOST` that egress
+  writes over, not `BUNNY_STORAGE_HOSTNAME` which is the CMS zone. The native
+  API takes a plain AccessKey header, which is why purging needs no SigV4 and
+  boto3 stays out of `requirements.txt`.
+- Bunny 404 on delete counts as success — the object is gone, which is the
+  goal. Every other status raises so the purge is retried.
+- The sweep is windowed to 7 days (`SWEEP_WINDOW_DAYS`); an unbounded scan
+  would grow with every class ever held.
+
+**NOT YET PROVEN AGAINST REAL INFRASTRUCTURE.** Every LiveKit and Bunny call
+in all five phases is mocked in tests. The zone
+(`shiksha-class-egress`, SG, pull zone `shiksha-class-egress-pull.b-cdn.net`)
+exists, but `scripts/provision_bunny_egress_zone.py --verify` has not been run
+against it, so the S3 credentials are unverified, and no real class has been
+recorded. Do that before trusting any of this in production.
 
 ## Local environment note: the Dockerfile's Python is too old for its own requirements
 

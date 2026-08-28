@@ -355,6 +355,19 @@ BUNNY_EGRESS_S3_HOST = (
     os.getenv("BUNNY_EGRESS_S3_HOST")
     or f"{BUNNY_EGRESS_REGION}-s3.storage.bunnycdn.com"
 )
+# NATIVE Edge Storage API host for this zone — a THIRD host, distinct from
+# both BUNNY_EGRESS_S3_HOST above and BUNNY_STORAGE_HOSTNAME (which belongs to
+# the CMS zone and may be in a different region entirely). Used only to DELETE
+# the raw mp4 once Bunny Stream has ingested it: the native API takes a simple
+# AccessKey header, so purging needs no SigV4 signing and therefore no boto3
+# in the app's dependencies.
+#
+# Bunny's native host pattern gives the main region no prefix and every other
+# region one: storage.bunnycdn.com for de, sg.storage.bunnycdn.com for sg.
+BUNNY_EGRESS_STORAGE_HOST = os.getenv("BUNNY_EGRESS_STORAGE_HOST") or (
+    "storage.bunnycdn.com" if BUNNY_EGRESS_REGION == "de"
+    else f"{BUNNY_EGRESS_REGION}.storage.bunnycdn.com"
+)
 # Public Pull Zone hostname in front of BUNNY_EGRESS_ZONE, read only by the
 # Bunny Stream fetch hop. Must be its OWN pull zone serving only this bucket
 # — see reason (2) above. Deliberately not BUNNY_STORAGE_CDN_HOST and not

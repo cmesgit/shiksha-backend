@@ -49,6 +49,13 @@ app.conf.beat_schedule.update({
         "task": "livestream.tasks.auto_complete_expired_sessions",
         "schedule": crontab(minute="*/5"),  # safety net
     },
+    "sweep-egress-recordings": {
+        "task": "livestream.tasks.sweep_egress_recordings",
+        # Automatic class recordings have no browser polling for them, unlike a
+        # teacher's upload, so this is the ONLY thing that notices a transcode
+        # finishing — and the only backstop for a lost egress_ended webhook.
+        "schedule": crontab(minute="*/2"),
+    },
     "sample-live-viewers": {
         "task": "livestream.tasks.sample_live_viewers",
         "schedule": crontab(minute="*/1"),  # viewer snapshots + attendance reconcile

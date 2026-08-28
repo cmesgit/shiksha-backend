@@ -101,3 +101,40 @@ def fetch_into_video(guid, url):
             f"Bunny Stream fetch failed: {r.status_code} {r.text[:300]}"
         )
     logger.info("Bunny Stream fetch accepted for %s", guid)
+
+
+def delete_raw_object(storage_key):
+    """Delete the raw egress mp4 from Bunny Storage.
+
+    Called once Bunny Stream has finished transcoding, and it is the step that
+    closes the one uncomfortable property of this design: until it runs, the
+    mp4 is publicly readable on the egress pull zone. It is also a cost
+    saver — a term's worth of raw class video is far larger than its
+    transcoded Stream copy.
+
+    Uses the NATIVE Edge Storage API rather than S3, so no SigV4 signing and
+    no boto3 in the app's dependencies. Note the host: BUNNY_EGRESS_STORAGE_HOST
+    is the native one, not BUNNY_EGRESS_S3_HOST that egress writes over, and
+    not BUNNY_STORAGE_HOSTNAME which belongs to the CMS zone.
+
+    Raises on failure so the caller can leave `raw_deleted_at` unset and try
+    again — an mp4 that silently stays public is exactly what must not happen.
+    """
+    zone = getattr(settings, "BUNNY_EGRESS_ZONE", "")
+    host = getattr(settings, "BUNNY_EGRESS_STORAGE_HOST", "")
+    api_key = getattr(settings, "BUNNY_EGRESS_API_KEY", "")
+    if not (zone and host and api_key):
+        raise RuntimeError(
+            "BUNNY_EGRESS_ZONE / BUNNY_EGRESS_STORAGE_HOST / "
+            "BUNNY_EGRESS_API_KEY must all be set to purge raw recordings."
+        )
+
+    url = f"https://{host}/{zone}/{storage_key.lstrip('/')}"
+    r = requests.delete(url, headers={"AccessKey": api_key}, timeout=TIMEOUT)
+    # 404 is success for our purposes: the object is gone, which is the goal.
+    # Anything else left it in place and must be retried.
+    if r.status_code not in (200, 204, 404):
+        raise RuntimeError(
+            f"Bunny Storage delete failed: {r.status_code} {r.text[:300]}"
+        )
+    logger.info("Purged raw egress object %s", storage_key)

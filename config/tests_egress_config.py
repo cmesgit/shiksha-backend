@@ -140,6 +140,24 @@ class EgressEndpointTest(SimpleTestCase):
         })
         self.assertEqual(mod.BUNNY_EGRESS_S3_HOST, "custom-s3.example.net")
 
+    def test_native_storage_host_has_no_prefix_for_the_main_region(self):
+        """Bunny's native host pattern gives de no prefix and every other
+        region one — the opposite of the S3 host, which always has one."""
+        mod = _reload({**FULL_ENV, "BUNNY_EGRESS_REGION": "de"})
+        self.assertEqual(mod.BUNNY_EGRESS_STORAGE_HOST, "storage.bunnycdn.com")
+
+    def test_native_storage_host_is_prefixed_for_other_regions(self):
+        mod = _reload({**FULL_ENV, "BUNNY_EGRESS_REGION": "sg"})
+        self.assertEqual(
+            mod.BUNNY_EGRESS_STORAGE_HOST, "sg.storage.bunnycdn.com")
+
+    def test_native_and_s3_hosts_are_different(self):
+        """Purging uses the native API, egress writes over S3. Conflating them
+        makes the delete 401 and the raw mp4 stay public."""
+        mod = _reload({**FULL_ENV, "BUNNY_EGRESS_REGION": "sg"})
+        self.assertNotEqual(
+            mod.BUNNY_EGRESS_STORAGE_HOST, mod.BUNNY_EGRESS_S3_HOST)
+
     def test_s3_host_is_never_the_native_edge_storage_host(self):
         """config/bunny_storage.py's host would authenticate against the
         wrong API entirely, so no default may ever resolve to it."""
