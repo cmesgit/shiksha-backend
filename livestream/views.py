@@ -12,6 +12,7 @@ from .services.token import (
     generate_livekit_token, build_identity, parse_identity, parse_profile_id,
 )
 from .services.room_admin import close_room
+from .services.egress import start_session_egress
 from .services import attendance as attendance_svc
 from .models import (
     LiveSession,
@@ -1261,6 +1262,21 @@ def _handle_participant_join(event):
         session.teacher_left_at = None
         session.status = LiveSession.STATUS_LIVE
         update_fields += ["teacher_left_at", "status"]
+
+        # Automatic class recording starts on the TEACHER's join, not on
+        # room_started. _handle_room_started's own comment explains why: that
+        # event carries no participant identity, so it fires when ANY
+        # participant connects — including a student who arrives before the
+        # teacher, or well before the class. Egress is billed by the minute,
+        # so recording an empty room is a real cost, not just untidy.
+        #
+        # on_commit, because start_session_egress makes an outbound HTTP call
+        # to LiveKit and this handler runs inside @transaction.atomic holding
+        # a select_for_update lock on the session row. Deferring past commit
+        # also means a rolled-back join never starts a (billed) recording.
+        # No-ops when egress is unconfigured, and is idempotent across a
+        # teacher's reconnect — see livestream/services/egress.py.
+        transaction.on_commit(lambda: start_session_egress(session))
 
     session.save(update_fields=update_fields)
     broadcast_session_update(session)
