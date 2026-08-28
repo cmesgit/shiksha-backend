@@ -375,4 +375,168 @@ def apply_egress_event(event, room_name=""):
         "Egress %s → %s (session %s)",
         row.egress_id, row.status, row.session_id,
     )
+
+    # Hand a finished recording to Bunny Stream. on_commit so the worker never
+    # reads a row this transaction has not committed yet, and because the
+    # caller holds a row lock the fetch's HTTP calls must not sit inside.
+    if row.awaiting_stream_fetch:
+        pk = row.pk
+        transaction.on_commit(
+            lambda: _enqueue_stream_fetch(pk)
+        )
+
     return row
+
+
+def _enqueue_stream_fetch(egress_pk):
+    """Queue the Bunny Stream handoff, falling back to running it inline.
+
+    A broker that is down must not mean the recording is silently lost: the
+    inline path is slower and blocks the webhook response, but the webhook
+    sink already returns 200 regardless of handler outcome, so the worst case
+    is a slow request rather than a dropped class recording.
+    """
+    try:
+        from livestream.tasks import fetch_egress_recording
+
+        fetch_egress_recording.delay(egress_pk)
+    except Exception:
+        logger.exception(
+            "Could not queue Bunny Stream fetch for egress %s; running inline",
+            egress_pk,
+        )
+        try:
+            hand_off_to_stream(egress_pk)
+        except Exception:
+            logger.exception("Inline Bunny Stream fetch failed for %s", egress_pk)
+
+
+# ── Handoff to Bunny Stream ────────────────────────────────────────────────
+# Phase 3. The mp4 exists in Bunny Storage; this turns it into the
+# SessionRecording the rest of the app already knows how to play.
+
+# A fetch that has failed this many times is a configuration problem, not a
+# transient one. Retrying forever would hammer Bunny and hide the real fault.
+MAX_FETCH_ATTEMPTS = 5
+
+
+def _claim_for_fetch(egress_pk):
+    """Take exclusive ownership of one handoff, or decline.
+
+    Returns the row, or None when someone else already handled it. Locked
+    because both the egress_ended webhook and (from phase 4) a sweep can
+    reach the same row: without this, two workers create two Bunny Stream
+    videos for one class and one of them is billed forever with nothing
+    pointing at it.
+    """
+    from livestream.models import LiveSessionEgress
+
+    with transaction.atomic():
+        row = (
+            LiveSessionEgress.objects
+            .select_for_update()
+            .select_related("session", "session__subject")
+            .filter(pk=egress_pk)
+            .first()
+        )
+        if row is None:
+            return None
+        if row.recording_id is not None:
+            logger.info("Egress %s already has recording %s", row.pk,
+                        row.recording_id)
+            return None
+        if not row.awaiting_stream_fetch:
+            logger.info(
+                "Egress %s not ready for fetch (status=%s, key=%r)",
+                row.pk, row.status, row.storage_key,
+            )
+            return None
+        if row.fetch_attempts >= MAX_FETCH_ATTEMPTS:
+            logger.error(
+                "Egress %s exhausted %s fetch attempts; giving up",
+                row.pk, MAX_FETCH_ATTEMPTS,
+            )
+            return None
+        row.fetch_attempts += 1
+        row.save(update_fields=["fetch_attempts"])
+        return row
+
+
+def hand_off_to_stream(egress_pk):
+    """Pull a finished egress recording into Bunny Stream as a
+    SessionRecording. Idempotent, and safe to call twice.
+
+    Ordering here is deliberate: the Bunny video slot is created, then the
+    SessionRecording row, and only then is the fetch requested. Creating the
+    row before the fetch means a crash mid-handoff leaves a VISIBLE
+    unpublished recording a teacher and an admin can both see (the faculty
+    grid shows unpublished rows as Pending), rather than an invisible Bunny
+    video that bills forever with nothing in this database pointing at it.
+    A retry re-issues the fetch against the same guid, which is harmless.
+    """
+    from courses.models_recordings import SessionRecording
+    from livestream.services import bunny_stream
+
+    row = _claim_for_fetch(egress_pk)
+    if row is None:
+        return None
+
+    session = row.session
+    url = bunny_stream.public_url_for(row.storage_key)
+    if not url:
+        # Misconfiguration, not a transient fault: no amount of retrying
+        # invents a pull zone. Recorded so it shows up in the admin.
+        msg = ("BUNNY_EGRESS_PULL_HOST is not set — Bunny Stream cannot fetch "
+               "the recording. See config/settings_base.py.")
+        logger.error("Egress %s: %s", row.pk, msg)
+        row.error = msg
+        row.fetch_attempts = MAX_FETCH_ATTEMPTS
+        row.save(update_fields=["error", "fetch_attempts"])
+        return None
+
+    try:
+        guid = bunny_stream.create_video_slot(session.title)
+    except Exception as exc:
+        logger.exception("Egress %s: Bunny Stream slot creation failed", row.pk)
+        row.error = str(exc)[:2000]
+        row.save(update_fields=["error"])
+        return None
+
+    recording = SessionRecording.objects.create(
+        subject=session.subject,
+        # Inherited from the class, exactly as SaveRecordingView does for a
+        # manual upload: the batch that attended sees its own recording.
+        batch=session.batch,
+        live_session=session,
+        title=session.title,
+        description="Automatically recorded live class.",
+        session_date=session.start_time.date(),
+        bunny_video_id=guid,
+        # No human uploaded this. The column was made nullable in phase 0
+        # precisely for this row.
+        uploaded_by=None,
+        status=0,  # Created; Bunny advances it, phase 4 polls for it.
+        # Deliberately unpublished until Bunny reports status 4. Students
+        # filter on is_published, teachers do not, so the faculty grid shows
+        # it as Pending while it transcodes and nobody is offered a video
+        # that cannot play yet. Phase 4 publishes and notifies.
+        is_published=False,
+    )
+    row.recording = recording
+    row.save(update_fields=["recording"])
+
+    try:
+        bunny_stream.fetch_into_video(guid, url)
+    except Exception as exc:
+        # The recording row survives on purpose — see this function's
+        # docstring. A retry finds it via `recording_id` and re-issues.
+        logger.exception("Egress %s: Bunny Stream fetch failed", row.pk)
+        row.error = str(exc)[:2000]
+        row.save(update_fields=["error"])
+        return recording
+
+    logger.info(
+        "Egress %s handed off: %s → Bunny Stream video %s (recording %s)",
+        row.pk, row.storage_key, guid, recording.pk,
+    )
+    return recording

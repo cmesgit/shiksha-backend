@@ -282,3 +282,22 @@ def auto_complete_expired_sessions():
                 pass
 
     return f"Auto-completed/advanced {completed_count} sessions"
+
+
+@app.task(bind=True, max_retries=3, default_retry_delay=60)
+def fetch_egress_recording(self, egress_pk):
+    """Pull one finished egress recording into Bunny Stream (phase 3).
+
+    Thin wrapper: all the logic, including its own idempotence claim, lives in
+    livestream/services/egress.py::hand_off_to_stream. Retries are for
+    transient Bunny/network failures only — the service's own fetch_attempts
+    counter is the real backstop, so an exhausted row is a no-op rather than
+    an error loop.
+    """
+    from livestream.services.egress import hand_off_to_stream
+
+    try:
+        hand_off_to_stream(egress_pk)
+    except Exception as exc:
+        logger.exception("fetch_egress_recording failed for %s", egress_pk)
+        raise self.retry(exc=exc)

@@ -290,6 +290,56 @@ Traps for whoever does phases 1–5 (each already cost something to find):
   `courses/views_recordings.py`'s Bunny status/duration/thumbnail block into
   a shared function rather than copying it — it carries a real bug fix.
 
+### Phases 1–3 landed (2026-08-28)
+
+Recording now works end to end up to the point a `SessionRecording` appears.
+Phase 4 (status polling, publish, purge the raw mp4) is the remaining piece.
+
+- **Phase 1 — start** (`livestream/services/egress.py`). Hung off the
+  TEACHER's join inside `_handle_participant_join`, via
+  `transaction.on_commit`: that handler holds a `select_for_update` lock on
+  the session row, so an HTTP call to LiveKit must not sit inside it.
+  Best-effort and never raising — a failed recording must not take a live
+  class down. Idempotent across a teacher's reconnect (two
+  `participant_joined` events would otherwise start two billed egresses); a
+  *terminal* attempt still allows a retry.
+- **Phase 2 — webhook events** (`apply_egress_event`). One handler for
+  `egress_started`/`egress_updated`/`egress_ended`; the status field says
+  which. `_event_room_name()` now falls back to `event.egress_info.room_name`,
+  and the composite dedupe key carries the egress id.
+- **Phase 3 — Bunny Stream handoff** (`livestream/services/bunny_stream.py` +
+  `hand_off_to_stream`). Creates a Stream slot, then the `SessionRecording`,
+  then requests the fetch — in that order, so a mid-handoff crash leaves a
+  *visible* unpublished row rather than an invisible Bunny video that bills
+  forever. Recording is created `is_published=False`; students filter on that
+  flag, teachers do not, so it shows as Pending while transcoding.
+
+Non-obvious things already paid for, do not re-derive:
+
+- **LiveKit reports egress timestamps AND file duration in NANOSECONDS.**
+  Read as seconds they land in 1970 and nothing complains.
+- **Webhook delivery is neither ordered nor exactly-once.** The sink's
+  per-`event_id` dedupe collapses redeliveries of ONE event but cannot
+  reorder two, so `apply_egress_event` refuses to move a terminal row back to
+  a non-terminal status — otherwise an already-fetched recording rejoins the
+  fetch queue.
+- **Orphan adoption exists for a reason.** `start_session_egress` writes its
+  row *before* calling LiveKit, so a lost response leaves a `REQUESTED` row
+  while a real billed egress runs. Egress events reconcile the two. Narrow by
+  design: same room, no id yet, non-terminal, newest first.
+- **`BUNNY_EGRESS_REGION` is lower-cased in settings.** Bunny's own APIs
+  disagree: the zone-creation API and dashboard say `SG`, the S3 API signs
+  with `sg`. DNS forgives the hostname, SigV4 does not.
+- Both `file_results` and the deprecated singular `file` are read — which one
+  LiveKit populates has moved across versions.
+- `scripts/provision_bunny_egress_zone.py` creates the zone + pull zone and
+  `--verify` does a real S3 round trip. `StorageZoneType=1` is what enables
+  S3 on a Bunny zone; a zone without it has no S3 endpoint at all.
+
+**Known gap, deliberate:** if an `egress_ended` webhook is ever LOST, the mp4
+sits in Storage forever — nothing sweeps for `awaiting_stream_fetch` rows yet.
+Phase 4's beat task should drain that queue as well as poll transcode status.
+
 ## Local environment note: the Dockerfile's Python is too old for its own requirements
 
 `Dockerfile` pins `python:3.11-slim`, but `requirements.txt` pins
