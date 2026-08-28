@@ -12,7 +12,7 @@ from .services.token import (
     generate_livekit_token, build_identity, parse_identity, parse_profile_id,
 )
 from .services.room_admin import close_room
-from .services.egress import start_session_egress
+from .services.egress import start_session_egress, apply_egress_event
 from .services import attendance as attendance_svc
 from .models import (
     LiveSession,
@@ -1116,7 +1116,16 @@ def session_notes(request, session_id):
 
 def _event_room_name(event):
     room = getattr(event, "room", None)
-    return getattr(room, "name", "") if room else ""
+    name = getattr(room, "name", "") if room else ""
+    if name:
+        return name
+    # Egress events carry NO `event.room` — the room name lives on
+    # `event.egress_info` instead. Without this fallback every egress event
+    # was logged with room_name="" and session=None, so the admin webhook
+    # console could not associate any of them with the class they recorded,
+    # and the composite dedupe key below lost its only distinguishing field.
+    info = getattr(event, "egress_info", None)
+    return (getattr(info, "room_name", "") or "") if info is not None else ""
 
 
 def _event_dedupe_id(event):
@@ -1132,6 +1141,11 @@ def _event_dedupe_id(event):
         getattr(event, "event", ""),
         _event_room_name(event),
         str(getattr(getattr(event, "participant", None), "identity", "")),
+        # Egress events have no participant, so without this two events for
+        # two concurrent egresses in one room at the same second would
+        # collapse into a single row and the second would be dropped as a
+        # duplicate.
+        str(getattr(getattr(event, "egress_info", None), "egress_id", "")),
         str(getattr(event, "created_at", "")),
     ]
     return "|".join(parts)
@@ -1202,6 +1216,11 @@ def livekit_webhook(request):
         "participant_left": _handle_participant_left,
         "room_started": _handle_room_started,
         "room_finished": _handle_room_finished,
+        # All three carry the same EgressInfo payload and the status field
+        # says which it is, so one handler serves them.
+        "egress_started": _handle_egress_event,
+        "egress_updated": _handle_egress_event,
+        "egress_ended": _handle_egress_event,
     }
     handler = handlers.get(event_type)
 
@@ -1223,6 +1242,18 @@ def livekit_webhook(request):
             log_row.save(update_fields=["processed"])
 
     return HttpResponse(status=200)
+
+
+@transaction.atomic
+def _handle_egress_event(event):
+    """egress_started / egress_updated / egress_ended.
+
+    Thin: resolving the room name from an egress event is this layer's job
+    (see _event_room_name), everything else is domain logic in
+    services/egress.py. Atomic because apply_egress_event takes a row lock —
+    LiveKit can deliver two egress events for one attempt concurrently.
+    """
+    apply_egress_event(event, room_name=_event_room_name(event))
 
 
 @transaction.atomic
