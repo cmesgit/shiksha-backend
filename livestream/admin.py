@@ -8,6 +8,7 @@ from .models import (
     StreamHealthSample,
     SessionReview,
     SessionNote,
+    LiveSessionEgress,
 )
 
 
@@ -114,3 +115,40 @@ class SessionNoteAdmin(admin.ModelAdmin):
     search_fields = ("session__title", "user__email")
     ordering = ("-updated_at",)
     readonly_fields = ("session", "user", "created_at", "updated_at")
+
+
+@admin.register(LiveSessionEgress)
+class LiveSessionEgressAdmin(admin.ModelAdmin):
+    """Read-only, same shape as LiveKitWebhookEventAdmin above.
+
+    Nothing here is editable on purpose: every field is written by the egress
+    service or a LiveKit webhook, and hand-editing e.g. `status` would make
+    the row disagree with the actual egress LiveKit is still running.
+    """
+    list_display = (
+        "session",
+        "egress_id",
+        "status",
+        "recording",
+        "requested_at",
+        "ended_at",
+        "raw_deleted_at",
+    )
+    list_filter = ("status",)
+    search_fields = ("egress_id", "session__title", "session__room_name", "storage_key")
+    ordering = ("-requested_at",)
+    readonly_fields = (
+        "session",
+        "egress_id",
+        "status",
+        "storage_key",
+        "recording",
+        "error",
+        "requested_at",
+        "started_at",
+        "ended_at",
+        "file_size_bytes",
+        "duration_seconds",
+        "fetch_attempts",
+        "raw_deleted_at",
+    )

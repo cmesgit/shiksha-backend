@@ -302,6 +302,104 @@ BUNNY_EMBED = os.getenv("BUNNY_EMBED", "https://iframe.mediadelivery.net/embed")
 # switched ON in Bunny, or unsigned URLs keep working.
 BUNNY_STREAM_TOKEN_KEY = os.getenv("BUNNY_STREAM_TOKEN_KEY", "")
 
+# ── LiveKit Egress → Bunny Edge Storage (automatic class recording) ────────
+#
+# Phase 0 of automatic class recording. LiveKit Cloud's egress service
+# composites the live room and writes the result straight into a Bunny
+# Storage Zone over Bunny's S3-compatible API; a later phase pulls that file
+# into Bunny Stream, which is the product the entire existing
+# SessionRecording playback path already speaks (courses/views_recordings.py,
+# config/bunny_signing.py). Storage is the drop box, Stream stays the
+# library — nothing downstream of the fetch hop changes.
+#
+# These are deliberately a FOURTH, separate set of Bunny credentials,
+# distinct from:
+#   • BUNNY_STORAGE_*        — the CMS image bucket (config/bunny_storage.py)
+#   • BUNNY_API_KEY          — Bunny Stream library uploads
+#   • BUNNY_STREAM_TOKEN_KEY — Bunny Stream embed-token signing
+#
+# The separation is not tidiness, it is the whole safety story:
+#   1. The CMS storage zone is shared between dev and prod. Pointing egress
+#      at it would drop dev's test recordings into the bucket prod serves
+#      publicly, which is exactly the accident this split prevents.
+#   2. Raw class video has to sit briefly on a PUBLIC pull zone so the Bunny
+#      Stream fetch hop can read it (Bunny's POST /videos/fetch takes a plain
+#      URL and cannot use a signed one). That is a property you never want
+#      the CMS bucket to have.
+BUNNY_EGRESS_ZONE = os.getenv("BUNNY_EGRESS_ZONE", "")
+# The Storage Zone password, used as the S3 secret access key. Bunny has no
+# separate access-key concept: the zone NAME above is the access key id, and
+# the bucket name, all three at once (Access → S3 tab in the dashboard).
+BUNNY_EGRESS_API_KEY = os.getenv("BUNNY_EGRESS_API_KEY", "")
+# Bunny Storage region code of the zone: de (Frankfurt), ny, sg, uk, se, la,
+# jh or syd. This is BOTH the SigV4 signing region and the endpoint's own
+# subdomain, so it is stored once and the host derived from it below — the
+# two disagreeing is a silent misconfiguration that surfaces only as an
+# opaque signature error on the first real recording.
+BUNNY_EGRESS_REGION = os.getenv("BUNNY_EGRESS_REGION", "de")
+# S3-compatible endpoint host. NOTE this is NOT the same host as the native
+# Edge Storage API that config/bunny_storage.py talks to
+# (storage.bunnycdn.com): the S3 API answers on
+# "<region>-s3.storage.bunnycdn.com", and pointing egress at the native host
+# fails to authenticate. The override exists only for the case where Bunny's
+# dashboard shows a host that doesn't match this pattern — read it off the
+# zone's Access → S3 tab rather than guessing.
+BUNNY_EGRESS_S3_HOST = (
+    os.getenv("BUNNY_EGRESS_S3_HOST")
+    or f"{BUNNY_EGRESS_REGION}-s3.storage.bunnycdn.com"
+)
+# Public Pull Zone hostname in front of BUNNY_EGRESS_ZONE, read only by the
+# Bunny Stream fetch hop. Must be its OWN pull zone serving only this bucket
+# — see reason (2) above. Deliberately not BUNNY_STORAGE_CDN_HOST and not
+# BUNNY_CDN_HOST.
+BUNNY_EGRESS_PULL_HOST = os.getenv("BUNNY_EGRESS_PULL_HOST", "")
+# Key prefix inside the zone. Object keys are
+# "<prefix>/<session_id>/<random>.mp4" — the random segment is load-bearing
+# rather than cosmetic: between egress finishing and the Stream fetch
+# completing, that object is readable by anyone who can guess its URL.
+BUNNY_EGRESS_PREFIX = os.getenv("BUNNY_EGRESS_PREFIX", "class-egress")
+
+_egress_requested = os.getenv("LIVEKIT_EGRESS_ENABLED", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+_egress_creds = all([
+    LIVEKIT_URL,
+    LIVEKIT_API_KEY,
+    LIVEKIT_API_SECRET,
+    BUNNY_EGRESS_ZONE,
+    BUNNY_EGRESS_API_KEY,
+])
+
+# The single flag every egress code path checks. False unless recording was
+# explicitly switched ON *and* every credential it needs is present, so the
+# test settings (which set no LIVEKIT_* at all — see the note in CLAUDE.md)
+# and any half-configured deploy keep the existing manual-upload behaviour
+# instead of raising on every teacher join.
+LIVEKIT_EGRESS_ENABLED = _egress_requested and _egress_creds
+
+if _egress_requested and not _egress_creds:
+    import warnings
+    warnings.warn(
+        "LIVEKIT_EGRESS_ENABLED is set but LiveKit and/or Bunny egress "
+        "credentials are missing — automatic class recording stays OFF. "
+        "Needs LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, "
+        "BUNNY_EGRESS_ZONE and BUNNY_EGRESS_API_KEY.",
+        RuntimeWarning,
+        stacklevel=1,
+    )
+
+# Hard stop rather than a warning: sharing a Storage Zone with the CMS
+# bucket is never a valid configuration, and the failure it produces (dev's
+# test recordings served from prod's public CDN) is silent, and already
+# irreversible by the time anyone notices. Fail at import instead.
+if BUNNY_EGRESS_ZONE and BUNNY_EGRESS_ZONE == BUNNY_STORAGE_ZONE:
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured(
+        "BUNNY_EGRESS_ZONE must not be the same Bunny Storage Zone as "
+        "BUNNY_STORAGE_ZONE. Automatic class recordings need their own zone "
+        "and their own pull zone — see config/settings_base.py for why."
+    )
+
 # Razorpay — referenced by payments/services.py (order creation, at module
 # import time) and payments/webhooks.py (signature verification) but never
 # actually defined here before now; both would raise AttributeError the

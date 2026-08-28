@@ -100,9 +100,25 @@ class SessionRecording(models.Model):
 
     thumbnail_url = models.URLField(blank=True)
 
+    # NULL for recordings this app produced itself rather than a person
+    # uploading them: LiveKit egress writes a class recording with no human
+    # uploader at all, and the column was non-null CASCADE, which left no
+    # value to store. SET_NULL rather than CASCADE for the same reason
+    # `live_session` uses it — deleting a departed teacher's account must
+    # not take every class recording they ever made down with it.
+    #
+    # Every existing reader is already None-safe, verified rather than
+    # assumed: SessionRecordingSerializer.get_uploaded_by_name (courses/
+    # serializers_recordings.py) returns None for a falsy user, activity/
+    # admin_views._name returns an em dash, livestream/admin_views guards on
+    # uploaded_by_id, and DeleteRecordingView authorizes on teaches_subject()
+    # rather than on uploader identity, so an unowned recording is still
+    # deletable by the subject's staff.
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="uploaded_recordings"
     )
 

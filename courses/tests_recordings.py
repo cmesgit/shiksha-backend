@@ -455,3 +455,73 @@ class BunnyUploadTicketExpiryTest(TestCase):
         self.assertEqual(
             upload_expiry_for_size(100 * four_gb), MAX_UPLOAD_EXPIRY_SECONDS,
         )
+
+
+class UnownedRecordingTest(RecordingAccessBase):
+    """SessionRecording.uploaded_by is nullable — phase 0 of automatic class
+    recording (LiveKit Egress → Bunny).
+
+    An egress-produced recording has no human uploader, so the column had to
+    stop being non-null CASCADE. These tests pin the readers that would have
+    broken, because none of them are exercised by any other test with a NULL
+    uploader: each one looked None-safe on inspection, which is not the same
+    as being known to be.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.rec_auto = SessionRecording.objects.create(
+            subject=cls.subject, batch=None, title="Auto-recorded class",
+            bunny_video_id="vid-auto", uploaded_by=None, status=4,
+            duration_seconds=1800, is_published=True,
+        )
+
+    def test_recording_can_exist_with_no_uploader(self):
+        self.rec_auto.refresh_from_db()
+        self.assertIsNone(self.rec_auto.uploaded_by_id)
+
+    def test_serializer_reports_no_uploader_name_instead_of_raising(self):
+        """get_uploaded_by_name has to survive a NULL FK — this is the field
+        the student and teacher recording cards both render."""
+        res = _client(self.teacher, "teacher").get(self.list_url())
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        row = next(
+            r for r in res.data if str(r["id"]) == str(self.rec_auto.id)
+        )
+        self.assertIsNone(row["uploaded_by_name"])
+
+    def test_student_can_watch_an_unowned_recording(self):
+        """The learner read path filters on batch/publication, never on
+        uploader, so a recording nobody uploaded must still be visible."""
+        res = _client(self.parent, "learner", self.child_a).get(
+            self.list_url()
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn(
+            str(self.rec_auto.id), [str(r["id"]) for r in res.data],
+        )
+
+    def test_subject_staff_can_still_delete_an_unowned_recording(self):
+        """DeleteRecordingView authorizes on teaches_subject(), not on
+        uploader identity. If it had used uploaded_by, an auto-recording
+        would have been undeletable by anyone but a superuser."""
+        with patch("courses.views_recordings.requests.delete") as mock_del:
+            mock_del.return_value.status_code = 200
+            res = _client(self.teacher, "teacher").delete(
+                f"/api/courses/recordings/{self.rec_auto.id}/delete/"
+            )
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(
+            SessionRecording.objects.filter(id=self.rec_auto.id).exists()
+        )
+
+    def test_deleting_the_uploader_account_keeps_the_recording(self):
+        """SET_NULL, not CASCADE: a teacher leaving the institution must not
+        delete every class recording they ever made."""
+        rec_id = self.rec_open.id
+        self.assertIsNotNone(self.rec_open.uploaded_by_id)
+        User.objects.filter(id=self.teacher.id).delete()
+        surviving = SessionRecording.objects.filter(id=rec_id).first()
+        self.assertIsNotNone(surviving)
+        self.assertIsNone(surviving.uploaded_by_id)

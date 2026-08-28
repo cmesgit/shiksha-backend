@@ -66,3 +66,11 @@ CSRF_COOKIE_DOMAIN = None
 # otherwise never resolve, which would make every private-media response
 # come back as literally nothing.
 MEDIA_SERVED_BY_NGINX = False
+
+# Automatic class recording (LiveKit Egress → Bunny Storage) is off here.
+# settings_base already computes LIVEKIT_EGRESS_ENABLED as False whenever the
+# LIVEKIT_* / BUNNY_EGRESS_* env vars are absent, which they are in this
+# sandbox — this line is belt-and-braces so a developer who exports real
+# LiveKit credentials to run the sessions_app tests doesn't also start
+# billing egress minutes against a throwaway sqlite DB.
+LIVEKIT_EGRESS_ENABLED = False

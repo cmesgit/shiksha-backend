@@ -636,3 +636,159 @@ class StreamHealthSample(models.Model):
             models.Index(fields=["session", "ts"]),
             models.Index(fields=["session", "is_presenter", "ts"]),
         ]
+
+
+class LiveSessionEgress(models.Model):
+    """One ATTEMPT at auto-recording a live class through LiveKit Egress.
+
+    A row per attempt rather than a field on LiveSession, because a single
+    class legitimately produces several: the teacher's connection drops and
+    they rejoin, or LiveKit's egress worker dies mid-class and a replacement
+    is started. Flattening that onto LiveSession would silently discard every
+    attempt but the last, which is precisely the case where you need the
+    history to work out what happened to a missing recording.
+
+    Lifecycle, and how to read it — `status` tracks ONLY LiveKit's own egress
+    state machine. What happens afterwards (hand the file to Bunny Stream,
+    wait for transcode, delete the raw mp4) is deliberately NOT a second set
+    of status values, because that state is already derivable and two
+    overlapping state machines drift:
+
+        status=REQUESTED                    → the start call hasn't returned
+        status=EGRESS_COMPLETE, recording   → ended, not yet handed to Stream
+                            is NULL
+        recording set, recording.status < 4 → Bunny Stream is transcoding
+        raw_deleted_at set                  → done; the raw mp4 is purged
+
+    `storage_key` is the object key inside BUNNY_EGRESS_ZONE. It carries a
+    random segment on purpose: between egress finishing and the Stream fetch
+    completing, that object is readable by anyone who can guess its URL (see
+    config/settings_base.py's BUNNY_EGRESS_* block for why it must be
+    briefly public at all).
+    """
+
+    # Local state: the start call has been issued but LiveKit hasn't returned
+    # an egress id yet, so there is nothing to correlate a webhook against.
+    STATUS_REQUESTED = "REQUESTED"
+    # Local state: the start call itself raised. Distinct from EGRESS_FAILED,
+    # which is LiveKit telling us a real egress died — this one never began,
+    # and `error` holds the exception.
+    STATUS_START_FAILED = "START_FAILED"
+
+    # Mirrors livekit.protocol EgressStatus, stored as its string name so the
+    # value stays readable in the admin and survives an SDK enum renumbering.
+    STATUS_STARTING = "EGRESS_STARTING"
+    STATUS_ACTIVE = "EGRESS_ACTIVE"
+    STATUS_ENDING = "EGRESS_ENDING"
+    STATUS_COMPLETE = "EGRESS_COMPLETE"
+    STATUS_FAILED = "EGRESS_FAILED"
+    STATUS_ABORTED = "EGRESS_ABORTED"
+    STATUS_LIMIT_REACHED = "EGRESS_LIMIT_REACHED"
+
+    STATUS_CHOICES = [
+        (STATUS_REQUESTED, "Requested"),
+        (STATUS_START_FAILED, "Start failed"),
+        (STATUS_STARTING, "Starting"),
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_ENDING, "Ending"),
+        (STATUS_COMPLETE, "Complete"),
+        (STATUS_FAILED, "Failed"),
+        (STATUS_ABORTED, "Aborted"),
+        (STATUS_LIMIT_REACHED, "Limit reached"),
+    ]
+
+    # Terminal states in which no further LiveKit webhook will ever arrive.
+    TERMINAL_STATUSES = (
+        STATUS_START_FAILED,
+        STATUS_COMPLETE,
+        STATUS_FAILED,
+        STATUS_ABORTED,
+        STATUS_LIMIT_REACHED,
+    )
+
+    session = models.ForeignKey(
+        LiveSession,
+        on_delete=models.CASCADE,
+        related_name="egresses",
+    )
+
+    # LiveKit's egress id. Blank only in REQUESTED/START_FAILED — every
+    # webhook correlates on this, so it is indexed and unique-when-present
+    # (a partial constraint, since several in-flight rows may hold "").
+    egress_id = models.CharField(max_length=64, blank=True, db_index=True)
+
+    status = models.CharField(
+        max_length=32,
+        choices=STATUS_CHOICES,
+        default=STATUS_REQUESTED,
+    )
+
+    # Object key inside BUNNY_EGRESS_ZONE, e.g.
+    # "class-egress/<session_id>/<random>.mp4".
+    storage_key = models.CharField(max_length=512, blank=True)
+
+    # The Bunny Stream row this attempt eventually became. NULL until the
+    # fetch hop runs; SET_NULL so deleting a recording leaves the audit trail
+    # of how it got here intact.
+    recording = models.ForeignKey(
+        "courses.SessionRecording",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="egress_attempts",
+    )
+
+    # Last failure seen, from either the start call or an egress_ended event
+    # carrying an error. Kept rather than only logged: by the time anyone
+    # asks why a class has no recording, the log line has rotated away.
+    error = models.TextField(blank=True)
+
+    requested_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    # Reported by LiveKit on egress_ended; used to spot a truncated or
+    # zero-byte capture before it is handed to Bunny Stream.
+    file_size_bytes = models.BigIntegerField(null=True, blank=True)
+    duration_seconds = models.PositiveIntegerField(null=True, blank=True)
+
+    # Number of times the Bunny Stream fetch hop has been attempted, so a
+    # permanently unfetchable file stops being retried forever.
+    fetch_attempts = models.PositiveSmallIntegerField(default=0)
+
+    # When the raw mp4 was purged from Bunny Storage. Also the "this attempt
+    # is fully done" marker — see the lifecycle note above. NULL while the
+    # object is still sitting on a public pull zone.
+    raw_deleted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-requested_at"]
+        verbose_name_plural = "live session egresses"
+        indexes = [
+            models.Index(fields=["session", "-requested_at"]),
+            models.Index(fields=["status"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["egress_id"],
+                condition=~models.Q(egress_id=""),
+                name="uniq_livesessionegress_egress_id_when_set",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.session_id} · {self.egress_id or 'pending'} · {self.status}"
+
+    @property
+    def is_terminal(self):
+        return self.status in self.TERMINAL_STATUSES
+
+    @property
+    def awaiting_stream_fetch(self):
+        """Ended cleanly, has a file, and nothing has pulled it into Bunny
+        Stream yet — the queue the phase-3 fetch task drains."""
+        return (
+            self.status == self.STATUS_COMPLETE
+            and bool(self.storage_key)
+            and self.recording_id is None
+        )

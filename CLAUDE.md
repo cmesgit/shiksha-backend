@@ -233,3 +233,67 @@ confirmed by direct DB query).
 frontend + admin UI + free/legal Aadhaar verification) is functionally
 complete end to end. Remaining future work is optional: a real KYC vendor
 for DigiLocker/Aadhaar-OTP instant UX, and an accessibility pass.
+
+## Automatic class recording (LiveKit Egress → Bunny) — PHASE 0 ONLY (2026-08-28)
+
+Branch `claude/livekit-egress-bunny-storage-f23q5y`. **Phase 0 is groundwork
+only: no egress is ever started yet, and nothing in this phase changes
+runtime behaviour.** The feasibility verdict that deferred this as "HEAVY
+infra" is out of date — Bunny Storage's S3-compatible API went GA
+2026-07-09, and LiveKit Cloud runs egress as a managed service, so no relay
+box and no CPU on the prod droplet is involved.
+
+**The shape of the whole feature**, so phase 0's choices make sense: egress
+can write to Bunny *Storage* but not Bunny *Stream*, and Stream is what the
+entire existing playback path speaks (`SessionRecording.bunny_video_id`, the
+0–5 status codes, `config/bunny_signing.py`'s token embed). So it hops once:
+egress → Storage → `POST /library/{id}/videos/{guid}/fetch` → Stream →
+existing polling and signed embed, untouched.
+
+Landed in phase 0:
+- `config/settings_base.py` — a `BUNNY_EGRESS_*` block plus
+  `LIVEKIT_EGRESS_ENABLED`. Read that block's comments before touching it;
+  the credential separation is a safety property, not tidiness.
+- `courses/models_recordings.py` — `SessionRecording.uploaded_by` is now
+  nullable `SET_NULL` (was non-null `CASCADE`). An egress recording has no
+  human uploader. All four existing readers were checked and were already
+  None-safe; `courses/tests_recordings.py::UnownedRecordingTest` pins them.
+- `livestream/models.py` — new `LiveSessionEgress`, one row per *attempt*.
+  Its `status` tracks ONLY LiveKit's egress state machine; the
+  post-processing state (fetched? transcoded? raw file purged?) is
+  deliberately derived, not a second status column. See the class docstring.
+- Migrations `courses/0039`, `livestream/0011`; read-only admin registration.
+
+Traps for whoever does phases 1–5 (each already cost something to find):
+- **`BUNNY_EGRESS_S3_HOST` is not `BUNNY_STORAGE_HOSTNAME`.** Bunny's S3 API
+  answers on `<region>-s3.storage.bunnycdn.com`; the native Edge Storage API
+  that `config/bunny_storage.py` uses is `storage.bunnycdn.com`. Pointing
+  egress at the native host fails to authenticate. Verified against Bunny's
+  own docs after getting it wrong from memory first.
+- **Start egress on teacher-join, not `room_started`.** `livestream/views.py`
+  (see the comment in `_handle_room_started`) spells out that `room_started`
+  fires when *any* participant connects, including a student arriving before
+  the teacher. Recording an empty room is billed egress minutes.
+- **Egress webhook events carry no `event.room`.** `_event_room_name()` and
+  `_event_dedupe_id()` in `livestream/views.py` both read `event.room.name`;
+  for egress events the room name lives on `event.egress_info`. Left alone,
+  every egress event logs with `room_name=""` and `session=None`.
+- **`POST /videos/fetch` cannot read a signed URL**, so the raw mp4 must be
+  briefly public on a pull zone. That is why object keys carry a random
+  segment and why the egress zone needs its own pull zone.
+- **Do not rehearse against the CMS storage zone** — it is shared between dev
+  and prod. `settings_base` now raises `ImproperlyConfigured` if
+  `BUNNY_EGRESS_ZONE == BUNNY_STORAGE_ZONE`, so this trap is closed
+  structurally rather than by remembering it.
+- Phase 4 needs a Celery beat task; `CheckVideoStatusView` is client-polled
+  only and no video-related Celery task exists. Extract
+  `courses/views_recordings.py`'s Bunny status/duration/thumbnail block into
+  a shared function rather than copying it — it carries a real bug fix.
+
+## Local environment note: the Dockerfile's Python is too old for its own requirements
+
+`Dockerfile` pins `python:3.11-slim`, but `requirements.txt` pins
+`Django==6.0.1`, which requires Python >= 3.12 — so `pip install -r
+requirements.txt` fails outright on 3.11 and that image cannot build as
+written. Not fixed here (out of scope, and untested against the real deploy);
+locally, build the venv with `python3.12` or newer.
