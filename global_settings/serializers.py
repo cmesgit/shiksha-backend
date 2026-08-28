@@ -82,6 +82,7 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
             "quiz_v2_enabled",
             "ai_question_drafting_enabled",
             "content_studio_enabled",
+            "auto_record_classes",
             "updated_at",
         ]
         read_only_fields = ["updated_at"]

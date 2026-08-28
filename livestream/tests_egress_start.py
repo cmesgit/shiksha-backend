@@ -18,6 +18,7 @@ from django.utils import timezone
 from accounts.models import LearnerProfile, Role, UserRole
 from courses.models import Batch, Board, Course, Subject, TeachingAssignment
 from enrollments.models import Enrollment
+from global_settings.models import GlobalSettings
 from livestream import views as lv
 from livestream.models import LiveSession, LiveSessionEgress
 from livestream.services import egress as egress_svc
@@ -82,6 +83,16 @@ class EgressStartBase(TestCase):
             end_time=now + timedelta(hours=1), room_name="room_eg",
             created_by=self.teacher, status=LiveSession.STATUS_WAITING,
         )
+
+        # Phase 5 added an admin policy layer on top of the infrastructure
+        # flag: LIVEKIT_EGRESS_ENABLED alone no longer records, because
+        # GlobalSettings.auto_record_classes defaults to OFF (egress is billed
+        # per minute, so it must be switched on knowingly). These tests are
+        # about start MECHANICS given recording is wanted, so they enable it
+        # here; livestream/tests_egress_policy.py owns the policy itself.
+        gs = GlobalSettings.load()
+        gs.auto_record_classes = True
+        gs.save(update_fields=["auto_record_classes"])
 
     def teacher_event(self):
         return SimpleNamespace(

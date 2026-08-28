@@ -29,6 +29,7 @@ from .models import (
 )
 from .services import attendance as attendance_svc
 from .services.room_admin import close_room
+from .services.egress import is_recording_enabled_for
 from .views import broadcast_session_update
 
 logger = logging.getLogger(__name__)
@@ -163,6 +164,40 @@ def admin_stream_detail(request, session_id):
         for v in s.viewer_samples.order_by("ts")[:500]
     ]
 
+    # Automatic recording, one row per ATTEMPT (a teacher's reconnect or a
+    # dead egress worker produces more than one). Surfaced because when a
+    # class has no recording, "was an egress even started, and what did
+    # LiveKit say about it" is the first question — and the answer was
+    # previously only reachable through the Django admin.
+    egress = [
+        {
+            "id": e.pk,
+            "egress_id": e.egress_id,
+            "status": e.status,
+            "status_display": e.get_status_display(),
+            "is_terminal": e.is_terminal,
+            "awaiting_stream_fetch": e.awaiting_stream_fetch,
+            "storage_key": e.storage_key,
+            "file_size_bytes": e.file_size_bytes,
+            "duration_seconds": e.duration_seconds,
+            "fetch_attempts": e.fetch_attempts,
+            "error": e.error,
+            "requested_at": e.requested_at.isoformat(),
+            "started_at": e.started_at.isoformat() if e.started_at else None,
+            "ended_at": e.ended_at.isoformat() if e.ended_at else None,
+            # NULL here means the raw mp4 is still sitting on the public pull
+            # zone, which is the thing an admin most needs to be able to see.
+            "raw_deleted_at": (
+                e.raw_deleted_at.isoformat() if e.raw_deleted_at else None),
+            "recording_id": str(e.recording_id) if e.recording_id else None,
+            "recording_status": (
+                e.recording.get_status_display() if e.recording_id else None),
+            "recording_published": (
+                e.recording.is_published if e.recording_id else None),
+        }
+        for e in s.egresses.select_related("recording").all()
+    ]
+
     return Response({
         "stream": _stream_row(s),
         "attendance": attendance,
@@ -170,6 +205,12 @@ def admin_stream_detail(request, session_id):
         "health": health,
         "health_samples": health_samples,
         "viewer_samples": viewer_samples,
+        "egress": egress,
+        # Whether this class WOULD be recorded, resolved through the same
+        # function the webhook uses. Without it an admin looking at an empty
+        # egress list cannot tell "recording is off for this course" from
+        # "recording is on and failed to start".
+        "auto_record_enabled": is_recording_enabled_for(s),
     })
 
 

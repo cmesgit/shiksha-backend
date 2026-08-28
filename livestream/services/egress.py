@@ -164,12 +164,51 @@ def _claim(session):
         return row, True
 
 
+def is_recording_enabled_for(session):
+    """Should this class be recorded? Three levels, most specific first.
+
+    1. `settings.LIVEKIT_EGRESS_ENABLED` — the infrastructure gate. False
+       unless recording was switched on AND every LiveKit/Bunny credential is
+       present, so a half-configured deploy records nothing.
+    2. `Course.auto_record_enabled` — per-course override. NULL means "no
+       decision made for this course", not False.
+    3. `GlobalSettings.auto_record_classes` — the default for every course
+       without an override.
+
+    The per-course level exists because egress is billed per minute and the
+    infrastructure gate is all-or-nothing: without it, turning recording on at
+    all means recording every class in the catalogue. A school piloting this
+    on one batch should not be billed for the whole timetable.
+
+    Never raises: a GlobalSettings row that cannot be read must not take a
+    live class down, so it fails CLOSED (no recording) rather than open.
+    """
+    if not settings.LIVEKIT_EGRESS_ENABLED:
+        return False
+
+    course = getattr(session, "course", None)
+    if course is not None:
+        override = getattr(course, "auto_record_enabled", None)
+        if override is not None:
+            return bool(override)
+
+    try:
+        from global_settings.models import GlobalSettings
+
+        return bool(GlobalSettings.load().auto_record_classes)
+    except Exception:
+        logger.exception(
+            "Could not read GlobalSettings.auto_record_classes; not recording")
+        return False
+
+
 def start_session_egress(session):
     """Begin recording `session`, if recording is configured and not already
     running for it. Returns the LiveSessionEgress row, or None when egress is
     switched off. Never raises.
     """
-    if not settings.LIVEKIT_EGRESS_ENABLED:
+    # Infrastructure gate AND admin policy — see is_recording_enabled_for.
+    if not is_recording_enabled_for(session):
         return None
 
     if not session.room_name:

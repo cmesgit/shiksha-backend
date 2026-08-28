@@ -132,6 +132,24 @@ class Course(models.Model):
     seo_title = models.CharField(max_length=200, blank=True, default="")
     seo_description = models.TextField(blank=True, default="")
     promo_video_url = models.URLField(blank=True, default="")
+    # Per-course override for automatic class recording. NULL — the default —
+    # means "follow GlobalSettings.auto_record_classes"; True/False force it
+    # on or off for this course regardless of the global default.
+    #
+    # Nullable rather than a plain boolean specifically so that flipping the
+    # global switch reaches every course that has not been decided about
+    # individually. A non-null default would have frozen every existing course
+    # at whatever value the migration wrote, which is the opposite of a
+    # master switch.
+    auto_record_enabled = models.BooleanField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Record this course's live classes automatically. Leave unset to "
+            "follow the global default. Egress is billed per minute."
+        ),
+    )
+
     categories = models.ManyToManyField(
         CourseCategory, blank=True, related_name="courses",
     )

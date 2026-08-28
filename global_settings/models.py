@@ -212,6 +212,29 @@ class GlobalSettings(models.Model):
     # screen checks it, and with it OFF the existing eight-tab CMS is what
     # renders. It ships OFF and stays OFF until Phase 9 flips the default,
     # so a half-built Studio never reaches an admin mid-rebuild.
+    # Automatic class recording (LiveKit Egress → Bunny). The global DEFAULT;
+    # Course.auto_record_enabled overrides it per course, and
+    # settings.LIVEKIT_EGRESS_ENABLED gates all of it at the infrastructure
+    # level. See livestream/services/egress.py::is_recording_enabled_for.
+    #
+    # NOT the same switch as `live_recording_enabled` above, despite the
+    # similar name: that one belongs to sessions_app (Skill Dev private and
+    # group rooms) and is surfaced through sessions_app/live_rules.py. This
+    # one is academy live CLASSES. Merging them would make one toggle control
+    # two unrelated products.
+    #
+    # Defaults to False on purpose: egress is billed per minute, so recording
+    # must be something an admin turns on knowingly rather than something a
+    # deploy switches on for every class in the catalogue.
+    auto_record_classes = models.BooleanField(
+        default=False,
+        help_text=(
+            "Automatically record academy live classes to the recordings "
+            "library. Billed per minute of class time. Individual courses can "
+            "override this."
+        ),
+    )
+
     content_studio_enabled = models.BooleanField(
         default=True,
         help_text=(

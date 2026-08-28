@@ -368,6 +368,45 @@ public in Storage forever.
 - The sweep is windowed to 7 days (`SWEEP_WINDOW_DAYS`); an unbounded scan
   would grow with every class ever held.
 
+### Phase 5 landed (2026-08-28) — who gets recorded
+
+`LIVEKIT_EGRESS_ENABLED` is all-or-nothing and egress is billed per minute, so
+switching it on without a policy layer meant paying to record every class in
+the catalogue. Resolution is now three levels, in
+`livestream/services/egress.py::is_recording_enabled_for`:
+
+1. `settings.LIVEKIT_EGRESS_ENABLED` — infrastructure gate (env + credentials).
+2. `Course.auto_record_enabled` — per-course override. **NULL means "no
+   decision", not False.** Nullable on purpose: a non-null default would have
+   frozen every existing course at the migration's value, so the global switch
+   would reach nothing.
+3. `GlobalSettings.auto_record_classes` — default for courses without an
+   override. Defaults False.
+
+**It fails CLOSED.** An unreadable `GlobalSettings` row means no recording,
+never "record everything", and never an exception into the teacher-join path.
+
+**`auto_record_classes` is NOT `live_recording_enabled`.** That existing flag
+belongs to `sessions_app` (Skill Dev private/group rooms, surfaced via
+`sessions_app/live_rules.py`). Different product. Merging them would make one
+toggle control two unrelated features.
+
+`admin_stream_detail` now returns an `egress` list (one entry per attempt, with
+its error, `awaiting_stream_fetch`, and `raw_deleted_at`) plus a resolved
+`auto_record_enabled` — so an admin can tell "recording is off for this course"
+from "recording is on and failed to start". Migrations `courses/0040`,
+`global_settings/0011`.
+
+**Watch out:** adding this policy layer BROKE 8 phase-1 tests, because
+`LIVEKIT_EGRESS_ENABLED=True` alone no longer records. `tests_egress_start.py`
+now enables `auto_record_classes` in its fixture. Any new test that expects an
+egress to start must do the same.
+
+**Frontend not done:** the toggle has no UI. `auto_record_classes` is exposed
+through `global_settings/serializers.py` so the Admin-dashboard settings panel
+picks it up, but `Course.auto_record_enabled` has no admin form field yet, and
+no teacher-dashboard surfacing of "recording processing" exists. Backend only.
+
 **NOT YET PROVEN AGAINST REAL INFRASTRUCTURE.** Every LiveKit and Bunny call
 in all five phases is mocked in tests. The zone
 (`shiksha-class-egress`, SG, pull zone `shiksha-class-egress-pull.b-cdn.net`)
