@@ -29,7 +29,7 @@ from .models import (
 )
 from .services import attendance as attendance_svc
 from .services.room_admin import close_room
-from .services.egress import is_recording_enabled_for
+from .services.egress import is_recording_enabled_for, recording_state_for
 from .views import broadcast_session_update
 
 logger = logging.getLogger(__name__)
@@ -211,6 +211,11 @@ def admin_stream_detail(request, session_id):
         # egress list cannot tell "recording is off for this course" from
         # "recording is on and failed to start".
         "auto_record_enabled": is_recording_enabled_for(s),
+        # ...and WHY, because the three ways it can be off need three
+        # different actions. Browser-testing the panel with this as a bare
+        # boolean produced "turn it on in Courses" for a server that simply
+        # had no LiveKit credentials — advice that could not possibly work.
+        "auto_record_state": recording_state_for(s),
     })
 
 

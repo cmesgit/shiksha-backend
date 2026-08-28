@@ -1316,6 +1316,7 @@ class AdminBoardCoursesView(APIView):
                     for cat in c.categories.all()
                 ],
                 "seo_title": c.seo_title,
+                "auto_record_enabled": c.auto_record_enabled,
             }
             for c in courses
         ])
@@ -1439,6 +1440,12 @@ class AdminCourseCreateView(APIView):
                 # board's drill-down, by definition).
                 "kind": c.kind,
                 "class_level": c.class_level,
+                # The edit form prefers getCourse()'s full shape and falls
+                # back to this row (`full?.x ?? c.x`), so both need the field
+                # for the fallback to be worth anything — the same reason
+                # `details`, `is_featured` and `seo_title` are duplicated onto
+                # the board-scoped list below.
+                "auto_record_enabled": c.auto_record_enabled,
             }
             for c in courses
         ])
@@ -1447,6 +1454,11 @@ class AdminCourseCreateView(APIView):
         serializer = CourseSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         course = serializer.save()
+        # Honoured on create as well as PATCH: the admin course form sends one
+        # payload shape for both, and a key accepted on edit but silently
+        # dropped on create is precisely the failure mode that made a
+        # full_name PATCH vanish without an error (see CLAUDE.md).
+        _apply_auto_record(course, request)
         if request.FILES.get("thumbnail"):
             course.thumbnail = request.FILES["thumbnail"]
             course.save(update_fields=["thumbnail"])
@@ -1456,6 +1468,36 @@ class AdminCourseCreateView(APIView):
             CourseSerializer(course, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+def _apply_auto_record(course, request):
+    """Apply the admin-only `auto_record_enabled` key, if present.
+
+    Read off request.data rather than through CourseSerializer — where the
+    field is read-only — because UpdateCourseView hands that serializer the
+    whole payload and is only IsTeacherContext: writable there, any teacher
+    assigned to a subject could switch on automatic recording for the course,
+    which is billed per minute of egress. Same pattern `details` and
+    `categories` already use, for the same reason.
+
+    Tri-state, matching the model: the key being ABSENT means "leave as it is",
+    null/"" means "follow GlobalSettings.auto_record_classes", and anything
+    else is an explicit yes/no for this course. String forms are accepted
+    because the admin course form posts multipart whenever a thumbnail is
+    attached, which stringifies every value.
+    """
+    if "auto_record_enabled" not in request.data:
+        return
+    raw = request.data.get("auto_record_enabled")
+    if raw in (None, "", "null", "None"):
+        course.auto_record_enabled = None
+    elif isinstance(raw, bool):
+        course.auto_record_enabled = raw
+    else:
+        course.auto_record_enabled = (
+            str(raw).strip().lower() in ("1", "true", "yes", "on")
+        )
+    course.save(update_fields=["auto_record_enabled"])
 
 
 class AdminCourseDetailView(APIView):
@@ -1486,6 +1528,8 @@ class AdminCourseDetailView(APIView):
             course.save(update_fields=["thumbnail"])
 
         _apply_course_details_and_categories(course, request)
+
+        _apply_auto_record(course, request)
 
         course.refresh_from_db()
         return Response(CourseSerializer(course, context={"request": request}).data)

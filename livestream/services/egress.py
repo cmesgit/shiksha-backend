@@ -183,23 +183,46 @@ def is_recording_enabled_for(session):
     Never raises: a GlobalSettings row that cannot be read must not take a
     live class down, so it fails CLOSED (no recording) rather than open.
     """
+    return recording_state_for(session) == RECORD_ENABLED
+
+
+# Why a class is or isn't being recorded. Three "no"s that look identical in
+# the UI but need completely different actions, which is exactly what a bare
+# boolean hid: telling an admin to "turn it on in Courses" when the real
+# problem is missing server credentials sends them somewhere that cannot fix
+# it.
+RECORD_ENABLED = "enabled"
+RECORD_NO_INFRA = "no_infra"        # credentials/flag missing on the server
+RECORD_COURSE_OFF = "course_off"    # this course explicitly opted out
+RECORD_GLOBAL_OFF = "global_off"    # global default is off, course undecided
+RECORD_UNKNOWN = "unknown"          # settings unreadable; fails closed
+
+
+def recording_state_for(session):
+    """Same resolution as is_recording_enabled_for, but says WHY.
+
+    Returns one of the RECORD_* constants. Kept beside the boolean rather than
+    replacing it so call sites that only need a yes/no stay readable.
+    """
     if not settings.LIVEKIT_EGRESS_ENABLED:
-        return False
+        return RECORD_NO_INFRA
 
     course = getattr(session, "course", None)
     if course is not None:
         override = getattr(course, "auto_record_enabled", None)
         if override is not None:
-            return bool(override)
+            return RECORD_ENABLED if override else RECORD_COURSE_OFF
 
     try:
         from global_settings.models import GlobalSettings
 
-        return bool(GlobalSettings.load().auto_record_classes)
+        if GlobalSettings.load().auto_record_classes:
+            return RECORD_ENABLED
+        return RECORD_GLOBAL_OFF
     except Exception:
         logger.exception(
             "Could not read GlobalSettings.auto_record_classes; not recording")
-        return False
+        return RECORD_UNKNOWN
 
 
 def start_session_egress(session):

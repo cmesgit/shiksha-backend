@@ -197,10 +197,19 @@ class CourseSerializer(serializers.ModelSerializer):
             "stream_name",
             "board",
             "board_id",
+            "auto_record_enabled",
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "created_at", "updated_at")
+        # auto_record_enabled is READ-ONLY here on purpose. UpdateCourseView
+        # hands this serializer the whole request payload with no allowlist and
+        # is only IsTeacherContext, so a writable field would let any teacher
+        # switch on automatic recording — billed per minute of egress — for a
+        # whole course. Writes go through AdminCourseDetailView.patch (IsAdmin)
+        # reading the raw key, the same pattern `categories` already uses.
+        read_only_fields = (
+            "id", "created_at", "updated_at", "auto_record_enabled",
+        )
 
     def get_thumbnail(self, obj):
         request = self.context.get("request")

@@ -155,6 +155,79 @@ class FailsClosedTest(PolicyBase):
             self.assertTrue(egress_svc.is_recording_enabled_for(self.session))
 
 
+class RecordingStateReasonTest(PolicyBase):
+    """WHY recording is off, not just whether.
+
+    A bare boolean made the admin panel advise "turn it on in Courses" for a
+    server that simply had no LiveKit credentials — advice that could not
+    work. Browser-testing the panel is what surfaced it.
+    """
+
+    def test_no_credentials_is_distinguishable_from_a_policy_decision(self):
+        self.set_global(True)
+        self.assertEqual(
+            egress_svc.recording_state_for(self.session),
+            egress_svc.RECORD_NO_INFRA,
+        )
+
+    @override_settings(**EGRESS_ON)
+    def test_global_off_is_reported_as_such(self):
+        self.set_global(False)
+        self.assertEqual(
+            egress_svc.recording_state_for(self.session),
+            egress_svc.RECORD_GLOBAL_OFF,
+        )
+
+    @override_settings(**EGRESS_ON)
+    def test_course_opt_out_is_reported_separately_from_the_global_default(self):
+        self.set_global(True)
+        self.set_course(False)
+        self.assertEqual(
+            egress_svc.recording_state_for(self.session),
+            egress_svc.RECORD_COURSE_OFF,
+        )
+
+    @override_settings(**EGRESS_ON)
+    def test_enabled_state(self):
+        self.set_global(True)
+        self.assertEqual(
+            egress_svc.recording_state_for(self.session),
+            egress_svc.RECORD_ENABLED,
+        )
+
+    @override_settings(**EGRESS_ON)
+    def test_unreadable_settings_are_reported_as_unknown_not_as_off(self):
+        """"Off by policy" and "we could not tell" need different messages;
+        both still mean no recording."""
+        with patch.object(GlobalSettings, "load",
+                          side_effect=RuntimeError("db gone")):
+            self.assertEqual(
+                egress_svc.recording_state_for(self.session),
+                egress_svc.RECORD_UNKNOWN,
+            )
+            self.assertFalse(egress_svc.is_recording_enabled_for(self.session))
+
+    @override_settings(**EGRESS_ON)
+    def test_the_boolean_can_never_disagree_with_the_state(self):
+        """is_recording_enabled_for is DERIVED from recording_state_for, so
+        the two cannot drift — which is the whole reason it was refactored
+        rather than duplicated."""
+        for setup in (
+            lambda: self.set_global(True),
+            lambda: self.set_global(False),
+            lambda: (self.set_global(True), self.set_course(False)),
+            lambda: (self.set_global(False), self.set_course(True)),
+        ):
+            self.set_course(None)
+            setup()
+            state = egress_svc.recording_state_for(self.session)
+            self.assertEqual(
+                egress_svc.is_recording_enabled_for(self.session),
+                state == egress_svc.RECORD_ENABLED,
+                f"boolean disagrees with state {state}",
+            )
+
+
 @override_settings(**EGRESS_ON)
 class PolicyAtStartTest(PolicyBase):
     """The policy is enforced where the money is spent, not just in the
@@ -213,13 +286,19 @@ class AdminVisibilityTest(PolicyBase):
         c.force_authenticate(user=self.admin)
         return c.get(f"/api/livestream/admin/streams/{self.session.id}/")
 
-    def test_detail_reports_the_resolved_policy(self):
+    def test_detail_reports_the_resolved_policy_and_the_reason(self):
         self.set_global(True)
         res = self._detail()
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.data["auto_record_enabled"])
+        self.assertEqual(res.data["auto_record_state"], egress_svc.RECORD_ENABLED)
+
         self.set_course(False)
-        self.assertFalse(self._detail().data["auto_record_enabled"])
+        res = self._detail()
+        self.assertFalse(res.data["auto_record_enabled"])
+        # The reason is what lets the panel say something actionable.
+        self.assertEqual(
+            res.data["auto_record_state"], egress_svc.RECORD_COURSE_OFF)
 
     def test_detail_lists_every_attempt_with_its_failure(self):
         LiveSessionEgress.objects.create(
