@@ -546,6 +546,33 @@ class ShowcaseCourse(StatusedContentModel):
         help_text='e.g. "1,500" (₹/month). Empty + tutor set = Coming Soon.',
     )
     tutor_name = models.CharField(max_length=80, blank=True, default="")
+
+    # ── Overriding a linked course ────────────────────────────────────
+    # A card linked to a Course or Board derives its title, price and picture
+    # from that row on every read (courses/views.py's featured endpoint), which
+    # is what keeps the homepage honest when a course is renamed. There was no
+    # way out of that, so a card could never say anything the course didn't.
+    #
+    # Precedence deliberately is NOT flipped to "your value wins if set": every
+    # linked card on prod already carries a stale `title` from before it was
+    # linked (card 10 holds "CBSE (Central Board)" but renders the Board's
+    # "CBSE"), and nine carry a stale `price_label` of "1,500". Flipping would
+    # have silently rewritten the live homepage. So this is opt-in, per card,
+    # and defaults to today's behaviour.
+    use_own_details = models.BooleanField(
+        default=False,
+        help_text="Use this card's own title, price and picture instead of the "
+                  "linked course's.",
+    )
+    # Tri-state on purpose: NULL follows the linked course's status, which is
+    # what all 7 coming-soon cards do today. True/False force the badge on or
+    # off for a card whose course status says otherwise.
+    coming_soon_override = models.BooleanField(
+        null=True, blank=True,
+        help_text="Leave unset to follow the linked course. Set to force the "
+                  "“Coming Soon” badge on or off.",
+    )
+
     is_explore_card = models.BooleanField(
         default=False, help_text="Render a single 'Explore Programs' button.",
     )

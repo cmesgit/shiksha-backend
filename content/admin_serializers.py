@@ -244,6 +244,7 @@ class ShowcaseCourseAdminSerializer(FullCleanMixin, serializers.ModelSerializer)
         fields = [
             "id", "title", "level_label", "ribbon",
             "fact_line", "price_label", "tutor_name", "is_explore_card",
+            "use_own_details", "coming_soon_override",
             "categories", "gradient_css", "image", "image_url", "icon",
             "link_path", "link_state", "course", "course_title", "board",
             "order", "status",

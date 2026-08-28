@@ -2209,14 +2209,24 @@ class PublicFeaturedView(APIView):
 
         cards = []
         for card in cards_qs:
-            course = card.course
-            board = card.board
+            # `use_own_details` opts a single card out of deriving from its
+            # link, without unlinking it — the link still drives the destination
+            # and the Coming Soon default. Treating the card as unlinked HERE
+            # only, rather than clearing course/board, is what keeps those.
+            # Named `detail_*`, not `course`/`board`: these drive only the
+            # WORDING (title, price, picture). Identity and destination —
+            # course_id, course_slug, board_id — must always come from
+            # card.course/card.board, or opting out of the wording would break
+            # the card's link and dump visitors on the bare catalog, which is
+            # the exact regression this module was written to prevent.
+            detail_course = card.course if not card.use_own_details else None
+            detail_board = card.board if not card.use_own_details else None
 
             # title
-            if course:
-                title = course.title
-            elif board:
-                title = board.name
+            if detail_course:
+                title = detail_course.title
+            elif detail_board:
+                title = detail_board.name
             else:
                 title = card.title
 
@@ -2224,29 +2234,34 @@ class PublicFeaturedView(APIView):
             # A zero price is a real state, not missing data: the platform runs
             # free at launch (GlobalSettings.live_launch_free_mode), so say
             # "Free" rather than emitting "₹0/month" for the card to render.
-            if course:
+            if detail_course:
                 price_label = (
-                    "Free" if not course.price
-                    else f"₹{course.price // 100:,}/month"
+                    "Free" if not detail_course.price
+                    else f"₹{detail_course.price // 100:,}/month"
                 )
-            elif board:
+            elif detail_board:
                 price_label = None
             else:
                 price_label = card.price_label
 
-            # is_coming_soon
-            if course:
-                is_coming_soon = course.status == Course.STATUS_COMING_SOON
-            elif board:
-                is_coming_soon = board.is_active is False
+            # is_coming_soon — the override wins over everything, including a
+            # card that has opted out of deriving the rest. A card can show its
+            # own title and still follow the course's launch state, or vice
+            # versa; they are independent choices.
+            if card.coming_soon_override is not None:
+                is_coming_soon = card.coming_soon_override
+            elif card.course:
+                is_coming_soon = card.course.status == Course.STATUS_COMING_SOON
+            elif card.board:
+                is_coming_soon = card.board.is_active is False
             else:
                 is_coming_soon = False
 
             # thumbnail (absolute URL)
-            if course and course.thumbnail:
-                thumbnail = request.build_absolute_uri(course.thumbnail.url)
-            elif board and board.logo:
-                thumbnail = request.build_absolute_uri(board.logo.url)
+            if detail_course and detail_course.thumbnail:
+                thumbnail = request.build_absolute_uri(detail_course.thumbnail.url)
+            elif detail_board and detail_board.logo:
+                thumbnail = request.build_absolute_uri(detail_board.logo.url)
             elif card.image:
                 thumbnail = request.build_absolute_uri(card.image.url)
             else:
@@ -2256,8 +2271,8 @@ class PublicFeaturedView(APIView):
                 "id": card.id,
                 "title": title,
                 "price_label": price_label,
-                "mrp": course.mrp if course else None,
-                "discount_label": course.discount_label if course else None,
+                "mrp": detail_course.mrp if detail_course else None,
+                "discount_label": detail_course.discount_label if detail_course else None,
                 "is_coming_soon": is_coming_soon,
                 "thumbnail": thumbnail,
                 "tutor_name": card.tutor_name,
@@ -2277,7 +2292,7 @@ class PublicFeaturedView(APIView):
                 # on the bare catalog. Callers must tolerate this being absent:
                 # this response is cached for LIST_TTL, so entries written
                 # before this field existed keep serving until they expire.
-                "course_slug": course.slug if course else None,
+                "course_slug": card.course.slug if card.course_id else None,
                 "board_id": str(card.board_id) if card.board_id else None,
                 "order": card.order,
             })

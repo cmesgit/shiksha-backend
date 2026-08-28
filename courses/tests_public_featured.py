@@ -65,3 +65,91 @@ class PublicFeaturedSlugTests(TestCase):
         course.refresh_from_db()
         self.assertEqual(self._cards()[0]["course_slug"], course.slug)
         self.assertTrue(first)
+
+
+class LinkedCardOverrideTests(TestCase):
+    """A linked card derives its title, price and picture from the course. That
+    keeps the homepage honest when a course is renamed, but left no way for a
+    card to say anything the course didn't.
+
+    Precedence is deliberately NOT flipped to "the card's value wins if set":
+    every linked card on prod already carries a stale `title` from before it
+    was linked (one holds "CBSE (Central Board)" while rendering the Board's
+    "CBSE") and nine carry a stale price_label. Flipping would have silently
+    rewritten the live homepage, so the escape hatch is opt-in per card.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        cache.clear()
+
+    def _card(self):
+        res = self.client.get(URL)
+        self.assertEqual(res.status_code, 200)
+        return res.data["cards"][0]
+
+    def test_by_default_the_linked_course_still_wins(self):
+        course = Course.objects.create(title="Class 10 Science", price=150000)
+        ShowcaseCourse.objects.create(
+            title="Stale title from before linking", price_label="1,500",
+            course=course, order=0,
+        )
+        card = self._card()
+        self.assertEqual(card["title"], "Class 10 Science")
+        self.assertEqual(card["price_label"], "₹1,500/month")
+
+    def test_opting_out_lets_the_card_speak_for_itself(self):
+        course = Course.objects.create(title="Class 10 Science", price=150000)
+        ShowcaseCourse.objects.create(
+            title="Our flagship science programme", price_label="Talk to us",
+            course=course, order=0, use_own_details=True,
+        )
+        card = self._card()
+        self.assertEqual(card["title"], "Our flagship science programme")
+        self.assertEqual(card["price_label"], "Talk to us")
+
+    def test_opting_out_does_not_unlink_the_card(self):
+        """The link still drives where the card sends people — opting out is
+        about the words on it, not the destination."""
+        course = Course.objects.create(title="Class 10 Science", slug="class-10-science")
+        ShowcaseCourse.objects.create(
+            title="Own words", course=course, order=0, use_own_details=True,
+        )
+        card = self._card()
+        self.assertEqual(card["course_slug"], "class-10-science")
+
+    def test_coming_soon_follows_the_course_by_default(self):
+        course = Course.objects.create(
+            title="NEET Preparation", status=Course.STATUS_COMING_SOON,
+        )
+        ShowcaseCourse.objects.create(title="x", course=course, order=0)
+        self.assertTrue(self._card()["is_coming_soon"])
+
+    def test_the_badge_can_be_forced_on_for_a_published_course(self):
+        course = Course.objects.create(title="Live course")
+        ShowcaseCourse.objects.create(
+            title="x", course=course, order=0, coming_soon_override=True,
+        )
+        self.assertTrue(self._card()["is_coming_soon"])
+
+    def test_the_badge_can_be_forced_off_for_a_coming_soon_course(self):
+        course = Course.objects.create(
+            title="NEET Preparation", status=Course.STATUS_COMING_SOON,
+        )
+        ShowcaseCourse.objects.create(
+            title="x", course=course, order=0, coming_soon_override=False,
+        )
+        self.assertFalse(self._card()["is_coming_soon"])
+
+    def test_the_two_switches_are_independent(self):
+        """A card can show its own title and still follow the course's launch
+        state — they are separate decisions."""
+        course = Course.objects.create(
+            title="Course name", status=Course.STATUS_COMING_SOON,
+        )
+        ShowcaseCourse.objects.create(
+            title="My own name", course=course, order=0, use_own_details=True,
+        )
+        card = self._card()
+        self.assertEqual(card["title"], "My own name")
+        self.assertTrue(card["is_coming_soon"], "override left unset must still follow the course")
