@@ -103,6 +103,30 @@ class Activity(models.Model):
     object_id = models.UUIDField()
     content_object = GenericForeignKey("content_type", "object_id")
 
+    # Pre-computed click target, same contract as notifications.Notification's
+    # own link_url (and usually the identical string — both are written from
+    # one argument at the call site).
+    #
+    # Why this exists: the bell reads THIS table, the Communication Center
+    # reads notifications.Notification. Only the latter stored a link, so the
+    # bell had to re-derive every route client-side from (type, subject_id,
+    # …) — in two apps, kept in sync by hand. That divergence is not
+    # theoretical: the faculty bell built its submissions URL from the
+    # Activity row's own PK instead of the assignment id and 404'd, while the
+    # Comm Center opened the same notification correctly because it just
+    # followed the server's string.
+    #
+    # It also carries things the client cannot reconstruct. A study-material
+    # link needs ?course= so the learner app can switch course before
+    # filtering; an Activity row knows its subject but not its course, and
+    # resolving one from the other is a query per row.
+    #
+    # Blank is the documented legacy case: rows written before this column,
+    # and any call site with no meaningful destination. Both bells already
+    # treat a blank link as "fall through to type-based routing", so old rows
+    # keep behaving exactly as they do today.
+    link_url = models.CharField(max_length=500, blank=True, default="")
+
     due_date = models.DateTimeField(null=True, blank=True)
     is_read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)

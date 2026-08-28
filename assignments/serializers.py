@@ -700,6 +700,7 @@ class TeacherSubmissionListSerializer(serializers.ModelSerializer):
         source="learner_profile.id", read_only=True, default=None)
     submission_status = serializers.CharField(read_only=True)
     max_marks = serializers.IntegerField(source="assignment.max_marks", read_only=True)
+    submitted_file_name = serializers.SerializerMethodField()
 
     class Meta:
         model = AssignmentSubmission
@@ -710,6 +711,7 @@ class TeacherSubmissionListSerializer(serializers.ModelSerializer):
             "student_name",
             "learner_profile_id",
             "submitted_file",
+            "submitted_file_name",
             "submitted_at",
             "submission_status",
             "marks_obtained",
@@ -717,6 +719,20 @@ class TeacherSubmissionListSerializer(serializers.ModelSerializer):
             "feedback",
             "graded_at",
         )
+
+    def get_submitted_file_name(self, obj):
+        """Bare filename of the upload, e.g. "essay_draft2.docx".
+
+        AssignmentSubmission has no original_filename column (the teacher-side
+        AssignmentFile does), so this is the storage name — which Django may
+        have suffixed on collision. Good enough for its two jobs: labelling
+        the row, and letting the teacher's inline preview pick a renderer from
+        the extension. Deriving the type from the URL instead would be worse:
+        `upload_to` + collision suffixes make URL-regexing brittle, and the
+        URL is rewritten to /api/media/secure/<name> by SecureLocalStorage.
+        """
+        name = getattr(obj.submitted_file, "name", "") or ""
+        return name.rsplit("/", 1)[-1]
 
     def get_student_name(self, obj):
         # The learner who actually submitted — on a shared family account the

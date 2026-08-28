@@ -153,6 +153,10 @@ def _bulk_notify_students(enrollments, obj, activity_type, title, due_date,
             subject_name=subject_name,
             content_type=content_type,
             object_id=obj.id,
+            # Same string the notify() below stores on the Notification row.
+            # Writing it here too is what lets the bell and the Communication
+            # Center agree on where a notification goes.
+            link_url=link_url,
         )
         for e in rows
     ]
@@ -202,6 +206,7 @@ def _notify_teacher(teacher, obj, activity_type, title, due_date,
         subject_name=subject_name,
         content_type=content_type,
         object_id=obj.id,
+        link_url=link_url,
     )
 
     # A durable Notification alongside the Activity row, so the event also
@@ -466,6 +471,11 @@ def quiz_submitted(sender, instance, created, **kwargs):
         # The teacher bell routes quiz submissions to /quizzes, not the
         # assignment-submissions page — keep the discriminator.
         extra={"subtype": "quiz_submission"},
+        # …and, now that Activity stores one, say it outright rather than
+        # relying on the client to infer it. `subtype` only ever rode the
+        # ephemeral WS frame, so a row re-read from the REST feed lost the
+        # discriminator entirely and fell into the assignment branch.
+        link_url=f"/teacher/classes/{subject.id}/quizzes",
     )
 
 
@@ -499,4 +509,14 @@ def session_created(sender, instance, created, **kwargs):
         subject_name=subject_name,
         extra={"start_time": instance.start_time.isoformat()
                if instance.start_time else None},
+        # The same destination the learner bell's SESSION branch already
+        # computes. Stated server-side so it survives a page reload and so
+        # the Comm Center agrees.
+        #
+        # Audience-correct by construction: _bulk_notify_students only ever
+        # writes learner rows, so a learner path is right here, exactly as
+        # _notify_teacher's links are all /teacher/… . sender=LiveSession, so
+        # group/private/skill sessions (separate models, separate notifiers)
+        # never reach this line.
+        link_url=f"/live/{instance.id}",
     )

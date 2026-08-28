@@ -1798,9 +1798,30 @@ class CourseCatalogView(APIView):
             # staffing moved to per-batch rows the card showed no teacher at
             # all. PRIMARY first so the preview names the lead, not a
             # substitute; `order` then keeps it deterministic.
+            #
+            # teacher__isnull=False is load-bearing, not defensive noise.
+            # TeachingAssignment.teacher is SET_NULL (models.py:517-523), so
+            # hard-deleting a teacher account leaves the row behind with
+            # teacher_id NULL and is_active STILL True — the admin soft-end
+            # path only ever flips is_active, it never nulls the teacher, so
+            # an active row with no teacher can only come from a real account
+            # deletion. Without this filter, `link.teacher.default_learner_
+            # profile()` below raises AttributeError on None, DRF does not
+            # catch it, and the whole catalog returns Django's bare
+            # "Server Error (500)" HTML page — i.e. Browse Courses dies for
+            # every learner on the platform, not just one.
+            #
+            # Excluding the row (rather than skipping it inside the loop) is
+            # also the better behaviour: the `continue` at the top of the loop
+            # means the FIRST row per course wins, so a deleted lead teacher
+            # would otherwise suppress a live substitute's name entirely.
             links = (
                 TeachingAssignment.objects
-                .filter(subject__course_id__in=course_ids, is_active=True)
+                .filter(
+                    subject__course_id__in=course_ids,
+                    is_active=True,
+                    teacher__isnull=False,
+                )
                 .select_related("teacher", "subject")
                 .order_by(
                     "subject__course_id",
