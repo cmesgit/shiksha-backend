@@ -254,12 +254,33 @@ def admin_recordings(request):
         {
             "id": str(r.id),
             "title": r.title,
+            # DESCRIPTION and the *_id fields below exist so the admin edit
+            # form can be seeded from this row. This is a hand-built dict, not
+            # SessionRecordingSerializer, and it returned display NAMES only —
+            # so an edit modal had nothing to pre-select with and no way to
+            # send a valid batch/chapter back.
+            "description": r.description,
+            "subject_id": str(r.subject_id) if r.subject_id else None,
             "subject_name": r.subject.name if r.subject_id else "",
+            "course_id": (
+                str(r.subject.course_id)
+                if r.subject_id and r.subject.course_id else None
+            ),
             "course_name": (r.subject.course.title if r.subject_id and r.subject.course_id else ""),
+            "batch_id": str(r.batch_id) if r.batch_id else None,
             "batch_name": r.batch.name if r.batch_id and r.batch else None,
+            "chapter_id": str(r.chapter_id) if r.chapter_id else None,
+            "chapter_note": r.chapter_note,
+            "no_specific_chapter": r.no_specific_chapter,
             "session_date": r.session_date.isoformat() if r.session_date else None,
             "duration_seconds": r.duration_seconds,
+            "trim_start_seconds": r.trim_start_seconds,
+            "trim_end_seconds": r.trim_end_seconds,
             "status": r.get_status_display(),
+            # The raw int alongside the display string. A UI gating the trim
+            # control on "is this finished" must not string-match "Finished" —
+            # that breaks the moment the label is reworded or translated.
+            "status_code": r.status,
             # The ONLY playback handle there is — SessionRecording has no
             # video_url/playback_url field; every client composes the Bunny
             # embed URL from library id + this. Omitting it (as this

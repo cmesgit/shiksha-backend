@@ -1,14 +1,28 @@
+import json
+
 from django.conf import settings
 import requests
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
+from rest_framework.exceptions import ValidationError as DRFValidationError
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 
 from .models_recordings import SessionRecording, RecordingNote, PendingVideoUpload
-from .serializers_recordings import SessionRecordingSerializer, RecordingNoteSerializer
+from .serializers_recordings import (
+    RecordingNoteSerializer,
+    SessionRecordingSerializer,
+    SessionRecordingUpdateSerializer,
+)
 from .models import Subject, Batch
+from .chapter_tags import (
+    primary_chapter,
+    resolve_tags,
+    set_tags,
+    validate_tag_payload,
+)
 from .services import teaches_subject
 from accounts.permissions import IsTeacherContext, CTX_TEACHER
 from config.bunny_signing import (
@@ -24,6 +38,47 @@ from config.bunny_signing import (
 # without one of the two degrading into the other. Same sentinel pattern, for
 # the same reason, as materials/views.py's TEACHER_UNRESTRICTED.
 TEACHER_UNRESTRICTED = object()
+
+
+def _as_bool(raw):
+    """Coerce a chapter-tag flag to a bool.
+
+    This endpoint is JSON, so a real `true`/`false` arrives as a bool and
+    passes straight through. The string branch is for the multipart dialect
+    the same keys travel in on the material upload — accepting both here
+    means a client that already speaks one cannot be caught out by the other.
+    Note `str(False).lower()` is "false", which is NOT in the truthy set, so
+    the classic "the string 'false' is truthy" bug cannot appear.
+    """
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _chapter_tags_from(data):
+    """Read `chapter_tags` out of a request body.
+
+    A JSON list of objects (what this endpoint's clients send), or the
+    JSON-encoded *string* form multipart clients are forced into. Anything
+    that is not a list of dicts is treated as "no tags": tags are optional on
+    every surface, so the safe failure is to ignore them rather than 500.
+
+    Deliberately duplicated from materials/views.py rather than imported.
+    `materials` already depends on `courses`; importing back the other way
+    would make the two apps mutually dependent for eight lines of parsing.
+    """
+    raw = data.get("chapter_tags")
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple)):
+        candidates = raw
+    else:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        candidates = parsed if isinstance(parsed, list) else [parsed]
+    return [c for c in candidates if isinstance(c, dict)]
 
 
 def _authorize_subject_recordings(request, subject):
@@ -134,63 +189,81 @@ class TeacherAllRecordingsView(APIView):
         return Response(serializer.data)
 
 
-class CreateRecordingView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacherContext]
-
-    def post(self, request, subject_id):
-        subject = get_object_or_404(Subject, id=subject_id)
-        # Both siblings below gate on this; only create was missing it, which
-        # let any teacher-context account (including an auto-approved skill
-        # expert, who is never reviewed) attach a recording to ANY subject —
-        # it then renders to that course's enrolled students.
-        if not teaches_subject(request.user, subject):
-            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
-        serializer = SessionRecordingSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save(subject=subject, uploaded_by=request.user)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+# CreateRecordingView used to live here, routed at
+# `subjects/<id>/recordings/create/`. It took a raw SessionRecordingSerializer
+# payload — a ModelSerializer with no read_only_fields — so a caller supplied
+# their own `bunny_video_id`, `status` and `is_published` directly. That
+# bypassed the whole PendingVideoUpload ownership scheme
+# (CreateVideoSlotView → SignedUploadUrlView) whose entire job is proving the
+# caller owns the Bunny slot they are about to attach.
+#
+# Deleted rather than locked down: grepping all five frontends
+# (teacher/student/admin dashboards, shiksha-frontend, shikshacom_app) for
+# `recordings/create/` returned zero hits. The only live create path is
+# SaveRecordingView, which validates ownership properly.
 
 
 class DeleteRecordingView(APIView):
-    permission_classes = [IsAuthenticated, IsTeacherContext]
+    # NOT IsTeacherContext. That permission class requires has_role("TEACHER")
+    # AND a teacher JWT context claim, so a pure admin was rejected at the
+    # class gate and the `request.user.is_staff` branch that used to be in the
+    # body below was unreachable dead code — admin delete parity was blocked by
+    # the decorator, not the logic. Authorization is now _require_recording_editor,
+    # which PATCH shares, so the two can never drift the way recordings and
+    # materials once did.
+    permission_classes = [IsAuthenticated]
 
     def delete(self, request, recording_id):
         recording = get_object_or_404(SessionRecording, id=recording_id)
-        # Subject teaching staff (or an admin) may delete, not just the
-        # uploader. Deliberately the SAME rule as DeleteStudyMaterial — the
-        # two used to disagree (recordings: any co-teacher; materials:
-        # uploaded_by only) even though both list endpoints return
-        # colleagues' content, so on one screen the delete button worked and
-        # on the other it always 403'd. See that view for the reasoning.
-        if not (
-            request.user.is_staff
-            or teaches_subject(request.user, recording.subject)
-        ):
-            return Response({"detail": "Not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        _require_recording_editor(request, recording)
 
-        # Deleting only the DB row orphans the Bunny Stream video — it keeps
-        # billing forever with nothing in this app pointing at it. Bunny's
-        # delete is best-effort: a network hiccup or an already-gone video
-        # must never block removing the (broken/duplicate/wrong) DB row the
-        # teacher is actually trying to clear.
-        if recording.bunny_video_id:
-            url = (
-                f"https://video.bunnycdn.com/library/"
-                f"{settings.BUNNY_LIBRARY_ID}/videos/{recording.bunny_video_id}"
-            )
-            try:
-                requests.delete(
-                    url, headers={"AccessKey": settings.BUNNY_API_KEY}, timeout=10,
-                )
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Bunny video delete failed for %s: %s",
-                    recording.bunny_video_id, e,
+        bunny_video_id = recording.bunny_video_id
+
+        # Order matters. The Bunny delete used to run FIRST, so a subsequent
+        # DB failure left a live row pointing at a video that no longer
+        # existed — an unplayable recording nobody could tell was broken.
+        # Now the row goes first, inside a transaction, and Bunny is only told
+        # once that commit succeeds.
+        with transaction.atomic():
+            # ContentChapterTag is a GENERIC relation keyed on a plain UUID
+            # (models_chapter_tags.py: `object_id = UUIDField(db_index=True)`),
+            # so there is no FK and nothing cascades. Deleting a recording
+            # without this leaves its tag rows behind forever.
+            set_tags(recording, [])
+            recording.delete()
+
+            if bunny_video_id:
+                # Deleting only the DB row orphans the Bunny Stream video — it
+                # keeps billing forever with nothing in this app pointing at
+                # it. Bunny's delete stays best-effort: a network hiccup or an
+                # already-gone video must never block removing the
+                # (broken/duplicate/wrong) DB row the teacher is actually
+                # trying to clear.
+                transaction.on_commit(
+                    lambda: _delete_bunny_video(bunny_video_id)
                 )
 
-        recording.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _delete_bunny_video(bunny_video_id):
+    """Best-effort DELETE of a Bunny Stream video. Never raises."""
+    url = (
+        f"https://video.bunnycdn.com/library/"
+        f"{settings.BUNNY_LIBRARY_ID}/videos/{bunny_video_id}"
+    )
+    try:
+        # timeout=(5, 30) to match every other Bunny call in this file; it was
+        # a bare 10 here, which is a shorter read budget than the sibling
+        # calls for no stated reason.
+        requests.delete(
+            url, headers={"AccessKey": settings.BUNNY_API_KEY}, timeout=(5, 30),
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Bunny video delete failed for %s: %s", bunny_video_id, e,
+        )
 
 
 class CreateVideoSlotView(APIView):
@@ -282,9 +355,20 @@ class SaveRecordingView(APIView):
             )
 
         # Optional — NULL means course-wide (every batch of the subject sees
-        # it). Explicit batch_id wins; otherwise inherit the source live
-        # session's batch when there is one.
+        # it). An EXPLICIT batch_id wins; a batch_id the caller did not
+        # mention at all inherits the source live session's batch.
+        #
+        # PRESENCE, not truthiness. This used to be `if batch_id:` with a bare
+        # `elif live_session:` fallback, which cannot tell "the teacher
+        # deliberately chose All batches" (batch_id=null) from "the field was
+        # never sent". Uploading from a Live Session detail page therefore
+        # silently overrode an explicit All-batches choice with that session's
+        # own batch — so a recording the teacher meant for the whole course
+        # reached one batch, half the students never saw it, and nothing
+        # anywhere reported a problem. Reproduced live before fixing; see
+        # RecordingLiveSessionBatchOverrideTest.
         batch = None
+        batch_supplied = "batch_id" in request.data
         batch_id = request.data.get("batch_id")
         if batch_id:
             # course_id in the lookup, not just the pk. Without it a batch
@@ -297,11 +381,42 @@ class SaveRecordingView(APIView):
             batch = get_object_or_404(
                 Batch, id=batch_id, course_id=subject.course_id,
             )
-        elif live_session:
+        elif live_session and not batch_supplied:
             batch = live_session.batch
 
         if not session_date and live_session:
             session_date = live_session.start_time.date()
+
+        # Chapter placement. `SessionRecording` has carried `chapter`,
+        # `chapter_tags`, `chapter_note` and `no_specific_chapter` since the
+        # tagging system landed, and `SessionRecordingSerializer` returns all
+        # four — but this view read none of them, so an upload could only ever
+        # produce an untagged recording. The same contract as the material
+        # upload and `SessionRecordingUpdateSerializer`: pick any number of
+        # syllabus chapters, type your own, or say "no specific chapter" —
+        # none of it required.
+        #
+        # Resolved BEFORE the row is written so a contradictory payload 400s
+        # instead of leaving a half-placed recording behind, and AFTER the
+        # batch lookup above so a foreign-course batch 404 cannot first mint
+        # stray Chapter rows via save_chapters_to_course.
+        raw_tags = _chapter_tags_from(request.data)
+        no_specific = _as_bool(request.data.get("no_specific_chapter"))
+        try:
+            validate_tag_payload(raw_tags, no_specific)
+            resolved_tags = resolve_tags(
+                subject, raw_tags, teacher=request.user,
+                # OFF unless asked. A teacher's own shorthand stays private
+                # free text by default — the legacy `custom_chapter` key on
+                # the material upload promoted every typed name into the
+                # shared syllabus with no way to decline, and this endpoint
+                # must not repeat that.
+                save_to_course=_as_bool(
+                    request.data.get("save_chapters_to_course")
+                ),
+            )
+        except DRFValidationError as exc:
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
 
         recording = SessionRecording.objects.create(
             subject=subject,
@@ -313,7 +428,14 @@ class SaveRecordingView(APIView):
             bunny_video_id=video_id,
             uploaded_by=request.user,
             status=1,
+            # The additive invariant — see chapter_tags.primary_chapter().
+            # The single FK keeps pointing at the first resolved chapter so
+            # every legacy chapter-filtered read still finds the recording.
+            chapter=primary_chapter(resolved_tags),
+            chapter_note=(request.data.get("chapter_note") or ""),
+            no_specific_chapter=no_specific,
         )
+        set_tags(recording, resolved_tags)
         # The recording itself is now the ownership record for this video_id
         # (checked via teaches_subject above) — the pending-slot bookkeeping
         # row has done its job.
@@ -338,28 +460,52 @@ class SaveRecordingView(APIView):
         # Best-effort: a notification backend hiccup must not fail an upload
         # whose 3 GB Bunny transfer already succeeded — the recording row is
         # the thing the teacher cannot cheaply redo.
-        try:
-            from activity.models import Activity
-            from activity.signals import _bulk_notify_students, _enrollments_for
-
-            _bulk_notify_students(
-                _enrollments_for(subject.course, recording.batch_id),
-                recording,
-                Activity.TYPE_RECORDING,
-                f"New recording: {recording.title}",
-                None,                   # recordings have no due date
-                subject.id,
-                subject.name,
-                verb="recording.uploaded",
-                link_url=f"/subjects/recordings/{subject.id}",
-            )
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Recording notification failed for %s: %s", recording.id, e,
-            )
+        _notify_recording_published(recording)
 
         return Response(SessionRecordingSerializer(recording).data)
+
+
+def _notify_recording_published(recording):
+    """Tell the students who can actually SEE this recording that it exists.
+
+    Extracted so the upload path (SaveRecordingView) and the publish path
+    (RecordingDetailView.patch, on the False→True edge) cannot drift — the
+    batch-visibility rule below is the whole point, and two copies of it would
+    eventually disagree about who gets told.
+
+    _enrollments_for applies the same batch-visibility rule the READER applies,
+    so a batch-scoped recording never notifies a batch that would 403 on it;
+    _bulk_notify_students writes the durable Activity + Notification rows plus
+    one WS frame per row carrying the serialized activity, so dedupe and
+    mark-read work against /activity/feed/.
+
+    Never raises.
+    """
+    subject = recording.subject
+    if subject is None:
+        # Group-session recordings have no subject and therefore no enrolment
+        # set to notify. Their audience is the people who attended.
+        return
+    try:
+        from activity.models import Activity
+        from activity.signals import _bulk_notify_students, _enrollments_for
+
+        _bulk_notify_students(
+            _enrollments_for(subject.course, recording.batch_id),
+            recording,
+            Activity.TYPE_RECORDING,
+            f"New recording: {recording.title}",
+            None,                   # recordings have no due date
+            subject.id,
+            subject.name,
+            verb="recording.uploaded",
+            link_url=f"/subjects/recordings/{subject.id}",
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Recording notification failed for %s: %s", recording.id, e,
+        )
 
 
 class CheckVideoStatusView(APIView):
@@ -448,6 +594,45 @@ class RecordingDetailView(APIView):
         _require_recording_viewer(request, recording)
         return Response(SessionRecordingSerializer(recording).data)
 
+    def patch(self, request, recording_id):
+        """Edit a recording's metadata. PARTIAL updates only.
+
+        There was no update endpoint of any kind before this: RecordingDetailView
+        was GET-only, so renaming a recording, retagging its chapter, moving it
+        between batches or unpublishing it all required Django admin.
+
+        PUT is deliberately not implemented (405). The edit modal sends only
+        what changed, and a full replace would need every writable field on
+        every save — which is how a client ends up blanking a description it
+        never showed the teacher.
+        """
+        recording = get_object_or_404(
+            SessionRecording.objects.select_related("subject__course__board"),
+            id=recording_id,
+        )
+        _require_recording_editor(request, recording)
+
+        was_published = recording.is_published
+
+        serializer = SessionRecordingUpdateSerializer(
+            recording, data=request.data, partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        updated = serializer.save()
+
+        # Only the False→True EDGE notifies. Re-saving an already-published
+        # recording is silent, which is what makes a title fix cheap.
+        #
+        # Known and accepted: unpublish-then-republish notifies twice.
+        # Assignments behave the same way today (see
+        # TeacherAssignmentUpdateSerializer's is_published comment); deduping
+        # would need a `notified_at` column, which is its own decision.
+        if not was_published and updated.is_published:
+            _notify_recording_published(updated)
+
+        return Response(SessionRecordingSerializer(updated).data)
+
 
 def _require_recording_viewer(request, recording):
     """Teacher context must teach the recording's subject; a learner must be
@@ -465,6 +650,18 @@ def _require_recording_viewer(request, recording):
       other batches don't" (see the field's own comment). SubjectRecordingsView
       filters on it; this guard didn't, so the per-id endpoints were a side
       door around the list's own rule.
+
+    Two more, added with the recording PATCH endpoint:
+
+    · STAFF WERE DENIED. _authorize_subject_recordings (the list twin, above)
+      has an `is_staff` branch; this one didn't, so an admin who was not also
+      in teacher context fell through to the learner branch and was rejected
+      for having no learner profile. That made every per-id endpoint —
+      including /playback/ — unusable from the admin console.
+    · is_published WAS NEVER CHECKED. Harmless while only Django admin could
+      unpublish anything; the moment PATCH made unpublish a real teacher
+      action it became live: a teacher hiding a wrong recording would
+      reasonably expect it to stop being reachable, and it didn't.
     """
     from rest_framework.exceptions import PermissionDenied
     from accounts.auth_flow import get_active_profile
@@ -472,6 +669,9 @@ def _require_recording_viewer(request, recording):
     from enrollments.services import active_batch_id
 
     user = request.user
+    if user.is_staff:
+        return
+
     token = getattr(request, "auth", None)
     in_teacher_context = (
         bool(token) and token.get("context") == CTX_TEACHER and user.has_role("TEACHER")
@@ -499,6 +699,43 @@ def _require_recording_viewer(request, recording):
             learner_profile=learner, course_id=course.id,
         ):
             raise PermissionDenied("This recording is not available to your batch.")
+
+    # Checked LAST, deliberately: an unpublished recording should read as
+    # "not there yet" to someone who is otherwise entitled to the course, and
+    # as "not yours" to someone who isn't. Running it before the enrolment
+    # checks would tell an outsider which ids exist.
+    if not recording.is_published:
+        raise PermissionDenied("This recording isn't published yet.")
+
+
+def _require_recording_editor(request, recording):
+    """Who may MUTATE a recording — PATCH and DELETE share this.
+
+    Deliberately one helper rather than a check inlined in each view. The
+    delete rules for recordings and study materials drifted apart once already
+    (one allowed any co-teacher, the other only the uploader) even though both
+    list endpoints return colleagues' content, so on one screen the delete
+    button worked and on the other it always 403'd. Two call sites reading the
+    same function cannot do that.
+
+    Staff, or teacher context assigned to the recording's subject. Note this
+    is NOT the same as _require_recording_viewer: an enrolled learner can watch
+    a recording and must never be able to rename or delete it.
+    """
+    from rest_framework.exceptions import PermissionDenied
+
+    user = request.user
+    if user.is_staff:
+        return
+
+    token = getattr(request, "auth", None)
+    in_teacher_context = (
+        bool(token) and token.get("context") == CTX_TEACHER and user.has_role("TEACHER")
+    )
+    if in_teacher_context and teaches_subject(user, recording.subject):
+        return
+
+    raise PermissionDenied("You cannot modify this recording.")
 
 
 class RecordingPlaybackView(APIView):
@@ -537,16 +774,26 @@ class RecordingPlaybackView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Player options the client used to append itself. `start` resumes at
-        # the saved watch position; it is NOT part of the signature, so a
-        # viewer nudging it cannot invalidate (or extend) the token.
+        # Player options the client used to append itself. The seek parameter
+        # is NOT part of the signature, so a viewer nudging it cannot
+        # invalidate (or extend) the token.
+        #
+        # THE PARAMETER IS `t`, NOT `start`. Bunny documents `t` (accepting
+        # `30s`, `1h20m45s`, `hh:mm:ss` or a bare number of seconds); `start`
+        # is not a parameter it recognises, so the player silently ignored it.
+        # This code and all three frontends sent `start` — which means
+        # "resume where you left off" has never once resumed, on any screen,
+        # since the feature was written. See
+        # https://bunny.net/docs/stream-embedding-videos
         params = {"autoplay": "false"}
-        try:
-            start = int(float(request.query_params.get("start") or 0))
-        except (TypeError, ValueError):
-            start = 0
-        if start > 0:
-            params["start"] = start
+
+        # Default to the trim point, so a trimmed recording opens at its real
+        # beginning even when the caller passes nothing.
+        seek = recording.clamp_position(
+            request.query_params.get("start") or recording.effective_start_seconds
+        )
+        if seek > 0:
+            params["t"] = int(seek)
 
         url, expires, signed = bunny_embed_url(
             recording.bunny_video_id, params=params,
@@ -564,7 +811,14 @@ class RecordingPlaybackView(APIView):
             "embed_url": url,
             "expires": expires,
             "token_auth": signed,
+            # The FULL Bunny length — CheckVideoStatusView owns this field.
             "duration_seconds": recording.duration_seconds,
+            # The trimmed window, resolved here so clients don't each
+            # reimplement it.
+            "trim_start_seconds": recording.trim_start_seconds,
+            "trim_end_seconds": recording.trim_end_seconds,
+            "effective_duration_seconds": recording.effective_duration_seconds,
+            "start": int(seek),
         })
 
 

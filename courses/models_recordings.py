@@ -118,11 +118,96 @@ class SessionRecording(models.Model):
     chapter_note = chapter_note_field()
     no_specific_chapter = no_specific_chapter_field()
 
+    # --- Trim window -------------------------------------------------------
+    # Offsets into the Bunny video, in whole seconds. NULL on both = untrimmed.
+    #
+    # A TRIM IS PRESENTATIONAL, NOT ACCESS CONTROL. Bunny Stream has no
+    # server-side trim API, so the full video is always what gets streamed;
+    # these two only change where the player is told to begin and where the
+    # client stops it. A viewer who edits the URL, opens devtools, or reads the
+    # HLS playlist directly still reaches the trimmed-off head and tail. It is
+    # a tool for tidying up dead air at the start and end of a class — never a
+    # way to remove something that should not have been recorded. To actually
+    # remove content, delete the recording and upload a cut version.
+    #
+    # Whole seconds, not float: Bunny's `t` embed parameter is second-grained,
+    # so sub-second precision would be stored and then discarded.
+    trim_start_seconds = models.PositiveIntegerField(null=True, blank=True)
+    trim_end_seconds = models.PositiveIntegerField(null=True, blank=True)
+
     class Meta:
         ordering = ["-session_date"]
+        constraints = [
+            # An inverted or empty window would make effective_duration zero or
+            # negative, which every percent-complete calculation divides by.
+            models.CheckConstraint(
+                name="sessionrecording_trim_window_valid",
+                condition=(
+                    models.Q(trim_start_seconds__isnull=True)
+                    | models.Q(trim_end_seconds__isnull=True)
+                    | models.Q(trim_end_seconds__gt=models.F("trim_start_seconds"))
+                ),
+            ),
+        ]
 
     def __str__(self):
         return self.title
+
+    # --- The effective (trimmed) window ------------------------------------
+    #
+    # THE ONE PLACE THIS MATH LIVES. The serializer, both video-progress views
+    # and RecordingPlaybackView all read these rather than recomputing, because
+    # the three of them disagreeing is how a progress bar ends up showing 143%.
+
+    @property
+    def effective_start_seconds(self):
+        return self.trim_start_seconds or 0
+
+    @property
+    def effective_end_seconds(self):
+        """End of the visible window, or None when the length is still unknown.
+
+        duration_seconds stays NULL until Bunny finishes transcoding and
+        something polls the status, so this is legitimately None on a fresh
+        upload — callers must handle it rather than assume a number.
+        """
+        if self.trim_end_seconds:
+            return self.trim_end_seconds
+        return self.duration_seconds
+
+    @property
+    def effective_duration_seconds(self):
+        end = self.effective_end_seconds
+        if not end:
+            return None
+        return max(0, end - self.effective_start_seconds)
+
+    def clamp_position(self, seconds):
+        """Pull a raw player position into the trimmed window.
+
+        VideoProgress.last_position is stored in RAW player seconds, not
+        window-relative ones — there are live rows, and redefining the unit
+        under them would silently corrupt every one. So the window is applied
+        on read, here, and the stored value keeps meaning what it always meant.
+        """
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            return float(self.effective_start_seconds)
+
+        seconds = max(seconds, float(self.effective_start_seconds))
+        end = self.effective_end_seconds
+        if end:
+            seconds = min(seconds, float(end))
+        return seconds
+
+    def percent_watched(self, last_position):
+        """0-100, or None when the length isn't known yet."""
+        span = self.effective_duration_seconds
+        if not span or span <= 0:
+            return None
+        watched = self.clamp_position(last_position) - self.effective_start_seconds
+        return round(max(0.0, min(100.0, (watched / span) * 100)), 1)
 
 
 class RecordingNote(models.Model):

@@ -352,6 +352,16 @@ def _require_subject_access(request, subject):
     caller has neither, else None.
     """
     user = request.user
+
+    # Staff first. An admin has no enrollment and no TeachingAssignment, so
+    # without this they were refused every per-subject read with "Not
+    # enrolled." — including the chapter list an admin needs to place content
+    # they are moderating. Third instance of the same shape: the recordings
+    # per-id gate and the materials read gate both had to gain this branch
+    # too. If you add another per-subject gate, put it in from the start.
+    if user.is_staff:
+        return None
+
     learner = get_active_profile(request)
     enrolled = False
     if learner is not None:

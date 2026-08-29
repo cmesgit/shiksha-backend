@@ -39,7 +39,6 @@ from .views import MySubjectsView
 from .views_recordings import (
     TeacherAllRecordingsView,
     SubjectRecordingsView,
-    CreateRecordingView,
     DeleteRecordingView,
     CreateVideoSlotView,
     SaveRecordingView,
@@ -171,8 +170,10 @@ urlpatterns = [
     path("teacher/recordings/all/", TeacherAllRecordingsView.as_view()),
     path("subjects/<uuid:subject_id>/recordings/",
          SubjectRecordingsView.as_view()),
-    path("subjects/<uuid:subject_id>/recordings/create/",
-         CreateRecordingView.as_view()),
+    # `subjects/<id>/recordings/create/` was removed with CreateRecordingView —
+    # it let a caller supply their own bunny_video_id, bypassing the
+    # PendingVideoUpload ownership scheme. SaveRecordingView is the only
+    # create path.
     path("subjects/<uuid:subject_id>/recordings/save/",
          SaveRecordingView.as_view()),
     # RECORDINGS — static before uuid
