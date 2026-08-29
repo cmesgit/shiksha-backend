@@ -83,6 +83,44 @@ def active_batch_id(*, learner_profile, course_id):
     return enrollment.batch_id if enrollment else None
 
 
+def active_batch_ids(*, learner_profile):
+    """Every course this learner sits in, as ``{course_id: batch_id}``.
+
+    The multi-course counterpart to ``active_batch_id`` above, for the flat
+    endpoints that are NOT scoped to one course by their URL — quizzes is the
+    only one today. Those cannot resolve a single batch, because a learner can
+    sit in a DIFFERENT batch in each of their courses (Class 11 Morning and
+    Class 12 Weekend), so calling ``active_batch_id`` once and applying the
+    answer everywhere would cross the pairs and unlock one course's batch
+    content using another course's placement.
+
+    A course the learner is enrolled in but UNPLACED in maps to ``None``, and
+    a course they hold no active enrollment for is simply absent. Callers must
+    treat both the same way ``active_batch_id``'s ``None`` is treated —
+    course-wide content only — so that the scoped and un-scoped code paths
+    answer identically for the same learner. ``quizzes.visibility``'s
+    ``batch_scope_q_across_courses`` is the one place that does this.
+
+    NOTE this is deliberately NOT ``dashboard.views._batch_ids_for``, which
+    looks the same but widens an unplaced learner to every batch of the
+    course. That over-share is documented and pre-existing there; it is not
+    imported here, and neither helper should be "unified" into the other
+    without deciding which of the two behaviours is correct.
+    """
+    if learner_profile is None:
+        return {}
+    # Enrollment is unique_together (learner_profile, course), so there is at
+    # most one row per course and the dict cannot silently drop a pairing.
+    return dict(
+        Enrollment.objects
+        .filter(
+            learner_profile=learner_profile,
+            status=Enrollment.STATUS_ACTIVE,
+        )
+        .values_list("course_id", "batch_id")
+    )
+
+
 def is_user_enrolled(*, user, course, learner_profile=None) -> bool:
     """Legacy helper — kept for callers that only need the Enrollment row.
 

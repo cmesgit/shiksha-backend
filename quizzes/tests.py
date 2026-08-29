@@ -385,9 +385,15 @@ class QuizCourseScopingTest(TestCase):
         )
 
     def test_without_course_param_the_whole_profile_is_returned(self):
-        # The un-scoped behaviour is retained deliberately for any caller
-        # that wants a cross-course view; the leak was the Hub never passing
+        # The cross-COURSE behaviour is retained deliberately for any caller
+        # that wants a whole-profile view; the leak was the Hub never passing
         # ?course=, not the parameter being optional.
+        #
+        # Note this says nothing about BATCH scoping, which now applies on
+        # this call too — both quizzes here are course-wide (empty `batches`)
+        # so they reach every batch either way. QuizNoCourseParamBatchScoping-
+        # Test covers the batch half, which used to be skipped entirely when
+        # no ?course= was passed.
         c = self.client_as_student()
         self.assertEqual(
             self._titles(c.get("/api/student/quizzes/")),
@@ -445,6 +451,221 @@ class QuizCourseScopingTest(TestCase):
         self.assertEqual(b.status_code, 200, b.content)
         self.assertEqual(a.data["questions_solved"], 0)
         self.assertEqual(b.data["questions_solved"], 1)
+
+
+class QuizNoCourseParamBatchScopingTest(TestCase):
+    """The Hub list must scope by batch even when no ?course= is passed.
+
+    Sibling of QuizCourseScopingTest, which pins the *course* half of the
+    rule. This pins the *batch* half on the un-scoped call, which used to
+    skip it entirely: the batch filter in StudentDashboardView lived inside
+    `if course_id:`, so `GET /api/student/quizzes/` returned every batch's
+    quizzes for every course the profile held a subscription to.
+
+    Reproduced against a running server before it was fixed — 5 rows
+    including another batch's quiz with no params, 0 rows (correct) with
+    `?course=`. Information disclosure only: the per-id endpoints
+    (`/quizzes/<id>/`, `/quizzes/<id>/start/`) go through
+    `learner_may_see_quiz` and correctly 404, and QuizHub.jsx always sends
+    `?course=`, so nothing shipped could reach it. Fixed anyway — the
+    endpoint is public API surface and the next caller need not pass it.
+
+    TRAP, and it cost real time during verification: these endpoints gate on
+    an ACTIVE Subscription, so a fixture student who is merely *enrolled*
+    gets an empty list and every batch-isolation assertion below passes
+    vacuously. Both learners here get an Enrollment AND a live Subscription,
+    and `test_the_fixture_actually_sees_quizzes` asserts the list is
+    non-empty so this class can never rot back into passing for that reason.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Batch
+        from enrollments.models import Enrollment
+
+        Role.objects.get_or_create(name="STUDENT")
+        cls.teacher = User.objects.create_user(
+            username="nb_t", email="nb_t@test.com", password="x",
+        )
+
+        now = timezone.now()
+        cls.course = Course.objects.create(title="Class 11 (Science)")
+        cls.subject = Subject.objects.create(course=cls.course, name="Physics")
+        cls.batch_a = Batch.objects.create(course=cls.course, name="Morning", code="NB-A")
+        cls.batch_b = Batch.objects.create(course=cls.course, name="Evening", code="NB-B")
+
+        def learner(tag, batch):
+            user = User.objects.create_user(
+                username=f"nb_{tag}", email=f"nb_{tag}@test.com",
+                password="x", is_verified=True,
+            )
+            UserRole.objects.create(
+                user=user, role=Role.objects.get(name="STUDENT"),
+                is_active=True, is_primary=True,
+            )
+            profile = LearnerProfile.objects.create(
+                account=user, display_name=tag.upper(), is_default=True,
+            )
+            Enrollment.objects.create(
+                user=user, learner_profile=profile, course=cls.course,
+                batch=batch, status=Enrollment.STATUS_ACTIVE,
+            )
+            # Without this the endpoint returns nothing at all and every
+            # assertion below would pass for the wrong reason. See the
+            # class docstring.
+            Subscription.objects.create(
+                user=user, learner_profile=profile, course=cls.course,
+                status=Subscription.STATUS_ACTIVE,
+                starts_at=now, expires_at=now + timedelta(days=30),
+            )
+            return user, profile
+
+        cls.user_a, cls.profile_a = learner("a", cls.batch_a)
+        cls.user_b, cls.profile_b = learner("b", cls.batch_b)
+
+        def quiz(title, batches):
+            q = Quiz.objects.create(
+                subject=cls.subject, created_by=cls.teacher, title=title,
+                quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
+                review_status=Quiz.REVIEW_APPROVED,
+            )
+            # Scope lives in the M2M — the legacy `batch` FK was dropped in
+            # Phase 10, and an EMPTY batches set means "every batch of the
+            # course", which would make isolation assertions vacuous.
+            if batches:
+                q.batches.set(batches)
+            return q
+
+        cls.quiz_a_only = quiz("Batch A only", [cls.batch_a])
+        cls.quiz_b_only = quiz("Batch B only", [cls.batch_b])
+        cls.quiz_shared = quiz("Course-wide", [])
+
+    def _client(self, user, profile):
+        c = APIClient()
+        c.force_authenticate(
+            user=user,
+            token={"context": "learner", "active_profile": str(profile.id)},
+        )
+        return c
+
+    def _titles(self, response):
+        self.assertEqual(response.status_code, 200, response.content)
+        return {row["title"] for row in response.data}
+
+    def test_the_fixture_actually_sees_quizzes(self):
+        """Guards every other assertion here against the subscription trap."""
+        self.assertTrue(self._titles(self._client(self.user_a, self.profile_a)
+                                     .get("/api/student/quizzes/")))
+
+    def test_no_course_param_does_not_leak_another_batchs_quiz(self):
+        self.assertEqual(
+            self._titles(self._client(self.user_a, self.profile_a)
+                         .get("/api/student/quizzes/")),
+            {"Batch A only", "Course-wide"},
+        )
+        self.assertEqual(
+            self._titles(self._client(self.user_b, self.profile_b)
+                         .get("/api/student/quizzes/")),
+            {"Batch B only", "Course-wide"},
+        )
+
+    def test_the_param_and_no_param_calls_agree(self):
+        """The two code paths must not disagree — that gap WAS the bug."""
+        for user, profile in ((self.user_a, self.profile_a),
+                              (self.user_b, self.profile_b)):
+            c = self._client(user, profile)
+            self.assertEqual(
+                self._titles(c.get("/api/student/quizzes/")),
+                self._titles(c.get("/api/student/quizzes/",
+                                   {"course": str(self.course.id)})),
+            )
+
+    def test_a_learner_unplaced_in_a_batch_sees_course_wide_only(self):
+        """batch_id=None degrades to course-wide-only, on both paths.
+
+        Deliberately STRICTER than dashboard/views.py, which widens an
+        unplaced learner to every batch in the course. That asymmetry is
+        pre-existing and documented on batch_scope_q; what matters here is
+        that this endpoint answers the same way with and without ?course=.
+        """
+        from enrollments.models import Enrollment
+
+        Enrollment.objects.filter(learner_profile=self.profile_a).update(batch=None)
+        c = self._client(self.user_a, self.profile_a)
+        self.assertEqual(self._titles(c.get("/api/student/quizzes/")), {"Course-wide"})
+        self.assertEqual(
+            self._titles(c.get("/api/student/quizzes/", {"course": str(self.course.id)})),
+            {"Course-wide"},
+        )
+
+    def test_a_subscriber_with_no_enrollment_row_sees_course_wide_only(self):
+        """Fails closed. active_batch_id returns None for a missing
+        enrollment exactly as it does for an unplaced one, and the
+        multi-course path must not accidentally widen that to everything by
+        having no entry in its {course: batch} map."""
+        from enrollments.models import Enrollment
+
+        Enrollment.objects.filter(learner_profile=self.profile_a).delete()
+        self.assertEqual(
+            self._titles(self._client(self.user_a, self.profile_a)
+                         .get("/api/student/quizzes/")),
+            {"Course-wide"},
+        )
+
+    def test_a_learner_in_different_batches_of_two_courses(self):
+        """Why `?course=` could not simply be made required, and why one
+        active_batch_id() call is not enough: with no course in scope there
+        is no single batch to resolve, so the rule has to be built per
+        (course, batch) pair from the learner's active enrollments."""
+        from courses.models import Batch
+        from enrollments.models import Enrollment
+
+        now = timezone.now()
+        course2 = Course.objects.create(title="Class 11 (Commerce)")
+        subject2 = Subject.objects.create(course=course2, name="Accountancy")
+        c2_mine = Batch.objects.create(course=course2, name="Weekend", code="NB-C")
+        c2_other = Batch.objects.create(course=course2, name="Weekday", code="NB-D")
+        Enrollment.objects.create(
+            user=self.user_a, learner_profile=self.profile_a, course=course2,
+            batch=c2_mine, status=Enrollment.STATUS_ACTIVE,
+        )
+        Subscription.objects.create(
+            user=self.user_a, learner_profile=self.profile_a, course=course2,
+            status=Subscription.STATUS_ACTIVE,
+            starts_at=now, expires_at=now + timedelta(days=30),
+        )
+        for title, batch in (("C2 mine", c2_mine), ("C2 theirs", c2_other)):
+            q = Quiz.objects.create(
+                subject=subject2, created_by=self.teacher, title=title,
+                quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
+                review_status=Quiz.REVIEW_APPROVED,
+            )
+            q.batches.set([batch])
+
+        # Batch A in course 1, Weekend in course 2 — the pairs must not be
+        # crossed (course 1's batch must not unlock course 2's content).
+        self.assertEqual(
+            self._titles(self._client(self.user_a, self.profile_a)
+                         .get("/api/student/quizzes/")),
+            {"Batch A only", "Course-wide", "C2 mine"},
+        )
+
+    def test_questions_count_is_not_inflated_by_the_multi_course_rule(self):
+        """The OR-one-term-per-course shape is exactly what duplicates rows
+        under a join-based rule (see
+        test_the_batch_rule_adds_no_join_so_needs_no_distinct). Exists() is
+        immune; this asserts it at the endpoint, where the annotated
+        questions_count would otherwise be multiplied."""
+        self.quiz_a_only.batches.set([self.batch_a, self.batch_b])
+        for i in range(3):
+            Question.objects.create(
+                quiz=self.quiz_a_only, text=f"q{i}", marks=1, order=i,
+            )
+        r = self._client(self.user_a, self.profile_a).get("/api/student/quizzes/")
+        self.assertEqual(r.status_code, 200, r.content)
+        rows = [x for x in r.data if x["title"] == "Batch A only"]
+        self.assertEqual(len(rows), 1, r.data)
+        self.assertEqual(rows[0]["questions_count"], 3)
 
 
 class QuizAccidentalRetakeTest(TestCase):
