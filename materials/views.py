@@ -120,7 +120,13 @@ def _authorize_subject_materials(request, subject):
     batch-scoped material, so a reader that hides it leaves them staring at
     an empty list they have a notification for. See `_batch_scope_q`.
     """
-    if teaches_subject(request.user, subject):
+    # Staff first, and with the teacher's unrestricted scope: an admin has no
+    # TeachingAssignment and no learner profile, so without this branch they
+    # fell through to the subscription check and were denied every material in
+    # the system. That made the admin console structurally unable to look at
+    # content it is expected to moderate. Same branch, same reason, as
+    # courses/views_recordings.py's _authorize_subject_recordings.
+    if request.user.is_staff or teaches_subject(request.user, subject):
         return True, TEACHER_UNRESTRICTED
     profile = get_active_profile(request)
     if has_active_subscription(
@@ -353,8 +359,39 @@ class UploadStudyMaterial(APIView):
 # DELETE MATERIAL
 # ===============================
 
+def _require_material_editor(request, material):
+    """Who may MUTATE a study material. Raises PermissionDenied (403).
+
+    Staff, the uploader, or a teacher assigned to the material's subject.
+
+    Extracted into a helper for the same reason recordings has
+    _require_recording_editor: the delete rules for materials and recordings
+    have already drifted apart once (one allowed any co-teacher, the other
+    only the uploader) even though both list endpoints return colleagues'
+    content, so on one screen the button worked and on the other it always
+    403'd. A named rule two call sites share cannot do that.
+
+    NOTE the teacher-context claim is deliberately NOT required. It used to be,
+    via the view's permission_classes, which rejected a pure admin at the class
+    gate and made the `request.user.is_staff` branch below unreachable dead
+    code — so no admin could delete a study material at all, however staff they
+    were. Authorization belongs in the rule, not the decorator.
+    """
+    from rest_framework.exceptions import PermissionDenied
+
+    user = request.user
+    if (
+        user.is_staff
+        or material.uploaded_by_id == user.id
+        or teaches_subject(user, material.subject)
+    ):
+        return
+    raise PermissionDenied("You are not assigned to teach this subject.")
+
+
 class DeleteStudyMaterial(APIView):
-    permission_classes = [IsAuthenticated, IsTeacherContext]
+    # NOT IsTeacherContext — see _require_material_editor's docstring.
+    permission_classes = [IsAuthenticated]
 
     def delete(self, request, material_id):
         material = get_object_or_404(
@@ -376,15 +413,7 @@ class DeleteStudyMaterial(APIView):
         #
         # It is not a widening of *reach*: teaches_subject is the same gate
         # that decides whether the material is visible to this teacher at all.
-        if not (
-            request.user.is_staff
-            or material.uploaded_by_id == request.user.id
-            or teaches_subject(request.user, material.subject)
-        ):
-            return Response(
-                {"detail": "You are not assigned to teach this subject."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        _require_material_editor(request, material)
         material.delete()
         return Response(
             {"detail": "Material deleted successfully"},

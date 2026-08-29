@@ -369,6 +369,107 @@ class MaterialsDeleteAuthorityTest(TestCase):
         self.assertTrue(StudyMaterial.objects.filter(id=self.material.id).exists())
 
 
+class MaterialsAdminAccessTest(TestCase):
+    """An admin could not see, open or delete ANY study material.
+
+    `DeleteStudyMaterial` was gated on `IsTeacherContext`, which requires the
+    TEACHER role AND a teacher JWT context claim, so a pure staff account was
+    rejected at the class gate and the `request.user.is_staff` branch in the
+    body was unreachable dead code. `_authorize_subject_materials` had no
+    staff branch either, so reads fell through to the subscription check and
+    were denied too.
+
+    Net effect, verified live against a running server before the fix:
+        admin GET    material detail -> 403
+        admin DELETE material        -> 403
+        admin GET    subject list    -> 403
+    A material went live to students the instant a teacher uploaded it and no
+    admin could take it down through the API at all. Recordings had the
+    identical bug and were fixed first; this is the same rule.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import TeachingAssignment
+
+        teacher_role = Role.objects.create(name="TEACHER")
+        cls.course = Course.objects.create(title="Physics")
+        cls.subject = Subject.objects.create(course=cls.course, name="Optics")
+        cls.chapter = Chapter.objects.create(subject=cls.subject, title="Lenses")
+
+        cls.teacher = User.objects.create_user(
+            username="aa_t", email="aa_t@t.com", password="x")
+        UserRole.objects.create(user=cls.teacher, role=teacher_role,
+                                is_active=True, is_primary=True)
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, batch=None, is_active=True,
+        )
+
+        # A PURE admin: staff, no TEACHER role, no teaching assignment, no
+        # learner profile. Every gate in this app used to reject them.
+        cls.admin = User.objects.create_user(
+            username="aa_admin", email="aa_admin@t.com", password="x",
+            is_staff=True,
+        )
+
+    def setUp(self):
+        self.material = StudyMaterial.objects.create(
+            chapter=self.chapter, title="Notes", uploaded_by=self.teacher,
+        )
+
+    def client_with(self, user, context):
+        c = APIClient()
+        c.force_authenticate(user=user, token={"context": context})
+        return c
+
+    def test_admin_can_read_a_material_detail(self):
+        res = self.client_with(self.admin, "admin").get(
+            f"/api/materials/materials/{self.material.id}/"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_admin_can_list_a_subjects_materials(self):
+        res = self.client_with(self.admin, "admin").get(
+            f"/api/materials/subjects/{self.subject.id}/materials/"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_admin_can_delete_a_material(self):
+        res = self.client_with(self.admin, "admin").delete(
+            f"/api/materials/materials/{self.material.id}/delete/"
+        )
+        self.assertIn(res.status_code,
+                      (status.HTTP_200_OK, status.HTTP_204_NO_CONTENT))
+        self.assertFalse(
+            StudyMaterial.objects.filter(id=self.material.id).exists()
+        )
+
+    def test_a_non_staff_stranger_is_still_denied(self):
+        """The widening must be to STAFF, not to everyone authenticated."""
+        stranger = User.objects.create_user(
+            username="aa_x", email="aa_x@t.com", password="x")
+        res = self.client_with(stranger, "learner").delete(
+            f"/api/materials/materials/{self.material.id}/delete/"
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(
+            StudyMaterial.objects.filter(id=self.material.id).exists()
+        )
+
+    def test_admin_sees_batch_scoped_material_regardless_of_batch(self):
+        """An admin has no batch, so the batch gate must not silently hide
+        the very content they are moderating."""
+        from courses.models import Batch
+
+        batch = Batch.objects.create(course=self.course, name="A", code="OA")
+        self.material.batch = batch
+        self.material.save()
+        res = self.client_with(self.admin, "admin").get(
+            f"/api/materials/materials/{self.material.id}/"
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+
 class MaterialsBatchValidationTest(TestCase):
     """MEDIUM — UploadStudyMaterial did get_object_or_404(Batch, id=batch_id)
     with no course check, so a batch from ANOTHER course was accepted. Every

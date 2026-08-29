@@ -343,7 +343,14 @@ class Command(BaseCommand):
         for name, subject in subjects.items():
             quiz, created = Quiz.objects.get_or_create(
                 subject=subject, title=f"{name} — Chapter 1 quick check",
-                defaults={"created_by": faculty, "batch": batch,
+                # No "batch" here: the legacy Quiz.batch FK was dropped by the
+                # quiz-v2 refactor and the scoping field is now the `batches`
+                # M2M, set just below. This line still passed batch= and made
+                # the whole command crash with
+                # `FieldError: Invalid field name(s) for model Quiz: 'batch'`,
+                # so the one tool meant for clicking the platform through end
+                # to end could not run at all.
+                defaults={"created_by": faculty,
                           "quiz_type": Quiz.TYPE_MOCK, "time_limit_minutes": 10,
                           # is_assigned is what students actually filter on
                           # (Phase 1); is_published is the legacy mirror and
