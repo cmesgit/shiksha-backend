@@ -27,7 +27,7 @@ from courses.chapter_tags import (
 )
 from accounts.auth_flow import get_active_profile
 from enrollments.models import Enrollment
-from enrollments.services import active_batch_id
+from enrollments.services import active_batch_id, active_batch_ids
 from django.db import models
 from django.db.models import (
     Count, Avg, Max, Min, Q, Case, When, Value, F,
@@ -43,7 +43,9 @@ from .models import (
     Quiz, QuizSection, QuizAttempt, Question, Choice, StudentAnswer,
     PracticeSession, PracticeAnswer,
 )
-from .visibility import batch_scope_q, learner_may_see_quiz
+from .visibility import (
+    batch_scope_q, batch_scope_q_across_courses, learner_may_see_quiz,
+)
 from .serializers import (
     QuizCreateSerializer,
     QuestionCreateSerializer,
@@ -1017,27 +1019,48 @@ class StudentDashboardView(APIView):
         # Hub showed another class's quizzes under the active course, which
         # is exactly what was reported. Assignments/materials avoid this by
         # taking the course id as a URL kwarg; quizzes is a flat endpoint,
-        # so it takes it as a query param instead. Optional for backwards
-        # compatibility with any caller that genuinely wants the whole
-        # profile (e.g. a future cross-course "everything" view).
+        # so it takes it as a query param instead. Still optional, for any
+        # caller that genuinely wants the whole profile (e.g. a future
+        # cross-course "everything" view).
         if course_id:
             quizzes = quizzes.filter(subject__course_id=course_id)
 
-            # Batch isolation, finally enforced — see the warning on
-            # Quiz.batch. Course-wide quizzes plus this learner's own
-            # batch's quizzes, matching materials/views.py's
-            # StudentCourseMaterials exactly. Only meaningful when a course
-            # is in scope, since a batch belongs to one course.
-            #
-            # batch_scope_q covers the M2M `batches` AND the legacy `batch`
-            # FK in one rule, via Exists() subqueries — so it adds no join
-            # and cannot duplicate rows into the questions_count Count()
-            # annotated above. See quizzes/visibility.py.
-            batch_id = active_batch_id(
+        # Batch isolation, finally enforced — see the warning on Quiz.batch.
+        # Course-wide quizzes plus this learner's own batch's quizzes,
+        # matching materials/views.py's StudentCourseMaterials exactly.
+        #
+        # This is applied UNCONDITIONALLY. It used to live inside the
+        # `if course_id:` above, on the reasoning that a batch belongs to one
+        # course so batch scoping was only meaningful with a course in scope.
+        # That was true when written — Quiz.batch was declared but unused, so
+        # every quiz was course-wide and the gap had no victims — and it went
+        # stale the moment quizzes started carrying real batches (batch_id is
+        # required by QuizCreateSerializer and lands in the `batches` M2M).
+        # By then `GET /api/student/quizzes/` with no ?course= was returning
+        # every batch's quizzes, in every subscribed course, to anyone.
+        # Reproduced live before this fix; see
+        # QuizNoCourseParamBatchScopingTest.
+        #
+        # Making ?course= required would also have closed it, and the only
+        # live caller (QuizHub.jsx) always sends it — but this is public API
+        # surface, and 400-ing an unknown consumer is a worse outcome than
+        # answering it correctly.
+        #
+        # Either branch fails CLOSED to course-wide-only when the learner has
+        # no batch for a course, so the two agree on any course they both
+        # cover. Both rules are Exists()-based: no join, so no duplicate rows
+        # into the questions_count Count() annotated above, and none from the
+        # one-term-per-course OR the multi-course branch builds. See
+        # quizzes/visibility.py.
+        if course_id:
+            quizzes = quizzes.filter(batch_scope_q(active_batch_id(
                 learner_profile=learner,
                 course_id=course_id,
-            )
-            quizzes = quizzes.filter(batch_scope_q(batch_id))
+            )))
+        else:
+            quizzes = quizzes.filter(batch_scope_q_across_courses(
+                active_batch_ids(learner_profile=learner)
+            ))
 
         if subject_id:
             quizzes = quizzes.filter(subject_id=subject_id)

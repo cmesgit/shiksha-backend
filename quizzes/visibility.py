@@ -87,6 +87,45 @@ def batch_scope_q(batch_id):
     return Q(has_batch(batch_id)) | course_wide
 
 
+def batch_scope_q_across_courses(batch_ids_by_course, course_field="subject__course_id"):
+    """`batch_scope_q` for a learner spanning SEVERAL courses at once.
+
+    For the flat endpoints that take no course in their URL. `batch_scope_q`
+    resolves one batch, which is all a course-scoped caller ever needs; a
+    caller with no course in scope has a batch PER course and cannot collapse
+    them into one id. Doing so would cross the pairs — Class 11's placement
+    unlocking Class 12's batch-scoped quizzes. So the rule is OR'd one term
+    per (course, batch) pair:
+
+        course-wide-anywhere  OR  (in course C AND named batch B)  OR  ...
+
+    `batch_ids_by_course` comes from `enrollments.services.active_batch_ids`.
+    A course mapping to None (enrolled, unplaced) and a course absent from the
+    map entirely (no active enrollment) both contribute NO term, so their
+    quizzes fall through to the course-wide base — exactly what
+    `batch_scope_q(None)` does for the single-course path. That equivalence is
+    the point: `?course=X` and no-param must never disagree about X. It is
+    what the leak this fixes came down to, and
+    `QuizNoCourseParamBatchScopingTest` pins both directions.
+
+    An EMPTY map therefore degrades to course-wide-only rather than to
+    "everything" — fail-closed, which is what makes it safe to call
+    unconditionally.
+
+    Do NOT swap this for the join spelling. ORing one scope term per course is
+    precisely the shape that duplicates rows under a join
+    (`Q(batches=A) | Q(batches=B)` returns a two-batch quiz twice and doubles
+    any `Count()` beside it); the Exists() rule above contributes no join and
+    is immune. See the module docstring, and
+    `test_the_batch_rule_adds_no_join_so_needs_no_distinct`.
+    """
+    q = ~Q(has_any_batch())          # course-wide, in any course
+    for course_id, batch_id in batch_ids_by_course.items():
+        if batch_id is not None:
+            q |= Q(**{course_field: course_id}) & Q(has_batch(batch_id))
+    return q
+
+
 def visible_quiz_q(batch_id):
     """The complete student-visibility rule: assigned AND in scope."""
     return Q(is_assigned=True) & batch_scope_q(batch_id)
