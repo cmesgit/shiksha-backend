@@ -61,6 +61,16 @@ urlpatterns += [
         "admin/exams/readiness/",
         studio_views.ExamReadinessView.as_view(), name="studio-exam-readiness",
     ),
+    # Keep these ABOVE any future "admin/exams/<pk>/" route — "options" and
+    # "readiness" would otherwise be captured as an id by a greedy converter.
+    path(
+        "admin/exams/options/",
+        studio_views.ExamOptionsView.as_view(), name="studio-exam-options",
+    ),
+    path(
+        "admin/exams/",
+        studio_views.ExamCreateView.as_view(), name="studio-exam-create",
+    ),
     path("admin/labels/", studio_views.LabelListView.as_view(), name="studio-labels"),
     path("admin/labels/merge/", studio_views.LabelMergeView.as_view(), name="studio-labels-merge"),
     path(
