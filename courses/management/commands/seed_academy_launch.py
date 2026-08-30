@@ -1067,9 +1067,47 @@ class Command(BaseCommand):
                 row.save(update_fields=["teacher"])
                 moved += 1
 
+        reattributed = self._reattribute_content(seed_users, teachers)
+
         self._say("")
         self._ok(f"Rebalanced {moved} assignment(s).")
+        self._say(f"Re-filed {reattributed} content row(s) under the new holder.")
         self._report_distribution(seed_users)
+
+    def _reattribute_content(self, seed_users, teachers):
+        """Move seeded content to whoever now holds its subject.
+
+        Rebalancing changes who teaches a subject, but the material, quiz and
+        recording rows still point at the previous holder — and every
+        teacher-side list screen scopes through TeachingAssignment, so that
+        content becomes invisible to the person who now owns the subject and
+        stays visible to someone who no longer teaches it.
+
+        Only rows currently attributed to an EXAMPLE teacher are moved. Content
+        filed under a real teacher stays put, exactly as _content_author_for
+        intended when it put it there.
+        """
+        seed_ids = {u.id for u in seed_users}
+        ids = self._seeded_content_ids()
+        moved = 0
+
+        for model, id_key, field in (
+            (StudyMaterial, "material", "uploaded_by"),
+            (Quiz, "quiz", "created_by"),
+            (SessionRecording, "recording", "uploaded_by"),
+        ):
+            rows = model.objects.filter(pk__in=ids[id_key]).select_related("subject")
+            for row in rows:
+                if getattr(row, f"{field}_id") not in seed_ids:
+                    continue  # a real teacher's row — leave it alone
+                wanted = self._content_author_for(row.subject, teachers)
+                if wanted.id == getattr(row, f"{field}_id"):
+                    continue
+                setattr(row, field, wanted)
+                row.save(update_fields=[field])
+                moved += 1
+
+        return moved
 
     def _report_distribution(self, seed_users):
         counts = []

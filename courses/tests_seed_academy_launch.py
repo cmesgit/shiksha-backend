@@ -328,6 +328,44 @@ class RebalanceTest(SeedAcademyLaunchTestBase):
         row.refresh_from_db()
         self.assertEqual(row.teacher_id, real.id)
 
+    def test_rebalance_refiles_content_under_the_new_holder(self):
+        """Every teacher-side list screen scopes through TeachingAssignment, so
+        content left with the previous holder becomes invisible to whoever now
+        teaches the subject."""
+        subject = Subject.objects.create(course=self.course, name="English (Z)")
+        self.run_cmd(f"--flagship={self.course.id}")
+
+        material = StudyMaterial.objects.get(subject=subject)
+        # Force it onto the wrong example teacher, then rebalance.
+        other = self.seed_users().exclude(pk=material.uploaded_by_id).first()
+        material.uploaded_by = other
+        material.save(update_fields=["uploaded_by"])
+
+        self.run_cmd("--rebalance")
+
+        material.refresh_from_db()
+        holder = TeachingAssignment.objects.get(
+            subject=subject, batch__isnull=True, is_active=True,
+        ).teacher
+        self.assertEqual(material.uploaded_by_id, holder.id)
+
+    def test_rebalance_does_not_move_content_off_a_real_teacher(self):
+        real = User.objects.create_user(
+            email="real.owner@shiksha.test", username="real.owner", password="x",
+        )
+        TeachingAssignment.objects.create(
+            subject=self.physics, teacher=real, batch=None,
+            role=TeachingAssignment.ROLE_PRIMARY, is_active=True,
+        )
+        self.run_cmd(f"--flagship={self.course.id}")
+        material = StudyMaterial.objects.get(subject=self.physics)
+        self.assertEqual(material.uploaded_by_id, real.id)
+
+        self.run_cmd("--rebalance")
+
+        material.refresh_from_db()
+        self.assertEqual(material.uploaded_by_id, real.id)
+
     def test_rebalance_dry_run_writes_nothing(self):
         self.run_cmd("--structure-only")
         before = dict(
