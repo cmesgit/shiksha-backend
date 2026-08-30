@@ -251,6 +251,53 @@ class StaffingTest(SeedAcademyLaunchTestBase):
         self.assertEqual(material.uploaded_by_id, real.id)
 
 
+class QuizVisibilityTest(SeedAcademyLaunchTestBase):
+    """Quizzes do NOT follow the batch rule the rest of the content uses.
+
+    materials  (materials/views.py _batch_scope_q)   -> unplaced learner sees
+    assignments (assignments/views.py:318-326)          EVERYTHING
+    quizzes    (quizzes/visibility.py batch_scope_q) -> unplaced learner sees
+                                                        ONLY course-wide
+
+    So a quiz scoped to the seeded batch is invisible to every student at
+    once: un-batched ones only get course-wide quizzes, and batched ones
+    aren't in the seeded batch. The example material and assignments appeared
+    normally and only the quizzes were missing.
+    """
+
+    def test_seeded_quizzes_are_course_wide(self):
+        self.run_cmd(f"--flagship={self.course.id}")
+        for quiz in Quiz.objects.all():
+            self.assertEqual(
+                list(quiz.batches.all()), [],
+                f"{quiz.title} is batch-scoped and therefore invisible",
+            )
+
+    def test_an_unplaced_learner_can_actually_see_them(self):
+        """Asserted through the real rule, not by re-deriving it here."""
+        from quizzes.visibility import visible_quiz_q
+
+        self.run_cmd(f"--flagship={self.course.id}")
+        self.run_cmd("--go-live")
+
+        visible = Quiz.objects.filter(visible_quiz_q(None))
+        self.assertEqual(visible.count(), Quiz.objects.count())
+        self.assertGreater(visible.count(), 0)
+
+    def test_a_pre_existing_batch_scoped_seeded_quiz_gets_widened(self):
+        """Self-heal, so re-running fixes rows written before this was known."""
+        self.run_cmd(f"--flagship={self.course.id}")
+        batch = Batch.objects.get(course=self.course, code=BATCH_CODE)
+        quiz = Quiz.objects.first()
+        quiz.batches.set([batch])
+        self.assertTrue(quiz.batches.exists())
+
+        self.run_cmd(f"--flagship={self.course.id}")
+
+        quiz.refresh_from_db()
+        self.assertEqual(list(quiz.batches.all()), [])
+
+
 class DistributionTest(SeedAcademyLaunchTestBase):
     """Several teachers share a specialism, so subjects must spread across them.
 

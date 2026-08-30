@@ -588,6 +588,7 @@ class Command(BaseCommand):
         self._say("")
         self.skipped_staffed = 0
         self.adopted_empty = 0
+        self.fixed_quiz_scope = 0
         assigned = 0
         for course in courses:
             assigned += self._staff_course(course, teachers)
@@ -611,6 +612,11 @@ class Command(BaseCommand):
         flagships = courses if all_courses else self._flagship_courses(flagship_ids)
         for course in flagships:
             self._make_content(course, teachers, with_live_sessions)
+        if self.fixed_quiz_scope:
+            self._say(
+                f"       {self.fixed_quiz_scope} quiz(zes) widened to course-wide — "
+                "batch-scoped ones are invisible to un-batched students"
+            )
 
     # ── faculty ──────────────────────────────────────────────────────────
 
@@ -856,6 +862,11 @@ class Command(BaseCommand):
         pk = self._seed_pk("quiz", subject.id)
         quiz = Quiz.objects.filter(pk=pk).first()
         if quiz:
+            # Self-heal rows written before this was understood; see the
+            # course-wide note below. Clearing an already-empty M2M is free.
+            if quiz.batches.exists():
+                quiz.batches.clear()
+                self.fixed_quiz_scope += 1
             return quiz
 
         quiz = Quiz.objects.create(
@@ -871,8 +882,24 @@ class Command(BaseCommand):
             time_limit_minutes=15,
             is_assigned=False,
         )
-        if batch is not None:
-            quiz.batches.set([batch])
+        # ⚠ LEFT COURSE-WIDE (empty `batches`) ON PURPOSE. Quizzes do not
+        # follow the same batch rule as everything else around them:
+        #
+        #   materials    (materials/views.py _batch_scope_q) -> unplaced
+        #   assignments  (assignments/views.py:318-326)         learner sees
+        #                                                       EVERYTHING
+        #   quizzes      (quizzes/visibility.py batch_scope_q) -> unplaced
+        #                                                        learner sees
+        #                                                        ONLY
+        #                                                        course-wide
+        #
+        # That asymmetry is deliberate and documented in visibility.py. The
+        # consequence here is that a quiz scoped to the seeded batch is
+        # invisible to EVERY student — the un-batched ones because they only
+        # get course-wide quizzes, and the batched ones because nobody is
+        # enrolled in the seeded batch. Example material and assignments
+        # showed up fine and only the quizzes were missing, which is a
+        # genuinely confusing way to find this out.
 
         total = 0
         for text, options, correct_idx in GENERIC_QUESTIONS:
