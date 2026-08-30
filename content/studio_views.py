@@ -550,6 +550,282 @@ class ExamReadinessView(APIView):
         })
 
 
+# ── Creating a competitive exam ────────────────────────────────────
+#
+# The readiness view above reports on exams that already exist. Nothing could
+# CREATE one from the Studio: the empty state said "No competitive exams are
+# set up" and offered nothing, and the four objects an exam needs
+# (CourseCategory → Course → CourseDetail → ShowcaseCourse) lived on four
+# screens across two sections of the dashboard, in no stated order.
+#
+# ⚠ Three things make an exam that looks created but is invisible, and all
+# three are silent. They are why this is one transactional endpoint rather
+# than a note in the docs telling someone to visit four screens:
+#
+#   1. The navbar and the catalog's competitive axis BOTH key on the category
+#      link (courses/views.py PublicNavMenuView), not on kind="COACHING". A
+#      COACHING course with no category is in neither.
+#   2. Course.status defaults to DRAFT, which is below PUBLIC_COURSE_STATUSES.
+#      The existing NewCourseWizard never sends status, so every exam it made
+#      was invisible on the public site until someone separately found it in
+#      the Courses screen and flipped it.
+#   3. Course.slug is derived from the title on first save and never re-derived
+#      on rename, and it is what the navbar emits as /courses/<slug>.
+
+EXAM_STATUS_CHOICES = [
+    {
+        "value": "COMING_SOON",
+        "label": "Coming soon",
+        "consequence": "Listed in the navbar and the catalog, with a “Coming soon” "
+                       "badge. Visitors can see it but not enrol.",
+    },
+    {
+        "value": "PUBLISHED",
+        "label": "Published",
+        "consequence": "Fully live. Listed everywhere and open for enrolment.",
+    },
+    {
+        "value": "DRAFT",
+        "label": "Draft",
+        "consequence": "Invisible to visitors. Not in the navbar, not in the "
+                       "catalog, and its page cannot be reached.",
+    },
+]
+
+
+class ExamOptionsView(APIView):
+    """GET /api/content/admin/exams/options/
+
+    Everything the create form needs, resolved server-side. The alternative is
+    a frontend that hardcodes the status list, the icon keys and the category
+    group string — all three of which are backend facts that have already
+    drifted once.
+    """
+
+    permission_classes = [IsStudioEditor]
+
+    def get(self, request):
+        from courses.models import Course, CourseCategory
+
+        from .models import ShowcaseCourse
+
+        # Which competitive categories already carry a course. A category with
+        # no course lists nothing, which is the single most common half-built
+        # state on this data.
+        used = set(
+            Course.objects
+            .filter(categories__group=CourseCategory.GROUP_COMPETITIVE)
+            .values_list("categories__id", flat=True)
+        )
+        categories = [
+            {
+                "id": c.id,
+                "name": c.name,
+                "slug": c.slug,
+                "blurb": c.blurb,
+                "icon": c.icon,
+                "display_order": c.display_order,
+                "is_active": c.is_active,
+                "has_course": c.id in used,
+            }
+            for c in CourseCategory.objects
+            .filter(group=CourseCategory.GROUP_COMPETITIVE)
+            .order_by("display_order", "name")
+        ]
+
+        icon_field = ShowcaseCourse._meta.get_field("icon")
+        return Response({
+            "categories": categories,
+            "statuses": EXAM_STATUS_CHOICES,
+            "icons": [{"value": v, "label": lbl} for v, lbl in icon_field.choices],
+            "category_group": CourseCategory.GROUP_COMPETITIVE,
+        })
+
+
+class ExamCreateView(APIView):
+    """POST /api/content/admin/exams/
+
+    Creates a competitive exam end to end, in one transaction: the category
+    (or links an existing one), the Course with kind=COACHING and a real
+    status, its CourseDetail, and optionally the homepage showcase card.
+
+    Everything or nothing. A partial exam is the failure mode this endpoint
+    exists to remove — half of one is indistinguishable on screen from a
+    finished one that simply is not listed.
+    """
+
+    permission_classes = [IsStudioEditor]
+
+    def post(self, request):
+        from django.utils.text import slugify
+
+        from courses.models import Course, CourseCategory, CourseDetail
+
+        from .admin_serializers import ShowcaseCourseAdminSerializer
+
+        data = request.data or {}
+        errors = {}
+
+        name = (data.get("name") or "").strip()
+        if not name:
+            errors["name"] = "Give the exam a name."
+        elif Course.objects.filter(title__iexact=name).exists():
+            # Not a DB constraint — Course.title is not unique — but two
+            # courses with one title is how this data got a duplicate NEET and
+            # a stray "hy", and slugify() would hand the second one a
+            # different slug than the obvious one.
+            errors["name"] = f"A course called “{name}” already exists."
+
+        status_value = (data.get("status") or "COMING_SOON").upper()
+        if status_value not in {c["value"] for c in EXAM_STATUS_CHOICES}:
+            errors["status"] = f"Unknown status {status_value!r}."
+
+        # Category: either an existing id, or a name to create one from.
+        category = None
+        category_created = False
+        raw_category = data.get("category") or {}
+        category_id = raw_category.get("id")
+        category_name = (raw_category.get("name") or "").strip()
+
+        if category_id:
+            category = CourseCategory.objects.filter(
+                pk=category_id, group=CourseCategory.GROUP_COMPETITIVE,
+            ).first()
+            if category is None:
+                errors["category"] = (
+                    "No competitive category with that id. An exam must link to "
+                    "a category in the 'competitive' group — that link, not "
+                    "kind=COACHING, is what puts it in the navbar."
+                )
+        elif category_name:
+            # CourseCategory.save() appends "-2" on a slug clash rather than
+            # refusing, so a near-duplicate name silently creates a SECOND
+            # category that lists nothing. Catch it here instead.
+            if CourseCategory.objects.filter(
+                slug=slugify(category_name)
+            ).exists():
+                errors["category"] = (
+                    f"A category with the slug “{slugify(category_name)}” already "
+                    "exists. Pick it from the list instead of creating a second one."
+                )
+        else:
+            errors["category"] = "Choose a category or give a name for a new one."
+
+        if errors:
+            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+
+        card_payload = data.get("card") or {}
+        wants_card = bool(card_payload.get("create"))
+
+        with transaction.atomic():
+            if category is None:
+                category = CourseCategory.objects.create(
+                    name=category_name,
+                    group=CourseCategory.GROUP_COMPETITIVE,
+                    blurb=(raw_category.get("blurb") or "").strip(),
+                    icon=(raw_category.get("icon") or "").strip(),
+                    display_order=raw_category.get("display_order") or 0,
+                    is_active=True,
+                )
+                category_created = True
+
+            course = Course.objects.create(
+                title=name,
+                description=(data.get("description") or "").strip(),
+                kind="COACHING",
+                status=status_value,
+                # A competitive course has no board, deliberately — see
+                # create_competitive_courses and courses/tests_competitive_boards.
+                board=None,
+                price=data.get("price") or 0,
+                subscription_duration_days=data.get("subscription_duration_days") or 365,
+            )
+            course.categories.set([category])
+
+            detail_payload = data.get("detail") or {}
+            detail = CourseDetail.objects.create(
+                course=course,
+                level=(detail_payload.get("level") or "").strip(),
+                duration_weeks=detail_payload.get("duration_weeks") or 0,
+                language=(detail_payload.get("language") or "English").strip(),
+                syllabus=(detail_payload.get("syllabus") or "").strip(),
+                requirements=(detail_payload.get("requirements") or "").strip(),
+                highlights=(detail_payload.get("highlights") or "").strip(),
+                includes=(detail_payload.get("includes") or "").strip(),
+            )
+
+            card = None
+            if wants_card:
+                # Only non-empty values go in. Several of these fields are
+                # CharFields without blank=True but WITH a model default
+                # (gradient_css, fact_line), so passing "" is not "leave it
+                # alone" — it fails full_clean()'s blank check and 400s, while
+                # omitting the key lets the default apply.
+                card_data = {
+                    "title": (card_payload.get("title") or name)[:120],
+                    # level_label has no default and is not blank=True, so
+                    # something has to be here. It is the chip on the
+                    # thumbnail, e.g. "Foundation".
+                    "level_label": (
+                        card_payload.get("level_label") or "Competitive exam"
+                    )[:40],
+                    "icon": card_payload.get("icon") or "book",
+                    "categories": ["competitive"],
+                    "course": course.id,
+                    "order": card_payload.get("order") or 0,
+                    "status": card_payload.get("status") or "published",
+                }
+                for key in ("ribbon", "fact_line", "price_label", "tutor_name",
+                            "gradient_css"):
+                    value = (card_payload.get(key) or "").strip()
+                    if value:
+                        card_data[key] = value
+
+                card_serializer = ShowcaseCourseAdminSerializer(data=card_data)
+                # raise_exception so a bad card rolls the whole exam back rather
+                # than leaving a course with a silently missing card.
+                card_serializer.is_valid(raise_exception=True)
+                card = card_serializer.save()
+
+        return Response(
+            {
+                "course": {
+                    "id": str(course.id),
+                    "title": course.title,
+                    "slug": course.slug,
+                    "status": course.status,
+                    "public_url": f"/courses/{course.slug}",
+                },
+                "category": {
+                    "id": category.id,
+                    "name": category.name,
+                    "created": category_created,
+                },
+                "detail_id": detail.id,
+                "card_id": card.id if card is not None else None,
+                # What the exam still needs before it is genuinely live. The
+                # readiness screen computes the same pipeline; repeating the
+                # conclusion here means the create form can say what happens
+                # next without a second round trip.
+                "next_steps": self._next_steps(course, card),
+                "in_navbar": status_value in ("PUBLISHED", "COMING_SOON"),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    def _next_steps(self, course, card):
+        steps = []
+        if course.status == "DRAFT":
+            steps.append(
+                "It is saved as a draft, so no visitor can see it yet. Set it to "
+                "Coming soon or Published to list it."
+            )
+        if card is None:
+            steps.append("Add a homepage card so it appears in Featured courses.")
+        steps.append("Add subjects and chapters, then material, to make it live.")
+        return steps
+
+
 # ── Labels: tags and course categories on one screen ──────────────
 #
 # ⚠ The SCREEN is merged, not the tables. `content.ContentTag` and
