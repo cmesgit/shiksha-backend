@@ -142,70 +142,126 @@ FLAGSHIP_COURSES = [
     ("Class 12 Science", "CBSE"),
 ]
 
-# Example faculty. `match` is a list of lowercase substrings tested against the
-# subject name; first roster entry that matches wins, and GENERAL_TEACHER_IDX
-# catches anything unmatched. Matching on substrings rather than exact names is
-# deliberate — the live subject vocabulary is inconsistent ("Hindi (Grammer)",
-# "English ( Footrpints Without Feet)", "3B: Social Science – Geography"), so
-# an exact-name table would silently staff almost nothing.
+# Example faculty.
+#
+# `match` is specific tokens; `broad` is the catch-all tokens that only apply
+# when nothing specific hit. Both are lowercase substrings tested against the
+# subject name. Substrings rather than exact names is deliberate — the live
+# subject vocabulary is inconsistent ("Hindi (Grammer)", "English ( Footrpints
+# Without Feet)", "3B: Social Science – Geography"), so an exact-name table
+# would silently staff almost nothing.
+#
+# ⚠ SEVERAL TEACHERS SHARE A SPECIALISM ON PURPOSE. One teacher per subject
+# area produced a roster where a single English teacher held 100 subjects and
+# one social-science teacher held 73, because so much of the catalogue is
+# English/Hindi/Social-Science variants. Subjects are spread across everyone
+# who matches (see _teacher_for_subject), so the count per person stays
+# plausible for a real timetable.
 FACULTY = [
     {
         "first": "Ananya", "last": "Sharma", "subject": "physics",
-        "match": ["physics"],
+        "match": ["physics"], "broad": [],
         "qualification": "M.Sc. Physics, B.Ed.",
         "bio": "Physics faculty. Teaches mechanics and electromagnetism for Classes 11 and 12.",
     },
     {
         "first": "Rohit", "last": "Deshmukh", "subject": "chemistry",
-        "match": ["chemistry"],
+        "match": ["chemistry"], "broad": [],
         "qualification": "M.Sc. Chemistry",
         "bio": "Chemistry faculty, with a focus on physical and organic chemistry.",
     },
     {
         "first": "Priya", "last": "Menon", "subject": "biology",
-        "match": ["biology", "botany", "zoology"],
+        "match": ["biology", "botany", "zoology"], "broad": [],
         "qualification": "M.Sc. Botany, B.Ed.",
-        "bio": "Biology faculty. Handles Classes 11 and 12 board and NEET-track batches.",
+        "bio": "Biology faculty. Handles Classes 11 and 12 board batches.",
     },
     {
         "first": "Sanjay", "last": "Kulkarni", "subject": "mathematics",
-        "match": ["math"],
+        "match": ["math"], "broad": [],
         "qualification": "M.Sc. Mathematics",
-        "bio": "Mathematics faculty across Classes 8 to 12.",
+        "bio": "Mathematics faculty for the senior classes.",
+    },
+    {
+        "first": "Deepa", "last": "Iyer", "subject": "mathematics",
+        "match": ["math"], "broad": [],
+        "qualification": "M.Sc. Mathematics, B.Ed.",
+        "bio": "Mathematics faculty for Classes 8 to 10.",
     },
     {
         "first": "Meera", "last": "Krishnan", "subject": "english",
-        "match": ["english"],
+        "match": ["english"], "broad": [],
         "qualification": "M.A. English Literature, B.Ed.",
-        "bio": "English faculty — literature, grammar and writing skills.",
+        "bio": "English faculty — main reader and literature.",
+    },
+    {
+        "first": "Joseph", "last": "Lalrin", "subject": "english",
+        "match": ["english"], "broad": [],
+        "qualification": "M.A. English",
+        "bio": "English faculty — grammar and writing skills.",
+    },
+    {
+        "first": "Rebecca", "last": "Zothan", "subject": "english",
+        "match": ["english"], "broad": [],
+        "qualification": "M.A. English, B.Ed.",
+        "bio": "English faculty — supplementary readers and spoken English.",
     },
     {
         "first": "Vikas", "last": "Chauhan", "subject": "hindi",
-        "match": ["hindi", "mil"],
+        "match": ["hindi"], "broad": ["mil"],
         "qualification": "M.A. Hindi",
-        "bio": "Hindi faculty, covering the main reader, supplementary texts and grammar.",
+        "bio": "Hindi faculty — main reader and supplementary texts.",
+    },
+    {
+        "first": "Sunita", "last": "Yadav", "subject": "hindi",
+        "match": ["hindi"], "broad": ["mil"],
+        "qualification": "M.A. Hindi, B.Ed.",
+        "bio": "Hindi faculty — grammar and composition.",
     },
     {
         "first": "Neha", "last": "Bansal", "subject": "economics",
-        "match": ["econom", "account", "business", "commerce", "statistics"],
-        "qualification": "M.Com., M.A. Economics",
-        "bio": "Commerce faculty — accountancy, business studies and economics.",
+        "match": ["econom", "statistic"], "broad": [],
+        "qualification": "M.A. Economics",
+        "bio": "Economics faculty — micro, macro and Indian economic development.",
     },
     {
-        "first": "Arun", "last": "Thapa", "subject": "social_science",
-        "match": ["social", "history", "geograph", "civic", "political", "sociolog"],
+        "first": "Ramesh", "last": "Gupta", "subject": "accountancy",
+        "match": ["account", "business", "commerce"], "broad": [],
+        "qualification": "M.Com., CA (Inter)",
+        "bio": "Commerce faculty — accountancy and business studies.",
+    },
+    {
+        "first": "Arun", "last": "Thapa", "subject": "history",
+        "match": ["history"], "broad": ["social"],
         "qualification": "M.A. History, B.Ed.",
-        "bio": "Social science faculty, covering history, geography, civics and political science.",
+        "bio": "History faculty across the school and senior classes.",
+    },
+    {
+        "first": "Lalnunpuii", "last": "Ralte", "subject": "geography",
+        "match": ["geograph"], "broad": ["social"],
+        "qualification": "M.A. Geography",
+        "bio": "Geography faculty — physical and human geography.",
+    },
+    {
+        "first": "David", "last": "Sailo", "subject": "political_science",
+        "match": ["civic", "political", "sociolog"], "broad": ["social"],
+        "qualification": "M.A. Political Science, B.Ed.",
+        "bio": "Political science and civics faculty.",
     },
     {
         "first": "Kavita", "last": "Rao", "subject": "science",
-        "match": ["science", "computer", "informatics"],
+        "match": ["science", "computer", "informatics"], "broad": [],
+        # ⚠ "Social Science – Geography" and "Political Science" both contain
+        # the substring "science", so without this the general-science teacher
+        # silently competes for every social-science and political-science
+        # subject in the catalogue — and wins about half of them.
+        "avoid": ["social", "political"],
         "qualification": "M.Sc. Education",
         "bio": "General science faculty for the middle-school classes.",
     },
 ]
-# Index of the roster entry used when nothing matches. Kavita Rao is last and
-# her "science" match is broad, so she doubles as the fallback.
+# Used when nothing matches at all. Kavita Rao is last and her "science" match
+# is the broadest, so she doubles as the fallback.
 GENERAL_TEACHER_IDX = len(FACULTY) - 1
 
 # Quiz questions are generic on purpose: this seeds "a quiz exists and can be
@@ -260,6 +316,23 @@ class Command(BaseCommand):
             help="Batches and teaching assignments only — no example content.",
         )
         parser.add_argument(
+            "--all-courses", action="store_true",
+            help="Put example content on EVERY published course, not just the "
+                 "flagship three.",
+        )
+        parser.add_argument(
+            "--rebalance", action="store_true",
+            help="Reassign example-owned teaching assignments to match the "
+                 "current roster. Only touches rows held by an example "
+                 "teacher — a real teacher is never moved.",
+        )
+        parser.add_argument(
+            "--repair-teacher-profiles", action="store_true",
+            help="Give a TeacherProfile to anyone who holds the TEACHER role "
+                 "and real teaching assignments but has no profile row, which "
+                 "keeps them off the faculty list entirely.",
+        )
+        parser.add_argument(
             "--flagship", action="append", default=None, metavar="COURSE_ID",
             help="Course id to treat as a flagship, repeatable. Overrides the "
                  "built-in title list, which is matched against production's "
@@ -277,10 +350,15 @@ class Command(BaseCommand):
             return self._undo()
         if options["go_live"]:
             return self._go_live()
+        if options["rebalance"]:
+            return self._rebalance()
+        if options["repair_teacher_profiles"]:
+            return self._repair_teacher_profiles()
         return self._create(
             structure_only=options["structure_only"],
             with_live_sessions=options["with_live_sessions"],
             flagship_ids=options["flagship"],
+            all_courses=options["all_courses"],
         )
 
     # ── output helpers ───────────────────────────────────────────────────
@@ -384,13 +462,42 @@ class Command(BaseCommand):
             found.append(match)
         return found
 
-    def _teacher_for_subject(self, subject_name, teachers):
-        """Pick the roster entry whose `match` list hits this subject name."""
-        lowered = subject_name.lower()
-        for idx, spec in enumerate(FACULTY):
-            if any(token in lowered for token in spec["match"]):
-                return teachers[idx]
-        return teachers[GENERAL_TEACHER_IDX]
+    def _teacher_for_subject(self, subject, teachers):
+        """Which example teacher should hold this subject.
+
+        Two tiers, then an even spread:
+
+        1. Specific tokens win. "3B: Social Science – Geography" contains both
+           "social" and "geograph"; only the geography teacher should get it,
+           so `broad` tokens are consulted only when nothing specific matched.
+        2. Among everyone who matched at the winning tier, the subject is
+           placed by `uuid % count`. Several teachers deliberately share a
+           specialism — with one per area, a single English teacher ended up
+           holding 100 subjects.
+
+        Keyed on the subject UUID rather than a running counter so the answer
+        is the same on every run regardless of iteration order. That is what
+        lets --rebalance be idempotent instead of reshuffling the roster each
+        time it is called.
+        """
+        lowered = subject.name.lower()
+
+        def hits(spec, tokens):
+            if any(bad in lowered for bad in spec.get("avoid", [])):
+                return False
+            return any(tok in lowered for tok in tokens)
+
+        specific = [
+            i for i, spec in enumerate(FACULTY) if hits(spec, spec["match"])
+        ]
+        candidates = specific or [
+            i for i, spec in enumerate(FACULTY)
+            if hits(spec, spec.get("broad", []))
+        ]
+        if not candidates:
+            return teachers[GENERAL_TEACHER_IDX]
+
+        return teachers[candidates[subject.id.int % len(candidates)]]
 
     def _content_author_for(self, subject, teachers):
         """Whoever actually teaches this subject, else the roster match.
@@ -421,11 +528,12 @@ class Command(BaseCommand):
         primary = base.filter(batch__isnull=True).first() or base.first()
         if primary is not None:
             return primary.teacher
-        return self._teacher_for_subject(subject.name, teachers)
+        return self._teacher_for_subject(subject, teachers)
 
     # ── create ───────────────────────────────────────────────────────────
 
-    def _create(self, structure_only, with_live_sessions, flagship_ids=None):
+    def _create(self, structure_only, with_live_sessions, flagship_ids=None,
+                all_courses=False):
         courses = list(self._published_courses())
         if not courses:
             raise CommandError(
@@ -452,7 +560,7 @@ class Command(BaseCommand):
             try:
                 with transaction.atomic():
                     self._do_create(courses, structure_only, with_live_sessions,
-                                    flagship_ids)
+                                    flagship_ids, all_courses)
                     raise _DryRunRollback()
             except _DryRunRollback:
                 pass
@@ -461,14 +569,16 @@ class Command(BaseCommand):
             return
 
         with transaction.atomic():
-            self._do_create(courses, structure_only, with_live_sessions, flagship_ids)
+            self._do_create(courses, structure_only, with_live_sessions,
+                            flagship_ids, all_courses)
 
         self._say("")
         self._ok("Done. Everything is staged and invisible to students.")
         self._say(f"Example accounts: <name>@{SEED_EMAIL_DOMAIN} / {SEED_PASSWORD}")
         self._say("Next: --go-live to reveal it, or --undo to remove it.")
 
-    def _do_create(self, courses, structure_only, with_live_sessions, flagship_ids=None):
+    def _do_create(self, courses, structure_only, with_live_sessions,
+                   flagship_ids=None, all_courses=False):
         teachers = self._make_faculty()
         self._say("")
 
@@ -498,7 +608,7 @@ class Command(BaseCommand):
             return
 
         self._say("")
-        flagships = self._flagship_courses(flagship_ids)
+        flagships = courses if all_courses else self._flagship_courses(flagship_ids)
         for course in flagships:
             self._make_content(course, teachers, with_live_sessions)
 
@@ -602,7 +712,7 @@ class Command(BaseCommand):
         batch = Batch.objects.filter(course=course, code=BATCH_CODE).first()
         added = 0
         for subject in course.subjects.all():
-            teacher = self._teacher_for_subject(subject.name, teachers)
+            teacher = self._teacher_for_subject(subject, teachers)
 
             course_primary = TeachingAssignment.objects.filter(
                 subject=subject, batch__isnull=True, is_active=True,
@@ -813,7 +923,7 @@ class Command(BaseCommand):
         if not subjects:
             return None
         subject = subjects[0]
-        teacher = self._teacher_for_subject(subject.name, teachers)
+        teacher = self._teacher_for_subject(subject, teachers)
         room = f"example-{uuid.uuid5(SEED_NS, f'live:{course.id}').hex[:12]}"
         existing = LiveSession.objects.filter(room_name=room).first()
         if existing:
@@ -889,6 +999,151 @@ class Command(BaseCommand):
 
         self._say("")
         self._ok("Live.")
+
+    # ── rebalance ────────────────────────────────────────────────────────
+
+    def _rebalance(self):
+        """Move example-owned assignments onto the current roster.
+
+        Needed because the roster grew: one teacher per subject area gave a
+        single English teacher 100 subjects. Adding colleagues changes who
+        _teacher_for_subject picks, but the rows already written still point at
+        the old answer.
+
+        Only rows whose CURRENT holder is an example teacher are touched. A
+        real teacher is never moved — losing a subject you actually teach
+        because a seeding script rebalanced itself would be a genuinely bad
+        outcome.
+        """
+        seed_users = list(self._seed_users())
+        if not seed_users:
+            raise CommandError(
+                f"No accounts on @{SEED_EMAIL_DOMAIN} — nothing to rebalance."
+            )
+        by_email = {u.email: u for u in seed_users}
+        teachers = []
+        for spec in FACULTY:
+            email = f"{spec['first']}.{spec['last']}".lower() + f"@{SEED_EMAIL_DOMAIN}"
+            if email not in by_email:
+                raise CommandError(
+                    f"Roster entry {email} has no account — run the command "
+                    "without --rebalance first so the new teachers exist."
+                )
+            teachers.append(by_email[email])
+
+        rows = (
+            TeachingAssignment.objects
+            .filter(teacher__in=seed_users, is_active=True)
+            .select_related("subject")
+        )
+
+        moves = []
+        for row in rows:
+            wanted = self._teacher_for_subject(row.subject, teachers)
+            if wanted.id != row.teacher_id:
+                moves.append((row, wanted))
+
+        self._say(f"{rows.count()} example-held assignment(s) in scope")
+        self._say(f"{len(moves)} would move")
+
+        if self.dry_run:
+            self._say("")
+            self._warn("DRY RUN — nothing was written.")
+            return
+
+        moved = 0
+        with transaction.atomic():
+            for row, wanted in moves:
+                # uniq_active_teacher_per_batch_subject: the target must not
+                # already hold this (batch, subject) on another active row, or
+                # the update trips the constraint.
+                clash = TeachingAssignment.objects.filter(
+                    subject=row.subject, batch=row.batch, teacher=wanted,
+                    is_active=True,
+                ).exclude(pk=row.pk).exists()
+                if clash:
+                    continue
+                row.teacher = wanted
+                row.save(update_fields=["teacher"])
+                moved += 1
+
+        self._say("")
+        self._ok(f"Rebalanced {moved} assignment(s).")
+        self._report_distribution(seed_users)
+
+    def _report_distribution(self, seed_users):
+        counts = []
+        for user in seed_users:
+            n = TeachingAssignment.objects.filter(
+                teacher=user, is_active=True,
+            ).count()
+            counts.append((n, f"{user.first_name} {user.last_name}"))
+        counts.sort(reverse=True)
+        self._say("")
+        self._say("subjects held per example teacher:")
+        for n, name in counts:
+            self._say(f"   {n:4}  {name}")
+
+    # ── repair teacher profiles ──────────────────────────────────────────
+
+    def _repair_teacher_profiles(self):
+        """Give a TeacherProfile to people who are teaching without one.
+
+        The faculty list queries TeacherProfile, so someone holding the TEACHER
+        role and real teaching assignments but no profile row is invisible on
+        every faculty surface while still owning subjects and content. That is
+        not a seeding artefact — it is a real account set up half way, and it
+        looks exactly like a bug in the teacher list.
+
+        Only touches accounts that already hold ACTIVE teaching assignments, so
+        this cannot promote someone who merely has the role.
+        """
+        candidates = (
+            User.objects
+            .filter(
+                user_roles__role__name="TEACHER",
+                user_roles__is_active=True,
+                teaching_assignments__is_active=True,
+            )
+            .exclude(teacher_profile__isnull=False)
+            .exclude(email__endswith=f"@{SEED_EMAIL_DOMAIN}")
+            .distinct()
+        )
+
+        rows = list(candidates)
+        if not rows:
+            self._ok("Every teaching account already has a profile.")
+            return
+
+        for user in rows:
+            n = TeachingAssignment.objects.filter(
+                teacher=user, is_active=True,
+            ).count()
+            self._plan(
+                f"create an approved TeacherProfile for {user.email} "
+                f"({n} active assignment(s))"
+            )
+
+        if self.dry_run:
+            self._say("")
+            self._warn("DRY RUN — nothing was written.")
+            return
+
+        with transaction.atomic():
+            for user in rows:
+                TeacherProfile.objects.create(
+                    user=user,
+                    teacher_type=TeacherProfile.TYPE_FACULTY,
+                    academy_status=TeacherProfile.TRACK_APPROVED,
+                    is_approved=True,
+                )
+
+        self._say("")
+        self._ok(f"Created {len(rows)} teacher profile(s).")
+        self._warn(
+            "These accounts are now on the faculty list and reachable in chat, "
+            "which is what a teaching account is supposed to be."
+        )
 
     # ── undo ─────────────────────────────────────────────────────────────
 

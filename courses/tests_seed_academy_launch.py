@@ -251,6 +251,171 @@ class StaffingTest(SeedAcademyLaunchTestBase):
         self.assertEqual(material.uploaded_by_id, real.id)
 
 
+class DistributionTest(SeedAcademyLaunchTestBase):
+    """Several teachers share a specialism, so subjects must spread across them.
+
+    With one teacher per subject area, production ended up with a single
+    English teacher holding 100 subjects and one social-science teacher
+    holding 73 — not a plausible timetable.
+    """
+
+    def test_english_subjects_spread_across_more_than_one_teacher(self):
+        names = [
+            "English (Main Reader)", "English (Supplementary)",
+            "English - Grammar and Writing Skills", "English (Honeydew)",
+            "4A: English – Main Reader (Beehive)", "English (Snapshots)",
+            "English ( First Flight)", "English (Grammar & Writing Skills)",
+        ]
+        for name in names:
+            Subject.objects.create(course=self.course, name=name)
+
+        self.run_cmd("--structure-only")
+
+        holders = set(
+            TeachingAssignment.objects
+            .filter(subject__name__startswith="English", batch__isnull=True,
+                    is_active=True)
+            .values_list("teacher__email", flat=True)
+        )
+        self.assertGreater(len(holders), 1, f"all English went to {holders}")
+
+    def test_a_specific_match_beats_a_broad_one(self):
+        """"3B: Social Science – Geography" contains both "social" and
+        "geograph". Only the geography teacher should get it."""
+        subject = Subject.objects.create(
+            course=self.course, name="3B: Social Science – Geography",
+        )
+
+        self.run_cmd("--structure-only")
+
+        holder = TeachingAssignment.objects.get(
+            subject=subject, batch__isnull=True, is_active=True,
+        ).teacher
+        self.assertEqual(holder.first_name, "Lalnunpuii")
+
+    def test_assignment_is_stable_across_runs(self):
+        """Keyed on the subject UUID, not a running counter — otherwise
+        --rebalance would reshuffle the whole roster every time it ran."""
+        subject = Subject.objects.create(course=self.course, name="English (X)")
+        self.run_cmd("--structure-only")
+        first = TeachingAssignment.objects.get(
+            subject=subject, batch__isnull=True, is_active=True,
+        ).teacher_id
+
+        self.run_cmd("--rebalance")
+
+        second = TeachingAssignment.objects.get(
+            subject=subject, batch__isnull=True, is_active=True,
+        ).teacher_id
+        self.assertEqual(first, second)
+
+
+class RebalanceTest(SeedAcademyLaunchTestBase):
+    def test_rebalance_never_moves_a_real_teacher(self):
+        real = User.objects.create_user(
+            email="real.english@shiksha.test", username="real.english",
+            password="x",
+        )
+        subject = Subject.objects.create(course=self.course, name="English (Y)")
+        row = TeachingAssignment.objects.create(
+            subject=subject, teacher=real, batch=None,
+            role=TeachingAssignment.ROLE_PRIMARY, is_active=True,
+        )
+
+        self.run_cmd("--structure-only")
+        self.run_cmd("--rebalance")
+
+        row.refresh_from_db()
+        self.assertEqual(row.teacher_id, real.id)
+
+    def test_rebalance_dry_run_writes_nothing(self):
+        self.run_cmd("--structure-only")
+        before = dict(
+            TeachingAssignment.objects.values_list("id", "teacher_id")
+        )
+        self.run_cmd("--rebalance", "--dry-run")
+        after = dict(
+            TeachingAssignment.objects.values_list("id", "teacher_id")
+        )
+        self.assertEqual(before, after)
+
+
+class RepairTeacherProfilesTest(SeedAcademyLaunchTestBase):
+    def _teaching_user_without_profile(self):
+        from accounts.models import Role, UserRole
+
+        user = User.objects.create_user(
+            email="halfsetup@shiksha.test", username="halfsetup", password="x",
+        )
+        role, _ = Role.objects.get_or_create(name="TEACHER")
+        UserRole.objects.create(user=user, role=role, is_active=True)
+        TeachingAssignment.objects.create(
+            subject=self.physics, teacher=user, batch=None,
+            role=TeachingAssignment.ROLE_PRIMARY, is_active=True,
+        )
+        return user
+
+    def test_creates_a_profile_for_someone_already_teaching(self):
+        """The faculty list queries TeacherProfile, so a teaching account with
+        no profile row is invisible on every faculty surface while still owning
+        subjects and content."""
+        user = self._teaching_user_without_profile()
+        self.assertFalse(TeacherProfile.objects.filter(user=user).exists())
+
+        self.run_cmd("--repair-teacher-profiles")
+
+        profile = TeacherProfile.objects.get(user=user)
+        self.assertEqual(profile.academy_status, TeacherProfile.TRACK_APPROVED)
+
+    def test_does_not_promote_someone_who_only_has_the_role(self):
+        from accounts.models import Role, UserRole
+
+        user = User.objects.create_user(
+            email="roleonly@shiksha.test", username="roleonly", password="x",
+        )
+        role, _ = Role.objects.get_or_create(name="TEACHER")
+        UserRole.objects.create(user=user, role=role, is_active=True)
+
+        self.run_cmd("--repair-teacher-profiles")
+
+        self.assertFalse(TeacherProfile.objects.filter(user=user).exists())
+
+    def test_leaves_an_existing_profile_alone(self):
+        user = self._teaching_user_without_profile()
+        TeacherProfile.objects.create(
+            user=user, teacher_type=TeacherProfile.TYPE_FACULTY,
+            academy_status=TeacherProfile.TRACK_REJECTED,
+        )
+
+        self.run_cmd("--repair-teacher-profiles")
+
+        profile = TeacherProfile.objects.get(user=user)
+        self.assertEqual(profile.academy_status, TeacherProfile.TRACK_REJECTED)
+
+    def test_dry_run_writes_nothing(self):
+        user = self._teaching_user_without_profile()
+        self.run_cmd("--repair-teacher-profiles", "--dry-run")
+        self.assertFalse(TeacherProfile.objects.filter(user=user).exists())
+
+
+class AllCoursesTest(SeedAcademyLaunchTestBase):
+    def test_all_courses_puts_content_everywhere(self):
+        other = Course.objects.create(
+            title="Class 9", status=Course.STATUS_PUBLISHED,
+            kind=Course.KIND_ACADEMIC,
+        )
+        Subject.objects.create(course=other, name="Mathematics")
+
+        self.run_cmd("--all-courses")
+
+        self.assertTrue(
+            StudyMaterial.objects.filter(subject__course=other).exists()
+        )
+        self.assertTrue(
+            StudyMaterial.objects.filter(subject__course=self.course).exists()
+        )
+
+
 class IdempotencyTest(SeedAcademyLaunchTestBase):
     def test_running_twice_creates_one_set(self):
         self.run_cmd(f"--flagship={self.course.id}")
