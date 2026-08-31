@@ -15,7 +15,8 @@ from django.utils.html import format_html
 
 from .models import (
     Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem, HomeFloater,
-    HomeContentBlock, HomeListItem, PublishStatus, ShowcaseCourse,
+    HomeContentBlock, HomeListItem, PublishStatus, ShowcaseCategory,
+    ShowcaseCourse,
 )
 
 # ── optional rich-text widget ────────────────────────────────────
@@ -186,6 +187,19 @@ class AnnouncementAdmin(admin.ModelAdmin):
         now = timezone.now()
         return (obj.status == PublishStatus.PUBLISHED and obj.starts_at <= now
                 and (obj.ends_at is None or obj.ends_at >= now))
+
+
+@admin.register(ShowcaseCategory)
+class ShowcaseCategoryAdmin(admin.ModelAdmin):
+    """The Featured grid's filter tabs. `is_active` is a real field here,
+    not a property — list_editable/list_filter against a non-field raise
+    admin.E116 + E121 and stop the process booting."""
+
+    list_display = ("label", "slug", "order", "is_active")
+    list_editable = ("order", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("slug", "label")
+    prepopulated_fields = {"slug": ("label",)}
 
 
 @admin.register(ShowcaseCourse)

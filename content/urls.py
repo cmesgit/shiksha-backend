@@ -39,6 +39,15 @@ admin_router.register("admin/current-affairs", admin_views.CurrentAffairAdminVie
 admin_router.register("admin/faqs", admin_views.FAQItemAdminViewSet, basename="admin-faq")
 admin_router.register("admin/announcements", admin_views.AnnouncementAdminViewSet, basename="admin-announcement")
 admin_router.register("admin/showcase", admin_views.ShowcaseCourseAdminViewSet, basename="admin-showcase")
+# Registered AFTER admin/showcase, but the router matches on the full prefix so
+# "admin/showcase-categories" cannot be swallowed by "admin/showcase"'s detail
+# route — that would need a slash. Kept as a sibling rather than nested under
+# showcase/ because a tab is not owned by any one card.
+admin_router.register(
+    "admin/showcase-categories",
+    admin_views.ShowcaseCategoryAdminViewSet,
+    basename="admin-showcase-category",
+)
 admin_router.register("admin/tags", admin_views.TagAdminViewSet, basename="admin-tag")
 admin_router.register("admin/home-content", admin_views.HomeContentBlockAdminViewSet, basename="admin-home-content")
 admin_router.register("admin/home-list-items", admin_views.HomeListItemAdminViewSet, basename="admin-home-list-item")

@@ -41,11 +41,16 @@ def _register():
         Batch, Board, Chapter, Course, CourseCategory, CourseDetail,
         Stream, Subject,
     )
-    from content.models import ShowcaseCourse
+    # Cross-app on purpose: /courses/public/featured/ lives in this app and
+    # serves content.ShowcaseCourse rows, so a card edit has to bump THIS
+    # version. ShowcaseCategory rides along for the same reason — the featured
+    # payload now carries the filter-tab list, so renaming or hiding a tab must
+    # invalidate it immediately rather than waiting out the 300s TTL.
+    from content.models import ShowcaseCategory, ShowcaseCourse
 
     tracked = (
         Course, Subject, Chapter, Batch, Board,
-        CourseDetail, CourseCategory, Stream, ShowcaseCourse,
+        CourseDetail, CourseCategory, Stream, ShowcaseCourse, ShowcaseCategory,
     )
 
     def _bump(*args, **kwargs):

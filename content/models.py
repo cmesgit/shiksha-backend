@@ -520,6 +520,61 @@ class Announcement(StatusedContentModel):
 #  Homepage showcase cards ("Featured courses" grid)
 # ─────────────────────────────────────────────────────────────────
 
+class ShowcaseCategory(models.Model):
+    """One filter tab above the homepage 'Featured courses' grid.
+
+    This list used to be hardcoded in THREE places that had to be edited and
+    deployed together — `ShowcaseCourse.CATEGORY_CHOICES` here,
+    `COURSE_TABS` in shiksha-frontend's homeData.js, and a literal
+    `CATEGORY_CHOICES` array in Admin-dashboard's CardFormModal.jsx — kept in
+    sync by comment alone. Adding one tab was a three-repo coordinated deploy,
+    so in practice nobody added one.
+
+    `is_active`, not `status`: this is taxonomy, not published content. It has
+    no draft/review/archive lifecycle and no revisions, and the sibling
+    taxonomy model `courses.CourseCategory` uses `is_active` for the same
+    reason. (The six *content* models moved off `is_active` onto `status` in
+    migration content/0024 — that change was about content, not taxonomy.)
+    """
+
+    # Matches the slugs already stored in ShowcaseCourse.categories, so the
+    # seed migration makes every existing card valid with no data migration on
+    # the JSON column itself. SlugField accepts "class8-12".
+    slug = models.SlugField(
+        max_length=40, unique=True,
+        help_text='Stored on cards, and the tab id the homepage filters by. '
+                  'Cannot be "all" — see clean().',
+    )
+    label = models.CharField(
+        max_length=40, help_text='Shown on the tab, e.g. "Class 8–12".',
+    )
+    order = models.PositiveSmallIntegerField(default=0)
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Uncheck to hide the tab without untagging any card.",
+    )
+
+    class Meta:
+        ordering = ["order", "slug"]
+        verbose_name = "showcase category"
+        verbose_name_plural = "showcase categories"
+
+    def clean(self):
+        super().clean()
+        # "all" is a reserved sentinel the homepage treats as "no filter
+        # applied" and renders itself. A real category with that slug would
+        # give the grid two "All" tabs, one of which filters for cards tagged
+        # with the literal string "all" and so always renders empty.
+        if (self.slug or "").strip().lower() == "all":
+            raise ValidationError({
+                "slug": '"all" is reserved — the homepage always shows an "All" '
+                        "tab of its own. Choose a different slug.",
+            })
+
+    def __str__(self):
+        return self.label
+
+
 class ShowcaseCourse(StatusedContentModel):
     """One card in the homepage 'Featured courses' grid. Field names mirror
     the frontend's homeData.js entries so the section can render straight
@@ -576,10 +631,11 @@ class ShowcaseCourse(StatusedContentModel):
     is_explore_card = models.BooleanField(
         default=False, help_text="Render a single 'Explore Programs' button.",
     )
-    # Keys must match shiksha-frontend's homeData.js COURSE_TABS ids. "all" is
-    # deliberately excluded — it's a reserved sentinel FeaturedCourses.jsx
-    # treats as "no filter applied", not a real category a card is tagged
-    # with (see CATEGORY_CHOICES in Admin-dashboard's Showcase.jsx).
+    # The original hardcoded tab list. NO LONGER the validation source — that
+    # is the ShowcaseCategory table (see clean()). Kept only to document where
+    # the seed in migration content/0028 came from; that migration creates
+    # those three rows so every card already on prod stays valid.
+    # Do not add to this — add a ShowcaseCategory row instead.
     CATEGORY_CHOICES = ("boards", "class8-12", "competitive")
 
     categories = models.JSONField(
@@ -643,12 +699,24 @@ class ShowcaseCourse(StatusedContentModel):
         super().clean()
         if not isinstance(self.categories, list):
             raise ValidationError({"categories": "Must be a JSON list."})
-        else:
-            invalid = sorted(set(self.categories) - set(self.CATEGORY_CHOICES))
+        elif self.categories:
+            # Validated against the live taxonomy rather than a constant, so a
+            # new tab needs no deploy. Only hit when the card actually carries
+            # tags, so an untagged card costs no query.
+            #
+            # Deliberately checks ALL categories, not just active ones: a tab
+            # can be switched off to hide it from the homepage, and rejecting
+            # its slug here would make every card still tagged with it
+            # unsaveable — turning "hide this tab" into "corrupt these cards".
+            valid = set(
+                ShowcaseCategory.objects.values_list("slug", flat=True)
+            )
+            invalid = sorted(set(self.categories) - valid)
             if invalid:
                 raise ValidationError({
                     "categories": f"Unknown categor{'y' if len(invalid) == 1 else 'ies'}: "
-                                  f"{', '.join(invalid)}. Valid: {', '.join(self.CATEGORY_CHOICES)}.",
+                                  f"{', '.join(invalid)}. Valid: "
+                                  f"{', '.join(sorted(valid)) or '(none defined yet)'}.",
                 })
         if self.course_id and self.is_explore_card:
             raise ValidationError({

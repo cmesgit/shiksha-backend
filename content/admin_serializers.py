@@ -26,7 +26,7 @@ from .blocks import validate_blocks, validate_theme
 from .models import (
     Announcement, BlogPost, ContentImage, ContentTag, CurrentAffair,
     FAQItem, HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
-    ShowcaseCourse,
+    ShowcaseCategory, ShowcaseCourse,
 )
 
 
@@ -240,6 +240,31 @@ def _is_competitive(course):
     if getattr(course, "kind", None) == "COACHING":
         return True
     return course.categories.filter(group="competitive").exists()
+
+
+class ShowcaseCategoryAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
+    """The homepage's Featured-grid filter tabs.
+
+    `card_count` is reported so the UI can warn before a delete: removing a tab
+    leaves its slug behind in every card's `categories` JSON, and those cards
+    then fail validation on their next save.
+    """
+
+    card_count = serializers.SerializerMethodField()
+
+    def get_card_count(self, obj):
+        # Counted in Python over the JSON column rather than with a DB
+        # containment lookup, because `categories` is a plain JSONField and the
+        # portable `contains` lookup differs between SQLite (tests) and
+        # Postgres (prod). The row count here is tiny.
+        return sum(
+            1 for cats in ShowcaseCourse.objects.values_list("categories", flat=True)
+            if isinstance(cats, list) and obj.slug in cats
+        )
+
+    class Meta:
+        model = ShowcaseCategory
+        fields = ["id", "slug", "label", "order", "is_active", "card_count"]
 
 
 class ShowcaseCourseAdminSerializer(FullCleanMixin, serializers.ModelSerializer):

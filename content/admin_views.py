@@ -17,6 +17,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
@@ -27,13 +28,15 @@ from .admin_serializers import (
     CurrentAffairAdminSerializer, FAQItemAdminSerializer,
     HomeContentBlockAdminSerializer, HomeFloaterAdminSerializer,
     HomeListItemAdminSerializer, HomeSectionOrderAdminSerializer,
+    ShowcaseCategoryAdminSerializer,
     ShowcaseCourseAdminSerializer,
 )
 from .models import (
     Announcement, BlogPost, BlogRevision, ContentImage, ContentRevision,
     ContentTag,
     CurrentAffair, FAQItem, HomeContentBlock, HomeFloater, HomeListItem,
-    HomeSectionOrder, Locale, PublishStatus, ShowcaseCourse,
+    HomeSectionOrder, Locale, PublishStatus, ShowcaseCategory,
+    ShowcaseCourse,
 )
 from .permissions import IsContentEditor
 from .revisions import (
@@ -196,6 +199,87 @@ class ShowcaseCourseAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
     # `image` is a file upload field, so multipart support must not be
     # left to an implicit default that could change.
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    @action(detail=False, methods=["post"])
+    def reorder(self, request):
+        """POST {"cards": ["<id>", "<id>", ...]} — every card id in the desired
+        order.
+
+        Demands the COMPLETE set, like HomeSectionOrderAdminViewSet.reorder and
+        for the same reason: a partial list from a stale tab would renumber a
+        subset and silently reshuffle the homepage against the editor's
+        intent. Until now the only way to order these cards was to type an
+        integer into each one's edit form, one card at a time, while the grid
+        rendered a drag handle that did nothing.
+        """
+        ids = request.data.get("cards")
+        if not isinstance(ids, list) or not ids:
+            return Response(
+                {"detail": "cards must be a non-empty list of card ids."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # str() both sides: ids arrive as JSON strings, pks are UUIDs.
+        given = [str(i) for i in ids]
+        existing = {str(pk) for pk in ShowcaseCourse.objects.values_list("pk", flat=True)}
+        if len(given) != len(set(given)) or set(given) != existing:
+            return Response(
+                {"detail": "cards must contain each existing card exactly once.",
+                 "missing": sorted(existing - set(given)),
+                 "unexpected": sorted(set(given) - existing)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        with transaction.atomic():
+            rows = {
+                str(r.pk): r
+                for r in ShowcaseCourse.objects.select_for_update()
+            }
+            for i, cid in enumerate(given):
+                rows[cid].order = i
+            ShowcaseCourse.objects.bulk_update(rows.values(), ["order"])
+        return Response(
+            ShowcaseCourseAdminSerializer(
+                ShowcaseCourse.objects.all(), many=True, context={"request": request},
+            ).data
+        )
+
+
+# ── Showcase categories (the Featured grid's filter tabs) ──────────
+
+class ShowcaseCategoryAdminViewSet(viewsets.ModelViewSet):
+    """Full CRUD for the homepage's filter tabs.
+
+    No `RecordsRevisions`: revisions record what a person did to a piece of
+    *content*, and this is taxonomy — the same reasoning that keeps migrations
+    and seeds out of ContentRevision.
+    """
+
+    queryset = ShowcaseCategory.objects.all()
+    serializer_class = ShowcaseCategoryAdminSerializer
+    permission_classes = [IsContentEditor]
+    pagination_class = None
+
+    def perform_destroy(self, instance):
+        """Refuses while cards still carry the slug.
+
+        `categories` is a JSON list of slugs with no FK, so deleting a row
+        cannot cascade — the slug would simply be orphaned in every tagged
+        card, and each of those cards would then fail clean() on its next save
+        with "Unknown category". Hiding is almost always what was meant, so the
+        message says so.
+        """
+        in_use = [
+            cats for cats in ShowcaseCourse.objects.values_list("categories", flat=True)
+            if isinstance(cats, list) and instance.slug in cats
+        ]
+        if in_use:
+            n = len(in_use)
+            raise DRFValidationError({
+                "detail": f"{n} card{'' if n == 1 else 's'} still use this tab. "
+                          f"Untag them first, or switch the tab off "
+                          f"(is_active) to hide it without breaking them.",
+                "card_count": n,
+            })
+        instance.delete()
 
 
 # ── Editor-uploaded images (rich-text body content) ────────────────

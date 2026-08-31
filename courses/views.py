@@ -22,7 +22,7 @@ from assignments.models import Assignment
 from courses.progress_stats import average_quiz_score_pct
 from .board_display import board_name_for
 from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream, BoardNotifyRequest, CourseNotifyRequest
-from content.models import ShowcaseCourse, PublishStatus
+from content.models import ShowcaseCategory, ShowcaseCourse, PublishStatus
 from .serializers import (
     CourseSerializer, SubjectSerializer, BoardSerializer, CourseDetailSerializer,
     CourseCategorySerializer,
@@ -2328,7 +2328,22 @@ class PublicFeaturedView(APIView):
                 "order": card.order,
             })
 
-        data = {"cards": cards}
+        # The filter tabs above the grid. These were hardcoded in the frontend
+        # (homeData.js's COURSE_TABS), so they could not be changed without a
+        # deploy and could silently disagree with the slugs cards actually
+        # carry. Shipped in this same payload rather than a second endpoint so
+        # the tabs and the cards they filter can never be fetched a cache
+        # generation apart.
+        #
+        # Only active rows, ordered. "All" is NOT included — the homepage owns
+        # that sentinel and renders it itself (ShowcaseCategory.clean() refuses
+        # the slug for exactly that reason).
+        tabs = [
+            {"id": c.slug, "label": c.label}
+            for c in ShowcaseCategory.objects.filter(is_active=True)
+        ]
+
+        data = {"cards": cards, "tabs": tabs}
         cache.set(key, data, LIST_TTL)
         return Response(data)
 
