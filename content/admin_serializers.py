@@ -17,6 +17,7 @@
 # tag names as ContentTag primary keys.
 
 import os
+import re
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
@@ -26,6 +27,24 @@ from .models import (
     Announcement, BlogPost, ContentImage, ContentTag, CurrentAffair,
     FAQItem, HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
     ShowcaseCourse,
+)
+
+
+# One colour stop: #rgb/#rrggbb/#rrggbbaa, rgb()/rgba(), or a bare CSS colour
+# keyword, each with an optional trailing position ("50%"). Used by
+# ShowcaseCourseAdminSerializer.validate_gradient_css — see the docstring there
+# for why this is an allowlist. Note the stop pattern cannot be split on commas
+# first: rgba() contains its own.
+_GRADIENT_STOP = (
+    r"(?:#[0-9a-fA-F]{3,8}"
+    r"|rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*(?:,\s*[\d.]+\s*)?\)"
+    r"|[a-zA-Z]{3,20})"
+    r"(?:\s+\d{1,3}(?:\.\d+)?%)?"
+)
+# Two or more stops, comma-separated. A single stop is rejected: it is not a
+# gradient and renders as a flat block, which is never what was intended.
+_GRADIENT_STOPS_RE = re.compile(
+    rf"^\s*(?:{_GRADIENT_STOP}\s*,\s*)+{_GRADIENT_STOP}\s*$"
 )
 
 
@@ -238,6 +257,33 @@ class ShowcaseCourseAdminSerializer(FullCleanMixin, serializers.ModelSerializer)
 
     def get_course_title(self, obj):
         return obj.course.title if obj.course_id else None
+
+    def validate_gradient_css(self, value):
+        """`gradient_css` holds the STOPS ONLY — the public card interpolates
+        them into `linear-gradient(135deg, <stops>)`. Nothing validated that,
+        so a typo produced an invalid CSS declaration and the card's thumbnail
+        rendered with no background at all: a silent, on-the-homepage failure
+        whose cause was invisible from the admin screen.
+
+        Deliberately an allowlist rather than a blocklist. The value lands in
+        an inline style attribute, so anything that could terminate the
+        declaration (`;`) or open a new one (`{}`) must not survive, and `url(`
+        must not either — that would let a CMS editor make the public homepage
+        issue requests to a third-party host.
+        """
+        value = (value or "").strip()
+        if not value:
+            # Blank is allowed: the model supplies its own default, and the
+            # card falls back to that rather than rendering nothing.
+            return value
+        if not _GRADIENT_STOPS_RE.match(value):
+            raise serializers.ValidationError(
+                "Enter two or more colour stops separated by commas, e.g. "
+                "\"rgba(15,157,107,0.72),rgba(11,91,62,0.88)\" or "
+                "\"#0F9D6B,#0B5B3E\". Do not include the linear-gradient(...) "
+                "wrapper — the card adds that itself."
+            )
+        return value
 
     class Meta:
         model = ShowcaseCourse
