@@ -127,6 +127,22 @@ BLOCKS = {
             "that is effective, enjoyable, and accessible from anywhere."
         ),
     },
+    # The closing band. Block-only — no list rows — and the two buttons ride on
+    # the same cta_primary_*/cta_secondary_* columns the hero uses. The hrefs
+    # are in-app paths; AboutUs.jsx renders an <a> instead of a react-router
+    # <Link> if an editor ever points one at an external campaign URL.
+    HomeSection.ABOUT_CTA: {
+        "eyebrow": "Join ShikshaCom",
+        "heading": "Ready to learn with ShikshaCom?",
+        "subhead": (
+            "Explore our courses and find the learning path that fits you — "
+            "accessible, engaging and built for how you learn."
+        ),
+        "cta_primary_label": "Explore courses",
+        "cta_primary_href": "/courses",
+        "cta_secondary_label": "Create free account",
+        "cta_secondary_href": "/signup",
+    },
 }
 
 # ── List rows ────────────────────────────────────────────────────────────────

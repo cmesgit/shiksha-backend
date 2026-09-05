@@ -767,6 +767,13 @@ class HomeSection(models.TextChoices):
     ABOUT_MISSION = "about_mission", "About — Our Mission"
     ABOUT_VALUES = "about_values", "About — Our Values"
     ABOUT_WHY = "about_why", "About — Why Choose ShikshaCom"
+    # The closing "Ready to learn with ShikshaCom?" band, added with the /about
+    # redesign. It has no repeatable rows — heading, one line of copy and two
+    # buttons — so it stays out of SECTIONS_WITH_LIST_ITEMS and uses the
+    # cta_primary_*/cta_secondary_* columns the hero already uses. Without this
+    # the band was the one part of the redesigned page an editor could not
+    # touch, including the two links it sends every visitor to.
+    ABOUT_CTA = "about_cta", "About — Closing CTA"
     # The /contact page, same story as the About sections above: its
     # heading, blurb and all four detail cards were hardcoded in
     # Contact.jsx, so correcting a phone number meant a code change and a
