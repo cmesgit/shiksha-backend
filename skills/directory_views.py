@@ -205,6 +205,79 @@ def _open_slots(expert) -> int:
     return len(set(grid.get("open", [])) - set(grid.get("booked", [])))
 
 
+class DirectoryLocationsView(APIView):
+    """GET /skill/locations/ — the real states and districts experts are in.
+
+    The directory advertises reach "across India", but the district filter used
+    to be a hardcoded list of Mizoram's eight districts living in the frontend
+    (`components/skill/directoryOptions.js`), with a comment noting it was the
+    launch set "until /skill/districts/ exists". So an expert in Assam or Delhi
+    was reachable by search but could never be found through the location
+    filter, and the copy claimed a reach the UI could not deliver.
+
+    Derived from the data rather than from a fixed list of India's ~780
+    districts: offering a district with nobody in it is a guaranteed dead end,
+    and a curated national list goes stale the moment a district is renamed or
+    split. The trade-off is that the filter grows as the roster grows, which is
+    the correct behaviour for a directory.
+
+    Shape — states each carrying their own districts, so the UI can cascade:
+
+        {"states": [{"state": "Mizoram",
+                     "districts": ["Aizawl", "Lunglei"],
+                     "experts": 6}, ...],
+         "districts": ["Aizawl", "Lunglei", ...]}
+
+    `districts` is the flat union, for the plain single-select case and so the
+    UI keeps working if no state is chosen.
+
+    Note `state` has been an accepted filter on ExpertListView all along
+    (see `_apply_filters`); nothing in any frontend has ever sent it.
+    """
+    permission_classes = [AllowAny]
+    CACHE_KEY = "skill:directory-locations:v1"
+    CACHE_SECONDS = 3600
+
+    def get(self, request):
+        from django.core.cache import cache
+
+        cached = cache.get(self.CACHE_KEY)
+        if cached:
+            return Response(cached)
+
+        rows = (
+            ExpertProfile.objects
+            .filter(is_listed=True)
+            .exclude(district="")
+            .values_list("state", "district")
+        )
+
+        by_state = {}
+        for state, district in rows:
+            # An expert may have a district but no state filled in. Group those
+            # under a readable bucket rather than dropping them: the district
+            # is still a usable filter value, which is what matters here.
+            key = (state or "").strip() or "Other"
+            district = (district or "").strip()
+            if not district:
+                continue
+            by_state.setdefault(key, set()).add(district)
+
+        states = [
+            {
+                "state": state,
+                "districts": sorted(districts),
+                "experts": len(districts),
+            }
+            for state, districts in sorted(by_state.items())
+        ]
+        flat = sorted({d for entry in states for d in entry["districts"]})
+
+        payload = {"states": states, "districts": flat}
+        cache.set(self.CACHE_KEY, payload, self.CACHE_SECONDS)
+        return Response(payload)
+
+
 class DirectoryStatsView(APIView):
     """GET /skill/directory-stats/ — the hero "at a glance" panel.
 

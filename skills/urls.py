@@ -4,7 +4,9 @@
 # (the messaging_views module is deleted; all chat now runs through the chat app).
 """skills/urls.py — mounted under /api/skill/ in project urls.py."""
 from django.urls import path
-from .directory_views import ExpertListView, DirectoryStatsView   # replaces views.ExpertListView
+from .directory_views import (  # replaces views.ExpertListView
+    ExpertListView, DirectoryStatsView, DirectoryLocationsView,
+)
 from .listing_views import (
     TeacherListingListView, TeacherListingDetailView, TeacherListingSlotsView,
 )
@@ -83,6 +85,9 @@ urlpatterns = [
     path("marketing/",                               MarketingBlockListView.as_view()),
     path("teachers/",                                ExpertListView.as_view()),
     path("directory-stats/",                         DirectoryStatsView.as_view()),
+    # Real states/districts from the roster — replaces the frontend's hardcoded
+    # eight Mizoram districts, which made "across India" undeliverable.
+    path("locations/",                               DirectoryLocationsView.as_view()),
     path("teachers/<uuid:expert_id>/",               ExpertDetailView.as_view()),
     # NEW: powers the Book-a-Tutor weekly grid (was unwired → grid showed empty,
     # so every slot looked "closed" and nothing could be booked).
