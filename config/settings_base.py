@@ -233,6 +233,11 @@ REST_FRAMEWORK = {
         "agreement_public": "60/hour",
         # Public faculty-signup option lists (static taxonomy, no user data).
         "faculty_choices": "120/hour",
+        # The /contact page's enquiry form. Looser than board_notify because a
+        # genuine sender may reasonably send two or three messages, and because
+        # schools and families share one NAT address — the same reasoning as
+        # the login limits above. Spam is caught by the honeypot, not by this.
+        "contact_form": "10/hour",
     },
 }
 
@@ -269,6 +274,11 @@ LOGGING = {
 # Uses port 443, so it works on hosts where outbound SMTP is blocked.
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "Shiksha <onboarding@resend.dev>")
+
+# Where public /contact enquiries are emailed. The submission is stored in
+# content.ContactMessage first and this notification is best-effort, so an
+# unset or wrong value here delays an enquiry — it never loses one.
+CONTACT_FORM_RECIPIENT = os.getenv("CONTACT_FORM_RECIPIENT", "info@shikshacom.com")
 
 # Quiz builder's "Generate with AI" action (quizzes/views.py
 # TeacherGenerateAIQuestionsView). Unset by default — the endpoint raises a

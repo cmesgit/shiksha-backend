@@ -9,12 +9,17 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from . import admin_views, ai_views, studio_views, views
+from . import admin_views, ai_views, contact_views, studio_views, views
 
 app_name = "content"
 
 urlpatterns = [
     path("ai/general-studies/", ai_views.GeneralStudiesAIView.as_view(), name="general-studies-ai"),
+
+    # The public contact form's only write endpoint. Anonymous + throttled —
+    # see content/contact_views.py for the threat model.
+    path("contact/", contact_views.ContactMessageCreateView.as_view(), name="contact-create"),
+    path("newsletter/", contact_views.NewsletterSubscribeView.as_view(), name="newsletter-subscribe"),
 
     path("blogs/", views.BlogPostListView.as_view(), name="blog-list"),
     path("blogs/<path:slug>/", views.BlogPostDetailView.as_view(), name="blog-detail"),

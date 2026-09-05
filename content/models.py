@@ -1265,3 +1265,108 @@ class MediaUsage(models.Model):
 
     def __str__(self):
         return f"{self.asset_id} on {self.content_type.model}#{self.object_id}.{self.field_name}"
+
+
+class ContactMessage(models.Model):
+    """One message sent through the public /contact form.
+
+    The redesigned contact page (design handoff "ShikshaContact.html") ships a
+    full enquiry form. The handoff itself only faked success in the browser and
+    threw the message away, which on a live site means a visitor is told "we
+    got it" while nobody ever sees it. This model is the durable half of the
+    fix: every submission is a row here first, and only then do we *try* to
+    email the team. If the email fails the row still exists, so the enquiry is
+    recoverable from the admin — the reverse (email-only, no row) loses it.
+
+    Deliberately NOT a `Notification` / `Activity`: those are addressed to a
+    ShikshaCom *account*, and the sender here is an anonymous visitor with no
+    user row at all.
+    """
+
+    class Role(models.TextChoices):
+        STUDENT = "student", "Student"
+        PARENT = "parent", "Parent or guardian"
+        TEACHER = "teacher", "Teacher or tutor"
+        SCHOOL = "school", "School or institution"
+        OTHER = "other", "Other"
+
+    class Topic(models.TextChoices):
+        ADMISSIONS = "admissions", "Admissions & course enquiry"
+        SUPPORT = "support", "Student support"
+        PARTNERSHIPS = "partnerships", "Schools & partnerships"
+        CAREERS = "careers", "Careers at ShikshaCom"
+        FEEDBACK = "feedback", "Feedback or something else"
+
+    class Status(models.TextChoices):
+        NEW = "new", "New"
+        IN_PROGRESS = "in_progress", "In progress"
+        CLOSED = "closed", "Closed"
+
+    name = models.CharField(max_length=120)
+    email = models.EmailField()
+    # Optional on the form, so blank rather than null — this is a CharField and
+    # the codebase's convention is "" for absent text, never NULL.
+    phone = models.CharField(max_length=40, blank=True)
+    role = models.CharField(max_length=20, choices=Role.choices)
+    topic = models.CharField(max_length=20, choices=Topic.choices)
+    message = models.TextField()
+
+    # The form's consent checkbox is required to submit, so this is always True
+    # on creation. Stored as a TIMESTAMP rather than a boolean because the only
+    # reason to keep it is to be able to answer "when did they agree?" — a bare
+    # True that is true on every row answers nothing.
+    consented_at = models.DateTimeField()
+
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.NEW, db_index=True,
+    )
+    # Free-text scratchpad for whoever picks the enquiry up. Not shown to the
+    # sender anywhere — there is no logged-in sender to show it to.
+    handled_note = models.TextField(blank=True)
+
+    # Anti-abuse forensics only. This is the sole unauthenticated write path on
+    # the public site besides the notify-me endpoints, and an IP is the only
+    # thing tying a spam run together once the throttle has been evaded from a
+    # pool of addresses. Nullable because a misconfigured proxy can leave
+    # REMOTE_ADDR unset, and losing the enquiry over that would be absurd.
+    submitted_ip = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["status", "-created_at"])]
+        verbose_name = "Contact message"
+
+    def __str__(self):
+        return f"{self.name} <{self.email}> — {self.get_topic_display()}"
+
+
+class NewsletterSubscriber(models.Model):
+    """An email address collected by the /contact page's closing CTA band.
+
+    Exists for the same reason as ContactMessage: the design handoff shipped a
+    subscribe box that printed "You are on the list" and stored nothing. This
+    at least makes that sentence true.
+
+    Deliberately minimal — an address, when it arrived, and whether it is still
+    wanted. There is no campaign/segment model here because nothing sends to
+    this list yet; adding one now would be inventing a product. What this DOES
+    guarantee is that the addresses are not lost in the meantime.
+
+    ``unsubscribed_at`` rather than a hard delete: re-subscribing must not be
+    able to silently resurrect someone who opted out, and proving that an
+    address asked to be removed is the whole point of keeping the row.
+    """
+
+    email = models.EmailField(unique=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    unsubscribed_at = models.DateTimeField(null=True, blank=True)
+    submitted_ip = models.GenericIPAddressField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Newsletter subscriber"
+
+    def __str__(self):
+        state = "unsubscribed" if self.unsubscribed_at else "subscribed"
+        return f"{self.email} ({state})"

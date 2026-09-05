@@ -14,9 +14,9 @@ from django.utils import timezone
 from django.utils.html import format_html
 
 from .models import (
-    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem, HomeFloater,
-    HomeContentBlock, HomeListItem, PublishStatus, ShowcaseCategory,
-    ShowcaseCourse,
+    Announcement, BlogPost, ContactMessage, ContentTag, CurrentAffair, FAQItem,
+    HomeFloater, HomeContentBlock, HomeListItem, NewsletterSubscriber,
+    PublishStatus, ShowcaseCategory, ShowcaseCourse,
 )
 
 # ── optional rich-text widget ────────────────────────────────────
@@ -240,3 +240,63 @@ class HomeFloaterAdmin(admin.ModelAdmin):
     list_display = ("section", "slot", "label", "status")
     list_filter = ("section", "status")
     search_fields = ("label", "sublabel")
+
+
+# ── Contact form inbox ────────────────────────────────────────────
+
+@admin.register(ContactMessage)
+class ContactMessageAdmin(admin.ModelAdmin):
+    """Read the enquiry, triage it — never edit it.
+
+    Every field the visitor supplied is read-only. This is a record of what
+    somebody actually sent us; an admin who can retype it can no longer be
+    sure what the original said, which is exactly the question you ask when an
+    enquiry is disputed. Only `status` and `handled_note` — our own workflow
+    state, not theirs — are writable.
+
+    No add permission either: the only legitimate way a row appears here is
+    through the public form.
+    """
+
+    list_display = ("created_at", "name", "email", "topic", "role", "status")
+    list_filter = ("status", "topic", "role", "created_at")
+    list_editable = ("status",)
+    search_fields = ("name", "email", "phone", "message")
+    date_hierarchy = "created_at"
+    readonly_fields = ("name", "email", "phone", "role", "topic", "message",
+                       "consented_at", "submitted_ip", "created_at")
+    fieldsets = (
+        ("The enquiry", {
+            "fields": ("name", "email", "phone", "role", "topic", "message"),
+        }),
+        ("Our handling", {"fields": ("status", "handled_note")}),
+        ("Record", {
+            "classes": ("collapse",),
+            "fields": ("consented_at", "submitted_ip", "created_at"),
+            "description": "Consent timestamp and origin IP, kept for abuse "
+                           "handling and to evidence the basis for replying.",
+        }),
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(NewsletterSubscriber)
+class NewsletterSubscriberAdmin(admin.ModelAdmin):
+    """The list collected by the contact page's CTA band.
+
+    ``unsubscribed_at`` is the only editable field: set it to remove someone,
+    rather than deleting the row. A hard delete loses the evidence that they
+    asked, and lets the same address be re-added by anyone typing it into the
+    public box.
+    """
+
+    list_display = ("email", "created_at", "unsubscribed_at")
+    list_filter = ("unsubscribed_at", "created_at")
+    search_fields = ("email",)
+    date_hierarchy = "created_at"
+    readonly_fields = ("email", "submitted_ip", "created_at")
+
+    def has_add_permission(self, request):
+        return False
