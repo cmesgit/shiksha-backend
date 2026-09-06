@@ -18,6 +18,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.pagination import PageNumberPagination
 
 logger = logging.getLogger(__name__)
 
@@ -2871,6 +2872,34 @@ class TeacherGenerateAIQuestionsView(APIView):
 # TEACHER QUESTION BANK
 # =====================================================
 
+class BankQuestionPagination(PageNumberPagination):
+    """Shared by both question-bank list endpoints (teacher bank + admin
+    review queue).
+
+    Pagination here is OPT-IN, not the DEFAULT_PAGINATION_CLASS treatment.
+    `list()` on both views below only calls `self.paginate_queryset()` when
+    the request actually sent `page` or `page_size` — DRF's own
+    `paginate_queryset()` defaults to page=1 even with neither param present,
+    which would silently truncate every existing caller's response the day
+    this class was attached.
+
+    QuizBank.jsx and QuizBuilder.jsx's bank-picker drawer (which fetches
+    scope=mine and scope=school in parallel) and QuestionReviewQueue.jsx via
+    `getReviewQueue` all predate this and send neither param, so they keep
+    getting exactly today's shape — bare array for the teacher bank,
+    `{results, counts, contributing_teachers}` for the admin queue — with no
+    frontend change required in this task. A caller opts in simply by adding
+    `?page=1` (or `?page_size=`), which is also how a client requests more
+    than one page at once, matching the `fetchAllPages` helper already used
+    against `AdminPagination` in Admin-dashboard's `api/admin.js`.
+    """
+    page_size = 50
+    page_size_query_param = "page_size"
+    # Prod's review queue is already at 514 suggested rows; a client cannot
+    # ask for "everything" through page_size once this cap exists.
+    max_page_size = 200
+
+
 class TeacherQuestionBankView(generics.ListAPIView):
     """
     GET /teacher/question-bank/?scope=mine|school&subject=<id>&topic=&difficulty=&state=&search=
@@ -2896,6 +2925,7 @@ class TeacherQuestionBankView(generics.ListAPIView):
     """
     serializer_class = BankQuestionSerializer
     permission_classes = [IsAuthenticated, IsEmailVerified, IsTeacherContext]
+    pagination_class = BankQuestionPagination
 
     def get_queryset(self):
         user = self.request.user
@@ -2955,10 +2985,14 @@ class TeacherQuestionBankView(generics.ListAPIView):
     def list(self, request, *args, **kwargs):
         # T3 shows each question's chapter. That lives on the QUIZ (Phase 3 put
         # chapter tagging there, not on Question), so resolve it once for the
-        # whole page rather than per row — a 142-question bank would otherwise
-        # be 142 extra queries.
+        # whole PAGE rather than per row — a 142-question bank would otherwise
+        # be 142 extra queries. See BankQuestionPagination's docstring for why
+        # this only paginates when the caller asks: opt-in via `page`/
+        # `page_size`, so an old caller (neither param) still gets today's
+        # bare array over the WHOLE filtered queryset, unpaginated.
         queryset = self.filter_queryset(self.get_queryset())
-        rows = list(queryset)
+        opted_in = "page" in request.query_params or "page_size" in request.query_params
+        rows = list(self.paginate_queryset(queryset)) if opted_in else list(queryset)
         # `if q.quiz_id` drops standalone bank questions (Question.quiz is
         # nullable as of the public Quiz Hub work). They cannot reach here
         # today — every scope above is subject-scoped through the quiz, which
@@ -2970,7 +3004,10 @@ class TeacherQuestionBankView(generics.ListAPIView):
         self._chapter_tags_by_quiz = {
             qid: serialize_tags(quiz) for qid, quiz in quizzes.items()
         }
-        return Response(self.get_serializer(rows, many=True).data)
+        data = self.get_serializer(rows, many=True).data
+        if opted_in:
+            return self.get_paginated_response(data)
+        return Response(data)
 
 
 class TeacherBankStatusView(APIView):
@@ -3241,6 +3278,7 @@ class AdminQuestionBankQueueView(generics.ListAPIView):
     """
     serializer_class = BankQuestionSerializer
     permission_classes = [IsAuthenticated, IsAdmin]
+    pagination_class = BankQuestionPagination
 
     def get_queryset(self):
         state = self.request.query_params.get("state", Question.BANK_STATE_SUGGESTED)
@@ -3281,7 +3319,18 @@ class AdminQuestionBankQueueView(generics.ListAPIView):
         return ctx
 
     def list(self, request, *args, **kwargs):
-        rows = list(self.filter_queryset(self.get_queryset()))
+        # Pagination is opt-in (see BankQuestionPagination's docstring): a
+        # request with neither `page` nor `page_size` gets today's exact
+        # shape — `results` over the WHOLE filtered queryset, no `count`/
+        # `next`/`previous` — because QuestionReviewQueue.jsx's
+        # `getReviewQueue` sends neither and is not being touched in this
+        # task. Opting in only changes what `rows`/`results` cover; the
+        # `counts`/`contributing_teachers` aggregates below are computed
+        # from the database directly, never from `rows`, so they describe
+        # the whole filtered bank either way and are never paginated away.
+        queryset = self.filter_queryset(self.get_queryset())
+        opted_in = "page" in request.query_params or "page_size" in request.query_params
+        rows = list(self.paginate_queryset(queryset)) if opted_in else list(queryset)
         # `if q.quiz_id` — get_queryset() already excludes NULL-quiz rows, so
         # this is belt-and-braces: one None in this map makes
         # attach_chapter_tags() raise.
@@ -3297,6 +3346,12 @@ class AdminQuestionBankQueueView(generics.ListAPIView):
         # the queue is broken and starts looking for a bug that isn't there.
         # A count that disagrees with the list it sits on top of is worse than
         # no count.
+        #
+        # This also must NOT be derived from `rows`: `rows` is one PAGE once
+        # pagination is opted into, and the whole point of `counts` is that it
+        # describes the entire filtered set, not whatever page happens to be
+        # on screen. So it stays its own query against the database, exactly
+        # as before pagination existed.
         counts = (
             Question.objects
             .exclude(bank_state=Question.BANK_STATE_PRIVATE)
@@ -3304,7 +3359,7 @@ class AdminQuestionBankQueueView(generics.ListAPIView):
             .values("bank_state").annotate(n=Count("id"))
         )
         by_state = {c["bank_state"]: c["n"] for c in counts}
-        return Response({
+        envelope = {
             "results": self.get_serializer(rows, many=True).data,
             "counts": {
                 "suggested": by_state.get(Question.BANK_STATE_SUGGESTED, 0),
@@ -3322,7 +3377,18 @@ class AdminQuestionBankQueueView(generics.ListAPIView):
                 .filter(quiz__isnull=False)
                 .values("quiz__created_by").distinct().count()
             ),
-        })
+        }
+        if opted_in:
+            # get_paginated_response() builds {count, next, previous,
+            # results} from the page just pulled; splice counts/
+            # contributing_teachers into that envelope rather than the other
+            # way round, so `next`/`previous` still carry the right
+            # query-string page numbers.
+            paginated = self.get_paginated_response(envelope["results"])
+            paginated.data["counts"] = envelope["counts"]
+            paginated.data["contributing_teachers"] = envelope["contributing_teachers"]
+            return paginated
+        return Response(envelope)
 
 
 def _apply_bank_review(question, *, action, feedback, admin,

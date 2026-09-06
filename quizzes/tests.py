@@ -4632,3 +4632,262 @@ class QuestionTagEffectiveStatusTest(TestCase):
         self.tag.status = QuestionTag.STATUS_SOON
         self.assertEqual(
             self.tag.effective_status(500), QuestionTag.STATUS_SOON)
+
+
+# =====================================================
+# Phase 1c — question-bank list pagination
+# =====================================================
+#
+# Both TeacherQuestionBankView and AdminQuestionBankQueueView used to
+# materialise their ENTIRE filtered queryset on every request. Prod's review
+# queue already carries 514 suggested rows, each shipped with its choices, in
+# one response. BankQuestionPagination (quizzes/views.py) makes both
+# endpoints paginate — but only when a caller actually asks for a page via
+# `page`/`page_size`. Neither existing frontend caller (QuizBank.jsx /
+# QuizBuilder.jsx's bank drawer; QuestionReviewQueue.jsx's `getReviewQueue`)
+# sends either param, so the backwards-compatibility tests below are the
+# ones a regression here would actually break.
+
+class TeacherQuestionBankPaginationTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        cls.teacher = User.objects.create_user(
+            username="pg_t", email="pg_t@test.com", password="x", is_verified=True)
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+
+        cls.course = Course.objects.create(title="Class 9")
+        cls.subject = Subject.objects.create(course=cls.course, name="Biology")
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, is_active=True)
+
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Cells")
+        # 7 — enough that a page_size=3 needs three pages, and enough to
+        # tell "one page" apart from "the whole set" in an assertion.
+        for n in range(7):
+            q = Question.objects.create(
+                quiz=cls.quiz, text=f"Q{n}", marks=1, order=n, explanation="e")
+            Choice.objects.create(question=q, text="a", is_correct=True)
+            Choice.objects.create(question=q, text="b", is_correct=False)
+
+    def _client(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        return c
+
+    def test_no_pagination_param_still_returns_a_bare_array_of_everything(self):
+        """Backwards compatibility: QuizBank.jsx / QuizBuilder.jsx's bank
+        drawer send neither `page` nor `page_size` and must keep getting
+        exactly today's shape — a bare JSON array over the whole filtered
+        queryset."""
+        r = self._client().get("/api/teacher/question-bank/?scope=mine")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIsInstance(r.data, list)
+        self.assertEqual(len(r.data), 7)
+
+    def test_a_page_returns_only_page_size_rows(self):
+        r = self._client().get(
+            "/api/teacher/question-bank/?scope=mine&page=1&page_size=3")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertNotIsInstance(r.data, list)
+        self.assertEqual(r.data["count"], 7)
+        self.assertEqual(len(r.data["results"]), 3)
+
+    def test_an_oversized_page_size_is_clamped(self):
+        from quizzes.views import BankQuestionPagination
+        from unittest import mock
+        # Only 7 rows exist, so a real page_size ceiling of 200 would never
+        # observably clamp anything here — lower the ceiling for the
+        # duration of this test so the clamp itself is what's exercised.
+        with mock.patch.object(BankQuestionPagination, "max_page_size", 5):
+            r = self._client().get(
+                "/api/teacher/question-bank/?scope=mine&page=1&page_size=99999")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(len(r.data["results"]), 5)
+
+    def test_a_page_past_the_end_behaves_sanely(self):
+        r = self._client().get(
+            "/api/teacher/question-bank/?scope=mine&page=99&page_size=3")
+        # DRF's own out-of-range handling: a readable 404, not a 500 and not
+        # a silent empty 200 that looks like "the bank is empty".
+        self.assertEqual(r.status_code, 404, r.content)
+
+
+class AdminQuestionBankQueuePaginationTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        cls.admin = User.objects.create_user(
+            username="pg_admin", email="pg_admin@test.com", password="x",
+            is_verified=True, is_staff=True, is_superuser=True,
+        )
+        cls.teacher = User.objects.create_user(
+            username="pg_qt", email="pg_qt@test.com", password="x", is_verified=True)
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Physics")
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, is_active=True)
+        cls.quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="Waves")
+
+        # 7 suggested (queue-visible) + 1 accepted (already curated, should
+        # never appear in the default `state=suggested` queue but DOES still
+        # count in `counts.accepted`).
+        for n in range(7):
+            q = Question.objects.create(
+                quiz=cls.quiz, text=f"S{n}", marks=1, order=n, explanation="e",
+                bank_state=Question.BANK_STATE_SUGGESTED,
+            )
+            Choice.objects.create(question=q, text="a", is_correct=True)
+            Choice.objects.create(question=q, text="b", is_correct=False)
+        accepted = Question.objects.create(
+            quiz=cls.quiz, text="Already accepted", marks=1, order=7,
+            explanation="e", bank_state=Question.BANK_STATE_ACCEPTED,
+        )
+        Choice.objects.create(question=accepted, text="a", is_correct=True)
+        Choice.objects.create(question=accepted, text="b", is_correct=False)
+
+    def _admin(self):
+        c = APIClient()
+        c.force_authenticate(user=self.admin, token={"context": "admin"})
+        return c
+
+    def test_no_pagination_param_still_returns_todays_dict_shape(self):
+        """Backwards compatibility: QuestionReviewQueue.jsx's
+        `getReviewQueue` sends neither `page` nor `page_size` and must keep
+        getting exactly today's envelope — `results` over the WHOLE filtered
+        queryset, no `count`/`next`/`previous`."""
+        r = self._admin().get("/api/quizzes/admin/question-bank/queue/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(set(r.data.keys()),
+                          {"results", "counts", "contributing_teachers"})
+        self.assertEqual(len(r.data["results"]), 7)
+        self.assertEqual(r.data["counts"]["suggested"], 7)
+        self.assertEqual(r.data["counts"]["accepted"], 1)
+
+    def test_a_page_returns_only_page_size_rows_while_counts_covers_everything(self):
+        r = self._admin().get(
+            "/api/quizzes/admin/question-bank/queue/?page=1&page_size=3")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(len(r.data["results"]), 3)
+        self.assertEqual(r.data["count"], 7)
+        # The aggregates describe the WHOLE filtered set, not the page —
+        # still 7 suggested / 1 accepted even though only 3 rows came back.
+        self.assertEqual(r.data["counts"]["suggested"], 7)
+        self.assertEqual(r.data["counts"]["accepted"], 1)
+        self.assertEqual(r.data["contributing_teachers"], 1)
+
+    def test_an_oversized_page_size_is_clamped(self):
+        from quizzes.views import BankQuestionPagination
+        from unittest import mock
+        with mock.patch.object(BankQuestionPagination, "max_page_size", 5):
+            r = self._admin().get(
+                "/api/quizzes/admin/question-bank/queue/?page=1&page_size=99999")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(len(r.data["results"]), 5)
+        # Still describes the whole filtered set, clamp or not.
+        self.assertEqual(r.data["counts"]["suggested"], 7)
+
+    def test_a_page_past_the_end_behaves_sanely(self):
+        r = self._admin().get(
+            "/api/quizzes/admin/question-bank/queue/?page=99&page_size=3")
+        self.assertEqual(r.status_code, 404, r.content)
+
+
+class BankQuestionPaginationQueryCountTest(TestCase):
+    """Chapter-tag resolution (`_chapter_tags_by_quiz`) must cost a constant
+    number of queries per PAGE, not per row and not per whole queryset, once
+    a request opts into pagination. Follows the same
+    `assertNumQueries`-style guard as `TeacherBankT3RowDataTest`, but with
+    enough quizzes/rows behind the page that a regression reading the WHOLE
+    queryset for the chapter map (while returning only a page of results)
+    would show up as a much higher count than a real 6-row page costs.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from courses.models import Chapter
+
+        Role.objects.get_or_create(name="TEACHER")
+        cls.teacher = User.objects.create_user(
+            username="pgq_t", email="pgq_t@test.com", password="x", is_verified=True)
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+
+        cls.course = Course.objects.create(title="Class 12")
+        cls.subject = Subject.objects.create(course=cls.course, name="Chemistry")
+        TeachingAssignment.objects.create(
+            subject=cls.subject, teacher=cls.teacher, is_active=True)
+
+        # 5 quizzes x 4 questions = 20 rows across 5 chapters. A naive read
+        # of the WHOLE queryset for the chapter map — instead of just the
+        # page — would touch every one of the 5 quizzes even when the page
+        # itself only spans 2 or 3 of them.
+        for i in range(5):
+            chapter = Chapter.objects.create(
+                subject=cls.subject, title=f"Chapter {i}", order=i)
+            quiz = Quiz.objects.create(
+                subject=cls.subject, created_by=cls.teacher, title=f"Quiz {i}")
+            set_tags(quiz, [(chapter, "", 0)])
+            for n in range(4):
+                q = Question.objects.create(
+                    quiz=quiz, text=f"Q{i}-{n}", marks=1, order=n,
+                    explanation="e", bank_state=Question.BANK_STATE_SUGGESTED,
+                )
+                Choice.objects.create(question=q, text="a", is_correct=True)
+                Choice.objects.create(question=q, text="b", is_correct=False)
+
+    def _teacher(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        return c
+
+    def _admin(self):
+        admin = User.objects.create_user(
+            username="pgq_admin", email="pgq_admin@test.com", password="x",
+            is_verified=True, is_staff=True, is_superuser=True,
+        )
+        c = APIClient()
+        c.force_authenticate(user=admin, token={"context": "admin"})
+        return c
+
+    def test_teacher_bank_page_costs_a_constant_number_of_queries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            r = self._teacher().get(
+                "/api/teacher/question-bank/?scope=mine&page=1&page_size=6")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(len(r.data["results"]), 6)
+        # Same generous regression-guard ceiling as TeacherBankT3RowDataTest,
+        # not a measurement of the exact count — but well under what reading
+        # all 20 rows' worth of quizzes would cost.
+        self.assertLess(
+            len(ctx), 10,
+            f"chapter chip looks N+1 again under pagination: {len(ctx)} "
+            f"queries for a 6-row page out of 20",
+        )
+
+    def test_admin_queue_page_costs_a_constant_number_of_queries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            r = self._admin().get(
+                "/api/quizzes/admin/question-bank/queue/?page=1&page_size=6")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(len(r.data["results"]), 6)
+        self.assertLess(
+            len(ctx), 10,
+            f"chapter chip looks N+1 again under pagination: {len(ctx)} "
+            f"queries for a 6-row page out of 20",
+        )
