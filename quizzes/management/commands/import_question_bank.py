@@ -93,6 +93,84 @@ IMPORT_WARNING = (
 # ordinary "… by 1. 5 times" style decimal does not trip it.
 STEM_MID_NUMBERING = re.compile(r"\S\s+\d{1,4}\s*[.)]\s+[A-Z]")
 
+# ⚠ THE THIRD PLACE THE TWO-COLUMN SPLICE LANDS: the EXPLANATION.
+# The stem and option gates above were written after an audit that checked
+# only those two fields, and they are clean — but the same column break also
+# truncates an explanation mid-word ("samese traditions…" for "Assamese") and
+# runs the NEXT question's stem and options into the end of the previous
+# one's explanation. Browser-verifying the admin screen is what surfaced it:
+# the row rendered a confident answer under prose about a different subject.
+#
+# Measured on the 3,793-row SSC import: 78 explanations begin lower-case and
+# 67 carry an "(a)"-style option marker — 142 rows in union, 123 of them not
+# already caught by the contradiction check.
+#
+# FLAGGED, NOT SKIPPED, for the same reason as the contradiction check: the
+# marked ANSWER is usually still right (the Lalit Kala Akademi row that
+# exposed this is correctly keyed 1954), so dropping the row would throw away
+# a good question over bad prose. A human decides. Note the failure is also
+# less dangerous than a wrong answer but more visible — "instant
+# explanations" is the page's headline promise.
+EXPLANATION_OPTION_MARKER = re.compile(r"\(\s*[abcd]\s*\)", re.I)
+EXPLANATION_WARNING = (
+    "Imported: the explanation looks spliced by the source's two-column "
+    "layout — it may start mid-word or carry text from the next question. "
+    "Read it before accepting; the answer itself is often still correct."
+)
+
+
+def topic_label_is_usable(topic):
+    """True when `topic` looks like a section heading rather than wreckage.
+
+    The same column splice that damages stems and explanations also lands in
+    the section heading the parser reads the topic from — and unlike those, a
+    bad topic becomes a *QuestionTag row*, i.e. a filter chip on the public
+    page reading:
+
+        "Prehistoric Period pottery was discovered? Neolithic ____
+         (b) Chalcolithic (c) Palaeolithic ____ (d) Mesolithic …"
+
+    All THREE topic tags the SSC import produced were like this, so the topic
+    facet was pure noise. This drops the label and keeps the question — a
+    topic is optional, and subject and exam (which are clean) are what the
+    design's rails actually use.
+
+    Refuses rather than flags, because unlike a question there is nothing for
+    a human to salvage in a mangled heading, and one bad row here is visible
+    to every visitor rather than to one learner.
+    """
+    label = (topic or "").strip()
+    if not label or len(label) > 60:
+        return False
+    if EXPLANATION_OPTION_MARKER.search(label) or "?" in label:
+        return False
+    # "1. ____ Art & Culture" — the source's own numbering and the parser's
+    # tab-leader placeholder both surviving into the heading.
+    if "____" in label or re.match(r"^\d+\s*[.)]", label):
+        return False
+    return True
+
+
+def explanation_looks_spliced(explanation):
+    """True when the explanation shows column-splice damage.
+
+    Two signals, deliberately cheap and deliberately over-eager:
+
+    * it begins with a lower-case letter — real explanations start with a
+      capital, so this catches the mid-word truncation; and
+    * it carries an "(a)"–"(d)" option marker, which means another
+      question's options were pulled in behind it.
+
+    Over-eager is the right bias here only because this FLAGS. A
+    "match the following" explanation that legitimately lists "(a) … (b) …"
+    will trip the second signal, and that costs a human one glance. Silently
+    publishing spliced prose costs a learner their trust in the answer.
+    """
+    text = (explanation or "").strip()
+    if not text:
+        return False
+    return bool(text[0].islower() or EXPLANATION_OPTION_MARKER.search(text))
+
 
 def clean_stem(text):
     text = LEADING_NUMBER.sub("", text or "")
@@ -293,6 +371,7 @@ class Command(BaseCommand):
 
         skipped = Counter()
         warned = 0
+        spliced = 0
         seen_this_run = set()
         existing = self._existing_fingerprints()
         to_create = []
@@ -338,11 +417,17 @@ class Command(BaseCommand):
                 skipped["already in the bank (duplicate)"] += 1
                 continue
             seen_this_run.add(fp)
-            contradicts = answer_contradicts_explanation(
-                stem, options, answer, clean_explanation(row.get("explanation")))
-            if contradicts:
+            explanation = clean_explanation(row.get("explanation"))
+            # A row can trip both checks; it is one queue either way, so the
+            # notes are joined rather than one winning.
+            notes = []
+            if answer_contradicts_explanation(stem, options, answer, explanation):
+                notes.append(IMPORT_WARNING)
                 warned += 1
-            to_create.append((row, stem, options, answer, fp, contradicts))
+            if explanation_looks_spliced(explanation):
+                notes.append(EXPLANATION_WARNING)
+                spliced += 1
+            to_create.append((row, stem, options, answer, fp, notes))
 
         self.stdout.write(f"Read      : {len(rows)} rows")
         self.stdout.write(f"Importable: {len(to_create)}")
@@ -357,6 +442,14 @@ class Command(BaseCommand):
                 "before being accepted —\nabout a third of them are genuinely "
                 "wrong. Filter the bank screen\nby that flag and curate those "
                 "first."))
+        if spliced:
+            self.stdout.write(self.style.WARNING(
+                f"\n{spliced} of the importable rows have an explanation that "
+                "looks SPLICED by\nthe source's two-column layout — starting "
+                "mid-word, or carrying the next\nquestion's text. The marked "
+                "answer is usually still correct, so these are\nimported and "
+                "flagged rather than dropped. They land in the same\n"
+                "\"needs a closer look\" queue."))
 
         if opts["dry_run"]:
             self.stdout.write(self.style.WARNING(
@@ -368,7 +461,7 @@ class Command(BaseCommand):
         # One transaction for the whole import so a failure half way through
         # cannot leave a partially-tagged bank behind.
         with transaction.atomic():
-            for row, stem, options, answer, fp, contradicts in to_create:
+            for row, stem, options, answer, fp, notes in to_create:
                 q = Question(
                     quiz=None,
                     text=stem,
@@ -382,7 +475,7 @@ class Command(BaseCommand):
                     # render, rather than adding a column — see
                     # answer_contradicts_explanation() for why this is a note
                     # for a human and not a decision.
-                    bank_feedback=(IMPORT_WARNING if contradicts else ""),
+                    bank_feedback=" ".join(notes),
                 )
                 # save(), never bulk_create: Question.save() carries the bank
                 # invariant that normalises bank_state, and bulk_create
@@ -400,7 +493,7 @@ class Command(BaseCommand):
                     t = self._tag(QuestionTag.KIND_EXAM, exam, cache)
                     if t:
                         tags.append(t)
-                if row.get("topic"):
+                if row.get("topic") and topic_label_is_usable(row["topic"]):
                     t = self._tag(QuestionTag.KIND_TOPIC, row["topic"], cache)
                     if t:
                         tags.append(t)

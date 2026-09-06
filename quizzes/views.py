@@ -42,12 +42,14 @@ from courses.services import teaches_subject
 
 from .models import (
     Quiz, QuizSection, QuizAttempt, Question, Choice, StudentAnswer,
-    PracticeSession, PracticeAnswer, QuestionTag,
+    PracticeSession, PracticeAnswer, QuestionTag, PracticeSet,
+    PublicAttempt, PublicAttemptAnswer,
 )
 from .visibility import (
     batch_scope_q, batch_scope_q_across_courses, learner_may_see_quiz,
 )
 from .permissions import IsPublicQuizHubEnabled
+from .public_insights import build_summary
 from .serializers import (
     QuizCreateSerializer,
     QuestionCreateSerializer,
@@ -68,6 +70,13 @@ from .serializers import (
     AdminQuizReviewActionSerializer,
     AdminBankQuestionWriteSerializer,
     AdminQuestionTagSerializer,
+    PracticeSetCardSerializer,
+    PracticeSetDetailSerializer,
+    PublicRailSerializer,
+    QuestionPublicSerializer,
+    AdminPracticeSetSerializer,
+    PublicAttemptReviewSerializer,
+    PublicAttemptSubmitSerializer,
     _bank_question_usage,
     _tags_with_counts,
 )
@@ -3627,6 +3636,7 @@ class AdminBankQuestionListCreateView(generics.ListCreateAPIView):
         year = self.request.query_params.get("year", "").strip()
         state = self.request.query_params.get("state", "").strip()
         untagged = self.request.query_params.get("untagged", "").strip()
+        flagged = self.request.query_params.get("flagged", "").strip()
 
         if search:
             qs = qs.filter(Q(text__icontains=search) | Q(topic__icontains=search))
@@ -3650,6 +3660,17 @@ class AdminBankQuestionListCreateView(generics.ListCreateAPIView):
             # The importer will create thousands of untagged rows; this is
             # how an admin finds them to classify in bulk.
             qs = qs.filter(tags__isnull=True)
+        if flagged == "1":
+            # The importer stamps bank_feedback on rows whose source
+            # explanation names a different option than the one marked
+            # correct — ~35% of them are genuinely wrong against a ~5% base
+            # rate (see import_question_bank's
+            # answer_contradicts_explanation). This is the "read these
+            # first" queue, and without it that warning is written where
+            # nothing can find it.
+            qs = qs.exclude(bank_feedback="")
+        elif flagged == "0":
+            qs = qs.filter(bank_feedback="")
 
         # .distinct(): filtering on `tags__...` joins the M2M through table,
         # which can multiply a row once per matching tag without this.
@@ -3665,6 +3686,46 @@ class AdminBankQuestionListCreateView(generics.ListCreateAPIView):
         # own representation would give back.
         return Response(
             BankQuestionSerializer(question).data, status=status.HTTP_201_CREATED)
+
+
+class AdminBankQuestionSummaryView(APIView):
+    """
+    GET /quizzes/admin/bank/summary/ — headline counts for the bank screen.
+
+    A SEPARATE call from the list, deliberately, and for the same reason
+    Phase 1c pulled the aggregates off the other two bank endpoints: a
+    screen showing one page of 50 rows must not drag a full-table scan
+    behind it on every keystroke of a search box. The list paginates; this
+    is fetched once per screen load.
+
+    `publishable` is the number that actually answers "would the public hub
+    have anything to show?" — it is stricter than accepted (it also needs an
+    explanation and exactly one correct choice), and on the imported corpus
+    it is the count that stays at 0 until somebody curates. Showing accepted
+    alone would read as progress that has not happened.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin, IsPublicQuizHubEnabled]
+
+    def get(self, request):
+        standalone = Question.objects.filter(quiz__isnull=True)
+        by_state = dict(
+            standalone.values_list("bank_state")
+            .annotate(n=Count("id"))
+            .values_list("bank_state", "n")
+        )
+        return Response({
+            "total": standalone.count(),
+            "by_state": {
+                state: by_state.get(state, 0)
+                for state, _ in Question.BANK_STATE_CHOICES
+            },
+            "flagged": standalone.exclude(bank_feedback="").count(),
+            "untagged": standalone.filter(tags__isnull=True).count(),
+            # Scoped to standalone rows so it matches this screen, not the
+            # platform-wide figure the public endpoints will serve.
+            "publishable": Question.objects.publishable()
+                                   .filter(quiz__isnull=True).count(),
+        })
 
 
 class AdminBankQuestionDetailView(APIView):
@@ -3848,3 +3909,426 @@ class AdminQuestionTagMergeView(APIView):
             "target_id": str(target.id),
             "deleted_source_ids": source_id_strs,
         })
+
+
+# =====================================================
+# PUBLIC — the Quiz Hub (design_handoff_public_quiz_hub Phase 5)
+#
+# ⚠ THE ONLY ANONYMOUS ENDPOINTS IN THIS FILE. Everything else here requires
+# a role. `permission_classes = [IsPublicQuizHubEnabled]` alone is deliberate:
+# that class checks the flag and nothing else, so a signed-out visitor is
+# allowed through when the Hub is on and gets a readable 503 when it is off.
+# Do NOT add IsAuthenticated — the whole point is that /quiz works logged out.
+#
+# Everything served here goes through the *Public* serializers, which omit
+# `is_correct` and `explanation`. Swapping in an admin serializer to save a
+# query would hand the answer key to anyone with curl.
+# =====================================================
+
+class PublicPracticeSetListView(generics.ListAPIView):
+    """
+    GET /quizzes/public/sets/?subject=<slug>&exam=<slug>&difficulty=&q=&ordering=
+
+    Published sets only. Paginated — the hub grid loads a page at a time and
+    the set count is expected to grow well past one screen.
+
+    ⚠ SEARCH AND SORT ARE SERVER-SIDE BECAUSE THE LIST IS PAGINATED. Doing
+    either in the browser would apply it to the loaded page only, so "hardest
+    first" would mean "the hardest of the first 50" while looking like it
+    meant the whole catalogue — wrong in a way no one would notice until
+    there were more than 50 sets.
+    """
+    serializer_class = PracticeSetCardSerializer
+    permission_classes = [IsPublicQuizHubEnabled]
+    # Reuses the bank's page class (page_size 50, max 200). A plain
+    # ListAPIView paginates unconditionally, unlike the two older bank
+    # endpoints whose opt-in behaviour lives in their overridden list().
+    pagination_class = BankQuestionPagination
+
+    def get_queryset(self):
+        qs = (PracticeSet.objects
+              .filter(status=PracticeSet.STATUS_PUBLISHED)
+              .select_related("subject_tag", "exam_tag")
+              # distinct=True: without it a second join (none today, but the
+              # filters below add them) multiplies this count. Same trap the
+              # workspace CLAUDE.md documents.
+              .annotate(submitted_attempts=Count(
+                  "attempts",
+                  filter=Q(attempts__submitted_at__isnull=False),
+                  distinct=True)))
+        subject = self.request.query_params.get("subject", "").strip()
+        exam = self.request.query_params.get("exam", "").strip()
+        difficulty = self.request.query_params.get("difficulty", "").strip()
+        if subject:
+            qs = qs.filter(subject_tag__slug=subject,
+                           subject_tag__kind=QuestionTag.KIND_SUBJECT)
+        if exam:
+            qs = qs.filter(exam_tag__slug=exam,
+                           exam_tag__kind=QuestionTag.KIND_EXAM)
+        if difficulty:
+            qs = qs.filter(difficulty=difficulty)
+
+        search = self.request.query_params.get("q", "").strip()
+        if search:
+            qs = qs.filter(
+                Q(title__icontains=search)
+                | Q(description__icontains=search)
+                | Q(subject_tag__label__icontains=search)
+                | Q(exam_tag__label__icontains=search)
+            )
+        return self._ordered(qs)
+
+    # Difficulty is a string column, so ordering by it alphabetically gives
+    # easy → hard → medium. The rank makes "easiest first" mean what it says.
+    # A set's difficulty may also be "" — a real state meaning "any
+    # difficulty", not a missing value — which ranks alongside medium.
+    _DIFFICULTY_RANK = Case(
+        When(difficulty=Question.DIFFICULTY_EASY, then=Value(1)),
+        When(difficulty=Question.DIFFICULTY_HARD, then=Value(3)),
+        default=Value(2),
+        output_field=IntegerField(),
+    )
+
+    def _ordered(self, qs):
+        ordering = self.request.query_params.get("ordering", "").strip()
+        qs = qs.annotate(difficulty_rank=self._DIFFICULTY_RANK)
+        # Every branch ends in a unique tiebreak. Without one, rows that tie
+        # on the sort key can come back in a different order per page and a
+        # set silently appears twice across "Load more" while another never
+        # appears at all.
+        plans = {
+            "popular": ["-submitted_attempts", "-created_at", "id"],
+            "new": ["-created_at", "id"],
+            "easy": ["difficulty_rank", "-submitted_attempts", "id"],
+            "hard": ["-difficulty_rank", "-submitted_attempts", "id"],
+            "short": ["minutes", "-submitted_attempts", "id"],
+        }
+        return qs.order_by(*plans.get(
+            ordering, ["display_order", "-submitted_attempts", "id"]))
+
+
+class PublicPracticeSetDetailView(generics.RetrieveAPIView):
+    """
+    GET /quizzes/public/sets/<slug>/ — the set and its paper.
+
+    Looked up by SLUG, not id: these URLs are shared and bookmarked, and a
+    UUID in the address bar tells a visitor nothing.
+
+    ⚠ A DRAFT set 404s here rather than 403ing. "You may not see this" would
+    confirm that a set by that name exists, which is information an anonymous
+    visitor has no business getting from an unpublished editorial draft.
+    """
+    serializer_class = PracticeSetDetailSerializer
+    permission_classes = [IsPublicQuizHubEnabled]
+    lookup_field = "slug"
+
+    def get_queryset(self):
+        return (PracticeSet.objects
+                .filter(status=PracticeSet.STATUS_PUBLISHED)
+                .select_related("subject_tag", "exam_tag"))
+
+
+class PublicRailListView(APIView):
+    """
+    GET /quizzes/public/rails/ — the subject tiles and exam chips.
+
+    Hidden tags never appear at all. `soon` ones DO appear, because the
+    design renders them greyed out with a "Soon" label — hiding them would
+    lose the "this is coming" signal the product decision asked for.
+
+    Counts are annotated in ONE query rather than per tag, and with
+    `distinct=True`: counting across the questions M2M without it multiplies
+    a tag's count by its questions' other joins. That is the exact trap the
+    workspace CLAUDE.md calls out (2 subjects reported as 6).
+    """
+    permission_classes = [IsPublicQuizHubEnabled]
+
+    def get(self, request):
+        publishable = Question.objects.publishable().filter(quiz__isnull=True)
+        publishable_ids = publishable.values("id")
+        tags = (QuestionTag.objects
+                .filter(kind__in=[QuestionTag.KIND_SUBJECT, QuestionTag.KIND_EXAM])
+                .exclude(status=QuestionTag.STATUS_HIDDEN)
+                .select_related("cover_image")
+                .annotate(
+                    publishable_count=Count(
+                        "questions",
+                        filter=Q(questions__in=publishable_ids),
+                        distinct=True,
+                    ),
+                    # distinct=True on BOTH, or the two joins multiply each
+                    # other and every count inflates — 2 sets reported as 6.
+                    published_set_count=Count(
+                        "practice_sets",
+                        filter=Q(practice_sets__status=(
+                            PracticeSet.STATUS_PUBLISHED)),
+                        distinct=True,
+                    ),
+                )
+                .order_by("kind", "display_order", "label"))
+        data = PublicRailSerializer(
+            tags, many=True, context={"request": request}).data
+        subjects = [t for t in data if t["kind"] == QuestionTag.KIND_SUBJECT]
+        return Response({
+            "subjects": subjects,
+            "exams": [t for t in data if t["kind"] == QuestionTag.KIND_EXAM],
+            # The hero's counts. They ship here rather than as hardcoded copy
+            # because "1,000+ questions" over a bank holding 40 is the exact
+            # kind of claim this page cannot afford to get wrong.
+            #
+            # `questions` is a DISTINCT count of the questions themselves, not
+            # the sum of the per-tag counts above — a question carrying both a
+            # subject and an exam tag would otherwise be counted twice.
+            "stats": {
+                "questions": publishable.distinct().count(),
+                # Subjects a visitor can actually open, i.e. after the degrade
+                # rule. Counting rows with status='live' would include one an
+                # admin flagged live over an empty bank.
+                "subjects": sum(
+                    1 for t in subjects
+                    if t["status"] == QuestionTag.STATUS_LIVE),
+                "sets": PracticeSet.objects.filter(
+                    status=PracticeSet.STATUS_PUBLISHED).count(),
+            },
+        })
+
+
+class PublicAttemptStartView(APIView):
+    """
+    POST /quizzes/public/sets/<slug>/attempts/ → {attempt_id, questions[]}
+
+    ⚠ THE SNAPSHOT HAPPENS HERE, and it is the whole reason starting an
+    attempt is a POST rather than the client just grading itself against the
+    detail endpoint. A PracticeSet resolves its questions with a live query
+    (Phase 5), so its membership drifts as curation lands. Writing one
+    PublicAttemptAnswer row per served question freezes the paper, and the
+    submit and review endpoints read ONLY those rows. Without this a learner
+    could be shown a review of ten questions they were never asked.
+
+    Anonymous callers get a row with account=NULL. The returned id is a
+    capability — hold it to submit and to read the review back.
+
+    ⚠ THROTTLED. This is the app's only anonymous endpoint that writes on
+    every call, so it is the one that can be flooded into filling a table.
+    See the `quiz_attempt_start` rate for why the cap is generous rather
+    than tight.
+    """
+    permission_classes = [IsPublicQuizHubEnabled]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "quiz_attempt_start"
+
+    @transaction.atomic
+    def post(self, request, slug):
+        practice_set = get_object_or_404(
+            PracticeSet, slug=slug, status=PracticeSet.STATUS_PUBLISHED)
+        questions = practice_set.pick_questions()
+        if not questions:
+            # A published set over a subject nobody has curated yet. Better a
+            # readable refusal than an attempt with a zero-question paper.
+            return Response(
+                {"detail": "This set has no questions ready yet."},
+                status=status.HTTP_409_CONFLICT)
+
+        attempt = PublicAttempt.objects.create(
+            practice_set=practice_set,
+            account=request.user if request.user.is_authenticated else None,
+            total=len(questions),
+        )
+        PublicAttemptAnswer.objects.bulk_create([
+            PublicAttemptAnswer(attempt=attempt, question=q, order=i)
+            for i, q in enumerate(questions)
+        ])
+        return Response(
+            {
+                "attempt_id": str(attempt.id),
+                "total": attempt.total,
+                "questions": QuestionPublicSerializer(questions, many=True).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+def _attempt_for(request, pk):
+    """Fetch an attempt, enforcing ownership.
+
+    The id is a capability, which is enough for an anonymous attempt — only
+    the browser that started it has the UUID. But once an attempt belongs to
+    an ACCOUNT, a leaked id must not expose that person's history, so a
+    signed-in attempt is readable only by its owner. 404 rather than 403:
+    confirming the row exists is itself a small leak.
+    """
+    attempt = get_object_or_404(
+        PublicAttempt.objects.select_related("practice_set"), pk=pk)
+    if attempt.account_id and attempt.account_id != getattr(
+            request.user, "id", None):
+        raise Http404
+    return attempt
+
+
+class PublicAttemptSubmitView(APIView):
+    """
+    POST /quizzes/public/attempts/<uuid>/submit/  {answers:[{question, choice}]}
+
+    Grades against the SNAPSHOT, never against the set. A question the client
+    omits stays blank rather than erroring, so a half-finished paper still
+    produces a reviewable attempt.
+
+    `is_correct` and `score` are frozen here. An admin who fixes an answer key
+    next week must not retroactively change a score somebody already saw.
+    """
+    permission_classes = [IsPublicQuizHubEnabled]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "quiz_attempt_submit"
+
+    @transaction.atomic
+    def post(self, request, pk):
+        attempt = _attempt_for(request, pk)
+        if attempt.is_submitted:
+            # Idempotent-ish: re-submitting would let someone improve a score
+            # after reading the review they already received.
+            return Response(
+                {"detail": "This attempt has already been submitted."},
+                status=status.HTTP_409_CONFLICT)
+
+        serializer = PublicAttemptSubmitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        chosen = {row["question"]: row["choice"]
+                  for row in serializer.validated_data["answers"]}
+
+        rows = list(attempt.answers.select_related("question")
+                    .prefetch_related("question__choices"))
+        score = 0
+        for row in rows:
+            choice_id = chosen.get(str(row.question_id))
+            picked = None
+            if choice_id:
+                # Scoped to THIS question's choices: without that, a client
+                # could send another question's correct choice id and be
+                # graded against it.
+                picked = next((c for c in row.question.choices.all()
+                               if str(c.id) == str(choice_id)), None)
+            row.selected_choice = picked
+            row.selected_text = picked.text[:500] if picked else ""
+            row.is_correct = bool(picked and picked.is_correct)
+            if row.is_correct:
+                score += 1
+        PublicAttemptAnswer.objects.bulk_update(
+            rows, ["selected_choice", "selected_text", "is_correct"])
+
+        attempt.score = score
+        attempt.submitted_at = timezone.now()
+        attempt.save(update_fields=["score", "submitted_at"])
+        attempt.refresh_from_db()
+        return Response(PublicAttemptReviewSerializer(attempt).data)
+
+
+class PublicAttemptDetailView(APIView):
+    """
+    GET /quizzes/public/attempts/<uuid>/ — the review.
+
+    ⚠ Refuses BEFORE submission. This response carries the correct choice and
+    the explanation for every question; serving it mid-attempt would hand over
+    the answer key to anyone who opened a second tab.
+    """
+    permission_classes = [IsPublicQuizHubEnabled]
+
+    def get(self, request, pk):
+        attempt = _attempt_for(request, pk)
+        if not attempt.is_submitted:
+            return Response(
+                {"detail": "Submit this attempt before reading its review."},
+                status=status.HTTP_409_CONFLICT)
+        attempt = PublicAttempt.objects.select_related("practice_set").prefetch_related(
+            "answers__question__choices").get(pk=attempt.pk)
+        return Response(PublicAttemptReviewSerializer(attempt).data)
+
+
+class PublicPersonalSummaryView(APIView):
+    """
+    GET /quizzes/public/me/summary/ — the hub's four signed-in panels.
+
+    Performance insights, recently attempted, recommendations and the streak,
+    all derived from this account's own submitted attempts. See
+    `quizzes/public_insights.py` for why several figures the design's fixture
+    carried ("+6% this month", "Top 12% of learners") are absent rather than
+    approximated.
+
+    Guests get 401 and the page renders no panels at all — the product
+    decision is *hidden, never faked*, so there is no anonymous variant of
+    this response and no empty-state shaped like data.
+    """
+    permission_classes = [IsAuthenticated, IsPublicQuizHubEnabled]
+
+    def get(self, request):
+        return Response(build_summary(request.user))
+
+
+class AdminPracticeSetListCreateView(generics.ListCreateAPIView):
+    """
+    GET/POST /quizzes/admin/sets/
+
+    Until this existed a practice set could only be made from a Django shell,
+    which meant the public hub had an API and no way to put anything on it.
+    """
+    serializer_class = AdminPracticeSetSerializer
+    permission_classes = [IsAuthenticated, IsAdmin, IsPublicQuizHubEnabled]
+    pagination_class = BankQuestionPagination
+
+    def get_queryset(self):
+        qs = PracticeSet.objects.select_related("subject_tag", "exam_tag")
+        subject = self.request.query_params.get("subject", "").strip()
+        state = self.request.query_params.get("status", "").strip()
+        search = self.request.query_params.get("search", "").strip()
+        if subject:
+            qs = qs.filter(subject_tag_id=subject)
+        if state:
+            qs = qs.filter(status=state)
+        if search:
+            qs = qs.filter(Q(title__icontains=search)
+                           | Q(description__icontains=search))
+        return qs
+
+
+class AdminPracticeSetDetailView(APIView):
+    """
+    GET/PATCH/DELETE /quizzes/admin/sets/<uuid:pk>/
+
+    DELETE refuses with 409 once anyone has attempted it —
+    `PublicAttempt.practice_set` is PROTECT, and a learner's result must not
+    disappear because an editor tidied up. Unpublish it instead.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin, IsPublicQuizHubEnabled]
+
+    def get_object(self, pk):
+        return get_object_or_404(
+            PracticeSet.objects.select_related("subject_tag", "exam_tag"), pk=pk)
+
+    def get(self, request, pk):
+        return Response(AdminPracticeSetSerializer(self.get_object(pk)).data)
+
+    def patch(self, request, pk):
+        practice_set = self.get_object(pk)
+        serializer = AdminPracticeSetSerializer(
+            practice_set, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(
+            AdminPracticeSetSerializer(self.get_object(pk)).data)
+
+    def delete(self, request, pk):
+        practice_set = self.get_object(pk)
+        attempts = practice_set.attempts.count()
+        if attempts:
+            return Response(
+                {
+                    "detail": (
+                        "People have already practised this set, and deleting "
+                        "it would take their results with it. Set it back to "
+                        "draft to remove it from the site."
+                    ),
+                    "attempt_count": attempts,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        practice_set.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

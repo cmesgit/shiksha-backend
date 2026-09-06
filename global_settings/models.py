@@ -221,24 +221,27 @@ class GlobalSettings(models.Model):
     )
 
     # ── Public Quiz Hub (design_handoff_public_quiz_hub) ────────────────
-    # Gates the public site's /quiz rebuild AND the admin question-bank
-    # authoring screens that feed it, while both are built out phase by
-    # phase (BUILD_GUIDE Phase 0). Like content_studio_enabled and unlike
-    # quiz_v2_enabled, this is a REAL gate: every new public endpoint and
-    # every new admin screen checks it, and with it OFF the existing
-    # "coming soon" placeholder at /quiz is what renders. It ships OFF and
-    # stays OFF until Phase 9 flips the default, so a half-built hub never
-    # reaches a visitor mid-rebuild.
+    # Gates the public site's /quiz Quiz Hub AND the admin question-bank
+    # authoring screens that feed it. Like content_studio_enabled and unlike
+    # quiz_v2_enabled, this is a REAL gate: every public endpoint and every
+    # new admin screen checks it.
     #
-    # It does NOT gate anything that exists today: the academy quiz system,
-    # the teacher question bank and the admin review queue all keep working
+    # ⚠ DEFAULT FLIPPED TO True IN PHASE 9 (migration 0012). It is no longer
+    # a launch gate — the hub has shipped — it is a KILL SWITCH. Turning it
+    # off makes every public quiz endpoint return 503 and /quiz render a
+    # short "unavailable" notice. The old "coming soon" placeholder is gone,
+    # because it promised a feature that now exists.
+    #
+    # It does NOT gate anything older: the academy quiz system, the teacher
+    # question bank and the admin review queue all keep working
     # unconditionally whatever this says.
     public_quiz_hub_enabled = models.BooleanField(
-        default=False,
+        default=True,
         help_text=(
             "Master switch for the public Quiz Hub at /quiz and the admin "
-            "question-bank authoring screens behind it. While OFF, the "
-            "placeholder page is shown instead."
+            "question-bank authoring screens behind it. Turning this OFF "
+            "takes the public quiz pages down and returns 503 from every "
+            "public quiz endpoint — it does not affect the academy."
         ),
     )
 

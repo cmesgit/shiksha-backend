@@ -5564,3 +5564,131 @@ class AdminQuestionTagMergeTest(QuizHubAdminAPITestBase):
             {"source_ids": [str(self.source1.id)], "target_id": str(self.target.id)},
             format="json")
         self.assertEqual(r.status_code, 503, r.content)
+
+
+class AdminBankFlaggedFilterTest(QuizHubAdminAPITestBase):
+    """?flagged= — the importer's "read these first" queue.
+
+    import_question_bank stamps Question.bank_feedback on rows whose source
+    explanation names a different option than the one marked correct (~35%
+    of them are genuinely wrong against a ~5% base rate). Without a filter
+    that warning is written somewhere nothing can find it, which is the same
+    class of bug as the six admin serializers that carried `status` on the
+    model but never exposed it (CLAUDE.md, Content Studio Phase 3).
+    """
+    BANK_URL = "/api/quizzes/admin/bank/"
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.flagged = Question.objects.create(
+            text="Which is the biggest building at Mohenjodaro?",
+            explanation="Findings include a Great bath and an Assembly Hall.",
+            bank_feedback="Imported: the source explanation names a different option.",
+        )
+        Choice.objects.create(question=cls.flagged, text="Great Granary", is_correct=True)
+        Choice.objects.create(question=cls.flagged, text="Assembly Hall", is_correct=False)
+
+        cls.clean = Question.objects.create(
+            text="Which Harappan site had a dockyard?",
+            explanation="Lothal in Gujarat.",
+        )
+        Choice.objects.create(question=cls.clean, text="Lothal", is_correct=True)
+        Choice.objects.create(question=cls.clean, text="Ropar", is_correct=False)
+
+    def _texts(self, r):
+        return [q["text"] for q in r.data["results"]]
+
+    def test_flagged_1_returns_only_the_warned_rows(self):
+        r = self._admin().get(self.BANK_URL, {"flagged": "1"})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self._texts(r), [self.flagged.text])
+
+    def test_flagged_0_returns_only_the_unwarned_rows(self):
+        r = self._admin().get(self.BANK_URL, {"flagged": "0"})
+        self.assertEqual(self._texts(r), [self.clean.text])
+
+    def test_omitting_it_returns_both(self):
+        r = self._admin().get(self.BANK_URL)
+        self.assertEqual(r.data["count"], 2)
+
+    def test_the_warning_text_itself_reaches_the_client(self):
+        """A filter that finds the row but a serializer that drops the note
+        would leave the admin filtering blind."""
+        r = self._admin().get(self.BANK_URL, {"flagged": "1"})
+        self.assertIn("names a different option",
+                      r.data["results"][0]["bank_feedback"])
+
+    def test_accepting_a_flagged_row_removes_it_from_the_queue(self):
+        """_apply_bank_review blanks bank_feedback on accept, so the queue
+        drains as it is curated rather than needing a second pass."""
+        r = self._admin().patch(
+            f"/api/quizzes/admin/question-bank/{self.flagged.id}/review/",
+            {"action": "accept"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        r = self._admin().get(self.BANK_URL, {"flagged": "1"})
+        self.assertEqual(r.data["count"], 0)
+
+
+class AdminBankSummaryTest(QuizHubAdminAPITestBase):
+    """The stat tiles. Separate from the list per Phase 1c."""
+    URL = "/api/quizzes/admin/bank/summary/"
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        # Accepted AND explained AND well-formed => publishable.
+        cls.good = Question.objects.create(
+            text="Publishable one", explanation="Because.",
+            bank_state=Question.BANK_STATE_ACCEPTED)
+        Choice.objects.create(question=cls.good, text="a", is_correct=True)
+        Choice.objects.create(question=cls.good, text="b", is_correct=False)
+        # Accepted but UNEXPLAINED => accepted, not publishable.
+        cls.unexplained = Question.objects.create(
+            text="Accepted but bare", explanation="",
+            bank_state=Question.BANK_STATE_ACCEPTED)
+        Choice.objects.create(question=cls.unexplained, text="a", is_correct=True)
+        Choice.objects.create(question=cls.unexplained, text="b", is_correct=False)
+        # Suggested + flagged + untagged, i.e. a typical imported row.
+        cls.imported = Question.objects.create(
+            text="Imported row", explanation="Something.",
+            bank_state=Question.BANK_STATE_SUGGESTED,
+            bank_feedback="Imported: check this.")
+        Choice.objects.create(question=cls.imported, text="a", is_correct=True)
+        Choice.objects.create(question=cls.imported, text="b", is_correct=False)
+
+    def test_it_counts_by_state(self):
+        r = self._admin().get(self.URL)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["total"], 3)
+        self.assertEqual(r.data["by_state"]["accepted"], 2)
+        self.assertEqual(r.data["by_state"]["suggested"], 1)
+
+    def test_every_state_is_present_even_at_zero(self):
+        """So the screen can render a stable set of tiles instead of
+        tiles that appear and vanish as the bank changes shape."""
+        r = self._admin().get(self.URL)
+        self.assertIn("changes_requested", r.data["by_state"])
+        self.assertEqual(r.data["by_state"]["changes_requested"], 0)
+
+    def test_it_counts_flagged_and_untagged(self):
+        r = self._admin().get(self.URL)
+        self.assertEqual(r.data["flagged"], 1)
+        self.assertEqual(r.data["untagged"], 3)
+
+    def test_publishable_is_stricter_than_accepted(self):
+        """The number that answers "would the public hub show anything?".
+        Two rows are accepted; only one is servable, because the other has
+        no explanation."""
+        r = self._admin().get(self.URL)
+        self.assertEqual(r.data["by_state"]["accepted"], 2)
+        self.assertEqual(r.data["publishable"], 1)
+
+    def test_it_is_admin_only(self):
+        self.assertEqual(self._nonadmin().get(self.URL).status_code, 403)
+
+    def test_it_is_gated_on_the_feature_flag(self):
+        """503, not 403, matching every other hub endpoint — the feature is
+        switched off, which is not the same answer as "you may not"."""
+        self._disable_hub()
+        self.assertEqual(self._admin().get(self.URL).status_code, 503)

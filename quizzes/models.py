@@ -909,6 +909,156 @@ class PracticeSession(models.Model):
         return f"Practice {self.chapter_id} · {self.learner_profile_id}"
 
 
+class PracticeSet(models.Model):
+    """A public Quiz Hub practice set (design_handoff_public_quiz_hub Phase 5).
+
+    ⚠ NOT `PracticeSession`, which is above and is a different feature — that
+    is one learner's run through a course CHAPTER. This is a course-less,
+    batch-less, subject-less-in-the-`courses`-sense set that anybody on the
+    public site can practise, including signed-out visitors.
+
+    It deliberately CANNOT be a `Quiz`: `Quiz.subject` is a required FK to
+    `courses.Subject`, which is scoped to one course, so every public set
+    would have to be filed under some arbitrary course and would inherit that
+    course's batch visibility rules.
+
+    ── Why membership is a QUERY, not a stored list ────────────────────────
+    The reference design settles this itself. Its own fixture builds a set as
+    an AUTHORED description over a GENERATED selection:
+
+        q.questions = rotate(BANK[q.subject], q.seed)
+
+    …while `title`, `desc`, `diff`, `mins` and `exams` are written by hand.
+    So this model stores the editorial half and resolves the questions at
+    read time:
+
+    * A title like "Ancient India — SSC History Quiz 01" cannot be derived
+      from tags, so it has to be stored.
+    * Pinning an explicit question list would freeze a set at the moment it
+      was made. Curation is ongoing — 3,793 rows arrive `suggested` and are
+      accepted over time — so a stored list would be mostly-empty on day one
+      and permanently stale afterwards. A query grows as the bank is curated,
+      with no further human work.
+
+    The cost of that choice, stated plainly: a set's questions can CHANGE
+    between two attempts as curation lands. That is why Phase 6 must record
+    the questions it actually served on the attempt itself rather than
+    re-deriving them from the set — otherwise a learner's review screen would
+    show questions they never saw.
+    """
+
+    STATUS_DRAFT = "draft"
+    STATUS_PUBLISHED = "published"
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, "Draft — not on the public site"),
+        (STATUS_PUBLISHED, "Published — anyone can practise it"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=160)
+    slug = models.SlugField(max_length=180, unique=True, blank=True)
+    description = models.TextField(blank=True)
+
+    # The rail this set belongs to. Required: a set with no subject has
+    # nowhere to appear on the page.
+    subject_tag = models.ForeignKey(
+        QuestionTag,
+        on_delete=models.PROTECT,
+        related_name="practice_sets",
+        help_text="A kind='subject' tag. Drives both the card and the query.",
+    )
+    # Optional narrowing. `exam_tag` doubles as the card's exam chip.
+    exam_tag = models.ForeignKey(
+        QuestionTag,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="practice_sets_by_exam",
+    )
+    # "" means "any difficulty" — a real state, not a missing value, so this
+    # is blank-able rather than nullable.
+    difficulty = models.CharField(
+        max_length=10, blank=True, choices=Question.DIFFICULTY_CHOICES)
+
+    question_count = models.PositiveSmallIntegerField(
+        default=10, help_text="How many questions to serve, at most.")
+    minutes = models.PositiveSmallIntegerField(default=10)
+    # Two sets over the same subject show different questions by starting at
+    # different offsets — exactly what the design's `seed` does.
+    seed = models.PositiveSmallIntegerField(default=0)
+
+    status = models.CharField(
+        max_length=10, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    display_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["display_order", "title"]
+        indexes = [models.Index(fields=["status", "display_order"])]
+
+    def __str__(self):
+        return self.title
+
+    def save(self, *args, **kwargs):
+        # Derived once and then left alone: re-deriving on rename would break
+        # every link and bookmark already pointing at the old slug. Same
+        # reasoning as QuestionTag.slug.
+        if not self.slug:
+            base = slugify(self.title)[:170] or "practice-set"
+            slug, n = base, 2
+            while PracticeSet.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base}-{n}"
+                n += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
+
+    def question_queryset(self):
+        """Every bank question eligible for this set.
+
+        `publishable()` is what keeps a half-curated bank off the public site:
+        it demands `accepted` AND an explanation AND exactly one correct
+        choice. A `suggested` row can never leak here.
+
+        ⚠ The two `.filter(tags=…)` calls are chained, not combined into a
+        single `tags__in`: chained means "has the subject tag AND the exam
+        tag", `tags__in` would mean "either". `.distinct()` because each
+        join can otherwise repeat a row per matching tag.
+        """
+        qs = (Question.objects.publishable()
+              .filter(quiz__isnull=True, tags=self.subject_tag))
+        if self.exam_tag_id:
+            qs = qs.filter(tags=self.exam_tag)
+        if self.difficulty:
+            qs = qs.filter(difficulty=self.difficulty)
+        return qs.distinct()
+
+    def pick_questions(self):
+        """The questions this set serves, in a STABLE order.
+
+        Stability is the whole point — ordering by `id` is arbitrary but
+        repeatable, so the same set serves the same questions in the same
+        order on every request. Anything random here would mean a learner
+        who reloads mid-attempt gets a different paper.
+        """
+        ids = list(self.question_queryset().order_by("id")
+                   .values_list("id", flat=True))
+        if not ids:
+            return []
+        start = self.seed % len(ids)
+        chosen = (ids[start:] + ids[:start])[:self.question_count]
+        by_id = {
+            q.id: q for q in
+            Question.objects.filter(id__in=chosen).prefetch_related("choices")
+        }
+        return [by_id[i] for i in chosen if i in by_id]
+
+    @property
+    def available_count(self):
+        """How many questions it can actually serve right now — which is not
+        `question_count` when the bank has not been curated that far yet.
+        The card must show this, or it advertises 10 questions and serves 3."""
+        return min(self.question_count, self.question_queryset().count())
+
+
 class PracticeAnswer(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     session = models.ForeignKey(
@@ -933,3 +1083,115 @@ class PracticeAnswer(models.Model):
 
     def __str__(self):
         return f"PracticeAnswer {self.question_id}"
+
+
+class PublicAttempt(models.Model):
+    """One run at a PracticeSet from the public Quiz Hub
+    (design_handoff_public_quiz_hub Phase 6).
+
+    ── Why this is not QuizAttempt ─────────────────────────────────────────
+    `QuizAttempt` carries two conditional unique constraints keyed on
+    (quiz, learner_profile|student, attempt_number), so it cannot represent
+    "the same anonymous visitor, twice, with no user at all". And its
+    `StudentAnswer.selected_choice` is NOT NULL, so it cannot record a
+    question left BLANK — which is half of what a review screen has to show.
+
+    ── Anonymous rows are real rows ────────────────────────────────────────
+    `account` is nullable and a signed-out attempt is still stored. That is
+    what makes an honest `attempt_count` possible on the set card (the design
+    wants social proof; Phase 5 deliberately shipped no such field rather
+    than fake one). It also means the id below is a CAPABILITY: whoever holds
+    the UUID can read that attempt's review. For a signed-in attempt the view
+    additionally checks ownership, so a leaked id cannot expose someone's
+    account history.
+
+    ⚠ Creating a row is an ANONYMOUS WRITE, so the start endpoint carries a
+    ScopedRateThrottle (`quiz_attempt_start`, 100/hour per IP). One call
+    writes this row plus one PublicAttemptAnswer per served question, which
+    is what made an unthrottled version trivially floodable.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    practice_set = models.ForeignKey(
+        "PracticeSet", on_delete=models.PROTECT, related_name="attempts")
+    # The ACCOUNT, not a LearnerProfile: the public site is not profile-scoped
+    # and a visitor may hold no learner profile at all (a teacher, or someone
+    # who only ever reads the marketing site). Requiring one would make the
+    # hub unusable for exactly the people the page is advertised to.
+    account = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="public_attempts")
+    started_at = models.DateTimeField(auto_now_add=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    # Frozen at submit. Never recomputed — see PublicAttemptAnswer.is_correct.
+    score = models.PositiveSmallIntegerField(default=0)
+    total = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-started_at"]
+        indexes = [
+            models.Index(fields=["account", "-started_at"]),
+            models.Index(fields=["practice_set", "submitted_at"]),
+        ]
+
+    def __str__(self):
+        return f"PublicAttempt {self.id} · {self.practice_set_id}"
+
+    @property
+    def is_submitted(self):
+        return self.submitted_at is not None
+
+
+class PublicAttemptAnswer(models.Model):
+    """One question as it was SERVED, plus what was chosen for it.
+
+    ⚠ THIS IS THE SNAPSHOT PHASE 5 REQUIRES. A PracticeSet resolves its
+    questions with a query, so its membership changes as curation lands. If
+    the review screen re-derived the paper from the set, a learner could
+    submit ten questions and be shown a review of a different ten. These rows
+    are written when the attempt STARTS, one per question served, and the
+    review reads only these.
+
+    Three fields exist purely so a later admin edit cannot rewrite history:
+
+    * `selected_choice` is SET_NULL because the admin bank editor replaces a
+      question's choices WHOLESALE (delete-all + bulk_create) on every PATCH
+      that includes them. Without SET_NULL that edit would cascade away a
+      submitted answer; with it, the FK goes null — which is why…
+    * `selected_text` snapshots what the learner actually picked, so the
+      review still reads correctly after the options have been rewritten. A
+      NULL choice with text tells you "their option no longer exists", which
+      is different from…
+    * `selected_choice IS NULL AND selected_text = ''`, which means LEFT
+      BLANK — the state QuizAttempt structurally cannot store.
+
+    `is_correct` is likewise frozen at submit rather than derived on read: an
+    admin correcting an answer key next week must not silently change a score
+    somebody already saw.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    attempt = models.ForeignKey(
+        PublicAttempt, on_delete=models.CASCADE, related_name="answers")
+    # PROTECT, not CASCADE: a bank question with attempts against it must not
+    # be deletable out from under them. _bank_question_usage() lists this
+    # relation so the admin gets a readable 409 long before PROTECT fires.
+    question = models.ForeignKey(
+        Question, on_delete=models.PROTECT, related_name="public_attempt_answers")
+    order = models.PositiveSmallIntegerField(default=0)
+    selected_choice = models.ForeignKey(
+        Choice, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="public_attempt_answers")
+    selected_text = models.CharField(max_length=500, blank=True)
+    is_correct = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["order"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["attempt", "question"],
+                name="uniq_public_attempt_question"),
+        ]
+
+    def __str__(self):
+        return f"{self.attempt_id} · q{self.order}"

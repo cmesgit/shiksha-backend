@@ -238,6 +238,22 @@ REST_FRAMEWORK = {
         # schools and families share one NAT address — the same reasoning as
         # the login limits above. Spam is caught by the honeypot, not by this.
         "contact_form": "10/hour",
+        # Public Quiz Hub. Starting an attempt is the only anonymous endpoint
+        # in the app that WRITES on every call — one PublicAttempt plus one
+        # PublicAttemptAnswer per served question, so ~11 rows a call. Without
+        # a cap it is trivially floodable by anyone with curl.
+        #
+        # 100/hour rather than something tight, for the NAT reason the login
+        # limits above spell out: a school lab shares one address, and 40
+        # students doing two sets each in a period is 80 legitimate starts.
+        # A single learner cannot approach it — these are 10-minute papers.
+        "quiz_attempt_start": "100/hour",
+        # Submitting writes no new rows (it updates the snapshot in place) and
+        # is refused outright on an already-submitted attempt, so it is the
+        # less dangerous of the two. It stays bounded anyway, and above the
+        # start rate so a genuine attempt can never be throttled at the point
+        # where the learner would lose their answers.
+        "quiz_attempt_submit": "200/hour",
     },
 }
 

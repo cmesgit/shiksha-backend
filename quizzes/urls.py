@@ -44,7 +44,17 @@ from .views import (
     AdminQuizDetailView,
     AdminQuizReviewView,
     AdminBankQuestionListCreateView,
+    AdminBankQuestionSummaryView,
     AdminBankQuestionDetailView,
+    PublicPracticeSetListView,
+    PublicPracticeSetDetailView,
+    PublicRailListView,
+    PublicAttemptStartView,
+    PublicAttemptSubmitView,
+    PublicPersonalSummaryView,
+    PublicAttemptDetailView,
+    AdminPracticeSetListCreateView,
+    AdminPracticeSetDetailView,
     AdminQuestionTagListCreateView,
     AdminQuestionTagDetailView,
     AdminQuestionTagMergeView,
@@ -130,6 +140,22 @@ urlpatterns = [
     # Practice-mode instant feedback (one question at a time)
     path("quizzes/<uuid:pk>/questions/<uuid:qid>/check/", CheckAnswerView.as_view()),
 
+    # ── Public: the Quiz Hub (no auth; gated on public_quiz_hub_enabled) ──────
+    # Kept well clear of "quizzes/<uuid:pk>/" above — "public" is not a UUID,
+    # so it cannot be swallowed by it.
+    path("quizzes/public/sets/", PublicPracticeSetListView.as_view()),
+    path("quizzes/public/rails/", PublicRailListView.as_view()),
+    # Slug, not UUID: these URLs get shared. Last of the three so the two
+    # literal segments above can never be read as a slug.
+    path("quizzes/public/sets/<slug:slug>/", PublicPracticeSetDetailView.as_view()),
+    # Phase 6. Starting an attempt SNAPSHOTS the paper — see the view.
+    path("quizzes/public/sets/<slug:slug>/attempts/", PublicAttemptStartView.as_view()),
+    path("quizzes/public/attempts/<uuid:pk>/", PublicAttemptDetailView.as_view()),
+    path("quizzes/public/attempts/<uuid:pk>/submit/", PublicAttemptSubmitView.as_view()),
+    # Phase 8. The ONE authenticated endpoint under public/ — the hub's
+    # signed-in panels. Guests get 401 and the page renders nothing there.
+    path("quizzes/public/me/summary/", PublicPersonalSummaryView.as_view()),
+
     # ── Admin: Academy Quizzes (verification queue) ───────────────────────────
     path("quizzes/admin/", AdminQuizListView.as_view()),
     # ⚠ ORDER MATTERS. "quizzes/admin/<uuid:pk>/" below is a catch-all for any
@@ -142,7 +168,13 @@ urlpatterns = [
     # converter is ever loosened (e.g. to accept dashless hex) — don't move
     # them below it.
     path("quizzes/admin/bank/", AdminBankQuestionListCreateView.as_view()),
+    # Above the <uuid:pk> route below it: "summary" is not a UUID so ordering
+    # is not load-bearing today, but keeping every literal segment ahead of
+    # the converter keeps that true if the converter is ever loosened.
+    path("quizzes/admin/bank/summary/", AdminBankQuestionSummaryView.as_view()),
     path("quizzes/admin/bank/<uuid:pk>/", AdminBankQuestionDetailView.as_view()),
+    path("quizzes/admin/sets/", AdminPracticeSetListCreateView.as_view()),
+    path("quizzes/admin/sets/<uuid:pk>/", AdminPracticeSetDetailView.as_view()),
     path("quizzes/admin/tags/", AdminQuestionTagListCreateView.as_view()),
     path("quizzes/admin/tags/merge/", AdminQuestionTagMergeView.as_view()),
     path("quizzes/admin/tags/<uuid:pk>/", AdminQuestionTagDetailView.as_view()),

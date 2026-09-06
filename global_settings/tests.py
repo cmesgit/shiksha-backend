@@ -195,15 +195,16 @@ class ContentStudioFeatureFlagTest(TestCase):
 
 
 class PublicQuizHubFeatureFlagTest(TestCase):
-    """design_handoff_public_quiz_hub Phase 0 groundwork.
+    """design_handoff_public_quiz_hub — the flag, after Phase 9.
 
-    The public /quiz rebuild and the admin question-bank authoring behind it
-    ship behind one admin-controlled flag, OFF, and nothing consumes it yet.
+    ⚠ THIS CONTRACT INVERTED IN PHASE 9. Through Phases 0–8 the flag shipped
+    OFF and this class asserted that, so a half-built hub could not reach a
+    visitor mid-rebuild. The hub has now shipped, migration 0012 flips the
+    default to True, and the flag's job changed from launch gate to KILL
+    SWITCH.
 
-    Like content_studio_enabled and unlike quiz_v2_enabled, this is a REAL
-    gate. Phase 9 flips the default; until then a half-built hub must never
-    reach a visitor. The default assertion below is what stops a later phase
-    from quietly turning it on mid-rebuild.
+    What still matters, and is still asserted below: only an admin can move
+    it, and the key is present in `feature_flags` whatever its value.
     """
 
     URL = "/api/admin/settings/"
@@ -214,8 +215,8 @@ class PublicQuizHubFeatureFlagTest(TestCase):
         c.force_authenticate(user=user)
         return c
 
-    def test_ships_off_by_default(self):
-        self.assertFalse(GlobalSettings.load().public_quiz_hub_enabled)
+    def test_ships_on_by_default_after_phase_9(self):
+        self.assertTrue(GlobalSettings.load().public_quiz_hub_enabled)
 
     def test_admin_can_flip_it_via_patch(self):
         from accounts.models import User
@@ -230,7 +231,10 @@ class PublicQuizHubFeatureFlagTest(TestCase):
         self.assertTrue(res.json()["public_quiz_hub_enabled"])
         self.assertTrue(GlobalSettings.objects.get(pk=1).public_quiz_hub_enabled)
 
-    def test_non_admin_cannot_turn_it_on(self):
+    def test_non_admin_cannot_turn_it_off(self):
+        """The direction that matters flipped with the default: the risk is no
+        longer a stranger launching the hub early, it is a stranger taking a
+        live public page down."""
         from accounts.models import User
 
         GlobalSettings.load()
@@ -238,10 +242,10 @@ class PublicQuizHubFeatureFlagTest(TestCase):
             username="student3", email="student3@example.com", password="x",
         )
         res = self._client(student).patch(
-            self.URL, {"public_quiz_hub_enabled": True}, format="json",
+            self.URL, {"public_quiz_hub_enabled": False}, format="json",
         )
         self.assertEqual(res.status_code, 403, res.content)
-        self.assertFalse(GlobalSettings.objects.get(pk=1).public_quiz_hub_enabled)
+        self.assertTrue(GlobalSettings.objects.get(pk=1).public_quiz_hub_enabled)
 
     def test_exposed_read_only_in_feature_flags_on_me(self):
         """Every app reads flags off /accounts/me/, so the key must be present
@@ -256,7 +260,36 @@ class PublicQuizHubFeatureFlagTest(TestCase):
         self.assertEqual(res.status_code, 200, res.content)
         flags = res.json()["feature_flags"]
         self.assertIn("public_quiz_hub_enabled", flags)
-        self.assertFalse(flags["public_quiz_hub_enabled"])
+        self.assertTrue(flags["public_quiz_hub_enabled"])
+
+    def test_the_phase_9_migration_flips_a_row_that_already_exists(self):
+        """⚠ THE POINT OF THIS TEST. Changing a model default only affects
+        rows CREATED afterwards, and GlobalSettings is a singleton whose row
+        already exists on dev and prod holding False. Without the data step in
+        migration 0012, "the default is now True" would be true of a fresh
+        database and of nothing that is actually deployed — the hub would stay
+        dark everywhere it matters and look like a broken flag.
+
+        Running the migration end to end here is not possible on SQLite — the
+        executor cannot unapply inside the test's transaction — so this calls
+        the migration's own data function against a row that says False, which
+        is exactly the situation on dev and prod.
+        """
+        import importlib
+
+        from django.apps import apps as real_apps
+
+        # importlib, because a module whose name starts with a digit cannot
+        # be reached by an import statement.
+        _mod = importlib.import_module(
+            "global_settings.migrations.0012_public_quiz_hub_on_by_default")
+
+        GlobalSettings.load()
+        GlobalSettings.objects.update(public_quiz_hub_enabled=False)
+
+        _mod.turn_on(real_apps, None)
+
+        self.assertTrue(GlobalSettings.objects.get(pk=1).public_quiz_hub_enabled)
 
 
 class PublicConfigViewTest(TestCase):

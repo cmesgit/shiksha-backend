@@ -23,6 +23,9 @@ from .models import (
     QuizAttempt,
     StudentAnswer,
     QuestionTag,
+    PracticeSet,
+    PublicAttempt,
+    PublicAttemptAnswer,
 )
 
 # Absorbs real network/render lag on a legitimate last-second auto-submit;
@@ -1189,6 +1192,12 @@ def _bank_question_usage(question):
     practice_sessions = question.practice_sessions.count()
     if practice_sessions:
         usage["practice_sessions"] = practice_sessions
+    # Phase 6. Without this the admin sees "safe to delete", the DELETE then
+    # hits PublicAttemptAnswer.question's PROTECT, and a friendly 409 becomes
+    # a 500. The point of the guard is to answer BEFORE the database does.
+    public_attempt_answers = question.public_attempt_answers.count()
+    if public_attempt_answers:
+        usage["public_attempt_answers"] = public_attempt_answers
     return usage
 
 
@@ -1352,4 +1361,268 @@ class AdminQuizReviewActionSerializer(serializers.Serializer):
     def validate(self, attrs):
         if attrs["action"] == self.ACTION_REJECT and not attrs.get("reason", "").strip():
             raise ValidationError("A reason is required when rejecting a quiz.")
+        return attrs
+
+
+# =====================================================
+# PUBLIC — the Quiz Hub (design_handoff_public_quiz_hub Phase 5)
+#
+# ⚠ EVERYTHING BELOW IS SERVED TO ANONYMOUS VISITORS. The admin/teacher
+# serializers further up expose `is_correct` and `explanation`, which is
+# correct for them and fatal here — a learner who can read the answer key
+# before answering has no reason to answer. So these build on
+# QuestionPublicSerializer / ChoicePublicSerializer, which omit both, and
+# nothing here may be "reused" from the admin side to save a few lines.
+# =====================================================
+
+class PracticeSetCardSerializer(serializers.ModelSerializer):
+    """The card on the hub's grid. No questions — a list of 20 sets must not
+    drag 200 questions and their choices behind it."""
+
+    subject = serializers.CharField(source="subject_tag.label", read_only=True)
+    subject_slug = serializers.CharField(source="subject_tag.slug", read_only=True)
+    exam = serializers.CharField(
+        source="exam_tag.label", read_only=True, default=None)
+    # The number it can ACTUALLY serve today, not the target. Advertising 10
+    # and serving 3 is the specific lie this field exists to prevent.
+    question_count = serializers.IntegerField(
+        source="available_count", read_only=True)
+    # Phase 6 made this real. It counts SUBMITTED attempts only — a row is
+    # created the moment someone opens a set, and counting those would
+    # advertise "312 attempts" for a set 312 people bounced off.
+    # Annotated by the list view; the fallback keeps a bare instance usable.
+    attempt_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PracticeSet
+        fields = [
+            "id", "slug", "title", "description", "subject", "subject_slug",
+            "exam", "difficulty", "minutes", "question_count", "attempt_count",
+            # Lets the card's "New this week" badge be a real fact rather than
+            # the fixture's hand-set `fresh` flag.
+            "created_at",
+        ]
+
+    def get_attempt_count(self, obj):
+        cached = getattr(obj, "submitted_attempts", None)
+        if cached is not None:
+            return cached
+        return obj.attempts.filter(submitted_at__isnull=False).count()
+
+
+class PracticeSetDetailSerializer(PracticeSetCardSerializer):
+    """The set plus the paper. Still no answers and no explanations."""
+
+    questions = serializers.SerializerMethodField()
+
+    class Meta(PracticeSetCardSerializer.Meta):
+        fields = PracticeSetCardSerializer.Meta.fields + ["questions"]
+
+    def get_questions(self, obj):
+        return QuestionPublicSerializer(obj.pick_questions(), many=True).data
+
+
+class PublicRailSerializer(serializers.ModelSerializer):
+    """A subject or exam chip on the hub.
+
+    `status` is NOT exposed — the public site has no business knowing what an
+    admin intended. It gets `effective_status`, which is the server's verdict
+    after the degrade rule (a `live` tag with nothing publishable comes back
+    `soon`), so a chip can never be clickable onto an empty grid.
+    """
+
+    status = serializers.SerializerMethodField()
+    question_count = serializers.SerializerMethodField()
+    cover_image = serializers.SerializerMethodField()
+    set_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = QuestionTag
+        fields = ["id", "kind", "label", "slug", "status", "question_count",
+                  "set_count", "icon", "color", "cover_image", "display_order"]
+
+    def get_set_count(self, obj):
+        """Published sets on this subject. Annotated by the view in one query.
+
+        The subject tile advertises this, so it counts PUBLISHED sets only —
+        a tile reading "6 sets" that opens onto three is the same class of
+        lie as `question_count` advertising a target it cannot serve.
+        """
+        cached = getattr(obj, "published_set_count", None)
+        return cached if cached is not None else 0
+
+    def get_cover_image(self, obj):
+        """Absolute URL of the tag's cover art, or None.
+
+        None is a real answer, not a failure: the hub falls back to the tag's
+        `color` as a flat tile. Returning a broken path instead would render
+        an empty frame on the most visible part of the page.
+        """
+        image = obj.cover_image
+        if not image or not image.file:
+            return None
+        url = image.file.url
+        request = self.context.get("request")
+        return request.build_absolute_uri(url) if request else url
+
+    def _count(self, obj):
+        # Annotated by the view in one query; the fallback keeps the
+        # serializer usable on a bare instance (e.g. in tests).
+        cached = getattr(obj, "publishable_count", None)
+        if cached is not None:
+            return cached
+        return Question.objects.publishable().filter(
+            quiz__isnull=True, tags=obj).distinct().count()
+
+    def get_question_count(self, obj):
+        return self._count(obj)
+
+    def get_status(self, obj):
+        return obj.effective_status(self._count(obj))
+
+
+class PublicAttemptAnswerReviewSerializer(serializers.ModelSerializer):
+    """One reviewed question. ⚠ REVEALS THE ANSWER — only ever nested inside
+    PublicAttemptReviewSerializer, which the view returns exclusively for a
+    SUBMITTED attempt."""
+
+    question_id = serializers.UUIDField(source="question.id", read_only=True)
+    text = serializers.CharField(source="question.text", read_only=True)
+    explanation = serializers.CharField(
+        source="question.explanation", read_only=True)
+    choices = ChoicePublicSerializer(
+        source="question.choices", many=True, read_only=True)
+    correct_choice_id = serializers.SerializerMethodField()
+    selected_choice_id = serializers.UUIDField(read_only=True, allow_null=True)
+    was_blank = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PublicAttemptAnswer
+        fields = ["question_id", "order", "text", "choices", "explanation",
+                  "selected_choice_id", "selected_text", "correct_choice_id",
+                  "is_correct", "was_blank"]
+
+    def get_correct_choice_id(self, obj):
+        correct = next(
+            (c for c in obj.question.choices.all() if c.is_correct), None)
+        return str(correct.id) if correct else None
+
+    def get_was_blank(self, obj):
+        """Distinguishes "left blank" from "picked an option that has since
+        been edited away" — both have a NULL selected_choice, and conflating
+        them would tell a learner they skipped a question they answered."""
+        return obj.selected_choice_id is None and not obj.selected_text
+
+
+class PublicAttemptReviewSerializer(serializers.ModelSerializer):
+    set_title = serializers.CharField(
+        source="practice_set.title", read_only=True)
+    set_slug = serializers.CharField(source="practice_set.slug", read_only=True)
+    answers = PublicAttemptAnswerReviewSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = PublicAttempt
+        fields = ["id", "set_title", "set_slug", "score", "total",
+                  "started_at", "submitted_at", "answers"]
+
+
+class PublicAttemptSubmitSerializer(serializers.Serializer):
+    """`answers` maps question id → chosen choice id, or null for blank.
+
+    A question the client omits entirely is treated as blank, so a learner
+    who closes the tab half way still gets a scored, reviewable attempt
+    rather than an error.
+    """
+
+    answers = serializers.ListField(child=serializers.DictField(), default=list)
+
+    def validate_answers(self, rows):
+        cleaned = []
+        for row in rows:
+            qid = row.get("question")
+            if not qid:
+                raise ValidationError(
+                    "Every answer needs a `question` id.")
+            cleaned.append({"question": str(qid),
+                            "choice": row.get("choice") or None})
+        return cleaned
+
+
+class AdminPracticeSetSerializer(serializers.ModelSerializer):
+    """Author a public practice set.
+
+    ⚠ A set does not hold questions — it holds the CRITERIA that select them
+    (see PracticeSet's docstring). So the admin is choosing a subject, an
+    optional exam and difficulty, and a size; the paper follows from the
+    bank. `available_count` is therefore the number that matters on screen,
+    and it moves on its own as curation lands.
+    """
+
+    subject = serializers.CharField(source="subject_tag.label", read_only=True)
+    exam = serializers.CharField(
+        source="exam_tag.label", read_only=True, default=None)
+    # What it can serve RIGHT NOW, which is not `question_count` (the target).
+    available_count = serializers.IntegerField(read_only=True)
+    attempt_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PracticeSet
+        fields = [
+            "id", "slug", "title", "description", "subject_tag", "subject",
+            "exam_tag", "exam", "difficulty", "question_count", "minutes",
+            "seed", "status", "display_order", "created_at",
+            "available_count", "attempt_count",
+        ]
+        read_only_fields = ["id", "slug", "created_at"]
+
+    def get_attempt_count(self, obj):
+        return obj.attempts.filter(submitted_at__isnull=False).count()
+
+    def validate_subject_tag(self, tag):
+        if tag.kind != QuestionTag.KIND_SUBJECT:
+            raise ValidationError(
+                f'"{tag.label}" is a {tag.kind} label, not a subject.')
+        return tag
+
+    def validate_exam_tag(self, tag):
+        if tag is not None and tag.kind != QuestionTag.KIND_EXAM:
+            raise ValidationError(
+                f'"{tag.label}" is a {tag.kind} label, not an exam.')
+        return tag
+
+    def validate(self, attrs):
+        """Refuse to PUBLISH a set that would serve nothing.
+
+        Same principle as QuestionTag's degrade rule: an admin may not put
+        something on the public page that opens empty. Here it has to be a
+        hard refusal rather than a silent downgrade, because unlike a chip a
+        set has no "Soon" state — it is either on the page or it is not.
+
+        Evaluated against the MERGED result, not the incoming payload, so
+        changing difficulty alone on an existing published set is checked
+        against the combination that will actually be stored.
+        """
+        merged = PracticeSet(
+            subject_tag=attrs.get(
+                "subject_tag", getattr(self.instance, "subject_tag", None)),
+            exam_tag=attrs.get(
+                "exam_tag", getattr(self.instance, "exam_tag", None)),
+            difficulty=attrs.get(
+                "difficulty", getattr(self.instance, "difficulty", "")),
+            question_count=attrs.get(
+                "question_count", getattr(self.instance, "question_count", 10)),
+        )
+        status_value = attrs.get(
+            "status", getattr(self.instance, "status", PracticeSet.STATUS_DRAFT))
+        if status_value == PracticeSet.STATUS_PUBLISHED:
+            if merged.subject_tag is None:
+                raise ValidationError({"subject_tag": "Pick a subject."})
+            if merged.question_queryset().count() == 0:
+                raise ValidationError({
+                    "status":
+                        "Nothing in the bank matches this yet, so publishing "
+                        "it would put an empty set on the site. Accept some "
+                        "questions for this subject first, or save it as a "
+                        "draft.",
+                })
         return attrs

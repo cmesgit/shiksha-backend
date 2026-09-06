@@ -402,3 +402,100 @@ class AnswerContradictsExplanationTest(TestCase):
             explanation="Blue light scatters most in the atmosphere.",
         )]))
         self.assertEqual(Question.objects.get().bank_feedback, "")
+
+
+class UnusableTopicLabelTest(TestCase):
+    """A mangled section heading becomes a public filter chip.
+
+    All three topic tags the real SSC import produced were wreckage — a whole
+    spliced question used as a label. Unlike a damaged question there is
+    nothing for a human to salvage in a heading, and one bad row is visible to
+    every visitor, so this REFUSES the label and keeps the question.
+    """
+
+    def _tag_labels(self, kind):
+        return set(QuestionTag.objects.filter(kind=kind)
+                   .values_list("label", flat=True))
+
+    def test_a_topic_carrying_option_markers_is_dropped(self):
+        run(write([row(topic=("Prehistoric Period pottery was discovered? "
+                              "Neolithic (b) Chalcolithic (c) Palaeolithic"))]))
+        self.assertEqual(self._tag_labels(QuestionTag.KIND_TOPIC), set())
+
+    def test_a_topic_with_the_sources_own_numbering_is_dropped(self):
+        run(write([row(topic="1. ____ Art & Culture")]))
+        self.assertEqual(self._tag_labels(QuestionTag.KIND_TOPIC), set())
+
+    def test_an_overlong_topic_is_dropped(self):
+        run(write([row(topic="Unit / Measurement / Measuring Instrument / "
+                             "Physical Quantities Unit and more besides")]))
+        self.assertEqual(self._tag_labels(QuestionTag.KIND_TOPIC), set())
+
+    def test_the_question_survives_a_dropped_topic(self):
+        """The topic is optional; subject and exam are what the rails use."""
+        run(write([row(topic="1. ____ Art & Culture")]))
+        q = Question.objects.get()
+        self.assertEqual(
+            {t.kind for t in q.tags.all()},
+            {QuestionTag.KIND_SUBJECT, QuestionTag.KIND_EXAM},
+        )
+
+    def test_a_clean_topic_is_still_kept(self):
+        run(write([row(topic="Indus Valley")]))
+        self.assertEqual(self._tag_labels(QuestionTag.KIND_TOPIC),
+                         {"Indus Valley"})
+
+
+class SplicedExplanationTest(TestCase):
+    """The two-column splice landing in the EXPLANATION.
+
+    Found by browser-driving the admin bank screen, not by any audit: a row
+    about the Lalit Kala Akademi rendered a correctly-keyed answer (1954)
+    under prose about Assamese culture. The stem and option gates were clean,
+    because the damage was in a third field nobody had checked.
+
+    142 of the 3,793 imported rows trip this; 123 were not already caught by
+    the contradiction check.
+    """
+
+    def test_an_explanation_starting_mid_word_is_flagged(self):
+        run(write([row(explanation=(
+            "samese traditions and values of Assam; hence, it is a symbol "
+            "of unity and pride in culture."))]))
+        self.assertIn("spliced", Question.objects.get().bank_feedback)
+
+    def test_an_explanation_carrying_the_next_questions_options_is_flagged(self):
+        run(write([row(explanation=(
+            "The Chalukya dynasty. Who succeeded him? (a) PulakesinI "
+            "(b) Kirtivarman (c) Narasimhavarman (d) Mangalesa"))]))
+        self.assertIn("spliced", Question.objects.get().bank_feedback)
+
+    def test_the_row_is_still_imported_and_keeps_its_answer(self):
+        """The marked answer is usually fine — dropping the row would throw
+        away a good question over bad prose."""
+        run(write([row(explanation="samese traditions and values of Assam.")]))
+        q = Question.objects.get()
+        self.assertEqual(q.choices.filter(is_correct=True).count(), 1)
+        self.assertEqual(q.choices.get(is_correct=True).text, "Lothal")
+
+    def test_a_clean_explanation_is_not_flagged(self):
+        run(write([row()]))
+        self.assertEqual(Question.objects.get().bank_feedback, "")
+
+    def test_the_command_reports_how_many_look_spliced(self):
+        out = run(write([row(explanation="samese traditions of Assam.")]))
+        self.assertIn("SPLICED", out)
+
+    def test_both_warnings_can_land_on_one_row(self):
+        """A row can be both contradicted and spliced; it is one queue, so
+        the notes are joined rather than one silently winning."""
+        run(write([row(
+            stem="Which is the biggest building at Mohenjodaro?",
+            options=["Great Granary", "Assembly Hall", "Warehouse", "Citadel"],
+            answer_index=0,
+            explanation=("major findings include a Great bath and an "
+                         "Assembly Hall at the site."),
+        )]))
+        feedback = Question.objects.get().bank_feedback
+        self.assertIn("names a different option", feedback)
+        self.assertIn("spliced", feedback)
