@@ -30,16 +30,22 @@ Signup cases:
             + TEACHER role (reuses existing SELF learner).
 
   Case 5  EXISTING (has_student) + Student signup  → BLOCK
-  Case 6  EXISTING teacher + signup for the OTHER track → ADD TRACK (asymmetric)
-          A Guest-expert (Skill) teacher may apply for the Faculty (Academy)
-          track; the new track is added to the SAME TeacherProfile:
+  Case 6  EXISTING teacher + signup for the OTHER track → ADD TRACK
+          The new track is added to the SAME TeacherProfile, and the track
+          they already hold keeps working the whole time:
             · adding Academy (faculty) → pending admin review
-          The Skill track they already hold keeps working the whole time.
-          The REVERSE is NOT allowed: a Faculty (Academy) teacher may NOT add
-          the Skill/Guest track — faculty stay faculty-only (see
-          TeacherProfile.can_apply_track / track_add_block_reason).
+            · adding Skill (guest)     → approved immediately
+          This works in BOTH directions as of 2026-09-06 (see
+          TeacherProfile.can_apply_track). It previously refused faculty →
+          skill; that asymmetry was policy only and has been removed.
   Case 7  EXISTING teacher + signup for a track they already hold → BLOCK
-  Case 8  EXISTING Faculty teacher + signup for Skill/Guest → BLOCK (asymmetry)
+
+⚠ THIS SERIALIZER IS BEING RETIRED. Account-first registration lives in
+`accounts/registration.py` and adding a teacher identity lives in
+`accounts/identity_views.py`. Cases 3–6 exist only because signup can be
+re-entered by an account that already exists; once the frontend stops calling
+`/signup/`, they are dead. See design_handoff_account_model/BUILD_GUIDE.md
+Phase 8. Do not add new branches here.
 """
 import base64
 import binascii

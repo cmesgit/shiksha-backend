@@ -39,6 +39,17 @@ class SignupRateThrottle(AnonRateThrottle):
     scope = "signup"
 
 
+class OAuthRateThrottle(AnonRateThrottle):
+    """Per-IP cap on Google sign-in attempts.
+
+    LoginRateThrottle is bound to LoginView specifically, so the OAuth
+    endpoint would otherwise be an unthrottled authentication route. Each call
+    costs an outbound verification against Google's keys, so this bounds our
+    own egress as much as it bounds an attacker.
+    """
+    scope = "oauth"
+
+
 class ResendVerificationRateThrottle(UserRateThrottle):
     scope = "resend_verification"
 

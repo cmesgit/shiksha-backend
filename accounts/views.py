@@ -251,7 +251,36 @@ class VerifyEmailView(APIView):
             user=user,
         )
 
-        return redirect(f"{frontend_url}/email-verified?status=success")
+        # ── Auto-login (account-model simplification, Phase 1) ─────────────
+        # They proved control of the mailbox, so make the click land them
+        # signed in rather than at a login form. This removes two screens from
+        # every signup and weakens nothing: `is_verified` is still required,
+        # the token is single-use and already deleted above, and 24h-expiring.
+        #
+        # `?context=` tells the frontend where to send them. It is a HINT, not
+        # authority — the session cookie is what actually authenticates, and
+        # the page must still work if the cookie never arrives. That is not
+        # hypothetical: corporate mail scanners and link prefetchers fetch this
+        # URL, which consumes the token and sets the cookie on a machine that
+        # is not the user's. In that case the person lands verified but
+        # anonymous, and /email-verified must show a normal "sign in" path.
+        try:
+            # Local import, matching how this module already reaches for
+            # build_tokens / set_auth_cookies elsewhere.
+            from .auth_flow import issue_login_session, set_auth_cookies
+
+            body, refresh = issue_login_session(user, request)
+            response = redirect(
+                f"{frontend_url}/email-verified"
+                f"?status=success&context={body['context']}"
+            )
+            return set_auth_cookies(response, refresh)
+        except Exception as e:
+            # Verification itself has already succeeded and been committed.
+            # Never let a session-minting problem turn that into a failure the
+            # user has to retry with a token that no longer exists.
+            logger.error(f"Auto-login after verification failed for {user.email}: {e}")
+            return redirect(f"{frontend_url}/email-verified?status=success")
 
 
 # =====================================================
@@ -1021,15 +1050,25 @@ class LogoutView(APIView):
 
 
 # =====================================================
-# PROFILE COMPLETE PERMISSION
+# PROFILE COMPLETE PERMISSION — REMOVED 2026-09-06
 # =====================================================
-
-class IsProfileComplete(BasePermission):
-    def has_permission(self, request, view):
-        if not request.user.is_authenticated:
-            return False
-        target = _profile_target(request)
-        return bool(target and getattr(target, "is_complete", False))
+#
+# `IsProfileComplete` lived here and was attached to ZERO views. Its frontend
+# counterparts (`RequireProfileComplete`, `ProfileFillupModal`, and the
+# `FORM_FILLUP_ENABLED` switch that disabled them) were likewise shipped
+# switched off. A complete enforcement system existed and enforced nothing,
+# which meant nobody reading the code could tell whether it was dead or
+# pending.
+#
+# It is dead. Profile detail is now asked for at the moment it is needed —
+# phone at enrolment, ID at a teacher application — never as a wall in front
+# of the product.
+#
+# `LearnerProfile.is_complete` and `/me/`'s `profile_complete` REMAIN. They are
+# a signal for nudges, which is the only thing they ever actually did.
+# `ExpertProfile.refresh_listing` is a different system entirely and is
+# untouched: an incomplete expert genuinely should not appear in a public
+# directory.
 
 
 # =====================================================

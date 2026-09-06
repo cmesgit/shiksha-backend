@@ -400,6 +400,59 @@ def _ensure_default_profile(user):
     return [lp]
 
 
+def issue_login_session(user, request):
+    """Open a session for a freshly-authenticated account and mint its token.
+
+    Returns ``(body, refresh)``. The caller wraps `body` in whatever response
+    shape it needs and passes `refresh` to `set_auth_cookies`.
+
+    Extracted from LoginView so the two paths that can start a brand-new
+    session — password login, and auto-login from the email verification link
+    (`VerifyEmailView`) — cannot drift on what a new session looks like. Both
+    must agree on the auto-select rule, the `sid`, and the response body, and
+    keeping one copy is the only way to guarantee that.
+
+    Behaviour is byte-for-byte what LoginView did inline before the extraction.
+    """
+    profiles = _ensure_default_profile(user)
+    teacher  = getattr(user, "teacher_profile", None)
+    # A teacher identity in ANY state (even a faculty application still in
+    # review) means we show the picker, so the person sees their status and
+    # can pick the learner side or an approved teaching track.
+    has_teacher_identity = teacher is not None
+
+    # One UserSession per login — this is the only place one is opened. Its
+    # id rides every token this browser is issued from now on so Settings →
+    # Sessions & devices shows one row per device, not one per switch.
+    session = open_session(user, request)
+
+    # Auto-select: single PIN-free profile, no teacher identity at all.
+    if len(profiles) == 1 and not has_teacher_identity:
+        profile = profiles[0]
+        if not profile.has_pin():
+            refresh = build_tokens(
+                user, context=CTX_LEARNER, profile=profile, sid=session.id
+            )
+            body = {
+                "context":       CTX_LEARNER,
+                "profile":       serialize_profile_card(profile),
+                "profiles":      [serialize_profile_card(profile)],
+                "teacher":       None,
+                "auto_selected": True,
+            }
+            return body, refresh
+
+    # Multiple profiles or a teacher identity → account token, and the
+    # frontend shows the profile picker.
+    refresh = build_tokens(user, context=CTX_ACCOUNT, sid=session.id)
+    body = {
+        "context":  CTX_ACCOUNT,
+        "profiles": [serialize_profile_card(p) for p in profiles],
+        "teacher":  serialize_teacher(teacher),
+    }
+    return body, refresh
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1 — account login
 # ─────────────────────────────────────────────────────────────────────────────
@@ -427,42 +480,7 @@ class LoginView(APIView):
         if not user.is_verified:
             raise ValidationError("Email not verified.")
 
-        profiles    = _ensure_default_profile(user)
-        teacher     = getattr(user, "teacher_profile", None)
-        # A teacher identity in ANY state (even a faculty application still in
-        # review) means we show the picker, so the person sees their status and
-        # can pick the learner side or an approved teaching track.
-        has_teacher_identity = teacher is not None
-
-        # One UserSession per login — this is the only place one is opened. Its
-        # id rides every token this browser is issued from now on so Settings →
-        # Sessions & devices shows one row per device, not one per switch.
-        session = open_session(user, request)
-
-        # Auto-select: single PIN-free profile, no teacher identity at all.
-        if len(profiles) == 1 and not has_teacher_identity:
-            profile = profiles[0]
-            if not profile.has_pin():
-                refresh = build_tokens(
-                    user, context=CTX_LEARNER, profile=profile, sid=session.id
-                )
-                body = {
-                    "context":      CTX_LEARNER,
-                    "profile":      serialize_profile_card(profile),
-                    "profiles":     [serialize_profile_card(profile)],
-                    "teacher":      None,
-                    "auto_selected": True,
-                }
-                return set_auth_cookies(Response(body, status=status.HTTP_200_OK), refresh)
-
-        # Multiple profiles or a teacher identity → return account token, let
-        # the frontend show the profile picker.
-        refresh = build_tokens(user, context=CTX_ACCOUNT, sid=session.id)
-        body = {
-            "context":  CTX_ACCOUNT,
-            "profiles": [serialize_profile_card(p) for p in profiles],
-            "teacher":  serialize_teacher(teacher),
-        }
+        body, refresh = issue_login_session(user, request)
         return set_auth_cookies(Response(body, status=status.HTTP_200_OK), refresh)
 
 
@@ -507,8 +525,26 @@ class ProfileSelectView(APIView):
 
 class TeacherContextView(APIView):
     """
-    POST { password, track? }
-    Uses the ACCOUNT password. No separate teacher password exists.
+    POST { pin?, track? }
+
+    Entering teacher mode takes the teacher-mode PIN if one is set, and
+    nothing at all if one is not.
+
+    CHANGED 2026-09-06 — this used to demand the full ACCOUNT PASSWORD on
+    every entry. It was removed because it protected nothing: whoever holds
+    the session can already read the learner's data, message people and
+    enroll, and they had typed that same password minutes earlier at login.
+    It was simply the highest-friction moment on the teacher path.
+
+    It was replaced rather than deleted because one account can hold up to
+    five learner profiles including a teacher's own children. An ungated
+    Teach tile on a shared family device puts a child into a gradebook of
+    other students' personal data. The PIN is opt-in for exactly the people
+    who need it and invisible to everyone else — the same bargain
+    LearnerProfile PINs already make.
+
+    Setting or clearing the PIN still requires the account password; that
+    lives in TeacherPinView, not here.
 
     `track` is optional and one of "academy" | "skill". It chooses which
     dashboard to enter for teachers approved on both tracks; when omitted we
@@ -520,9 +556,11 @@ class TeacherContextView(APIView):
     403  { code: "not_approved" }            # no approved track yet
     403  { code: "track_locked" }            # asked for a track they don't hold
     403  { code: "track_pending" }           # asked for a track still in review
-    400  { code: "bad_password" }
+    400  { code: "bad_pin" }
     """
     permission_classes = [IsAuthenticated]
+    # A 4–6 digit PIN with unlimited guesses is brute-forceable in seconds.
+    throttle_classes = [PinVerifyRateThrottle]
 
     def post(self, request):
         teacher = getattr(request.user, "teacher_profile", None)
@@ -541,10 +579,11 @@ class TeacherContextView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        password = request.data.get("password") or ""
-        if not request.user.check_password(password):
+        # check_pin returns True when no PIN is configured, so an account that
+        # never set one walks straight through.
+        if not teacher.check_pin(request.data.get("pin") or ""):
             return Response(
-                {"code": "bad_password", "password": "Incorrect password."},
+                {"code": "bad_pin", "pin": "Incorrect PIN."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -686,6 +725,47 @@ class ProfilePinView(APIView):
         return Response({"profile_id": str(profile.id), "requires_pin": profile.has_pin()})
 
 
+class TeacherPinView(APIView):
+    """Set / change / clear the teacher-mode PIN.
+
+    Deliberately the SAME contract as ProfilePinView above: the ACCOUNT
+    PASSWORD is required, never the old PIN, so this doubles as the forgot-PIN
+    path and cannot be used by another session on the account to silently
+    strip protection. Send an empty `pin` to remove it.
+
+    Entering teacher mode itself no longer takes a password — see
+    TeacherContextView. This endpoint is the reason that is safe: the
+    destructive operation kept its strong gate while the routine one lost a
+    gate that was never protecting anything.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        teacher = getattr(request.user, "teacher_profile", None)
+        if not teacher:
+            return Response({"code": "no_teacher"}, status=status.HTTP_409_CONFLICT)
+        return Response({"requires_pin": teacher.has_pin()})
+
+    def post(self, request):
+        teacher = getattr(request.user, "teacher_profile", None)
+        if not teacher:
+            return Response(
+                {"code": "no_teacher",
+                 "detail": "This account has no teacher identity."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        verify_account_password(request)
+
+        new_pin = request.data.get("pin")
+        if new_pin and (not str(new_pin).isdigit() or not (4 <= len(str(new_pin)) <= 6)):
+            raise ValidationError({"pin": "PIN must be 4–6 digits."})
+
+        teacher.set_pin(str(new_pin) if new_pin else "")
+        teacher.save(update_fields=["pin"])
+        return Response({"requires_pin": teacher.has_pin()})
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # /me/ — context-aware, reload-safe
 # ─────────────────────────────────────────────────────────────────────────────
@@ -772,6 +852,11 @@ class MeView(APIView):
                 "quiz_v2_enabled": gs.quiz_v2_enabled,
                 "ai_question_drafting_enabled": gs.ai_question_drafting_enabled,
                 "content_studio_enabled": gs.content_studio_enabled,
+                # Exposed for consistency with the other flags. NOTE it cannot
+                # gate the Google button, which lives on the pre-auth login
+                # screen where /me/ has not been called — see the field's
+                # docstring in global_settings/models.py.
+                "google_oauth_enabled": gs.google_oauth_enabled,
             },
         })
 

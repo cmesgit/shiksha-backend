@@ -203,6 +203,10 @@ REST_FRAMEWORK = {
         "login": "20/min",
         "login_account": "10/min",
         "signup": "10/hour",
+        # Google sign-in. Looser than "signup" because it also covers repeat
+        # LOGINS, not just account creation, but tighter than "login" since
+        # every call costs an outbound verification against Google.
+        "oauth": "20/hour",
         "resend_verification": "3/hour",
         "password_reset_request": "5/hour",
         "password_reset_verify": "10/hour",
@@ -252,6 +256,13 @@ SECURE_SSL_REDIRECT = True
 SESSION_COOKIE_SAMESITE = "None"
 CSRF_COOKIE_SAMESITE = "None"
 COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN", ".shikshacom.com")
+
+# ── Google sign-in ───────────────────────────────────────────────────────
+# The OAuth 2.0 Web-application client id from Google Cloud. Empty by default:
+# with no value the verifier REFUSES rather than falling back to an unchecked
+# audience, so an unconfigured deployment cannot accidentally accept tokens
+# minted for some other application. See accounts/oauth_google.py.
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
 SESSION_COOKIE_DOMAIN = COOKIE_DOMAIN
 CSRF_COOKIE_DOMAIN = COOKIE_DOMAIN
 
