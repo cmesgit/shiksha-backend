@@ -10,11 +10,38 @@ Staff-gated, reusing the same IsAdmin permission the other admin endpoints use
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from accounts.permissions import IsAdmin
 from .models import GlobalSettings
 from .serializers import GlobalSettingsSerializer
+
+
+class PublicConfigView(APIView):
+    """GET /api/public-config/ — the handful of flags an ANONYMOUS visitor
+    needs before the marketing site can decide what to render.
+
+    This exists because feature flags previously reached the apps only through
+    ``feature_flags`` on ``/accounts/me/``, which requires a login. The public
+    Quiz Hub at /quiz is browsable by guests, so gating it on an authenticated
+    endpoint would mean either showing every visitor the placeholder or
+    shipping the real page to everyone regardless of the switch.
+
+    ⚠ ALLOWLIST, NEVER A SERIALIZER DUMP. GlobalSettings holds the Razorpay
+    key id, the platform UPI payee, the contact email and the whole live-session
+    rule set. Returning the model's serializer here would publish all of it to
+    anyone with curl. Only the names in PUBLIC_FLAGS below are ever emitted, and
+    anything added to that tuple is a deliberate decision to make it public.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    PUBLIC_FLAGS = ("public_quiz_hub_enabled",)
+
+    def get(self, request):
+        gs = GlobalSettings.load()
+        return Response({name: getattr(gs, name) for name in self.PUBLIC_FLAGS})
 
 
 class AdminGlobalSettingsView(APIView):

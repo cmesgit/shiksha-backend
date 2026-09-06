@@ -9,6 +9,8 @@ from django.conf import settings
 from content.sitemaps import CONTENT_SITEMAPS
 from .media_views import secure_media_view
 
+from global_settings.views import PublicConfigView
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     # Authenticated gate for private media (see config/media_security.py) —
@@ -31,6 +33,12 @@ urlpatterns = [
     path("api/skill/", include("skills.urls")),
     path("api/chat/", include("chat.urls")),
     path("api/admin/", include("global_settings.urls")),
+    # Anonymous-readable flag allowlist for the public marketing site. Mounted
+    # at the API root rather than under /api/admin/ so the path itself does not
+    # imply an admin-gated resource. See PublicConfigView — it emits ONLY the
+    # names in its PUBLIC_FLAGS tuple, never the settings serializer, which
+    # carries payment credentials.
+    path("api/public-config/", PublicConfigView.as_view()),
     path("api/forum/", include("forum.urls")),  # ← ADDED
     path("api/explore/", include("documents.urls")),  # ← ADDED (Explore document library)
     # Canonical notification API (bell + preferences). The legacy alias

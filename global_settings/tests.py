@@ -257,3 +257,54 @@ class PublicQuizHubFeatureFlagTest(TestCase):
         flags = res.json()["feature_flags"]
         self.assertIn("public_quiz_hub_enabled", flags)
         self.assertFalse(flags["public_quiz_hub_enabled"])
+
+
+class PublicConfigViewTest(TestCase):
+    """The anonymous flag allowlist behind /api/public-config/.
+
+    The marketing site is browsable by guests, so the Quiz Hub's switch has to
+    be readable without a login. The risk that creates is over-exposure, which
+    is what most of these tests are about.
+    """
+
+    URL = "/api/public-config/"
+
+    def _client(self):
+        from rest_framework.test import APIClient
+        return APIClient()
+
+    def test_an_anonymous_visitor_can_read_it(self):
+        res = self._client().get(self.URL)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertIn("public_quiz_hub_enabled", res.json())
+
+    def test_it_reflects_the_current_value(self):
+        GlobalSettings.load()
+        GlobalSettings.objects.filter(pk=1).update(public_quiz_hub_enabled=True)
+        self.assertTrue(self._client().get(self.URL).json()["public_quiz_hub_enabled"])
+        GlobalSettings.objects.filter(pk=1).update(public_quiz_hub_enabled=False)
+        self.assertFalse(self._client().get(self.URL).json()["public_quiz_hub_enabled"])
+
+    def test_it_leaks_nothing_beyond_the_allowlist(self):
+        """THE reason this view hand-builds its dict instead of using
+        GlobalSettingsSerializer. That model carries the Razorpay key id, the
+        platform UPI payee name and VPA, the contact email and every live
+        session limit. A serializer dump here publishes all of it to anyone
+        with curl, and it would look completely innocuous in review."""
+        GlobalSettings.objects.filter(pk=1).update(
+            razorpay_key_id="rzp_live_SHOULD_NOT_LEAK",
+            upi_id="shiksha@okaxis",
+            upi_payee_name="ShikshaCom",
+            platform_email="ops@shikshacom.com",
+        )
+        body = self._client().get(self.URL).json()
+        self.assertEqual(set(body), {"public_quiz_hub_enabled"})
+        blob = str(body)
+        for secret in ("rzp_live", "okaxis", "ShikshaCom", "ops@shikshacom.com"):
+            self.assertNotIn(secret, blob)
+
+    def test_it_is_read_only(self):
+        """No PATCH/POST handler — the admin endpoint is the only writer."""
+        self.assertEqual(
+            self._client().patch(self.URL, {"public_quiz_hub_enabled": True},
+                                 format="json").status_code, 405)
