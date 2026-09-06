@@ -950,13 +950,23 @@ class BankQuestionSerializer(serializers.ModelSerializer):
     current teacher QuizBank.jsx screen consumes this response shape as-is.
     """
     choices = ChoiceAdminSerializer(many=True, read_only=True)
-    quiz_id = serializers.UUIDField(source="quiz.id", read_only=True)
-    quiz_title = serializers.CharField(source="quiz.title", read_only=True)
-    subject_id = serializers.UUIDField(source="quiz.subject.id", read_only=True)
-    subject_name = serializers.CharField(source="quiz.subject.name", read_only=True)
+    # ⚠ EVERY ONE OF THESE NEEDS default=None. Question.quiz is nullable as of
+    # the public Quiz Hub work, and a standalone bank question has no quiz to
+    # borrow a title, subject or author from. DRF resolves a dotted source by
+    # walking the chain with getattr, so `quiz.subject.name` against a NULL
+    # quiz raises AttributeError; the default is what turns that into a null
+    # in the payload instead of a 500 on the bank list.
+    quiz_id = serializers.UUIDField(source="quiz.id", read_only=True, default=None)
+    quiz_title = serializers.CharField(source="quiz.title", read_only=True, default=None)
+    subject_id = serializers.UUIDField(source="quiz.subject.id", read_only=True, default=None)
+    subject_name = serializers.CharField(
+        source="quiz.subject.name", read_only=True, default=None)
     author_name = serializers.CharField(
         source="quiz.created_by.email", read_only=True, default=None)
     author_id = serializers.UUIDField(source="quiz.created_by.id", read_only=True, default=None)
+    # The classification a standalone question carries in its own right,
+    # rather than inheriting from a quiz it does not have.
+    tags = serializers.SerializerMethodField()
     # T3's chapter chip. A Question has no chapter of its own — Phase 3 put
     # chapter tagging on the quiz — so this is the quiz's first tag, which is
     # what the question is actually filed under. `chapter_is_custom` drives the
@@ -965,7 +975,18 @@ class BankQuestionSerializer(serializers.ModelSerializer):
     chapter_label = serializers.SerializerMethodField()
     chapter_is_custom = serializers.SerializerMethodField()
 
+    def get_tags(self, obj):
+        return [
+            {"id": str(t.id), "kind": t.kind, "label": t.label, "slug": t.slug}
+            for t in obj.tags.all()
+        ]
+
     def _first_tag(self, obj):
+        # A standalone bank question has no quiz, so no chapter tag either —
+        # chapter classification lives on the Quiz, not the Question. Bail
+        # before touching serialize_tags(None), which would raise.
+        if obj.quiz_id is None:
+            return None
         # Prefer the map the list view builds (one query for the whole page).
         # select_related gives every Question its OWN Quiz instance, so
         # attach_chapter_tags() on a deduped list would not reach them —
@@ -996,6 +1017,9 @@ class BankQuestionSerializer(serializers.ModelSerializer):
             "bank_state", "suggest_to_bank", "bank_feedback",
             # Phase 6 (T3) additions.
             "chapter_label", "chapter_is_custom",
+            # Public Quiz Hub additions — a standalone bank question carries
+            # its own classification rather than inheriting a quiz's.
+            "tags", "year", "question_type",
         ]
 
 

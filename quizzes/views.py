@@ -2913,7 +2913,11 @@ class TeacherQuestionBankView(generics.ListAPIView):
         qs = (
             Question.objects
             .select_related("quiz", "quiz__subject", "quiz__created_by")
-            .prefetch_related("choices")
+            # "tags" is prefetched, not walked lazily. BankQuestionSerializer
+            # renders each question's tags, so without this every row costs an
+            # extra query — which TeacherBankT3RowDataTest asserts against by
+            # counting queries, and it caught exactly this regression.
+            .prefetch_related("choices", "tags")
         )
 
         if scope == "school":
@@ -2955,7 +2959,13 @@ class TeacherQuestionBankView(generics.ListAPIView):
         # be 142 extra queries.
         queryset = self.filter_queryset(self.get_queryset())
         rows = list(queryset)
-        quizzes = {q.quiz_id: q.quiz for q in rows}
+        # `if q.quiz_id` drops standalone bank questions (Question.quiz is
+        # nullable as of the public Quiz Hub work). They cannot reach here
+        # today — every scope above is subject-scoped through the quiz, which
+        # a NULL quiz never matches — but this map feeds attach_chapter_tags()
+        # and a single None in it raises. Cheap guard against a future filter
+        # change turning a deliberate exclusion into a 500.
+        quizzes = {q.quiz_id: q.quiz for q in rows if q.quiz_id}
         attach_chapter_tags(list(quizzes.values()))
         self._chapter_tags_by_quiz = {
             qid: serialize_tags(quiz) for qid, quiz in quizzes.items()
@@ -3240,8 +3250,20 @@ class AdminQuestionBankQueueView(generics.ListAPIView):
         qs = (
             Question.objects
             .exclude(bank_state=Question.BANK_STATE_PRIVATE)
+            # ⚠ quiz__isnull=False keeps this queue what its name says: the
+            # things TEACHERS have suggested. Question.quiz became nullable
+            # for the public Quiz Hub, and a standalone bank question defaults
+            # to bank_state="suggested" like any other (the save() invariant
+            # normalises it), so without this filter every admin-authored and
+            # every bulk-imported question would land in the teachers' review
+            # queue — thousands of rows burying the handful a teacher is
+            # actually waiting on an answer about.
+            #
+            # Standalone questions are curated on their own admin screen
+            # instead. This queue is unchanged from before the hub work.
+            .filter(quiz__isnull=False)
             .select_related("quiz", "quiz__subject", "quiz__created_by")
-            .prefetch_related("choices")
+            .prefetch_related("choices", "tags")
         )
         if state:
             qs = qs.filter(bank_state=state)
@@ -3260,14 +3282,25 @@ class AdminQuestionBankQueueView(generics.ListAPIView):
 
     def list(self, request, *args, **kwargs):
         rows = list(self.filter_queryset(self.get_queryset()))
-        quizzes = {q.quiz_id: q.quiz for q in rows}
+        # `if q.quiz_id` — get_queryset() already excludes NULL-quiz rows, so
+        # this is belt-and-braces: one None in this map makes
+        # attach_chapter_tags() raise.
+        quizzes = {q.quiz_id: q.quiz for q in rows if q.quiz_id}
         attach_chapter_tags(list(quizzes.values()))
         self._chapter_tags_by_quiz = {
             qid: serialize_tags(quiz) for qid, quiz in quizzes.items()
         }
+        # ⚠ THE AGGREGATES MUST CARRY THE SAME quiz__isnull=False AS THE LIST.
+        # Without it the stat tiles count standalone bank questions that the
+        # list below deliberately excludes, so the screen reads "1,847
+        # waiting" above a queue showing 12 — and an admin reasonably concludes
+        # the queue is broken and starts looking for a bug that isn't there.
+        # A count that disagrees with the list it sits on top of is worse than
+        # no count.
         counts = (
             Question.objects
             .exclude(bank_state=Question.BANK_STATE_PRIVATE)
+            .filter(quiz__isnull=False)
             .values("bank_state").annotate(n=Count("id"))
         )
         by_state = {c["bank_state"]: c["n"] for c in counts}
@@ -3282,6 +3315,11 @@ class AdminQuestionBankQueueView(generics.ListAPIView):
             "contributing_teachers": (
                 Question.objects
                 .filter(bank_state=Question.BANK_STATE_SUGGESTED)
+                # Same filter again, and for a second reason: a standalone
+                # question has no quiz and therefore no quiz__created_by, so
+                # it contributes a NULL that .distinct() counts as one more
+                # "teacher" — silently inflating the headline by one.
+                .filter(quiz__isnull=False)
                 .values("quiz__created_by").distinct().count()
             ),
         })

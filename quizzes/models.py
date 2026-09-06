@@ -4,6 +4,7 @@ from django.db import models
 from django.db.models import Q
 from django.conf import settings
 from django.utils import timezone
+from django.utils.text import slugify
 from courses.models_chapter_tags import (
     chapter_note_field,
     no_specific_chapter_field,
@@ -324,6 +325,144 @@ class QuizSection(models.Model):
 # 2️⃣ QUESTION
 # -------------------------------------------------------
 
+class QuestionTag(models.Model):
+    """One optional classification facet on a bank question.
+
+    Every axis the public Quiz Hub filters on — subject, exam, topic, and
+    whatever comes next — is a ROW here rather than a column on Question.
+    That is the whole point: adding "exam stage" or "paper" later is an
+    INSERT, not a migration, which is what "tags stay optional as this
+    scales" has to mean in practice.
+
+    ``year`` is the deliberate exception and lives on Question as a real
+    integer column — it is range-queried and sorted ("2019 onwards"), and a
+    string tag would make that a text comparison.
+
+    Two optional links keep this from forking a second vocabulary:
+
+      * ``content_tag`` points at content.ContentTag, which Content Studio's
+        Labels screen already manages (create / rename / merge). Its slug is
+        unique and derived from the name, so "Biology" and "  biology  "
+        cannot both exist — exactly the property wanted here.
+      * ``course`` points at the real competitive-exam Course, so an "SSC
+        CGL" tag and the catalog agree on what SSC CGL is. An exam is a
+        Course in this codebase, never a free string.
+
+    The presentation fields (icon / color / cover_image / display_order) and
+    ``status`` are meaningful only for the subject and exam rails the hub
+    renders; they stay NULL/blank for topic tags. They live here rather than
+    in a separate table so the "a new facet is a row" property survives.
+    """
+
+    KIND_SUBJECT = "subject"
+    KIND_EXAM = "exam"
+    KIND_TOPIC = "topic"
+    KIND_CUSTOM = "custom"
+    KIND_CHOICES = [
+        (KIND_SUBJECT, "Subject"),
+        (KIND_EXAM, "Exam"),
+        (KIND_TOPIC, "Topic"),
+        (KIND_CUSTOM, "Custom"),
+    ]
+
+    # The rails the public hub renders. See effective_status() below — the
+    # server, not the admin, has the last word on what a visitor sees.
+    STATUS_LIVE = "live"
+    STATUS_SOON = "soon"
+    STATUS_HIDDEN = "hidden"
+    STATUS_CHOICES = [
+        (STATUS_LIVE, "Live — clickable, shows its question count"),
+        (STATUS_SOON, "Soon — greyed out, not clickable"),
+        (STATUS_HIDDEN, "Hidden — not rendered at all"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    kind = models.CharField(max_length=12, choices=KIND_CHOICES, db_index=True)
+    label = models.CharField(max_length=120)
+    slug = models.SlugField(max_length=140, blank=True)
+
+    content_tag = models.ForeignKey(
+        "content.ContentTag",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="question_tags",
+        help_text="Optional link to the CMS label of the same name.",
+    )
+    course = models.ForeignKey(
+        "courses.Course",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="question_tags",
+        help_text="For kind='exam': the competitive-exam Course this names.",
+    )
+
+    # ── Presentation, for the subject / exam rails only ──────────────────
+    status = models.CharField(
+        max_length=8, choices=STATUS_CHOICES, default=STATUS_SOON,
+        help_text=(
+            "What a visitor sees. Defaults to 'soon' so a newly created "
+            "subject never appears clickable before it has questions."
+        ),
+    )
+    display_order = models.PositiveSmallIntegerField(default=0)
+    icon = models.CharField(
+        max_length=40, blank=True, default="",
+        help_text="Sprite id from the hub's inline SVG sheet, e.g. 'qi-book'.",
+    )
+    color = models.CharField(
+        max_length=9, blank=True, default="",
+        help_text="Accent hex for the subject card, e.g. '#0F9D6B'.",
+    )
+    cover_image = models.ForeignKey(
+        "content.ContentImage",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="question_tag_covers",
+        help_text="Cover art for the recommendation cards, from the CMS library.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["kind", "display_order", "label"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["kind", "slug"], name="uniq_question_tag_per_kind"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["kind", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.get_kind_display()}: {self.label}"
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = slugify(self.label)
+        super().save(*args, **kwargs)
+
+    def effective_status(self, live_question_count):
+        """What a visitor actually sees, given how many live questions exist.
+
+        ``live`` is a FLOOR, not an override. An admin may force a rail to
+        ``soon`` or ``hidden`` for any reason — content is thin, the subject
+        is being retired, a paper is embargoed. An admin may NOT force
+        ``live`` onto a facet with no questions behind it, because that
+        renders a clickable chip that opens an empty grid, which is precisely
+        the lie this page exists to avoid.
+
+        The disagreement is not swallowed: the admin screens surface it as a
+        warning ("set to live but has 0 questions — still showing as Soon")
+        so a human sees why their setting did not take.
+        """
+        if self.status == self.STATUS_HIDDEN:
+            return self.STATUS_HIDDEN
+        if self.status == self.STATUS_LIVE and live_question_count > 0:
+            return self.STATUS_LIVE
+        return self.STATUS_SOON
+
+
 class Question(models.Model):
     DIFFICULTY_EASY = "easy"
     DIFFICULTY_MEDIUM = "medium"
@@ -336,10 +475,28 @@ class Question(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
+    # NULL = a STANDALONE BANK QUESTION, owned by no quiz.
+    #
+    # This was non-nullable until the public Quiz Hub work. Every bank
+    # question used to be a physical child of exactly one Quiz, so the "bank"
+    # was only ever a query-time view (filter on bank_state) and reuse was
+    # copy-on-pick — "add from bank" creates a fresh row and edits never
+    # propagate. That is fine for a teacher assembling a class test, but a
+    # public practice question belongs to no course, no subject and no batch,
+    # so under the old shape it had nowhere to live.
+    #
+    # ⚠ THE FAILURE MODE HERE IS SILENT. Roughly twenty filters across
+    # views.py reach classification through the quiz (quiz__subject,
+    # quiz__created_by, quiz__chapter_tags). Against a NULL quiz those joins
+    # match nothing, so a standalone question does not error — it simply
+    # never appears. Every one of those call sites has a test asserting a
+    # NULL-quiz question IS returned; do not remove them.
     quiz = models.ForeignKey(
         Quiz,
         on_delete=models.CASCADE,
         related_name="questions",
+        null=True,
+        blank=True,
     )
 
     # Which mock-paper section this question sits in. NULL = the flat list,
@@ -369,6 +526,43 @@ class Question(models.Model):
     topic = models.CharField(max_length=120, blank=True, default="")
     difficulty = models.CharField(
         max_length=10, choices=DIFFICULTY_CHOICES, default=DIFFICULTY_MEDIUM,
+    )
+
+    # Optional classification. Every facet is a QuestionTag row (subject,
+    # exam, topic, …) so a new axis costs an INSERT rather than a migration.
+    # blank=True is load-bearing: a question must be insertable with NO tags
+    # at all and still be servable — bulk-imported rows arrive untagged and
+    # get classified afterwards.
+    tags = models.ManyToManyField(
+        "QuestionTag", blank=True, related_name="questions",
+    )
+
+    # The one facet that is a real column rather than a tag, because it is
+    # range-queried and sorted ("2019 onwards", "newest first") and a string
+    # tag would make that a text comparison.
+    year = models.PositiveSmallIntegerField(
+        null=True, blank=True, db_index=True,
+        help_text="Exam year this question is from, when known.",
+    )
+
+    # ⚠ ONLY "single" IS IMPLEMENTED. The column exists now so that adding
+    # multi-select or numeric answers later is a widening of the choices
+    # rather than a schema rewrite of every consumer — but the serializers
+    # reject anything else today, deliberately. Single-select is baked deep:
+    # exactly one Choice.is_correct is enforced in the serializers, and
+    # StudentAnswer.selected_choice is a single non-null FK that cannot
+    # represent two selections or a typed value. Shipping a choice the code
+    # cannot honour would be worse than not having the column.
+    TYPE_SINGLE = "single"
+    TYPE_MULTI = "multi"
+    TYPE_NUMERIC = "numeric"
+    TYPE_CHOICES = [
+        (TYPE_SINGLE, "Single correct answer"),
+        (TYPE_MULTI, "Multiple correct answers (not implemented)"),
+        (TYPE_NUMERIC, "Numeric answer (not implemented)"),
+    ]
+    question_type = models.CharField(
+        max_length=10, choices=TYPE_CHOICES, default=TYPE_SINGLE,
     )
 
     # Provenance for the builder's per-question badge (AI-drafted, imported
@@ -441,6 +635,11 @@ class Question(models.Model):
         ]
 
     def __str__(self):
+        # quiz is nullable now — a standalone bank question has no title to
+        # borrow, and dereferencing it here would blow up the admin changelist
+        # and every error message that interpolates a Question.
+        if self.quiz_id is None:
+            return f"Bank question: {self.text[:60]}"
         return f"Question {self.order} - {self.quiz.title}"
 
     def save(self, *args, **kwargs):

@@ -27,6 +27,7 @@ from courses.models import Course, Subject, TeachingAssignment
 from enrollments.models import Subscription
 from quizzes.models import (
     Quiz, QuizSection, Question, Choice, QuizAttempt, StudentAnswer,
+    QuestionTag,
 )
 
 
@@ -4508,3 +4509,126 @@ class QuizSectionReplaceSemanticsTest(_Phase4Base):
         self.assertEqual(target.section_id, a.id)
         # An explicit null ungrouped the rest.
         self.assertEqual(a.questions.count(), 1)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  PUBLIC QUIZ HUB — Phase 1: the bank becomes first-class
+#
+#  Question.quiz is nullable now. The failure mode of that change is SILENT:
+#  roughly twenty filters reach classification through the quiz, and against a
+#  NULL quiz they match nothing, so a standalone question does not error — it
+#  simply never appears. These tests pin which surfaces a standalone question
+#  is supposed to appear on and which it is deliberately kept off, so a later
+#  phase cannot quietly flip either direction.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class StandaloneBankQuestionTest(TestCase):
+    """A bank question owned by no quiz can exist, be tagged and be read."""
+
+    def test_a_question_can_be_created_with_no_quiz(self):
+        q = Question.objects.create(text="Who founded the Mauryan Empire?")
+        self.assertIsNone(q.quiz_id)
+        self.assertEqual(Question.objects.filter(quiz__isnull=True).count(), 1)
+
+    def test_str_does_not_dereference_a_null_quiz(self):
+        """__str__ used to interpolate self.quiz.title unconditionally, which
+        would blow up the Django admin changelist and any error message that
+        formats a Question."""
+        q = Question.objects.create(text="A" * 80)
+        self.assertIn("Bank question", str(q))
+
+    def test_a_question_is_insertable_with_no_tags_at_all(self):
+        """'Tags stay optional as this scales' has to mean a bulk-imported row
+        with zero classification is still a valid, servable question. If tags
+        were ever made required this test is what fails."""
+        q = Question.objects.create(text="Untagged")
+        self.assertEqual(q.tags.count(), 0)
+        self.assertIsNone(q.year)
+
+    def test_tags_are_many_to_many_across_kinds(self):
+        q = Question.objects.create(text="Tagged", year=2023)
+        subj = QuestionTag.objects.create(kind=QuestionTag.KIND_SUBJECT, label="Polity")
+        exam = QuestionTag.objects.create(kind=QuestionTag.KIND_EXAM, label="SSC CGL")
+        q.tags.add(subj, exam)
+        self.assertEqual(q.tags.count(), 2)
+        self.assertEqual(q.year, 2023)
+
+    def test_question_type_defaults_to_single(self):
+        """Only 'single' is implemented; the column exists so adding multi or
+        numeric later widens the choices instead of rewriting the schema."""
+        q = Question.objects.create(text="Q")
+        self.assertEqual(q.question_type, Question.TYPE_SINGLE)
+
+    def test_the_bank_invariant_still_applies_without_a_quiz(self):
+        """Question.save()'s suggest_to_bank rule is enforced at model level
+        precisely because so many call sites create Questions. A standalone
+        question must not be an exception to it."""
+        q = Question.objects.create(text="Q", suggest_to_bank=False)
+        self.assertEqual(q.bank_state, Question.BANK_STATE_PRIVATE)
+        q2 = Question.objects.create(text="Q2")
+        self.assertEqual(q2.bank_state, Question.BANK_STATE_SUGGESTED)
+
+
+class QuestionTagSlugAndUniquenessTest(TestCase):
+
+    def test_slug_is_derived_from_the_label(self):
+        t = QuestionTag.objects.create(kind=QuestionTag.KIND_SUBJECT, label="General Awareness")
+        self.assertEqual(t.slug, "general-awareness")
+
+    def test_the_same_label_may_exist_under_two_different_kinds(self):
+        """Uniqueness is per (kind, slug), not global — 'Economy' is a
+        legitimate subject AND could be an exam paper name. Collapsing them
+        would make one of the two rails unable to name its own facet."""
+        QuestionTag.objects.create(kind=QuestionTag.KIND_SUBJECT, label="Economy")
+        QuestionTag.objects.create(kind=QuestionTag.KIND_TOPIC, label="Economy")
+        self.assertEqual(QuestionTag.objects.filter(slug="economy").count(), 2)
+
+    def test_a_duplicate_within_one_kind_is_refused(self):
+        from django.db import IntegrityError
+        QuestionTag.objects.create(kind=QuestionTag.KIND_SUBJECT, label="Polity")
+        with self.assertRaises(IntegrityError):
+            QuestionTag.objects.create(kind=QuestionTag.KIND_SUBJECT, label="polity")
+
+
+class QuestionTagEffectiveStatusTest(TestCase):
+    """'live' is a FLOOR, not an override.
+
+    An admin may force a rail to soon or hidden for any reason. An admin may
+    NOT force it live with nothing behind it, because that renders a
+    clickable chip that opens an empty grid — the exact lie the whole page
+    exists to avoid.
+    """
+
+    def setUp(self):
+        self.tag = QuestionTag.objects.create(
+            kind=QuestionTag.KIND_SUBJECT, label="Reasoning")
+
+    def test_a_new_rail_defaults_to_soon(self):
+        """Never 'live' on creation — a subject created before its questions
+        would otherwise be clickable and empty for the window in between."""
+        self.assertEqual(self.tag.status, QuestionTag.STATUS_SOON)
+
+    def test_live_with_questions_is_live(self):
+        self.tag.status = QuestionTag.STATUS_LIVE
+        self.assertEqual(
+            self.tag.effective_status(12), QuestionTag.STATUS_LIVE)
+
+    def test_live_with_zero_questions_degrades_to_soon(self):
+        """THE central rule. An admin setting Mathematics live before any
+        Mathematics questions exist must still render 'Soon'."""
+        self.tag.status = QuestionTag.STATUS_LIVE
+        self.assertEqual(
+            self.tag.effective_status(0), QuestionTag.STATUS_SOON)
+
+    def test_hidden_stays_hidden_even_when_full(self):
+        """The admin's suppression is honoured in the restrictive direction —
+        that half of the setting IS an override."""
+        self.tag.status = QuestionTag.STATUS_HIDDEN
+        self.assertEqual(
+            self.tag.effective_status(500), QuestionTag.STATUS_HIDDEN)
+
+    def test_soon_stays_soon_even_when_full(self):
+        self.tag.status = QuestionTag.STATUS_SOON
+        self.assertEqual(
+            self.tag.effective_status(500), QuestionTag.STATUS_SOON)
