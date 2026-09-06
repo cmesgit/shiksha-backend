@@ -40,12 +40,23 @@ Signup cases:
           skill; that asymmetry was policy only and has been removed.
   Case 7  EXISTING teacher + signup for a track they already hold → BLOCK
 
-⚠ THIS SERIALIZER IS BEING RETIRED. Account-first registration lives in
-`accounts/registration.py` and adding a teacher identity lives in
-`accounts/identity_views.py`. Cases 3–6 exist only because signup can be
-re-entered by an account that already exists; once the frontend stops calling
-`/signup/`, they are dead. See design_handoff_account_model/BUILD_GUIDE.md
-Phase 8. Do not add new branches here.
+⚠ DEPRECATED — but NOT deletable yet. Read this before "finishing the job".
+
+The web frontend no longer calls `POST /signup/`: `/signup` redirects to
+`/register` and `auth/Signup.jsx` is deleted (Phase 8, 2026-09-06). Account
+creation lives in `accounts/registration.py`; adding a teacher identity lives
+in `accounts/identity_views.py`.
+
+**The endpoint stays because the Flutter app still uses it.**
+`shikshacom_app/lib/core/network/dio_client.dart:49` whitelists
+`accounts/signup/` as a no-auth path, and `login_screen.dart:212` points at
+the flow. Deleting the endpoint breaks account creation for every mobile user,
+silently, at deploy time — not at build time, because nothing in this repo
+references it.
+
+To actually retire it: migrate the Flutter app to `POST /accounts/register/`,
+ship that, wait for adoption, THEN delete this. Until then, do not add new
+branches here and do not treat the deprecation as done.
 """
 import base64
 import binascii

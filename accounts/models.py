@@ -39,6 +39,29 @@ class User(AbstractUser):
     accepted_terms_version = models.CharField(max_length=20, blank=True)
     terms_accepted_at = models.DateTimeField(null=True, blank=True)
 
+    # ── "Land where you left off" (account-model simplification, Phase 5) ──
+    # WHO the person last was, and WHAT they were last doing. Two axes, kept
+    # separate on purpose — that separation is the whole point of the phase.
+    #
+    # The profile picker used to appear for ANY account holding a teacher
+    # identity, even one with a single learner profile and a single approved
+    # track, because it conflated "which person is this" (a people question)
+    # with "am I learning or teaching" (a mode question). A teacher with one
+    # profile answered a two-option question on every single login.
+    #
+    # These let login restore the last state instead of asking. They are a
+    # CONVENIENCE and never an authority: every gate still runs on restore, so
+    # a revoked track, a deactivated profile or a PIN all still stop it. See
+    # `issue_login_session`.
+    last_context = models.CharField(max_length=10, blank=True, default="")
+    last_track   = models.CharField(max_length=10, blank=True, default="")
+    last_profile = models.ForeignKey(
+        "accounts.LearnerProfile",
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username"]
 

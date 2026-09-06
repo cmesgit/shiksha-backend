@@ -1,19 +1,21 @@
 """
-accounts/auth_flow.py  ·  REFACTORED — single-password model
+accounts/auth_flow.py  ·  account · profiles with PIN · teacher PIN
 ─────────────────────────────────────────────────────────────
 ONE email · ONE password · profiles with PIN.
 
   Step 1  POST /api/accounts/login/              { email, password }
-          → authenticates account, issues account-scoped cookie
-          → returns profiles list + whether teacher identity exists
-          → auto-selects if single profile + no teacher identity
+          → authenticates account, issues a cookie
+          → RESTORES the last-used identity when it is still valid, so a
+            returning person lands where they left off (Phase 5). Falls back
+            to auto-selecting a single PIN-free profile, and only shows the
+            picker when there is a genuine choice to make.
 
   Step 2A POST /api/accounts/profiles/select/    { profile_id, pin? }
           → verifies profile belongs to account, checks PIN if set
           → issues LEARNER token with active_profile claim
 
-  Step 2B POST /api/accounts/context/teacher/    { password }
-          → verifies ACCOUNT password (same password as login)
+  Step 2B POST /api/accounts/context/teacher/    { pin? }
+          → checks the teacher-mode PIN if one is set, nothing if not
           → issues TEACHER token
 
   Switch  Call Step 2A or 2B at any time — no re-login needed.
@@ -400,50 +402,116 @@ def _ensure_default_profile(user):
     return [lp]
 
 
+def remember_context(user, *, context, profile=None, track=None):
+    """Record where this account last was, for `issue_login_session` to restore.
+
+    Called from every place a person commits to an identity: selecting a
+    profile, entering teacher mode, switching track. Best-effort — a failure
+    here must never break the switch that triggered it, since the only cost is
+    that the next login asks a question it could have skipped.
+    """
+    fields = []
+    if context and user.last_context != context:
+        user.last_context = context
+        fields.append("last_context")
+    if profile is not None and user.last_profile_id != profile.id:
+        user.last_profile = profile
+        fields.append("last_profile")
+    if track and user.last_track != track:
+        user.last_track = track
+        fields.append("last_track")
+    if fields:
+        user.save(update_fields=fields)
+
+
 def issue_login_session(user, request):
     """Open a session for a freshly-authenticated account and mint its token.
 
     Returns ``(body, refresh)``. The caller wraps `body` in whatever response
     shape it needs and passes `refresh` to `set_auth_cookies`.
 
-    Extracted from LoginView so the two paths that can start a brand-new
-    session — password login, and auto-login from the email verification link
-    (`VerifyEmailView`) — cannot drift on what a new session looks like. Both
-    must agree on the auto-select rule, the `sid`, and the response body, and
-    keeping one copy is the only way to guarantee that.
+    Shared by password login and by auto-login from the email verification
+    link (`VerifyEmailView`) so the two cannot drift on the selection rule,
+    the `sid`, or the response body.
 
-    Behaviour is byte-for-byte what LoginView did inline before the extraction.
+    LAND WHERE YOU LEFT OFF (Phase 5)
+    ─────────────────────────────────
+    This used to send anyone with a teacher identity to the profile picker,
+    even an account with ONE learner profile and ONE approved track — because
+    it treated "which person am I" and "am I teaching right now" as the same
+    question. A teacher with one profile answered a two-option prompt on every
+    login, forever.
+
+    Now the last-used identity is restored when it is still valid. `last_*` is
+    a HINT, never an authority: every gate is re-evaluated here, so a track
+    that was revoked, a profile that was deactivated or deleted, and any PIN
+    all still stop the restore and fall through to the picker.
     """
     profiles = _ensure_default_profile(user)
     teacher  = getattr(user, "teacher_profile", None)
-    # A teacher identity in ANY state (even a faculty application still in
-    # review) means we show the picker, so the person sees their status and
-    # can pick the learner side or an approved teaching track.
-    has_teacher_identity = teacher is not None
 
     # One UserSession per login — this is the only place one is opened. Its
     # id rides every token this browser is issued from now on so Settings →
     # Sessions & devices shows one row per device, not one per switch.
     session = open_session(user, request)
 
-    # Auto-select: single PIN-free profile, no teacher identity at all.
-    if len(profiles) == 1 and not has_teacher_identity:
-        profile = profiles[0]
-        if not profile.has_pin():
-            refresh = build_tokens(
-                user, context=CTX_LEARNER, profile=profile, sid=session.id
-            )
-            body = {
-                "context":       CTX_LEARNER,
-                "profile":       serialize_profile_card(profile),
-                "profiles":      [serialize_profile_card(profile)],
-                "teacher":       None,
-                "auto_selected": True,
-            }
-            return body, refresh
+    def _learner_body(profile, auto):
+        return {
+            "context":       CTX_LEARNER,
+            "profile":       serialize_profile_card(profile),
+            "profiles":      [serialize_profile_card(p) for p in profiles],
+            "teacher":       serialize_teacher(teacher),
+            "auto_selected": auto,
+        }
 
-    # Multiple profiles or a teacher identity → account token, and the
-    # frontend shows the profile picker.
+    # ── Restore teacher context ──
+    # Only when the track is STILL approved and the role is still active, and
+    # only when no teacher PIN is set: the PIN exists to stop someone already
+    # holding the session (a child on a shared device) from opening a
+    # gradebook, and silently restoring past it would defeat it entirely.
+    if (
+        user.last_context == CTX_TEACHER
+        and teacher is not None
+        and not teacher.has_pin()
+        and user.has_role(Role.TEACHER)
+    ):
+        approved = teacher.approved_tracks()
+        track = user.last_track if user.last_track in approved else (
+            approved[0] if approved else None
+        )
+        if track:
+            refresh = build_tokens(
+                user, context=CTX_TEACHER, active_track=track, sid=session.id
+            )
+            return {
+                "context":       CTX_TEACHER,
+                "teacher":       serialize_teacher(teacher, active_track=track),
+                "profiles":      [serialize_profile_card(p) for p in profiles],
+                "auto_selected": True,
+            }, refresh
+
+    # ── Restore the last learner profile ──
+    # Must still belong to this account and be active; `profiles` is already
+    # filtered to active, so membership in it is the whole check.
+    if user.last_context == CTX_LEARNER and user.last_profile_id:
+        match = next((p for p in profiles if p.id == user.last_profile_id), None)
+        if match is not None and not match.has_pin():
+            refresh = build_tokens(
+                user, context=CTX_LEARNER, profile=match, sid=session.id
+            )
+            return _learner_body(match, True), refresh
+
+    # ── First login, or nothing restorable: the original rule ──
+    # A single PIN-free profile needs no picker. A teacher identity no longer
+    # forces one — "who" and "what" are different questions, and the header
+    # switcher answers the second.
+    if len(profiles) == 1 and not profiles[0].has_pin():
+        refresh = build_tokens(
+            user, context=CTX_LEARNER, profile=profiles[0], sid=session.id
+        )
+        return _learner_body(profiles[0], True), refresh
+
+    # Several profiles, or a PIN → let them choose.
     refresh = build_tokens(user, context=CTX_ACCOUNT, sid=session.id)
     body = {
         "context":  CTX_ACCOUNT,
@@ -512,6 +580,7 @@ class ProfileSelectView(APIView):
         # Same browser, same session — carry the sid rather than minting a new one.
         sid = session_id_for(request)
         touch_session(sid, request)
+        remember_context(request.user, context=CTX_LEARNER, profile=profile)
         refresh = build_tokens(
             request.user, context=CTX_LEARNER, profile=profile, sid=sid
         )
@@ -545,6 +614,23 @@ class TeacherContextView(APIView):
 
     Setting or clearing the PIN still requires the account password; that
     lives in TeacherPinView, not here.
+
+    ⚠ MOBILE IMPACT — the Flutter app has NOT been updated.
+    `shikshacom_app/lib/core/auth/auth_api.dart:193` sends `{password, track}`
+    and switches on a `bad_password` code that this view no longer returns.
+    Nothing is broken today: no account has a PIN yet (the field is new), and
+    an unrecognised `password` key is simply ignored while `check_pin("")`
+    returns True for a PIN-less profile. But the FIRST teacher to set a PIN
+    can no longer enter teacher mode from the phone — they get `bad_pin`,
+    which the app does not handle.
+
+    Accepting the account password here as a fallback was considered and
+    rejected: the PIN exists to stop someone who ALREADY holds the session —
+    typically a child on a shared family device — and such a person may well
+    know or have watched the account password. A password fallback would
+    hand them exactly what the PIN is meant to withhold.
+
+    So: update the app before telling teachers the PIN exists.
 
     `track` is optional and one of "academy" | "skill". It chooses which
     dashboard to enter for teachers approved on both tracks; when omitted we
@@ -611,6 +697,7 @@ class TeacherContextView(APIView):
 
         sid = session_id_for(request)
         touch_session(sid, request)
+        remember_context(request.user, context=CTX_TEACHER, track=track)
         refresh = build_tokens(
             request.user, context=CTX_TEACHER, active_track=track, sid=sid
         )
@@ -678,6 +765,7 @@ class TeacherTrackSwitchView(APIView):
 
         sid = session_id_for(request)
         touch_session(sid, request)
+        remember_context(request.user, context=CTX_TEACHER, track=track)
         refresh = build_tokens(
             request.user, context=CTX_TEACHER, active_track=track, sid=sid
         )
