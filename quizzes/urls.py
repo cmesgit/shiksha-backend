@@ -43,6 +43,11 @@ from .views import (
     AdminQuizListView,
     AdminQuizDetailView,
     AdminQuizReviewView,
+    AdminBankQuestionListCreateView,
+    AdminBankQuestionDetailView,
+    AdminQuestionTagListCreateView,
+    AdminQuestionTagDetailView,
+    AdminQuestionTagMergeView,
 )
 
 urlpatterns = [
@@ -127,6 +132,20 @@ urlpatterns = [
 
     # ── Admin: Academy Quizzes (verification queue) ───────────────────────────
     path("quizzes/admin/", AdminQuizListView.as_view()),
+    # ⚠ ORDER MATTERS. "quizzes/admin/<uuid:pk>/" below is a catch-all for any
+    # single path segment after "admin/" — it only leaves room for "bank/" and
+    # "tags/" (added for the public Quiz Hub's admin authoring screens) to
+    # work AT ALL because neither string parses as a UUID, exactly the same
+    # reason "question-bank/" already works below despite sitting after this
+    # pattern too. Every ROUTE UNDER bank/ and tags/ is placed ABOVE this
+    # catch-all anyway, on purpose, so this stays true even if Django's UUID
+    # converter is ever loosened (e.g. to accept dashless hex) — don't move
+    # them below it.
+    path("quizzes/admin/bank/", AdminBankQuestionListCreateView.as_view()),
+    path("quizzes/admin/bank/<uuid:pk>/", AdminBankQuestionDetailView.as_view()),
+    path("quizzes/admin/tags/", AdminQuestionTagListCreateView.as_view()),
+    path("quizzes/admin/tags/merge/", AdminQuestionTagMergeView.as_view()),
+    path("quizzes/admin/tags/<uuid:pk>/", AdminQuestionTagDetailView.as_view()),
     path("quizzes/admin/<uuid:pk>/", AdminQuizDetailView.as_view()),
     path("quizzes/admin/<uuid:pk>/review/", AdminQuizReviewView.as_view()),
     # A1 · admin question-bank review queue (Phase 7).

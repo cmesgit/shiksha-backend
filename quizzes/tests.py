@@ -27,8 +27,9 @@ from courses.models import Course, Subject, TeachingAssignment
 from enrollments.models import Subscription
 from quizzes.models import (
     Quiz, QuizSection, Question, Choice, QuizAttempt, StudentAnswer,
-    QuestionTag,
+    QuestionTag, PracticeSession, PracticeAnswer,
 )
+from global_settings.models import GlobalSettings
 
 
 class QuizRetakeAndTimerTest(TestCase):
@@ -4891,3 +4892,675 @@ class BankQuestionPaginationQueryCountTest(TestCase):
             f"chapter chip looks N+1 again under pagination: {len(ctx)} "
             f"queries for a 6-row page out of 20",
         )
+
+
+# =====================================================
+# Public Quiz Hub — admin authoring: standalone bank questions + tags
+# =====================================================
+#
+# Everything below is new API surface (quizzes/admin/bank/... and
+# quizzes/admin/tags/...) built over the schema Phase 1 already landed
+# (StandaloneBankQuestionTest / QuestionTag* above). None of it touches
+# AdminQuestionBankQueueView, AdminQuestionReviewView,
+# AdminQuestionBulkReviewView or TeacherQuestionBankView — those keep their
+# own tests above, unmodified.
+
+class QuizHubAdminAPITestBase(TestCase):
+    """Shared fixture + flag/cache hygiene for every test below.
+
+    IsPublicQuizHubEnabled caches for 60s exactly like IsStudioEditor (see
+    quizzes/permissions.py) — cache.clear() in setUp, not reliance on test
+    ordering, is what content/tests_exam_create.py does for the same reason
+    and is repeated here.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        cls.admin = User.objects.create_user(
+            username="qh_admin", email="qh_admin@test.com", password="x",
+            is_verified=True, is_staff=True, is_superuser=True,
+        )
+        cls.nonadmin = User.objects.create_user(
+            username="qh_plain", email="qh_plain@test.com", password="x",
+            is_verified=True,
+        )
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        settings_row = GlobalSettings.load()
+        settings_row.public_quiz_hub_enabled = True
+        settings_row.save()
+
+    def _admin(self):
+        c = APIClient()
+        c.force_authenticate(user=self.admin, token={"context": "admin"})
+        return c
+
+    def _nonadmin(self):
+        c = APIClient()
+        c.force_authenticate(user=self.nonadmin, token={"context": "student"})
+        return c
+
+    def _disable_hub(self):
+        from django.core.cache import cache
+        settings_row = GlobalSettings.load()
+        settings_row.public_quiz_hub_enabled = False
+        settings_row.save()
+        cache.clear()
+
+    def _mcq(self, **extra):
+        """Minimal valid create-body for a standalone bank question."""
+        body = {
+            "text": "What is the capital of India?",
+            "difficulty": "easy",
+            "choices": [
+                {"text": "New Delhi", "is_correct": True},
+                {"text": "Mumbai", "is_correct": False},
+            ],
+        }
+        body.update(extra)
+        return body
+
+
+class AdminBankQuestionCreateTest(QuizHubAdminAPITestBase):
+    BANK_URL = "/api/quizzes/admin/bank/"
+
+    def test_creates_with_no_quiz(self):
+        r = self._admin().post(self.BANK_URL, self._mcq(), format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        q = Question.objects.get(pk=r.data["id"])
+        self.assertIsNone(q.quiz_id)
+
+    def test_created_question_is_accepted_but_still_needs_an_explanation(self):
+        """Admin-authored/imported rows are 'accepted' immediately (there is
+        no teacher on the other end to suggest them to an admin) but that
+        alone is not enough to be servable — see publishable() below."""
+        r = self._admin().post(self.BANK_URL, self._mcq(), format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        q = Question.objects.get(pk=r.data["id"])
+        self.assertEqual(q.bank_state, Question.BANK_STATE_ACCEPTED)
+        self.assertEqual(q.explanation, "")
+
+    def test_explanation_is_optional_on_create(self):
+        r = self._admin().post(self.BANK_URL, self._mcq(), format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+
+    def test_explanation_can_be_supplied_on_create(self):
+        r = self._admin().post(
+            self.BANK_URL, self._mcq(explanation="Delhi is the capital."),
+            format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(
+            Question.objects.get(pk=r.data["id"]).explanation,
+            "Delhi is the capital.")
+
+    def test_rejects_non_single_question_type(self):
+        r = self._admin().post(
+            self.BANK_URL, self._mcq(question_type="multi"), format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertIn("question_type", r.data)
+        self.assertFalse(Question.objects.filter(text=self._mcq()["text"]).exists())
+
+    def test_rejects_numeric_question_type_too(self):
+        r = self._admin().post(
+            self.BANK_URL, self._mcq(question_type="numeric"), format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_fewer_than_two_choices_is_refused(self):
+        r = self._admin().post(
+            self.BANK_URL,
+            self._mcq(choices=[{"text": "Only one", "is_correct": True}]),
+            format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_zero_correct_choices_is_refused(self):
+        r = self._admin().post(
+            self.BANK_URL,
+            self._mcq(choices=[
+                {"text": "a", "is_correct": False},
+                {"text": "b", "is_correct": False},
+            ]),
+            format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_two_correct_choices_is_refused(self):
+        r = self._admin().post(
+            self.BANK_URL,
+            self._mcq(choices=[
+                {"text": "a", "is_correct": True},
+                {"text": "b", "is_correct": True},
+            ]),
+            format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_blank_text_is_refused(self):
+        r = self._admin().post(self.BANK_URL, self._mcq(text=""), format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_tag_ids_attach_on_create(self):
+        tag = QuestionTag.objects.create(
+            kind=QuestionTag.KIND_SUBJECT, label="Geography")
+        r = self._admin().post(
+            self.BANK_URL, self._mcq(tag_ids=[str(tag.id)]), format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        q = Question.objects.get(pk=r.data["id"])
+        self.assertEqual(list(q.tags.all()), [tag])
+
+    def test_nonadmin_gets_403(self):
+        r = self._nonadmin().post(self.BANK_URL, self._mcq(), format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def test_flag_off_gets_503(self):
+        self._disable_hub()
+        r = self._admin().post(self.BANK_URL, self._mcq(), format="json")
+        self.assertEqual(r.status_code, 503, r.content)
+        self.assertFalse(Question.objects.exists())
+
+
+class QuestionPublishableQuerysetTest(TestCase):
+    """Question.objects.publishable() — the read-time floor beneath
+    bank_state='accepted' (§5 of the handoff: prod has 10 accepted questions
+    but only 11 WITH an explanation platform-wide, so 'accepted' alone is not
+    'servable to a learner')."""
+
+    def _question(self, **kwargs):
+        defaults = dict(text="Q", explanation="e", bank_state=Question.BANK_STATE_ACCEPTED)
+        defaults.update(kwargs)
+        q = Question.objects.create(**defaults)
+        return q
+
+    def test_accepted_with_explanation_and_one_correct_choice_is_publishable(self):
+        q = self._question()
+        Choice.objects.create(question=q, text="a", is_correct=True)
+        Choice.objects.create(question=q, text="b", is_correct=False)
+        self.assertIn(q, Question.objects.publishable())
+
+    def test_accepted_but_no_explanation_is_excluded(self):
+        """The exact split the create endpoint relies on: explanation is
+        optional to STORE, mandatory to SERVE."""
+        q = self._question(explanation="")
+        Choice.objects.create(question=q, text="a", is_correct=True)
+        Choice.objects.create(question=q, text="b", is_correct=False)
+        self.assertNotIn(q, Question.objects.publishable())
+
+    def test_suggested_state_is_excluded_even_with_an_explanation(self):
+        q = self._question(bank_state=Question.BANK_STATE_SUGGESTED)
+        Choice.objects.create(question=q, text="a", is_correct=True)
+        Choice.objects.create(question=q, text="b", is_correct=False)
+        self.assertNotIn(q, Question.objects.publishable())
+
+    def test_fewer_than_two_choices_is_excluded(self):
+        q = self._question()
+        Choice.objects.create(question=q, text="a", is_correct=True)
+        self.assertNotIn(q, Question.objects.publishable())
+
+    def test_zero_correct_choices_is_excluded(self):
+        q = self._question()
+        Choice.objects.create(question=q, text="a", is_correct=False)
+        Choice.objects.create(question=q, text="b", is_correct=False)
+        self.assertNotIn(q, Question.objects.publishable())
+
+    def test_two_correct_choices_is_excluded(self):
+        q = self._question()
+        Choice.objects.create(question=q, text="a", is_correct=True)
+        Choice.objects.create(question=q, text="b", is_correct=True)
+        self.assertNotIn(q, Question.objects.publishable())
+
+
+class AdminBankQuestionListFilterTest(QuizHubAdminAPITestBase):
+    BANK_URL = "/api/quizzes/admin/bank/"
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        cls.subject_tag = QuestionTag.objects.create(
+            kind=QuestionTag.KIND_SUBJECT, label="Polity")
+        cls.exam_tag = QuestionTag.objects.create(
+            kind=QuestionTag.KIND_EXAM, label="UPSC")
+
+        cls.tagged = Question.objects.create(
+            text="Who is the President of India?", difficulty="medium",
+            year=2022, bank_state=Question.BANK_STATE_ACCEPTED,
+        )
+        cls.tagged.tags.add(cls.subject_tag, cls.exam_tag)
+        Choice.objects.create(question=cls.tagged, text="a", is_correct=True)
+        Choice.objects.create(question=cls.tagged, text="b", is_correct=False)
+
+        cls.untagged = Question.objects.create(
+            text="Untagged import row", difficulty="hard", year=2019,
+            bank_state=Question.BANK_STATE_SUGGESTED,
+        )
+        Choice.objects.create(question=cls.untagged, text="a", is_correct=True)
+        Choice.objects.create(question=cls.untagged, text="b", is_correct=False)
+
+        # A teacher's quiz question must NEVER show up on this screen.
+        cls.course = Course.objects.create(title="Class 9")
+        cls.subject = Subject.objects.create(course=cls.course, name="Bio")
+        teacher = User.objects.create_user(
+            username="qh_teacher", email="qh_teacher@test.com", password="x",
+            is_verified=True)
+        UserRole.objects.create(
+            user=teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+        quiz = Quiz.objects.create(subject=cls.subject, created_by=teacher, title="T")
+        cls.quiz_question = Question.objects.create(
+            quiz=quiz, text="Teacher's own question", marks=1, order=0,
+            explanation="e")
+
+    def _list(self, **params):
+        return self._admin().get(self.BANK_URL, params)
+
+    def _texts(self, r):
+        return [q["text"] for q in r.data["results"]]
+
+    def test_list_is_paginated_by_default(self):
+        r = self._list()
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn("results", r.data)
+        self.assertIn("count", r.data)
+
+    def test_never_lists_a_teachers_quiz_question(self):
+        r = self._list()
+        self.assertNotIn("Teacher's own question", self._texts(r))
+
+    def test_untagged_filter(self):
+        r = self._list(untagged="1")
+        texts = self._texts(r)
+        self.assertIn("Untagged import row", texts)
+        self.assertNotIn("Who is the President of India?", texts)
+
+    def test_subject_filter(self):
+        r = self._list(subject=str(self.subject_tag.id))
+        self.assertEqual(self._texts(r), ["Who is the President of India?"])
+
+    def test_exam_filter(self):
+        r = self._list(exam=str(self.exam_tag.id))
+        self.assertEqual(self._texts(r), ["Who is the President of India?"])
+
+    def test_difficulty_filter(self):
+        r = self._list(difficulty="hard")
+        self.assertEqual(self._texts(r), ["Untagged import row"])
+
+    def test_year_filter(self):
+        r = self._list(year="2022")
+        self.assertEqual(self._texts(r), ["Who is the President of India?"])
+
+    def test_state_filter(self):
+        r = self._list(state=Question.BANK_STATE_SUGGESTED)
+        self.assertEqual(self._texts(r), ["Untagged import row"])
+
+    def test_search_filter(self):
+        r = self._list(search="President")
+        self.assertEqual(self._texts(r), ["Who is the President of India?"])
+
+    def test_nonadmin_gets_403(self):
+        r = self._nonadmin().get(self.BANK_URL)
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def test_flag_off_gets_503(self):
+        self._disable_hub()
+        r = self._admin().get(self.BANK_URL)
+        self.assertEqual(r.status_code, 503, r.content)
+
+
+class AdminBankQuestionDetailTest(QuizHubAdminAPITestBase):
+
+    def setUp(self):
+        super().setUp()
+        self.q = Question.objects.create(
+            text="Original text", bank_state=Question.BANK_STATE_ACCEPTED)
+        Choice.objects.create(question=self.q, text="a", is_correct=True)
+        Choice.objects.create(question=self.q, text="b", is_correct=False)
+
+    def _url(self, q=None):
+        return f"/api/quizzes/admin/bank/{(q or self.q).id}/"
+
+    def test_get_one(self):
+        r = self._admin().get(self._url())
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["text"], "Original text")
+
+    def test_patch_updates_scalar_fields_without_touching_choices(self):
+        r = self._admin().patch(
+            self._url(), {"explanation": "Because."}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.q.refresh_from_db()
+        self.assertEqual(self.q.explanation, "Because.")
+        self.assertEqual(self.q.choices.count(), 2)
+
+    def test_patch_can_replace_the_whole_choice_list(self):
+        r = self._admin().patch(
+            self._url(),
+            {"choices": [
+                {"text": "x", "is_correct": False},
+                {"text": "y", "is_correct": True},
+                {"text": "z", "is_correct": False},
+            ]},
+            format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.q.refresh_from_db()
+        self.assertEqual(self.q.choices.count(), 3)
+        self.assertEqual(
+            {c.text for c in self.q.choices.all()}, {"x", "y", "z"})
+
+    def test_patch_replacing_choices_still_enforces_exactly_one_correct(self):
+        r = self._admin().patch(
+            self._url(),
+            {"choices": [
+                {"text": "x", "is_correct": True},
+                {"text": "y", "is_correct": True},
+            ]},
+            format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+        self.q.refresh_from_db()
+        self.assertEqual(self.q.choices.count(), 2)  # untouched
+
+    def test_patch_can_change_tags(self):
+        tag = QuestionTag.objects.create(kind=QuestionTag.KIND_TOPIC, label="Rivers")
+        r = self._admin().patch(
+            self._url(), {"tag_ids": [str(tag.id)]}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual([t["id"] for t in r.data["tags"]], [str(tag.id)])
+
+    def test_a_teachers_quiz_question_is_not_reachable_here(self):
+        course = Course.objects.create(title="C")
+        subject = Subject.objects.create(course=course, name="S")
+        teacher = User.objects.create_user(
+            username="qh_teacher2", email="qh_teacher2@test.com", password="x",
+            is_verified=True)
+        quiz = Quiz.objects.create(subject=subject, created_by=teacher, title="T")
+        quiz_q = Question.objects.create(
+            quiz=quiz, text="Not standalone", marks=1, order=0, explanation="e")
+        r = self._admin().get(self._url(quiz_q))
+        self.assertEqual(r.status_code, 404, r.content)
+
+    def test_delete_with_no_usage_succeeds(self):
+        r = self._admin().delete(self._url())
+        self.assertEqual(r.status_code, 204, r.content)
+        self.assertFalse(Question.objects.filter(pk=self.q.id).exists())
+
+    def test_delete_refused_when_a_student_answer_references_it(self):
+        course = Course.objects.create(title="C2")
+        subject = Subject.objects.create(course=course, name="S2")
+        student = User.objects.create_user(
+            username="qh_stu", email="qh_stu@test.com", password="x", is_verified=True)
+        quiz = Quiz.objects.create(subject=subject, created_by=self.admin, title="Q")
+        attempt = QuizAttempt.objects.create(quiz=quiz, student=student)
+        choice = self.q.choices.first()
+        StudentAnswer.objects.create(
+            attempt=attempt, question=self.q, selected_choice=choice, is_correct=True)
+
+        r = self._admin().delete(self._url())
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertEqual(r.data["used_by"]["student_answers"], 1)
+        self.assertTrue(Question.objects.filter(pk=self.q.id).exists())
+
+    def test_delete_refused_when_a_practice_answer_references_it(self):
+        from courses.models import Chapter
+
+        course = Course.objects.create(title="C3")
+        subject = Subject.objects.create(course=course, name="S3")
+        chapter = Chapter.objects.create(subject=subject, title="Ch", order=0)
+        student = User.objects.create_user(
+            username="qh_stu2", email="qh_stu2@test.com", password="x", is_verified=True)
+        learner_profile = LearnerProfile.objects.create(account=student, display_name="Student")
+        session = PracticeSession.objects.create(
+            learner_profile=learner_profile, chapter=chapter)
+        session.questions.add(self.q)
+        PracticeAnswer.objects.create(
+            session=session, question=self.q, selected_choice=self.q.choices.first(),
+            is_correct=True)
+
+        r = self._admin().delete(self._url())
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertEqual(r.data["used_by"]["practice_answers"], 1)
+        self.assertEqual(r.data["used_by"]["practice_sessions"], 1)
+
+    def test_delete_refused_when_only_served_in_a_practice_session_unanswered(self):
+        """A session can serve a question the learner never got to — the
+        M2M alone (no PracticeAnswer yet) must still count as usage."""
+        from courses.models import Chapter
+
+        course = Course.objects.create(title="C4")
+        subject = Subject.objects.create(course=course, name="S4")
+        chapter = Chapter.objects.create(subject=subject, title="Ch", order=0)
+        student = User.objects.create_user(
+            username="qh_stu3", email="qh_stu3@test.com", password="x", is_verified=True)
+        learner_profile = LearnerProfile.objects.create(account=student, display_name="Student")
+        session = PracticeSession.objects.create(
+            learner_profile=learner_profile, chapter=chapter)
+        session.questions.add(self.q)
+
+        r = self._admin().delete(self._url())
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertEqual(r.data["used_by"]["practice_sessions"], 1)
+        self.assertNotIn("practice_answers", r.data["used_by"])
+
+    def test_nonadmin_gets_403_on_get_patch_delete(self):
+        c = self._nonadmin()
+        self.assertEqual(c.get(self._url()).status_code, 403)
+        self.assertEqual(
+            c.patch(self._url(), {"text": "x"}, format="json").status_code, 403)
+        self.assertEqual(c.delete(self._url()).status_code, 403)
+
+    def test_flag_off_gets_503_on_get_patch_delete(self):
+        self._disable_hub()
+        c = self._admin()
+        self.assertEqual(c.get(self._url()).status_code, 503)
+        self.assertEqual(
+            c.patch(self._url(), {"text": "x"}, format="json").status_code, 503)
+        self.assertEqual(c.delete(self._url()).status_code, 503)
+
+
+class AdminQuestionTagAPITest(QuizHubAdminAPITestBase):
+    TAGS_URL = "/api/quizzes/admin/tags/"
+
+    def _mk_tag(self, **kwargs):
+        defaults = dict(kind=QuestionTag.KIND_SUBJECT, label="Reasoning")
+        defaults.update(kwargs)
+        return QuestionTag.objects.create(**defaults)
+
+    def test_create_defaults_to_soon_and_zero_count(self):
+        r = self._admin().post(
+            self.TAGS_URL, {"kind": "subject", "label": "Economy"}, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.data["status"], "soon")
+        self.assertEqual(r.data["effective_status"], "soon")
+        self.assertFalse(r.data["status_downgraded"])
+        self.assertEqual(r.data["question_count"], 0)
+
+    def test_duplicate_label_within_the_same_kind_is_refused_with_a_400(self):
+        self._mk_tag(label="Polity")
+        r = self._admin().post(
+            self.TAGS_URL, {"kind": "subject", "label": "polity"}, format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(QuestionTag.objects.filter(slug="polity").count(), 1)
+
+    def test_same_label_is_fine_across_different_kinds(self):
+        self._mk_tag(kind=QuestionTag.KIND_SUBJECT, label="Economy")
+        r = self._admin().post(
+            self.TAGS_URL, {"kind": "exam", "label": "Economy"}, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+
+    def test_question_count_only_counts_publishable_questions(self):
+        tag = self._mk_tag()
+        # One publishable question carrying the tag...
+        good = Question.objects.create(
+            text="Q1", explanation="e", bank_state=Question.BANK_STATE_ACCEPTED)
+        Choice.objects.create(question=good, text="a", is_correct=True)
+        Choice.objects.create(question=good, text="b", is_correct=False)
+        good.tags.add(tag)
+        # ...and one merely "suggested" (not yet reviewed) — must NOT count.
+        pending = Question.objects.create(
+            text="Q2", explanation="e", bank_state=Question.BANK_STATE_SUGGESTED)
+        Choice.objects.create(question=pending, text="a", is_correct=True)
+        Choice.objects.create(question=pending, text="b", is_correct=False)
+        pending.tags.add(tag)
+
+        r = self._admin().get(f"{self.TAGS_URL}{tag.id}/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["question_count"], 1)
+
+    def test_effective_status_downgrades_a_live_tag_with_zero_questions(self):
+        """THE central rule surfaced through the API: an admin can set
+        status=live, but with 0 publishable questions the response must say
+        effective_status=soon AND status_downgraded=True — never silently
+        agree with the admin's setting."""
+        tag = self._mk_tag(status=QuestionTag.STATUS_LIVE)
+        r = self._admin().get(f"{self.TAGS_URL}{tag.id}/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["status"], "live")
+        self.assertEqual(r.data["effective_status"], "soon")
+        self.assertTrue(r.data["status_downgraded"])
+
+    def test_effective_status_matches_when_live_and_populated(self):
+        tag = self._mk_tag(status=QuestionTag.STATUS_LIVE)
+        q = Question.objects.create(
+            text="Q", explanation="e", bank_state=Question.BANK_STATE_ACCEPTED)
+        Choice.objects.create(question=q, text="a", is_correct=True)
+        Choice.objects.create(question=q, text="b", is_correct=False)
+        q.tags.add(tag)
+
+        r = self._admin().get(f"{self.TAGS_URL}{tag.id}/")
+        self.assertEqual(r.data["effective_status"], "live")
+        self.assertFalse(r.data["status_downgraded"])
+
+    def test_hidden_never_shows_as_downgraded(self):
+        """Only 'live' can disagree with the computed answer — hidden/soon
+        are both honoured unconditionally, so there is nothing to warn
+        about even at zero questions."""
+        tag = self._mk_tag(status=QuestionTag.STATUS_HIDDEN)
+        r = self._admin().get(f"{self.TAGS_URL}{tag.id}/")
+        self.assertEqual(r.data["effective_status"], "hidden")
+        self.assertFalse(r.data["status_downgraded"])
+
+    def test_kind_filter(self):
+        # Tags list is NOT paginated (unlike the bank question list) — the
+        # taxonomy is expected to stay small (subjects/exams/topics), so this
+        # returns a bare array, matching plain ListAPIView behaviour with no
+        # DEFAULT_PAGINATION_CLASS configured project-wide.
+        self._mk_tag(kind=QuestionTag.KIND_SUBJECT, label="History")
+        self._mk_tag(kind=QuestionTag.KIND_EXAM, label="SSC")
+        r = self._admin().get(self.TAGS_URL, {"kind": "exam"})
+        self.assertEqual(r.status_code, 200, r.content)
+        labels = [t["label"] for t in r.data]
+        self.assertEqual(labels, ["SSC"])
+
+    def test_delete_refuses_when_still_on_questions(self):
+        tag = self._mk_tag()
+        q = Question.objects.create(text="Q")
+        q.tags.add(tag)
+        r = self._admin().delete(f"{self.TAGS_URL}{tag.id}/")
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertEqual(r.data["question_count"], 1)
+        self.assertTrue(QuestionTag.objects.filter(pk=tag.id).exists())
+
+    def test_delete_succeeds_when_unused(self):
+        tag = self._mk_tag()
+        r = self._admin().delete(f"{self.TAGS_URL}{tag.id}/")
+        self.assertEqual(r.status_code, 204, r.content)
+        self.assertFalse(QuestionTag.objects.filter(pk=tag.id).exists())
+
+    def test_nonadmin_gets_403(self):
+        c = self._nonadmin()
+        self.assertEqual(c.get(self.TAGS_URL).status_code, 403)
+        self.assertEqual(
+            c.post(self.TAGS_URL, {"kind": "subject", "label": "X"},
+                   format="json").status_code, 403)
+        tag = self._mk_tag()
+        self.assertEqual(c.get(f"{self.TAGS_URL}{tag.id}/").status_code, 403)
+        self.assertEqual(
+            c.patch(f"{self.TAGS_URL}{tag.id}/", {"label": "Y"},
+                    format="json").status_code, 403)
+        self.assertEqual(c.delete(f"{self.TAGS_URL}{tag.id}/").status_code, 403)
+
+    def test_flag_off_gets_503(self):
+        self._disable_hub()
+        tag = self._mk_tag()
+        c = self._admin()
+        self.assertEqual(c.get(self.TAGS_URL).status_code, 503)
+        self.assertEqual(
+            c.post(self.TAGS_URL, {"kind": "subject", "label": "X"},
+                   format="json").status_code, 503)
+        self.assertEqual(c.get(f"{self.TAGS_URL}{tag.id}/").status_code, 503)
+
+
+class AdminQuestionTagMergeTest(QuizHubAdminAPITestBase):
+    MERGE_URL = "/api/quizzes/admin/tags/merge/"
+
+    def setUp(self):
+        super().setUp()
+        self.source1 = QuestionTag.objects.create(
+            kind=QuestionTag.KIND_SUBJECT, label="Hist.")
+        self.source2 = QuestionTag.objects.create(
+            kind=QuestionTag.KIND_SUBJECT, label="History (old)")
+        self.target = QuestionTag.objects.create(
+            kind=QuestionTag.KIND_SUBJECT, label="History")
+        self.exam_tag = QuestionTag.objects.create(
+            kind=QuestionTag.KIND_EXAM, label="SSC")
+
+        self.q1 = Question.objects.create(text="Q1")
+        self.q1.tags.add(self.source1)
+        self.q2 = Question.objects.create(text="Q2")
+        self.q2.tags.add(self.source2)
+
+    def test_moves_questions_and_deletes_sources(self):
+        r = self._admin().post(
+            self.MERGE_URL,
+            {"source_ids": [str(self.source1.id), str(self.source2.id)],
+             "target_id": str(self.target.id)},
+            format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["moved_question_refs"], 2)
+
+        self.q1.refresh_from_db()
+        self.q2.refresh_from_db()
+        self.assertEqual(list(self.q1.tags.all()), [self.target])
+        self.assertEqual(list(self.q2.tags.all()), [self.target])
+        self.assertFalse(
+            QuestionTag.objects.filter(
+                pk__in=[self.source1.id, self.source2.id]).exists())
+        self.assertTrue(QuestionTag.objects.filter(pk=self.target.id).exists())
+
+    def test_refuses_across_mismatched_kind(self):
+        r = self._admin().post(
+            self.MERGE_URL,
+            {"source_ids": [str(self.source1.id)], "target_id": str(self.exam_tag.id)},
+            format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+        # Nothing moved, nothing deleted.
+        self.q1.refresh_from_db()
+        self.assertEqual(list(self.q1.tags.all()), [self.source1])
+        self.assertTrue(QuestionTag.objects.filter(pk=self.source1.id).exists())
+
+    def test_unknown_source_id_is_refused(self):
+        r = self._admin().post(
+            self.MERGE_URL,
+            {"source_ids": ["00000000-0000-0000-0000-000000000000"],
+             "target_id": str(self.target.id)},
+            format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_target_as_its_own_source_is_refused(self):
+        r = self._admin().post(
+            self.MERGE_URL,
+            {"source_ids": [str(self.target.id)], "target_id": str(self.target.id)},
+            format="json")
+        self.assertEqual(r.status_code, 400, r.content)
+
+    def test_nonadmin_gets_403(self):
+        r = self._nonadmin().post(
+            self.MERGE_URL,
+            {"source_ids": [str(self.source1.id)], "target_id": str(self.target.id)},
+            format="json")
+        self.assertEqual(r.status_code, 403, r.content)
+
+    def test_flag_off_gets_503(self):
+        self._disable_hub()
+        r = self._admin().post(
+            self.MERGE_URL,
+            {"source_ids": [str(self.source1.id)], "target_id": str(self.target.id)},
+            format="json")
+        self.assertEqual(r.status_code, 503, r.content)

@@ -42,11 +42,12 @@ from courses.services import teaches_subject
 
 from .models import (
     Quiz, QuizSection, QuizAttempt, Question, Choice, StudentAnswer,
-    PracticeSession, PracticeAnswer,
+    PracticeSession, PracticeAnswer, QuestionTag,
 )
 from .visibility import (
     batch_scope_q, batch_scope_q_across_courses, learner_may_see_quiz,
 )
+from .permissions import IsPublicQuizHubEnabled
 from .serializers import (
     QuizCreateSerializer,
     QuestionCreateSerializer,
@@ -65,6 +66,10 @@ from .serializers import (
     AdminQuizListSerializer,
     AdminQuizDetailSerializer,
     AdminQuizReviewActionSerializer,
+    AdminBankQuestionWriteSerializer,
+    AdminQuestionTagSerializer,
+    _bank_question_usage,
+    _tags_with_counts,
 )
 
 
@@ -3557,3 +3562,289 @@ class AdminQuizReviewView(APIView):
         ])
 
         return Response(AdminQuizDetailSerializer(quiz).data)
+
+
+# =====================================================
+# ADMIN — standalone bank questions (design_handoff_public_quiz_hub)
+# =====================================================
+#
+# Every view below shares the same three-entry permission_classes, in THIS
+# order, deliberately:
+#
+#   [IsAuthenticated, IsAdmin, IsPublicQuizHubEnabled]
+#
+# DRF's check_permissions() evaluates permission classes in list order and
+# stops at the first one that fails, so a non-admin caller is rejected by
+# IsAdmin with an ordinary 403 and NEVER reaches IsPublicQuizHubEnabled —
+# which raises its own 503 rather than returning False (see
+# quizzes/permissions.py). Putting the flag check last is what keeps "you're
+# not allowed here" (403) and "this isn't live yet" (503) from ever being
+# confused for each other in a test or in the admin UI.
+
+class AdminBankQuestionListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /quizzes/admin/bank/  — list standalone bank questions (quiz=None).
+        Filters: ?search=, ?subject=<tag id>, ?exam=<tag id>, ?difficulty=,
+        ?year=, ?state=<bank_state>, ?untagged=1.
+    POST /quizzes/admin/bank/  — author (or import) one.
+
+    Paginated by DEFAULT — unlike BankQuestionPagination's other two callers
+    (TeacherQuestionBankView, AdminQuestionBankQueueView), which keep
+    pagination opt-in purely for backward compatibility with frontends that
+    predate it (see that class's docstring). This endpoint is brand new, so
+    there is no existing caller whose response shape would break, and §2.5 of
+    the handoff is explicit that an unpaginated bank list is "fatal... at the
+    tens of thousands this page implies" — which is exactly the scale a
+    previous-year-paper importer will produce. So this one just uses DRF's
+    normal pagination behaviour (`self.paginate_queryset()` unconditionally),
+    no opt-in dance required.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin, IsPublicQuizHubEnabled]
+    pagination_class = BankQuestionPagination
+
+    def get_serializer_class(self):
+        # Write serializer in (POST), read serializer out (GET) — see
+        # AdminBankQuestionWriteSerializer's docstring for why the two
+        # shapes are deliberately different.
+        if self.request.method == "POST":
+            return AdminBankQuestionWriteSerializer
+        return BankQuestionSerializer
+
+    def get_queryset(self):
+        qs = (
+            Question.objects
+            # Standalone bank questions ONLY. A question still attached to a
+            # teacher's quiz belongs to the existing teacher/admin review
+            # screens (TeacherQuestionBankView, AdminQuestionBankQueueView) —
+            # this screen is for questions with nowhere else to be curated.
+            .filter(quiz__isnull=True)
+            .prefetch_related("choices", "tags")
+        )
+        search = self.request.query_params.get("search", "").strip()
+        subject_id = self.request.query_params.get("subject", "").strip()
+        exam_id = self.request.query_params.get("exam", "").strip()
+        difficulty = self.request.query_params.get("difficulty", "").strip()
+        year = self.request.query_params.get("year", "").strip()
+        state = self.request.query_params.get("state", "").strip()
+        untagged = self.request.query_params.get("untagged", "").strip()
+
+        if search:
+            qs = qs.filter(Q(text__icontains=search) | Q(topic__icontains=search))
+        if subject_id:
+            # kind=subject required too, not just the tag id, so a caller
+            # can't accidentally scope the "subject" filter with an exam or
+            # topic tag's id and get a silently-wrong-but-200 result.
+            qs = qs.filter(tags__id=subject_id, tags__kind=QuestionTag.KIND_SUBJECT)
+        if exam_id:
+            qs = qs.filter(tags__id=exam_id, tags__kind=QuestionTag.KIND_EXAM)
+        if difficulty:
+            qs = qs.filter(difficulty=difficulty)
+        if year:
+            try:
+                qs = qs.filter(year=int(year))
+            except ValueError:
+                raise ValidationError({"year": "Must be a whole number."})
+        if state:
+            qs = qs.filter(bank_state=state)
+        if untagged == "1":
+            # The importer will create thousands of untagged rows; this is
+            # how an admin finds them to classify in bulk.
+            qs = qs.filter(tags__isnull=True)
+
+        # .distinct(): filtering on `tags__...` joins the M2M through table,
+        # which can multiply a row once per matching tag without this.
+        return qs.distinct().order_by("-created_at")
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        question = serializer.save()
+        # Read serializer out, per this section's convention — richer shape
+        # (tags as {id,kind,label,slug}, quiz_id/subject_id defaulted to None
+        # rather than raising on the NULL quiz) than the write serializer's
+        # own representation would give back.
+        return Response(
+            BankQuestionSerializer(question).data, status=status.HTTP_201_CREATED)
+
+
+class AdminBankQuestionDetailView(APIView):
+    """
+    GET/PATCH/DELETE /quizzes/admin/bank/:pk/
+
+    DELETE refuses (409) rather than cascading or archiving — see
+    _bank_question_usage()'s docstring in serializers.py for why "archive"
+    isn't available without a migration this task doesn't get to make.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin, IsPublicQuizHubEnabled]
+
+    def get_object(self, pk):
+        return get_object_or_404(
+            Question.objects.filter(quiz__isnull=True)
+            .prefetch_related("choices", "tags"),
+            pk=pk,
+        )
+
+    def get(self, request, pk):
+        return Response(BankQuestionSerializer(self.get_object(pk)).data)
+
+    def patch(self, request, pk):
+        question = self.get_object(pk)
+        serializer = AdminBankQuestionWriteSerializer(
+            question, data=request.data, partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        # Re-fetch rather than reuse `question`: .tags.set() on an instance
+        # whose `tags` relation was prefetched by get_object() can leave a
+        # stale prefetch cache behind, and BankQuestionSerializer's get_tags()
+        # would then report the OLD tag list right after a successful PATCH.
+        return Response(BankQuestionSerializer(self.get_object(pk)).data)
+
+    def delete(self, request, pk):
+        question = self.get_object(pk)
+        usage = _bank_question_usage(question)
+        if usage:
+            return Response(
+                {
+                    "detail": (
+                        "This question has real attempts/practice history "
+                        "against it and cannot be deleted."
+                    ),
+                    "used_by": usage,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        question.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# =====================================================
+# ADMIN — tag / rail taxonomy (design_handoff_public_quiz_hub)
+# =====================================================
+
+class AdminQuestionTagListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /quizzes/admin/tags/?kind=  — list, each row carrying its own
+        question_count + effective_status (see AdminQuestionTagSerializer).
+    POST /quizzes/admin/tags/         — create one.
+    """
+    serializer_class = AdminQuestionTagSerializer
+    permission_classes = [IsAuthenticated, IsAdmin, IsPublicQuizHubEnabled]
+
+    def get_queryset(self):
+        qs = _tags_with_counts(QuestionTag.objects.all())
+        kind = self.request.query_params.get("kind", "").strip()
+        if kind:
+            qs = qs.filter(kind=kind)
+        return qs
+
+
+class AdminQuestionTagDetailView(APIView):
+    """
+    GET/PATCH/DELETE /quizzes/admin/tags/:pk/
+
+    DELETE refuses (409) rather than silently detaching — an admin deleting
+    "Reasoning" while it still classifies 40 questions should see that
+    number and decide, not have it vanish from those 40 questions with no
+    trace. Merging (POST .../tags/merge/) is the supported way to move
+    questions off a tag before removing it.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin, IsPublicQuizHubEnabled]
+
+    def get_object(self, pk):
+        return get_object_or_404(_tags_with_counts(QuestionTag.objects.all()), pk=pk)
+
+    def get(self, request, pk):
+        return Response(AdminQuestionTagSerializer(self.get_object(pk)).data)
+
+    def patch(self, request, pk):
+        tag = self.get_object(pk)
+        serializer = AdminQuestionTagSerializer(tag, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(AdminQuestionTagSerializer(self.get_object(pk)).data)
+
+    def delete(self, request, pk):
+        tag = get_object_or_404(QuestionTag, pk=pk)
+        count = tag.questions.count()
+        if count:
+            return Response(
+                {
+                    "detail": (
+                        f"This tag is applied to {count} question(s). Remove "
+                        "it from them first, or merge it into another tag."
+                    ),
+                    "question_count": count,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        tag.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminQuestionTagMergeView(APIView):
+    """
+    POST /quizzes/admin/tags/merge/   { source_ids: [...], target_id: ... }
+
+    Moves every question on each source tag onto the target tag, then
+    deletes the sources, all in one transaction — a merge that moved half
+    the questions and then failed would leave the taxonomy in a worse state
+    than either "merged" or "not merged".
+
+    Refuses across `kind`: merging an exam tag into a subject tag (or vice
+    versa) would put a question meant to answer "which subject is this?"
+    onto a row meant to answer "which exam is this?", silently corrupting
+    whichever rail reads it next.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin, IsPublicQuizHubEnabled]
+
+    @transaction.atomic
+    def post(self, request):
+        source_ids = request.data.get("source_ids") or []
+        target_id = request.data.get("target_id")
+        if not isinstance(source_ids, list) or not source_ids:
+            raise ValidationError({"source_ids": "Give at least one source tag."})
+        if not target_id:
+            raise ValidationError({"target_id": "Required."})
+        if str(target_id) in {str(s) for s in source_ids}:
+            raise ValidationError(
+                {"target_id": "Target cannot also be one of the sources."})
+
+        target = get_object_or_404(QuestionTag, pk=target_id)
+        sources = list(QuestionTag.objects.filter(id__in=source_ids))
+        missing = {str(s) for s in source_ids} - {str(t.id) for t in sources}
+        if missing:
+            raise ValidationError({"source_ids": f"Unknown tag(s): {sorted(missing)}"})
+
+        mismatched = [t for t in sources if t.kind != target.kind]
+        if mismatched:
+            raise ValidationError({
+                "target_id": (
+                    f"Cannot merge a {mismatched[0].get_kind_display()} tag "
+                    f"into a {target.get_kind_display()} tag — kinds must match."
+                ),
+            })
+
+        # Captured BEFORE the delete loop: Django resets an instance's pk to
+        # None after a successful .delete() call, so building this list from
+        # `sources` afterward would report every id as "None".
+        source_id_strs = [str(t.id) for t in sources]
+
+        moved = 0
+        for source in sources:
+            question_ids = list(source.questions.values_list("id", flat=True))
+            moved += len(question_ids)
+            # .add()/.delete() here touch ONLY the M2M through table
+            # (quizzes_question_tags), never a Question row itself — so
+            # Question.save()'s bank_state invariant is never in the blast
+            # radius the way a queryset.update() on Question would put it.
+            # Deleting `source` cascades its own through-table rows for free.
+            target.questions.add(*question_ids)
+            source.delete()
+
+        return Response({
+            "moved_question_refs": moved,
+            "target_id": str(target.id),
+            "deleted_source_ids": source_id_strs,
+        })

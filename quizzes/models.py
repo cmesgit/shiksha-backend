@@ -463,7 +463,62 @@ class QuestionTag(models.Model):
         return self.STATUS_SOON
 
 
+class QuestionQuerySet(models.QuerySet):
+    """Home for query-time rules that must never drift from being re-derived
+    ad hoc at each call site — see publishable() below."""
+
+    def publishable(self):
+        """Questions safe to serve to the public Quiz Hub.
+
+        This is intentionally STRICTER than "bank_state == accepted" alone,
+        because "accepted" and "actually renderable" are not the same thing
+        on this data:
+
+          * Prod today has 10 accepted questions but only 11 WITH an
+            explanation platform-wide (design_handoff_public_quiz_hub/
+            README.md §5) — accepted rows with no explanation exist for
+            real, and the whole reason the admin bank-question create
+            endpoint leaves `explanation` optional is so previous-year
+            imports can land before anyone has written one. A question with
+            no explanation must not reach a learner who is about to be told
+            "here's why you got that wrong" and shown nothing.
+          * >=2 choices and exactly-one-is_correct are enforced at
+            CREATE time by the serializers (this file's admin write
+            serializer, and the older QuestionCreateSerializer). This
+            re-asserts the same invariant at READ time so a row that
+            reached a degenerate shape via some other path (a bad direct
+            DB write, a half-finished migration/backfill, choices deleted
+            out from under an otherwise-fine question) can't slip through
+            silently — better an accepted-looking question quietly does not
+            appear than one appears with zero or several correct answers.
+
+        distinct=True on both counts because two annotations both joining
+        the same `choices` relation would otherwise multiply rows against
+        each other the way CLAUDE.md's "don't count joined relations without
+        distinct=True" note warns about generally in this codebase.
+        """
+        return (
+            self.exclude(explanation="")
+            .filter(bank_state=self.model.BANK_STATE_ACCEPTED)
+            .annotate(
+                _choice_count=models.Count("choices", distinct=True),
+                _correct_choice_count=models.Count(
+                    "choices",
+                    filter=Q(choices__is_correct=True),
+                    distinct=True,
+                ),
+            )
+            .filter(_choice_count__gte=2, _correct_choice_count=1)
+        )
+
+
 class Question(models.Model):
+    # Custom manager ONLY to add .publishable() (see QuestionQuerySet above).
+    # `QuestionQuerySet.as_manager()` keeps every default manager method
+    # (create/filter/get/...) working exactly as before — this is additive,
+    # not a behaviour change to any existing `Question.objects.*` call site.
+    objects = QuestionQuerySet.as_manager()
+
     DIFFICULTY_EASY = "easy"
     DIFFICULTY_MEDIUM = "medium"
     DIFFICULTY_HARD = "hard"
