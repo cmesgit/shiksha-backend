@@ -1238,15 +1238,25 @@ class MediaUsage(models.Model):
     them.
 
     Kept generic rather than a reverse FK per owner because the owners span
-    four models today (``BlogPost.cover``, ``ShowcaseCourse.image``,
-    ``HomeContentBlock.image``, ``HomeListItem.image``) and will span more.
+    six models today (``BlogPost.cover``, ``ShowcaseCourse.image``,
+    ``HomeContentBlock.image``, ``HomeListItem.image``, ``courses.Course``'s
+    ``thumbnail`` and ``courses.Board.logo``) and will span more.
+
+    ⚠ ``object_id`` is a CharField, NOT the PositiveIntegerField this shipped
+    with. The four original owners all live in ``content`` and have integer
+    PKs; ``courses.Course`` and ``courses.Board`` have **UUID** primary keys,
+    which cannot be stored in an integer column at all. Widening it is what
+    lets one library index pictures across both apps. Always write
+    ``str(obj.pk)`` — a raw int and its string form are different rows to the
+    unique constraint, which would let the same usage be recorded twice and
+    make the delete guard's count wrong.
     """
 
     asset = models.ForeignKey(
         ContentImage, on_delete=models.CASCADE, related_name="usages",
     )
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
-    object_id = models.PositiveIntegerField()
+    object_id = models.CharField(max_length=64)
     target = GenericForeignKey("content_type", "object_id")
     # Which field on the owner points at this picture. Part of the key, so one
     # row using the same image in two fields counts as two usages.
