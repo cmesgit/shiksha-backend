@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from enrollments.models import Enrollment, EnrollmentRequest, Subscription
 from enrollments.services import legacy_profile_q
 from accounts.permissions import IsTeacherContext, IsAdmin, require_teacher_context
@@ -22,7 +23,7 @@ from assignments.models import Assignment
 from courses.progress_stats import average_quiz_score_pct
 from .board_display import board_name_for
 from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream, BoardNotifyRequest, CourseNotifyRequest
-from content.models import ShowcaseCategory, ShowcaseCourse, PublishStatus
+from content.models import ContentImage, ShowcaseCategory, ShowcaseCourse, PublishStatus
 from .serializers import (
     CourseSerializer, SubjectSerializer, BoardSerializer, CourseDetailSerializer,
     CourseCategorySerializer,
@@ -1344,6 +1345,56 @@ def _parse_maybe_json(value):
     return value
 
 
+def _apply_course_thumbnail(course, request):
+    """Set the course's picture, from an upload OR the CMS media library.
+
+    Shared by create and patch so the two can't drift.
+
+    ``thumbnail``           — a multipart file, as before. Goes through the
+                              field's ResizeToFill(1200, 675) + WEBP processor.
+    ``thumbnail_asset_id``  — a ``content.ContentImage`` id, i.e. a picture
+                              already in the CMS library.
+
+    The library branch POINTS AT the existing file rather than copying it.
+    Copying would put a second physical file in storage and a second row in
+    the Pictures screen for one picture, which is precisely the "two libraries"
+    outcome the media work exists to avoid. The tradeoff is that a
+    library-sourced picture keeps its uploaded dimensions instead of being
+    re-cropped to 16:9 — acceptable because both card surfaces render it with
+    ``object-fit: cover``, and because the CMS validator already caps it at
+    2560px / 5 MB.
+
+    ⚠ Assigning to ``.name`` (rather than to the field itself) is what keeps
+    the file uncopied: ``FileField.pre_save`` only re-saves — and imagekit only
+    re-processes — a file whose ``_committed`` is False, and setting ``.name``
+    on the existing FieldFile leaves it True.
+    """
+    if request.FILES.get("thumbnail"):
+        course.thumbnail = request.FILES["thumbnail"]
+        course.save(update_fields=["thumbnail"])
+        return
+
+    if "thumbnail_asset_id" not in request.data:
+        return
+    asset_id = request.data.get("thumbnail_asset_id")
+
+    # An explicit empty value clears the picture — that is how the admin form's
+    # "Remove" control reaches this, and it must not be confused with "the key
+    # was absent", which means "leave the picture alone".
+    if asset_id in (None, "", "null"):
+        course.thumbnail = None
+        course.save(update_fields=["thumbnail"])
+        return
+
+    asset = ContentImage.objects.filter(pk=asset_id).first()
+    if asset is None or not asset.file:
+        raise ValidationError(
+            {"thumbnail_asset_id": "That picture is not in the media library."}
+        )
+    course.thumbnail.name = asset.file.name
+    course.save(update_fields=["thumbnail"])
+
+
 def _apply_course_details_and_categories(course, request):
     """Upsert CourseDetail and set the categories M2M from the `details` /
     `categories` keys in request.data. Shared by AdminCourseCreateView.post
@@ -1457,9 +1508,7 @@ class AdminCourseCreateView(APIView):
         serializer = CourseSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         course = serializer.save()
-        if request.FILES.get("thumbnail"):
-            course.thumbnail = request.FILES["thumbnail"]
-            course.save(update_fields=["thumbnail"])
+        _apply_course_thumbnail(course, request)
         _apply_course_details_and_categories(course, request)
         course.refresh_from_db()
         return Response(
@@ -1491,9 +1540,7 @@ class AdminCourseDetailView(APIView):
         serializer.is_valid(raise_exception=True)
         course = serializer.save()
 
-        if request.FILES.get("thumbnail"):
-            course.thumbnail = request.FILES["thumbnail"]
-            course.save(update_fields=["thumbnail"])
+        _apply_course_thumbnail(course, request)
 
         _apply_course_details_and_categories(course, request)
 
