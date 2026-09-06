@@ -61,6 +61,38 @@ LEADING_NUMBER = re.compile(r"^\s*\d{1,4}\s*[.)]\s+")
 # Collapsed whitespace and the parser's fill-in-blank placeholder runs.
 MULTI_SPACE = re.compile(r"[ \t]{2,}")
 
+# ── structural corruption in the STEM ────────────────────────────────────
+# These three are the signature of a MISSED BLOCK BOUNDARY: the two-column
+# layout let the next question's text run into this one's stem, so the
+# options and the answer key belong to a DIFFERENT question than the stem
+# asks about. Found by auditing a real 3,821-row import — e.g. the stem
+#
+#   "How many monasteries and temples are there in Ellora caves?
+#    (a) 33 (b) 32 (c) 34 (d) 31 Which of the following Pallava kings…"
+#
+# carried the marked answer "Narsingh Varman I", which answers the SECOND
+# question. A row like that is unusable whatever its answer index says, and
+# it is not a judgement call — it is structurally detectable, so it is a
+# hard skip rather than a soft flag.
+#
+# ⚠ These check the STEM. An earlier audit only checked option text for
+# "(a)"-style markers, found zero, and read that as "no merged questions" —
+# the markers were in the stem the whole time.
+STEM_OPTION_MARKER = re.compile(r"\(\s*[abcd]\s*\)", re.I)
+# Stamped into Question.bank_feedback for rows whose explanation disagrees
+# with the marked answer. A FIXED string on purpose: the admin bank screen
+# filters on it to build the "check these first" queue, and _apply_bank_review
+# blanks bank_feedback on accept, so curating a row clears its own warning.
+IMPORT_WARNING = (
+    "Imported: the source explanation names a different option than the one "
+    "marked correct. Verify the answer against the explanation before "
+    "accepting this question."
+)
+# The source's own numbering ("… 47. Which of …") surviving mid-stem means
+# the block splitter ran past a boundary. Requires a capital after it so an
+# ordinary "… by 1. 5 times" style decimal does not trip it.
+STEM_MID_NUMBERING = re.compile(r"\S\s+\d{1,4}\s*[.)]\s+[A-Z]")
+
 
 def clean_stem(text):
     text = LEADING_NUMBER.sub("", text or "")
@@ -111,6 +143,71 @@ def quality_flags(row):
         # TABLES, not prose — a wall of place names with no sentence.
         flags.append("explanation_looks_like_a_table")
     return flags
+
+
+def structural_defects(stem):
+    """Hard, non-judgemental reasons a stem cannot be trusted at all.
+
+    Distinct from quality_flags(): those describe a row that reads badly but
+    whose answer is probably still right, so --include-imperfect can let
+    them through. These describe a row whose answer key belongs to a
+    DIFFERENT question. There is no flag to override them, because there is
+    no reading of such a row that is safe to show a learner.
+    """
+    defects = []
+    if len(STEM_OPTION_MARKER.findall(stem)) >= 2:
+        defects.append("stem merges two questions (carries option markers)")
+    if stem.count("?") >= 2:
+        defects.append("stem merges two questions (two question marks)")
+    if STEM_MID_NUMBERING.search(stem):
+        defects.append("stem ran past its block boundary (numbering mid-stem)")
+    return defects
+
+
+def _words(text):
+    return re.sub(r"[^a-z0-9 ]", " ", (text or "").lower())
+
+
+def answer_contradicts_explanation(stem, options, answer, explanation):
+    """True when the explanation names a WRONG option but not the marked one.
+
+    This is a WARNING, never a skip, and the distinction matters. Measured
+    on the real corpus: rows tripping this are ~35% factually wrong against
+    a ~5% base rate — a 7x enrichment, so it is a genuinely useful signal —
+    but the majority of them are still CORRECT. The common false positive is
+    the "all of the following EXCEPT" question, whose explanation quite
+    properly discusses the options that DO apply and never mentions the odd
+    one out, which is the answer.
+
+    So a row like this is imported, left `suggested` (i.e. invisible to
+    learners — Question.objects.publishable() requires `accepted`), and
+    stamped into `bank_feedback` so the human curating the bank is told
+    which rows to look at hardest. Deciding it automatically in either
+    direction would be wrong: skipping discards ~65% good questions,
+    accepting ships wrong answers to exam candidates.
+    """
+    expl = _words(explanation)
+    if not expl.strip():
+        return False
+
+    def testable(option):
+        # Short option text ("Red", "1875") appears in prose by coincidence
+        # far too often for its presence OR absence to mean anything.
+        return len(_words(option).strip()) >= 4
+
+    def named(option):
+        return testable(option) and _words(option).strip() in expl
+
+    correct = options[answer]
+    # If the marked answer is itself too short to look for, "the explanation
+    # does not mention it" is not evidence of anything — and flagging on a
+    # long WRONG option alone would fire on every "Red / Blue / Green"
+    # question whose explanation happens to discuss another colour. No
+    # testable answer, no verdict.
+    if not testable(correct):
+        return False
+    wrong_named = [o for i, o in enumerate(options) if i != answer and named(o)]
+    return bool(wrong_named) and not named(correct)
 
 
 class Command(BaseCommand):
@@ -195,6 +292,7 @@ class Command(BaseCommand):
             raise CommandError("No questions in that file.")
 
         skipped = Counter()
+        warned = 0
         seen_this_run = set()
         existing = self._existing_fingerprints()
         to_create = []
@@ -224,6 +322,12 @@ class Command(BaseCommand):
                 skipped["answer index out of range"] += 1
                 continue
 
+            # Not overridable by --include-imperfect — see structural_defects().
+            defects = structural_defects(stem)
+            if defects:
+                skipped[defects[0]] += 1
+                continue
+
             soft = [f for f in flags if f not in ("no_answer", "no_explanation")]
             if soft and not opts["include_imperfect"]:
                 skipped[f"held back: {', '.join(soft)}"] += 1
@@ -234,13 +338,25 @@ class Command(BaseCommand):
                 skipped["already in the bank (duplicate)"] += 1
                 continue
             seen_this_run.add(fp)
-            to_create.append((row, stem, options, answer, fp))
+            contradicts = answer_contradicts_explanation(
+                stem, options, answer, clean_explanation(row.get("explanation")))
+            if contradicts:
+                warned += 1
+            to_create.append((row, stem, options, answer, fp, contradicts))
 
         self.stdout.write(f"Read      : {len(rows)} rows")
         self.stdout.write(f"Importable: {len(to_create)}")
         self.stdout.write(f"Skipped   : {sum(skipped.values())}")
         for reason, n in skipped.most_common():
             self.stdout.write(f"    {n:6}  {reason}")
+        if warned:
+            self.stdout.write(self.style.WARNING(
+                f"\n{warned} of the importable rows have an explanation that "
+                "names a\nDIFFERENT option than the one marked correct. They "
+                "are imported, but\nflagged in bank_feedback and must be read "
+                "before being accepted —\nabout a third of them are genuinely "
+                "wrong. Filter the bank screen\nby that flag and curate those "
+                "first."))
 
         if opts["dry_run"]:
             self.stdout.write(self.style.WARNING(
@@ -252,7 +368,7 @@ class Command(BaseCommand):
         # One transaction for the whole import so a failure half way through
         # cannot leave a partially-tagged bank behind.
         with transaction.atomic():
-            for row, stem, options, answer, fp in to_create:
+            for row, stem, options, answer, fp, contradicts in to_create:
                 q = Question(
                     quiz=None,
                     text=stem,
@@ -262,6 +378,11 @@ class Command(BaseCommand):
                     year=(row.get("years") or [None])[0],
                     source=Question.SOURCE_IMPORT,
                     question_type=Question.TYPE_SINGLE,
+                    # Reuses the review-note field the admin screens already
+                    # render, rather than adding a column — see
+                    # answer_contradicts_explanation() for why this is a note
+                    # for a human and not a decision.
+                    bank_feedback=(IMPORT_WARNING if contradicts else ""),
                 )
                 # save(), never bulk_create: Question.save() carries the bank
                 # invariant that normalises bank_state, and bulk_create

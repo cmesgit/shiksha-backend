@@ -282,3 +282,123 @@ class ImportedQuestionsAreReachableTest(TestCase):
         q.bank_state = Question.BANK_STATE_ACCEPTED
         q.save()
         self.assertEqual(Question.objects.publishable().count(), 1)
+
+
+class SplicedStemTest(TestCase):
+    """A stem that swallowed the NEXT question's text.
+
+    This is the corruption that survived the first real 3,821-row import and
+    was only caught by auditing the DB afterwards. The two-column layout let
+    one question's block run into the next, so the options and the answer key
+    describe a different question than the stem asks about — and the row
+    looks perfectly well-formed: four distinct options, an in-range answer
+    index, a real explanation. Nothing in the pre-existing gates fired.
+
+    These are hard skips with no --include-imperfect escape hatch, because
+    there is no version of such a row that is safe to serve.
+    """
+
+    def test_a_stem_carrying_option_markers_is_refused(self):
+        out = run(write([row(
+            stem=("How many monasteries are there in Ellora caves? (a) 33 "
+                  "(b) 32 (c) 34 (d) 31 Which Pallava king took the title "
+                  "Vatapikonda?"),
+        )]))
+        self.assertEqual(Question.objects.count(), 0)
+        self.assertIn("merges two questions", out)
+
+    def test_a_stem_with_two_question_marks_is_refused(self):
+        run(write([row(
+            stem="Who founded the Chalukya dynasty? Which city was its capital?",
+        )]))
+        self.assertEqual(Question.objects.count(), 0)
+
+    def test_a_stem_with_the_sources_numbering_mid_sentence_is_refused(self):
+        run(write([row(
+            stem=("Sanchi joined the World Heritage list in 1989. 47. Group "
+                  "of Monuments at Pattadakal is in which state?"),
+        )]))
+        self.assertEqual(Question.objects.count(), 0)
+
+    def test_include_imperfect_does_NOT_override_a_spliced_stem(self):
+        """The whole point of the hard/soft split. --include-imperfect exists
+        for rows that READ badly; it must never let through a row whose
+        answer belongs to another question."""
+        run(write([row(stem="A? B? (a) x (b) y")]), "--include-imperfect")
+        self.assertEqual(Question.objects.count(), 0)
+
+    def test_one_option_marker_alone_is_NOT_treated_as_a_splice(self):
+        """A single parenthesised letter is ordinary prose — "(a) type of
+        rock". Only two or more mean an option list leaked in. Guards the
+        threshold against being tightened into a false positive."""
+        run(write([row(stem="Which of these is (a) type of igneous rock?")]))
+        self.assertEqual(Question.objects.count(), 1)
+
+    def test_a_decimal_mid_stem_is_NOT_treated_as_numbering(self):
+        """Requires a capital after the number, so "increased by 1. 5 times"
+        does not read as the source's question numbering."""
+        run(write([row(stem="Output increased by 1. 5 times over the decade?")]))
+        self.assertEqual(Question.objects.count(), 1)
+
+
+class AnswerContradictsExplanationTest(TestCase):
+    """The explanation names a different option than the marked answer.
+
+    Measured on the real corpus at ~35% genuinely wrong against a ~5% base
+    rate. That is a strong signal but a clear MAJORITY of these rows are
+    still correct — mostly "all of the following EXCEPT" questions, whose
+    explanation properly discusses the options that do apply and never names
+    the odd one out. So this warns and imports; it must not skip.
+    """
+
+    def _warned_row(self):
+        return row(
+            stem="Which is the biggest building at Mohenjodaro?",
+            options=["Great Granary", "Assembly Hall", "Warehouse", "Citadel"],
+            answer_index=0,
+            explanation=("Major findings at the site include a Great bath, "
+                         "an Assembly Hall and the idol of a Mother Goddess."),
+        )
+
+    def test_the_row_is_still_imported(self):
+        run(write([self._warned_row()]))
+        self.assertEqual(Question.objects.count(), 1)
+
+    def test_it_carries_the_warning_in_bank_feedback(self):
+        run(write([self._warned_row()]))
+        q = Question.objects.get()
+        self.assertIn("names a different option", q.bank_feedback)
+
+    def test_the_command_reports_how_many_were_flagged(self):
+        out = run(write([self._warned_row()]))
+        self.assertIn("marked correct", out)
+
+    def test_a_row_whose_explanation_names_the_answer_is_not_flagged(self):
+        run(write([row()]))
+        self.assertEqual(Question.objects.get().bank_feedback, "")
+
+    def test_accepting_the_question_clears_its_own_warning(self):
+        """_apply_bank_review blanks bank_feedback on accept, so the "check
+        these" queue empties as it is curated rather than needing a second
+        cleanup pass."""
+        run(write([self._warned_row()]))
+        q = Question.objects.get()
+        self.assertTrue(q.bank_feedback)
+        from quizzes.views import _apply_bank_review
+        from accounts.models import User
+        admin = User.objects.create_user(
+            username="rev", email="rev@example.com", password="x", is_staff=True)
+        _apply_bank_review(q, action="accept", feedback="", admin=admin)
+        q.refresh_from_db()
+        self.assertEqual(q.bank_feedback, "")
+
+    def test_a_short_option_appearing_by_coincidence_does_not_flag(self):
+        """"Red" turns up in prose constantly. Below four characters the
+        substring test means nothing, so it is not applied."""
+        run(write([row(
+            stem="Which colour has the longest wavelength?",
+            options=["Red", "Blue", "Green", "Violet"],
+            answer_index=0,
+            explanation="Blue light scatters most in the atmosphere.",
+        )]))
+        self.assertEqual(Question.objects.get().bank_feedback, "")
