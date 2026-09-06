@@ -192,3 +192,68 @@ class ContentStudioFeatureFlagTest(TestCase):
         )
         self.assertEqual(res.status_code, 403, res.content)
         self.assertFalse(GlobalSettings.objects.get(pk=1).content_studio_enabled)
+
+
+class PublicQuizHubFeatureFlagTest(TestCase):
+    """design_handoff_public_quiz_hub Phase 0 groundwork.
+
+    The public /quiz rebuild and the admin question-bank authoring behind it
+    ship behind one admin-controlled flag, OFF, and nothing consumes it yet.
+
+    Like content_studio_enabled and unlike quiz_v2_enabled, this is a REAL
+    gate. Phase 9 flips the default; until then a half-built hub must never
+    reach a visitor. The default assertion below is what stops a later phase
+    from quietly turning it on mid-rebuild.
+    """
+
+    URL = "/api/admin/settings/"
+
+    def _client(self, user):
+        from rest_framework.test import APIClient
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def test_ships_off_by_default(self):
+        self.assertFalse(GlobalSettings.load().public_quiz_hub_enabled)
+
+    def test_admin_can_flip_it_via_patch(self):
+        from accounts.models import User
+
+        admin = User.objects.create_user(
+            username="admin3", email="admin3@example.com", password="x", is_staff=True,
+        )
+        res = self._client(admin).patch(
+            self.URL, {"public_quiz_hub_enabled": True}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertTrue(res.json()["public_quiz_hub_enabled"])
+        self.assertTrue(GlobalSettings.objects.get(pk=1).public_quiz_hub_enabled)
+
+    def test_non_admin_cannot_turn_it_on(self):
+        from accounts.models import User
+
+        GlobalSettings.load()
+        student = User.objects.create_user(
+            username="student3", email="student3@example.com", password="x",
+        )
+        res = self._client(student).patch(
+            self.URL, {"public_quiz_hub_enabled": True}, format="json",
+        )
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertFalse(GlobalSettings.objects.get(pk=1).public_quiz_hub_enabled)
+
+    def test_exposed_read_only_in_feature_flags_on_me(self):
+        """Every app reads flags off /accounts/me/, so the key must be present
+        even while False — an absent key and a False one are different bugs to
+        debug, and each AuthContext defaults differently when it is missing."""
+        from accounts.models import User
+
+        user = User.objects.create_user(
+            username="learner3", email="learner3@example.com", password="x",
+        )
+        res = self._client(user).get("/api/accounts/me/")
+        self.assertEqual(res.status_code, 200, res.content)
+        flags = res.json()["feature_flags"]
+        self.assertIn("public_quiz_hub_enabled", flags)
+        self.assertFalse(flags["public_quiz_hub_enabled"])

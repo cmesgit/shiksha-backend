@@ -772,6 +772,7 @@ class MeView(APIView):
                 "quiz_v2_enabled": gs.quiz_v2_enabled,
                 "ai_question_drafting_enabled": gs.ai_question_drafting_enabled,
                 "content_studio_enabled": gs.content_studio_enabled,
+                "public_quiz_hub_enabled": gs.public_quiz_hub_enabled,
             },
         })
 
