@@ -1199,23 +1199,30 @@ def _checklist_for_block(block, draft_payload):
 
     checks = []
     heading = str(value("heading")).strip()
+    # The length checks measure what a visitor actually reads, which is both
+    # halves. Measuring `heading` alone called the seeded "Explore our" (11
+    # chars) "very short" while the rendered line was "Explore our popular
+    # courses" (27). Emptiness still keys on `heading` — a section carrying
+    # only a second half has no heading to lead with.
+    secondary = str(value("heading_secondary")).strip()
+    rendered = f"{heading} {secondary}".strip() if secondary else heading
     if not heading:
         checks.append({
             "id": "heading", "level": "block",
             "label": "This section has no heading",
             "note": "Visitors would see the section with no title on it.",
         })
-    elif len(heading) > HEADING_MAX:
+    elif len(rendered) > HEADING_MAX:
         checks.append({
             "id": "heading", "level": "warn",
             "label": "The heading is quite long",
-            "note": f"{len(heading)} characters. Long headings wrap awkwardly on a phone.",
+            "note": f"{len(rendered)} characters. Long headings wrap awkwardly on a phone.",
         })
-    elif len(heading) < HEADING_MIN:
+    elif len(rendered) < HEADING_MIN:
         checks.append({
             "id": "heading", "level": "warn",
             "label": "The heading is very short",
-            "note": f"{len(heading)} characters.",
+            "note": f"{len(rendered)} characters.",
         })
     else:
         checks.append({

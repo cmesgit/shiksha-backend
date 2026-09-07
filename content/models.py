@@ -856,7 +856,11 @@ class HomeContentBlock(StatusedContentModel):
     heading = models.CharField(max_length=200, blank=True, default="")
     heading_secondary = models.CharField(
         max_length=200, blank=True, default="",
-        help_text="Optional 2nd half of a two-part heading (only Hero uses this today).",
+        help_text=(
+            "Optional 2nd half of a two-part heading, rendered in the accent "
+            "colour. Used by hero, featured_courses, faq, courses_hero, "
+            "contact_hero and the five about_* sections."
+        ),
     )
     subhead = models.CharField(max_length=300, blank=True, default="")
     body = models.TextField(blank=True, default="")

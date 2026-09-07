@@ -201,9 +201,32 @@ class ForumHardeningTests(TestCase):
 
         following = auth_client(self.author).get("/api/forum/me/").json()["following"]
 
+        # `id` must be the SLUG — the same public id ForumCategorySerializer
+        # emits and the only thing FollowCategoryView accepts. Returning the
+        # numeric pk here silently broke the Follow button on every refresh.
         self.assertEqual(
             following["categories"],
-            [{"id": category.id, "slug": "physics", "name": "Physics"}])
+            [{"id": "physics", "slug": "physics", "name": "Physics"}])
         self.assertEqual(
             following["questions"],
             [{"id": self.post.id, "title": self.post.title}])
+
+    def test_me_category_id_matches_the_list_endpoints_id(self):
+        """The followed-set is compared against the card's `id` on the client,
+        so these two endpoints must agree on what a category's id is."""
+        category = ForumCategory.objects.create(name="Physics", slug="physics")
+        Follow.objects.create(
+            user=self.author, target_type=Follow.TARGET_CATEGORY,
+            target_key=category.slug)
+        client = auth_client(self.author)
+
+        followed = client.get("/api/forum/me/").json()["following"]["categories"]
+        listed = client.get("/api/forum/categories/").json()["results"]
+
+        by_id = {c["id"] for c in listed}
+        self.assertTrue(followed)
+        self.assertIn(followed[0]["id"], by_id)
+        # And the id it agrees on is one the follow route actually resolves.
+        self.assertEqual(
+            client.post(f"/api/forum/categories/{followed[0]['id']}/follow/").status_code,
+            200)
