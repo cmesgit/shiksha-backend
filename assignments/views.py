@@ -403,7 +403,10 @@ class TeacherCreateAssignmentView(APIView):
         serializer.is_valid(raise_exception=True)
 
         try:
-            assignment = serializer.save()
+            # created_by is set HERE, not on the serializer, and is absent from
+            # its `fields` — so a client cannot post someone else's id and
+            # attribute its work to another teacher.
+            assignment = serializer.save(created_by=user)
         except IntegrityError:
             # Race condition: two requests with same key hit simultaneously
             existing = Assignment.objects.filter(

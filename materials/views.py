@@ -9,7 +9,7 @@ from django.shortcuts import get_object_or_404
 from django.core.exceptions import ValidationError as DjangoValidationError
 
 from .models import StudyMaterial, MaterialFile
-from .serializers import StudyMaterialSerializer
+from .serializers import StudyMaterialSerializer, StudyMaterialUpdateSerializer
 from .validators import validate_material_file
 from django.db.models import Q
 from django.core.exceptions import PermissionDenied
@@ -615,6 +615,88 @@ class StudyMaterialDetail(APIView):
             context={"request": request}
         )
         return Response(serializer.data)
+
+    def patch(self, request, material_id):
+        """Edit a material's metadata. Files are NOT touched here.
+
+        StudyMaterial was create/read/delete only — the one content model of
+        the four with no edit path at all — so fixing a typo in a title meant
+        deleting the row and re-uploading every attached file. That is also why
+        `updated_at` only arrives with this method.
+
+        Deliberately metadata-only. Attachments live in MaterialFile rows and
+        are added through the validated upload flow (UploadTempFile →
+        UploadStudyMaterial); accepting raw files here would be a second,
+        unvalidated write path to the same table — the exact hole that let a
+        `.exe` reach students through assignments' create endpoint. Removing a
+        file remains a delete-and-reupload, which is unchanged behaviour, not a
+        regression this introduces.
+
+        Authorization is _require_material_editor, the SAME rule delete uses,
+        for the reason in its docstring: the list this is reached from returns
+        colleagues' materials, so an editor rule narrower than the list rule
+        renders buttons that can only 403.
+        """
+        material = get_object_or_404(
+            StudyMaterial.objects
+            .select_related("subject__course__board", "chapter", "batch")
+            .prefetch_related("files"),
+            id=material_id,
+        )
+        _require_material_editor(request, material)
+
+        serializer = StudyMaterialUpdateSerializer(
+            material,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+
+        chapter_changed = "chapter" in serializer.validated_data
+        serializer.save()
+
+        # KEEP THE ADDITIVE INVARIANT (courses/chapter_tags.py:208).
+        #
+        # The rich placement lives in ContentChapterTag rows; the scalar
+        # `chapter` FK is supposed to equal primary_chapter() of those rows. The
+        # upload path maintains that with set_tags(); writing the FK alone here
+        # would leave the two disagreeing, and the response proves it — the SAME
+        # payload carries chapter_title from the FK and chapter_tags from the
+        # rows, so a single edit returned a material filed under two different
+        # chapters at once, and the per-chapter listing
+        # (ChapterMaterials, which filters on the FK) moved it while every
+        # tag-reading surface kept it where it was.
+        #
+        # Only runs when the chapter actually changed: set_tags() DELETES and
+        # re-creates the rows, so doing it on a title-only edit would churn them
+        # (and discard any multi-chapter or free-text placement) for nothing.
+        if chapter_changed:
+            chapter = serializer.validated_data.get("chapter")
+            # set_tags takes (chapter, label, order) triples, the shape
+            # resolve_tags emits — not bare Chapter objects. One triple here
+            # because this form edits a single chapter; clearing it to None
+            # empties the tag set, which is what "No specific chapter" means.
+            set_tags(
+                material,
+                [(chapter, "", 0)] if chapter is not None else [],
+            )
+            # A material with a chapter cannot also be "no specific chapter" —
+            # validate_tag_payload refuses that combination on create, so the
+            # edit path must not be able to manufacture it.
+            if chapter is not None and material.no_specific_chapter:
+                material.no_specific_chapter = False
+                material.save(update_fields=["no_specific_chapter"])
+
+        # Re-read through the full serializer so the response is the same shape
+        # the list and detail endpoints return — the caller updates its row from
+        # this rather than refetching.
+        material.refresh_from_db()
+        return Response(
+            StudyMaterialSerializer(
+                material, context={"request": request}
+            ).data
+        )
 
 
 # ===============================

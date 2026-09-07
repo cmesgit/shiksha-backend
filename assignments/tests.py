@@ -1259,3 +1259,87 @@ class SubjectChaptersEndpointTest(AssignmentScopeFixtureMixin, TestCase):
         self.assertFalse(
             Chapter.objects.filter(title="Outsider Chapter").exists()
         )
+
+
+class AssignmentAuthorshipTest(AssignmentScopeFixtureMixin, TestCase):
+    """Assignment gained `created_by` — it was the one teacher-authored content
+    model with no owner column at all, so "assignments I wrote" was not
+    expressible and the teacher screens showed the whole subject's output as
+    undifferentiated.
+
+    NULL stays a real, permanent state (rows predating the column have no
+    recoverable author), and nothing may gate on this field: co-teachers must
+    keep being able to edit shared subject content. Quiz already demonstrates
+    the failure mode of gating on a nullable owner — a NULL-owner quiz is
+    uneditable and undeletable by every non-staff user.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.build_world()
+
+    def _create(self, client, **fields):
+        payload = {
+            "batch_id": str(self.batch_b.id),
+            "subject_id": str(self.subject.id),
+            "title": "Authored worksheet",
+            "due_date": (timezone.now() + timedelta(days=3)).isoformat(),
+            **fields,
+        }
+        return client.post(
+            "/api/assignments/teacher/create/", payload, format="json")
+
+    def test_create_attributes_the_assignment_to_the_caller(self):
+        r = self._create(_teacher_client(self.teacher_b))
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+        self.assertEqual(assignment.created_by_id, self.teacher_b.id)
+
+    def test_created_by_cannot_be_spoofed_through_the_body(self):
+        """It is set from request.user and is absent from the serializer's
+        `fields`, so a posted id must be ignored rather than honoured."""
+        impostor = User.objects.create_user(
+            username="impostor", email="imp@test.com", password="x",
+            is_verified=True)
+        r = self._create(
+            _teacher_client(self.teacher_b), created_by=str(impostor.id))
+        self.assertEqual(r.status_code, 201, r.content)
+        assignment = Assignment.objects.get(id=r.data["id"])
+        self.assertEqual(assignment.created_by_id, self.teacher_b.id)
+
+    def test_pre_existing_rows_keep_a_null_author(self):
+        # build_world() creates these with no author, exactly as every row that
+        # predates the column has.
+        self.assertIsNone(self.assignment_a.created_by_id)
+        self.assertIsNone(self.assignment_b.created_by_id)
+
+    def test_deleting_the_author_keeps_the_assignment(self):
+        """SET_NULL, not CASCADE: offboarding a teacher must not delete the
+        class's work — nor the submissions that cascade off it."""
+        r = self._create(_teacher_client(self.teacher_b))
+        assignment_id = r.data["id"]
+        self.teacher_b.delete()
+        assignment = Assignment.objects.get(id=assignment_id)
+        self.assertIsNone(assignment.created_by_id)
+
+    def test_authorship_does_not_gate_editing(self):
+        """A co-teacher who did not write it must still be able to edit it."""
+        r = self._create(_teacher_client(self.teacher_b))
+        assignment_id = r.data["id"]
+
+        cover = User.objects.create_user(
+            username="cover", email="cover@test.com", password="x",
+            is_verified=True)
+        UserRole.objects.create(
+            user=cover, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+        TeachingAssignment.objects.create(
+            batch=self.batch_b, subject=self.subject, teacher=cover,
+            is_active=True, role=TeachingAssignment.ROLE_ASSISTANT)
+
+        r2 = _teacher_client(cover).patch(
+            f"/api/assignments/teacher/{assignment_id}/edit/",
+            {"title": "Covered"}, format="json")
+        self.assertEqual(r2.status_code, 200, r2.content)
+        self.assertEqual(
+            Assignment.objects.get(id=assignment_id).title, "Covered")
