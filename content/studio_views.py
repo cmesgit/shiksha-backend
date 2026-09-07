@@ -427,10 +427,21 @@ class ExamReadinessView(APIView):
             )
         )
 
-        carded = set(
-            ShowcaseCourse.objects.filter(course__isnull=False)
-            .values_list("course_id", flat=True)
-        )
+        # `coming_soon_override` comes along because it is the SECOND source of
+        # the visitor-facing "Coming soon" badge: on the homepage card it beats
+        # the course's own status outright (courses/views.py:2329-2332). A
+        # screen that claims to report what a visitor sees has to consult it,
+        # or it is wrong about every overridden card.
+        carded = set()
+        card_override = {}
+        for course_id, override in ShowcaseCourse.objects.filter(
+            course__isnull=False,
+        ).values_list("course_id", "coming_soon_override"):
+            carded.add(course_id)
+            if override is not None:
+                # Several cards may point at one course. True wins: if any card
+                # on the site says "Coming soon", some visitor is seeing it.
+                card_override[course_id] = card_override.get(course_id) or override
 
         course_ids = [c.id for c in candidates]
 
@@ -490,15 +501,58 @@ class ExamReadinessView(APIView):
             }
             # Derived server-side, never stored: a stored flag would drift the
             # moment someone added a subject through the course editor.
-            state = (
-                "live"
-                if counts["subject_count"] > 0 and counts["material_count"] > 0
-                else "coming_soon"
+            #
+            # ⚠ "Published but empty" and "Coming soon" are DIFFERENT THINGS and
+            # this used to conflate them:
+            #
+            #     state = "live" if subjects and material else "coming_soon"
+            #
+            # consulted neither `Course.status` nor enrolment, so a PUBLISHED
+            # exam with a paying enrolled student and no StudyMaterial rows was
+            # labelled "Coming soon" — while visitors saw it as an ordinary
+            # published course, because every other coming-soon label in the
+            # platform keys strictly on `status == COMING_SOON`
+            # (courses/views.py:1914, :2121, :2202, :2332). COMING_SOON is its
+            # own Course.status value, which is exactly why borrowing the word
+            # for "published but has nothing in it" made the label lie.
+            #
+            # Emptiness is still worth shouting about — it is the whole point of
+            # the screen — it just isn't the same claim, so it gets its own
+            # state and its own wording.
+            has_content = (
+                counts["subject_count"] > 0 and counts["material_count"] > 0
             )
+            if not published:
+                # DRAFT / ARCHIVED: a visitor cannot reach it at all, so no
+                # visitor-facing label applies. The row keeps its counts.
+                state = "hidden"
+            elif course.status == Course.STATUS_COMING_SOON:
+                state = "coming_soon"
+            elif has_content:
+                state = "live"
+            else:
+                state = "empty"
+
+            # What a visitor ACTUALLY sees, override included. Kept separate
+            # from `state` so the screen never has to re-derive it.
+            visitor_coming_soon = (
+                card_override.get(course.id)
+                if course.id in card_override
+                else course.status == Course.STATUS_COMING_SOON
+            )
+
             exams.append({
                 "id": str(course.id),
                 "course_status": course.status,
                 "in_navbar": published,
+                "visitor_coming_soon": bool(published and visitor_coming_soon),
+                # True only when the card contradicts the course's own status —
+                # the case where fixing `status` alone changes nothing on screen.
+                "coming_soon_overridden": (
+                    course.id in card_override
+                    and card_override[course.id]
+                    != (course.status == Course.STATUS_COMING_SOON)
+                ),
                 "slug": getattr(course, "slug", ""),
                 "name": course.title,
                 # Course.description, not short_description — the latter does
@@ -512,6 +566,7 @@ class ExamReadinessView(APIView):
                     for k, lbl in zip(EXAM_STEPS, EXAM_STEP_LABELS)
                 ],
                 "state": state,
+                "has_content": has_content,
                 "edit_url": f"/courses?course={course.id}",
             })
 
@@ -520,9 +575,13 @@ class ExamReadinessView(APIView):
         live = sum(1 for e in exams if e["state"] == "live")
         in_navbar = sum(1 for e in exams if e["in_navbar"])
         hidden = [e for e in exams if not e["in_navbar"]]
-        # The one worth finishing first: furthest along but not yet live.
+        # The one worth finishing first: furthest along, reachable, and still
+        # missing content. Keyed on `has_content`, not on `state != "live"` —
+        # a COMING_SOON exam that is fully stocked is finished work, and asking
+        # someone to "set it up" again is the same category of lie as the
+        # label above.
         suggested = next(
-            (e["id"] for e in exams if e["state"] != "live" and e["in_navbar"]),
+            (e["id"] for e in exams if e["in_navbar"] and not e["has_content"]),
             None,
         )
 
@@ -537,9 +596,14 @@ class ExamReadinessView(APIView):
                 # Scoped to what a visitor can actually reach. Counting the
                 # unpublished rows here said "12 showing Coming soon" while
                 # only 10 were on the site.
-                "coming_soon": sum(
-                    1 for e in exams if e["in_navbar"] and e["state"] != "live"
-                ),
+                #
+                # This is now the literal answer to "how many visitors see the
+                # words Coming soon", derived from status + card override — not
+                # from content counts, which is what made it wrong.
+                "coming_soon": sum(1 for e in exams if e["visitor_coming_soon"]),
+                # Reachable, not labelled Coming soon, and there is nothing
+                # inside. The number the screen exists to report.
+                "empty": sum(1 for e in exams if e["state"] == "empty"),
                 "live": live,
             },
             "suggested_id": suggested,

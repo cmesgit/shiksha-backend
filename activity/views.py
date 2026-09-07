@@ -30,7 +30,7 @@ from rest_framework.views import APIView
 from accounts.auth_flow import get_active_profile, CTX_LEARNER, CTX_TEACHER
 
 from .models import Activity
-from .serializers import ActivitySerializer
+from .serializers import ActivitySerializer, course_names_for
 
 
 def _identity(request):
@@ -173,7 +173,13 @@ class ActivityFeedView(APIView):
             offset = 0
 
         total = qs.count()
-        serializer = ActivitySerializer(qs[offset: offset + limit], many=True)
+        page = list(qs[offset: offset + limit])
+        # One extra query for the whole page, not one per row. See
+        # course_names_for's docstring for why this is resolved on read.
+        serializer = ActivitySerializer(
+            page, many=True,
+            context={"course_names": course_names_for(page)},
+        )
         return Response({
             "results": serializer.data,
             "total": total,

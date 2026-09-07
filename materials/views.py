@@ -334,6 +334,7 @@ class UploadStudyMaterial(APIView):
             None,                       # materials have no due date
             subject.id,
             subject.name,
+            course_name=course.title,
             extra={"chapter": chapter.title if chapter else None},
             verb="materials.uploaded",
             # ?course= is not decoration. The learner app's Study Material
