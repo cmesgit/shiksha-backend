@@ -45,9 +45,42 @@ class CmsImageValidator:
         self.max_bytes = max_bytes
 
     def __call__(self, value):
+        # ── Only validate a file that is actually being UPLOADED ──────────
+        #
+        # ⚠ This guard is load-bearing on production. These checks read the
+        # file's size and then decode it with Pillow. For a file already in
+        # storage that is not a local read: `FieldFile.size` goes through
+        # BunnyStorage.size(), which is an authenticated HTTP HEAD, and
+        # `Image.open(value)` re-downloads the whole object. So running them
+        # against a stored file means every `full_clean()` makes remote calls
+        # for a file that was already validated when it was uploaded.
+        #
+        # That turned a CMS outage into a write outage. `FullCleanMixin`
+        # validates the WHOLE row on a PATCH, so with the Bunny storage key
+        # returning 401 the size HEAD raised `requests.HTTPError` — and note
+        # it raised from BEFORE the try/except below, so it escaped as a 500
+        # rather than a validation message. Result: every PATCH to a
+        # ShowcaseCourse carrying an image failed, which is 18 of prod's 19
+        # cards; the only card that saved was the one with no image. That is
+        # the real cause of "the show/hide toggle does nothing sometimes" on
+        # prod — a different cause from the reserved-"all" slug that
+        # content/0033 fixed, and it survived that migration untouched.
+        #
+        # `_committed` is Django's own flag: False on a FieldFile whose new
+        # content has been assigned but not yet written to storage, True for
+        # anything loaded back from the database. Absent on raw UploadedFile
+        # objects, which ARE fresh uploads — hence the `False` default.
+        if getattr(value, "_committed", False):
+            return
+
         errors = []
 
-        size = getattr(value, "size", None)
+        # Even on the upload path, a storage hiccup must not be what breaks a
+        # save — the module's own rule, applied to size as well as to Pillow.
+        try:
+            size = getattr(value, "size", None)
+        except Exception:
+            size = None
         if size and size > self.max_bytes:
             errors.append(
                 f"File is {size / 1024 / 1024:.1f} MB; the limit is "

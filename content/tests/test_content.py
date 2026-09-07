@@ -558,6 +558,100 @@ class CmsImageValidatorTests(TestCase):
             validate_cms_image(SimpleUploadedFile("x.png", b"not an image"))
         self.assertIn("could not be read", " ".join(cm.exception.messages))
 
+    # ── Stored files are skipped, and that is load-bearing ────────────────
+
+    def test_an_already_stored_file_is_skipped_entirely(self):
+        """The prod outage, stated as a test.
+
+        These checks read `.size` and then decode the file with Pillow. For a
+        file already in storage that is remote I/O — `FieldFile.size` is an
+        authenticated HTTP HEAD against Bunny and `Image.open` re-downloads
+        the object. `FullCleanMixin` validates the WHOLE row on a PATCH, so
+        when the Bunny key started returning 401 the size HEAD raised
+        `requests.HTTPError` and every PATCH to a ShowcaseCourse carrying an
+        image failed — 18 of prod's 19 cards, the one that saved being the
+        only one with no image.
+
+        A committed file must therefore never be touched: it was validated
+        when it was uploaded.
+        """
+        from content.validators import validate_cms_image
+
+        class _ExplodingStoredFile:
+            """Stands in for a FieldFile loaded from the database."""
+            _committed = True
+
+            @property
+            def size(self):
+                raise AssertionError("validator read .size on a stored file")
+
+            def open(self, *a, **k):
+                raise AssertionError("validator opened a stored file")
+
+            def seek(self, *a, **k):
+                raise AssertionError("validator seeked a stored file")
+
+        validate_cms_image(_ExplodingStoredFile())  # must not raise
+
+    def test_a_freshly_assigned_file_is_still_validated(self):
+        """The guard must not be so broad that it disables the validator.
+
+        A FieldFile whose new content has been assigned but not yet written
+        has `_committed = False`, and that IS an upload.
+        """
+        from django.core.exceptions import ValidationError
+
+        from content.validators import validate_cms_image
+
+        upload = self._image(4096, 4096)
+        upload._committed = False
+        with self.assertRaises(ValidationError) as cm:
+            validate_cms_image(upload)
+        self.assertIn("4096x4096", " ".join(cm.exception.messages))
+
+    def test_a_raw_upload_with_no_committed_flag_is_validated(self):
+        """`SimpleUploadedFile` has no `_committed` at all. Defaulting that to
+        "already stored" would silently switch the validator off for every
+        real upload, so the default has to be False."""
+        from django.core.exceptions import ValidationError
+
+        from content.validators import validate_cms_image
+
+        f = self._image(4096, 4096)
+        self.assertFalse(hasattr(f, "_committed"))
+        with self.assertRaises(ValidationError):
+            validate_cms_image(f)
+
+    def test_a_storage_failure_on_the_upload_path_is_not_a_save_failure(self):
+        """The module's own rule — reading metadata must never be what breaks
+        a save — applied to `.size`, not just to Pillow. A raising `.size` on
+        an otherwise-valid upload must fall through to the image checks."""
+        from content.validators import validate_cms_image
+
+        f = self._image()
+        raw = f.read()
+        f.seek(0)
+
+        class _SizeExplodes:
+            """A real upload whose storage cannot answer `.size`. Everything
+            else delegates, so Pillow sees a genuine file object (it needs
+            read/seek/tell/mode/name, which is why this proxies rather than
+            listing methods)."""
+            _committed = False
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            @property
+            def size(self):
+                raise OSError("storage unreachable")
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        validate_cms_image(_SizeExplodes(f))  # must not raise
+        self.assertTrue(raw.startswith(b"\x89PNG"))
+
     def test_leaves_the_file_readable_for_the_rest_of_the_save(self):
         """The validator opens the upload to read its size; if it does not
         rewind, whatever saves the file next writes zero bytes."""
