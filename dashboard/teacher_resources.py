@@ -92,6 +92,17 @@ STATUS_DRAFT = "draft"        # saved, not released
 STATUS_PROCESSING = "processing"  # recording still transcoding at Bunny
 STATUS_ERROR = "error"        # recording upload/transcode failed
 
+# The column each model records its author in. The two names are not
+# interchangeable and there is no third: materials and recordings say
+# `uploaded_by`, assignments and quizzes say `created_by`. Kept in one map so
+# an owner filter cannot be written against the wrong one for a type.
+OWNER_FIELD = {
+    TYPE_MATERIAL: "uploaded_by",
+    TYPE_ASSIGNMENT: "created_by",
+    TYPE_QUIZ: "created_by",
+    TYPE_RECORDING: "uploaded_by",
+}
+
 
 def _truthy(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -352,13 +363,38 @@ class TeacherResourcesView(APIView):
         return qs.filter(batch__isnull=True)
 
     # ------------------------------------------------------------------
+    # scope + owner hooks
+    #
+    # The two questions a subclass may answer differently. Everything else in
+    # this class — the row shape, the status vocabulary, the filters, the
+    # pagination — must NOT be re-implemented anywhere else, because a second
+    # copy of the status derivation is exactly how the same content ends up
+    # described two different ways on two screens.
+    # ------------------------------------------------------------------
+
+    def _scope(self, qs, content_type, user):
+        """Restrict to what `user` is allowed to see.
+
+        Per-type, matching each type's own pre-existing rule — see the module
+        docstring on why these are deliberately not unified.
+        """
+        if content_type == TYPE_ASSIGNMENT:
+            return teacher_scope_filter(qs, user).distinct()
+        return _subject_scoped(qs, user)
+
+    def _owner(self, qs, content_type, mine, user):
+        """Apply the authorship filter. `mine` is a filing question only."""
+        if not mine:
+            return qs
+        return qs.filter(**{OWNER_FIELD[content_type]: user})
+
+    # ------------------------------------------------------------------
     # querysets — each keeps its own pre-existing scope rule (see module doc)
     # ------------------------------------------------------------------
 
     def _materials(self, user, mine):
-        qs = _subject_scoped(StudyMaterial.objects.all(), user)
-        if mine:
-            qs = qs.filter(uploaded_by=user)
+        qs = self._scope(StudyMaterial.objects.all(), TYPE_MATERIAL, user)
+        qs = self._owner(qs, TYPE_MATERIAL, mine, user)
         return (
             qs.select_related("subject__course", "chapter", "batch",
                               "uploaded_by")
@@ -368,9 +404,8 @@ class TeacherResourcesView(APIView):
 
     def _assignments(self, user, mine):
         # Batch-aware, unlike the other three. See module docstring.
-        qs = teacher_scope_filter(Assignment.objects.all(), user).distinct()
-        if mine:
-            qs = qs.filter(created_by=user)
+        qs = self._scope(Assignment.objects.all(), TYPE_ASSIGNMENT, user)
+        qs = self._owner(qs, TYPE_ASSIGNMENT, mine, user)
         return (
             qs.select_related("subject__course", "chapter", "batch",
                               "created_by")
@@ -379,9 +414,8 @@ class TeacherResourcesView(APIView):
         )
 
     def _quizzes(self, user, mine):
-        qs = _subject_scoped(Quiz.objects.all(), user)
-        if mine:
-            qs = qs.filter(created_by=user)
+        qs = self._scope(Quiz.objects.all(), TYPE_QUIZ, user)
+        qs = self._owner(qs, TYPE_QUIZ, mine, user)
         return (
             # No "chapter"/"batch" in select_related: Quiz has NEITHER. The
             # legacy chapter FK was dropped (migrations 0029/0030) and delivery
@@ -399,9 +433,8 @@ class TeacherResourcesView(APIView):
         )
 
     def _recordings(self, user, mine):
-        qs = _subject_scoped(SessionRecording.objects.all(), user)
-        if mine:
-            qs = qs.filter(uploaded_by=user)
+        qs = self._scope(SessionRecording.objects.all(), TYPE_RECORDING, user)
+        qs = self._owner(qs, TYPE_RECORDING, mine, user)
         return (
             qs.select_related("subject__course", "chapter", "batch",
                               "uploaded_by")

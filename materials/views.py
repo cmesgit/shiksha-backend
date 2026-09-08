@@ -1,6 +1,7 @@
 from courses.models import Subject
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
+from accounts.display import display_name_for
 from accounts.permissions import IsTeacherContext
 from rest_framework.response import Response
 from rest_framework import status
@@ -15,7 +16,12 @@ from django.db.models import Q
 from django.core.exceptions import PermissionDenied
 
 from courses.models import Chapter, Batch
-from courses.services import resolve_or_create_chapter, teaches_subject
+from courses.services import (
+    require_authoring_context,
+    resolve_content_author,
+    resolve_or_create_chapter,
+    teaches_subject,
+)
 from courses.chapter_tags import (
     primary_chapter,
     resolve_tags,
@@ -174,10 +180,36 @@ class ChapterMaterials(APIView):
 # ===============================
 
 class UploadStudyMaterial(APIView):
-    permission_classes = [IsAuthenticated, IsTeacherContext]
+    # NOT IsTeacherContext at the class gate — resolve_content_author() below
+    # applies it to the teacher path itself, and applying it here as well
+    # would reject a pure admin before the admin branch could run. That is
+    # the same mistake DeleteStudyMaterial's docstring records: the class gate
+    # turned its `is_staff` branch into unreachable dead code, so no admin
+    # could touch a material however staff they were. Authorization belongs in
+    # the rule, not the decorator.
+    permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, chapter_id=None):
+        # A cheap gate BEFORE anything reads request.data. Reading the body
+        # makes MultiPartParser spool the entire upload to temp storage, so a
+        # caller who cannot possibly be authorized — a plain student — has to
+        # be refused first; the class-level IsTeacherContext used to do that
+        # for free. There are no throttles on this endpoint. The real
+        # per-subject decision still happens below, against `author`.
+        if not (request.user.is_staff or request.user.has_role("TEACHER")):
+            raise PermissionDenied(
+                "You are not assigned to teach this subject."
+            )
+
+        # `author` is who this material is FILED UNDER — request.user for a
+        # teacher uploading their own, the named teacher when an admin uploads
+        # on their behalf. Every check below runs against `author`, so an
+        # admin cannot attach content to a subject the chosen teacher does not
+        # teach. The one deliberate exception is the temp-file claim at the
+        # bottom, which stays on request.user: the ADMIN uploaded those bytes.
+        author = resolve_content_author(request)
+
         chapter_id = request.data.get("chapter_id")
         custom_chapter = request.data.get("custom_chapter")
 
@@ -204,9 +236,17 @@ class UploadStudyMaterial(APIView):
         # Checked BEFORE any chapter is minted, so an unauthorized request
         # cannot leave a stray Chapter row behind under a subject this teacher
         # has no claim to.
-        if not teaches_subject(request.user, subject):
+        if not teaches_subject(author, subject):
+            # Two wordings, because the two callers can act on two different
+            # mistakes: a teacher picked a subject that isn't theirs, an admin
+            # picked a teacher who isn't on it. Naming the teacher is what
+            # makes the admin's version fixable without guessing.
             raise PermissionDenied(
                 "You are not assigned to teach this subject."
+                if author.id == request.user.id
+                else f"{display_name_for(author)} is not assigned to teach "
+                     f"{subject.name}. Assign them to it first, or pick "
+                     f"another teacher."
             )
 
         if chapter is None and custom_chapter:
@@ -215,7 +255,7 @@ class UploadStudyMaterial(APIView):
             # reuses the existing row instead of hitting
             # unique_chapter_per_subject with a 500.
             chapter = resolve_or_create_chapter(
-                subject, custom_title=custom_chapter, created_by=request.user,
+                subject, custom_title=custom_chapter, created_by=author,
             )
 
         # New multi-value payload. Validated before anything is written so a
@@ -225,7 +265,7 @@ class UploadStudyMaterial(APIView):
         try:
             validate_tag_payload(raw_tags, no_specific)
             resolved_tags = resolve_tags(
-                subject, raw_tags, teacher=request.user,
+                subject, raw_tags, teacher=author,
                 save_to_course=_parse_bool(
                     request.data.get("save_chapters_to_course")
                 ),
@@ -275,7 +315,7 @@ class UploadStudyMaterial(APIView):
             description=request.data.get("description", ""),
             chapter_note=request.data.get("chapter_note", ""),
             no_specific_chapter=no_specific,
-            uploaded_by=request.user
+            uploaded_by=author
         )
         if raw_tags:
             set_tags(material, resolved_tags)
@@ -285,6 +325,12 @@ class UploadStudyMaterial(APIView):
             # NULL-uploader row, grandfathered per the model's own comment)
             # can be attached — stops claiming/re-parenting another
             # teacher's file by guessing or reading its UUID.
+            #
+            # request.user, NOT `author`: this is the one line in the method
+            # that is about who UPLOADED THE BYTES rather than who owns the
+            # material. When an admin files under a teacher, the temp rows
+            # belong to the admin, and matching on `author` would 404 every
+            # one of them.
             file = get_object_or_404(
                 MaterialFile.objects.filter(
                     Q(uploaded_by=request.user) | Q(uploaded_by__isnull=True)
@@ -704,10 +750,20 @@ class StudyMaterialDetail(APIView):
 # ===============================
 
 class UploadTempFile(APIView):
-    permission_classes = [IsAuthenticated, IsTeacherContext]
+    # Staff OR a teacher in teacher context. A temp file is not bound to a
+    # subject yet, so there is nothing subject-level to check here — the
+    # staffing gate lives in UploadStudyMaterial, which is the only thing that
+    # can turn one of these rows into student-visible content. An orphan temp
+    # row is unreachable: every read path goes through its material.
+    permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
+        # Before request.FILES, deliberately: touching the body makes
+        # MultiPartParser spool the whole upload to temp storage, and a caller
+        # who can never be authorized must be refused without paying for that.
+        require_authoring_context(request)
+
         file = request.FILES.get("file")
         if not file:
             return Response({"detail": "File required"}, status=400)

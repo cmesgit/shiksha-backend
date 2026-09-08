@@ -384,7 +384,13 @@ class TeacherAssignmentCreateSerializer(ChapterTagWriteMixin,
             )
 
         batch = attrs.get("batch")
-        user = self.context["request"].user
+        # "author" is the teacher this assignment is being filed under, which
+        # is request.user for a teacher and the admin's chosen teacher on the
+        # admin path. Every check below — the staffing guard, and who a minted
+        # chapter is credited to — has to run against them, not against the
+        # admin who pressed the button. Falls back to request.user so the
+        # update serializer and any caller that sets no context keeps working.
+        user = self.context.get("author") or self.context["request"].user
 
         chapter = attrs.get("chapter")
         custom_chapter = (attrs.pop("custom_chapter", "") or "").strip()
@@ -422,11 +428,28 @@ class TeacherAssignmentCreateSerializer(ChapterTagWriteMixin,
             # not assigned to this subject") was false and unactionable for the
             # case that actually produces it: a teacher who does teach the
             # subject, but only in another batch. They read it as a bug.
-            raise serializers.ValidationError(
-                {"non_field_errors": [
+            #
+            # Two wordings for the same refusal, because the two callers can
+            # act on two different mistakes. An admin filing on someone's
+            # behalf teaches nothing and has no batch of their own to pick, so
+            # "Pick a batch you teach" is advice they cannot follow — it has to
+            # name the teacher instead. Same split, same reason, as
+            # materials/views.py's upload gate.
+            if user.id == self.context["request"].user.id:
+                message = (
                     f"You are not assigned to teach {subject.name} "
                     f"in {batch.name}. Pick a batch you teach."
-                ]}
+                )
+            else:
+                from accounts.display import display_name_for
+
+                message = (
+                    f"{display_name_for(user)} does not teach {subject.name} "
+                    f"in {batch.name}. Pick a batch they cover, or a "
+                    f"different teacher."
+                )
+            raise serializers.ValidationError(
+                {"non_field_errors": [message]}
             )
 
         # ── 4. Legacy single-value shim ───────────────────────────────────

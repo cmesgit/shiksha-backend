@@ -1,5 +1,6 @@
 from django.urls import path
 from .views import DashboardView
+from .admin_academy import AdminAcademyOptionsView, AdminAcademyResourcesView
 from .admin_views import AdminAnalyticsView
 from .teacher_resources import TeacherResourcesView
 
@@ -10,4 +11,10 @@ urlpatterns = [
     # than in one of the four content apps because it belongs to none of them —
     # dashboard/ is already where cross-app teacher rollups live.
     path("teacher/resources/", TeacherResourcesView.as_view()),
+    # The same list, unscoped, for the admin console — plus the option tree its
+    # create forms pick from. Same reasoning for the mount point: this spans
+    # courses, materials, assignments, quizzes and recordings, so it belongs to
+    # none of them.
+    path("admin/academy/resources/", AdminAcademyResourcesView.as_view()),
+    path("admin/academy/options/", AdminAcademyOptionsView.as_view()),
 ]
