@@ -308,20 +308,103 @@ def _weekly_hours_map(teacher_ids):
 
 
 def _assignments_map(teacher_ids):
-    """teacher_id -> {subjects:set, class_levels:set} from active TeachingAssignment."""
+    """teacher_id -> {subjects:set, levels:set, courses:{course_id: group}}.
+
+    Grouped by COURSE, not flattened to subject names, because a subject name
+    on its own does not identify anything an admin can act on. Prod carries
+    "Class 10" under BOTH CBSE and MBSE (and the same for Class 8, 9, 11 Arts,
+    11 Commerce, 11 Science, 12 Arts, 12 Commerce, 12 Science), so a card
+    reading "Economics, Economics (Macroeconomics)" is genuinely ambiguous —
+    it could be either board, and the MBSE courses carry no CourseCategory at
+    all, so category cannot be the discriminator either. The board, the class
+    level and the course title together can be.
+
+    The batch/course-wide split is folded into the subject rather than left as
+    two rows: 171 of 172 staffed subjects carry BOTH a course-wide and a
+    batch-scoped assignment, so listing rows verbatim shows every subject
+    twice.
+    """
     tas = (
         TeachingAssignment.objects.filter(teacher_id__in=teacher_ids, is_active=True)
-        .select_related("subject", "subject__course")
+        .select_related(
+            "subject", "subject__course", "subject__course__board",
+            "subject__course__stream", "batch",
+        )
+        .prefetch_related("subject__course__categories")
     )
     out = {}
     for ta in tas:
-        d = out.setdefault(ta.teacher_id, {"subjects": set(), "levels": set()})
-        if ta.subject_id:
-            d["subjects"].add(ta.subject.name)
-            lvl = getattr(ta.subject.course, "class_level", None)
-            if lvl is not None:
-                d["levels"].add(lvl)
+        if not ta.subject_id:
+            continue
+        subject = ta.subject
+        course = subject.course
+        d = out.setdefault(
+            ta.teacher_id, {"subjects": set(), "levels": set(), "courses": {}},
+        )
+        d["subjects"].add(subject.name)
+        lvl = getattr(course, "class_level", None)
+        if lvl is not None:
+            d["levels"].add(lvl)
+
+        group = d["courses"].get(course.id)
+        if group is None:
+            group = d["courses"][course.id] = {
+                "course_id": str(course.id),
+                "course_title": course.title,
+                "board": course.board.name if course.board_id else None,
+                "board_slug": course.board.slug if course.board_id else None,
+                "class_level": lvl,
+                "stream": course.stream.name if course.stream_id else None,
+                "kind": course.kind,
+                "status": course.status,
+                "categories": [c.name for c in course.categories.all()],
+                "subjects": {},
+            }
+        row = group["subjects"].setdefault(subject.id, {
+            "subject_id": str(subject.id),
+            "name": subject.name,
+            "roles": set(),
+            "batches": set(),
+            "course_wide": False,
+        })
+        row["roles"].add(ta.role)
+        if ta.batch_id:
+            row["batches"].add(ta.batch.code or ta.batch.name)
+        else:
+            row["course_wide"] = True
     return out
+
+
+def _course_groups(asg):
+    """The per-course groups from _assignments_map, as a sorted JSON-safe list.
+
+    Ordered the way an admin scans them: school courses by class level first
+    (lowest to highest), then coaching courses with no class level, and boards
+    alphabetically within a level so the CBSE/MBSE twins sit next to each other.
+    """
+    groups = []
+    for group in asg.get("courses", {}).values():
+        subjects = sorted(
+            (
+                {
+                    "subject_id": s["subject_id"],
+                    "name": s["name"],
+                    "roles": sorted(s["roles"]),
+                    "batches": sorted(s["batches"]),
+                    "course_wide": s["course_wide"],
+                }
+                for s in group["subjects"].values()
+            ),
+            key=lambda s: s["name"].lower(),
+        )
+        groups.append({**group, "subjects": subjects, "subject_count": len(subjects)})
+    groups.sort(key=lambda g: (
+        g["class_level"] is None,          # coaching (no class level) last
+        g["class_level"] or 0,
+        (g["board"] or "").lower(),
+        g["course_title"].lower(),
+    ))
+    return groups
 
 
 def _skill_map(teacher_ids):
@@ -367,10 +450,17 @@ def _teacher_row(user, request, hours_map, asg_map, skill_map):
         tracks.append("academy")
     if user.id in skill_map or (profile and getattr(profile, "skill_status", None) == "approved"):
         tracks.append("skill")
-    asg = asg_map.get(user.id, {"subjects": set(), "levels": set()})
+    asg = asg_map.get(user.id, {"subjects": set(), "levels": set(), "courses": {}})
+    groups = _course_groups(asg)
     data.update({
         "tracks": tracks or ["academy"],
         "subjects": sorted(asg["subjects"]),
+        # What the teacher actually covers, grouped by course so board / class
+        # level / category travel with every subject name.
+        "courses": groups,
+        "course_count": len(groups),
+        "subject_count": sum(g["subject_count"] for g in groups),
+        "boards": sorted({g["board"] for g in groups if g["board"]}),
         "class_range": _class_range(asg["levels"]),
         "weekly_hours": hours_map.get(user.id, 0.0),
         "since": user.date_joined.isoformat() if user.date_joined else None,
@@ -383,14 +473,52 @@ class AdminTeacherDirectoryView(APIView):
     """Rich teacher directory for the admin Teachers screen.
 
     GET /courses/admin/teacher-directory/?q=&track=academy|skill
+                                        &board=<slug>&class_level=<int>
     Distinct from the lean AdminTeacherListView (the assign picker) so that
     screen's contract stays stable.
+
+    ``board`` and ``class_level`` filter on what the teacher actively teaches,
+    which is the only way to separate the CBSE "Class 10" faculty from the
+    MBSE "Class 10" faculty — the two courses share a title.
     """
     permission_classes = [IsAuthenticated, IsAdmin]
+
+    def _filter_options(self, base_qs):
+        """Boards and class levels that at least one listed teacher covers.
+
+        Built from the assignments of the base (unfiltered-by-facet) queryset
+        so a chip never offers a combination that returns nothing.
+        """
+        rows = (
+            TeachingAssignment.objects.filter(
+                is_active=True, teacher__in=base_qs,
+            )
+            .values(
+                "subject__course__board__slug",
+                "subject__course__board__name",
+                "subject__course__class_level",
+            )
+            .distinct()
+        )
+        boards, levels = {}, set()
+        for r in rows:
+            slug = r["subject__course__board__slug"]
+            if slug:
+                boards[slug] = r["subject__course__board__name"]
+            if r["subject__course__class_level"] is not None:
+                levels.add(r["subject__course__class_level"])
+        return {
+            "boards": [
+                {"slug": s, "name": n} for s, n in sorted(boards.items(), key=lambda kv: kv[1])
+            ],
+            "class_levels": sorted(levels),
+        }
 
     def get(self, request):
         q = request.query_params.get("q", "").strip()
         track = request.query_params.get("track", "").strip().lower()
+        board = request.query_params.get("board", "").strip()
+        class_level = request.query_params.get("class_level", "").strip()
         qs = (
             User.objects.filter(
                 teacher_profile__is_approved=True,
@@ -417,6 +545,23 @@ class AdminTeacherDirectoryView(APIView):
                 Q(teacher_profile__expert_profile__isnull=False)
                 | Q(teacher_profile__skill_status=TeacherProfile.TRACK_APPROVED)
             )
+        # Options are computed BEFORE the board/class facets are applied, so
+        # picking "CBSE" doesn't wipe every other chip off the screen.
+        options = self._filter_options(qs)
+
+        # ONE filter() call, not two. Two chained filters on a multi-valued
+        # relation produce two independent joins, so board=cbse&class_level=10
+        # would match a teacher who covers something CBSE and, separately,
+        # something in class 10 — not the CBSE Class 10 course they were
+        # actually asked about.
+        facets = {}
+        if board:
+            facets["teaching_assignments__subject__course__board__slug"] = board
+        if class_level.isdigit():
+            facets["teaching_assignments__subject__course__class_level"] = int(class_level)
+        if facets:
+            qs = qs.filter(teaching_assignments__is_active=True, **facets)
+
         qs = qs.order_by("first_name", "last_name", "email").distinct()
 
         total = qs.count()
@@ -430,6 +575,7 @@ class AdminTeacherDirectoryView(APIView):
             "data": rows,
             "count": total,
             "has_more": total > len(rows),
+            "filters": options,
         })
 
 
@@ -447,18 +593,24 @@ class AdminTeacherDetailView(APIView):
         skill_map = _skill_map([user.id])
         data = _teacher_row(user, request, hours_map, asg_map, skill_map)
 
-        # Assignment roster (active)
-        assignments = [
+        # Flat assignment roster, kept for anything reading the old shape —
+        # but derived from data["courses"] rather than re-queried, so it is
+        # one row per SUBJECT (course-wide and batch coverage merged) and each
+        # row now says which course, board and class the subject belongs to.
+        data["assignments"] = [
             {
-                "batch": ta.batch.name if ta.batch_id else None,
-                "batch_code": ta.batch.code if ta.batch_id else None,
-                "subject": ta.subject.name if ta.subject_id else None,
-                "role": ta.role,
+                "subject": s["name"],
+                "course_title": g["course_title"],
+                "board": g["board"],
+                "class_level": g["class_level"],
+                "batches": s["batches"],
+                "course_wide": s["course_wide"],
+                "batch_code": s["batches"][0] if s["batches"] else None,
+                "role": s["roles"][0] if s["roles"] else None,
             }
-            for ta in TeachingAssignment.objects.filter(teacher=user, is_active=True)
-            .select_related("batch", "subject")
+            for g in data["courses"]
+            for s in g["subjects"]
         ]
-        data["assignments"] = assignments
 
         # Recent activity — last few live classes taught
         from livestream.models import LiveSession
