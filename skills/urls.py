@@ -5,7 +5,7 @@
 """skills/urls.py — mounted under /api/skill/ in project urls.py."""
 from django.urls import path
 from .directory_views import (  # replaces views.ExpertListView
-    ExpertListView, DirectoryStatsView, DirectoryLocationsView,
+    ExpertListView, DirectoryStatsView, DirectoryLocationsView, DirectoryLanguagesView,
 )
 from .listing_views import (
     TeacherListingListView, TeacherListingDetailView, TeacherListingSlotsView,
@@ -88,6 +88,8 @@ urlpatterns = [
     # Real states/districts from the roster — replaces the frontend's hardcoded
     # eight Mizoram districts, which made "across India" undeliverable.
     path("locations/",                               DirectoryLocationsView.as_view()),
+    # Same story for languages — the frontend hardcoded three of them.
+    path("languages/",                               DirectoryLanguagesView.as_view()),
     path("teachers/<uuid:expert_id>/",               ExpertDetailView.as_view()),
     # NEW: powers the Book-a-Tutor weekly grid (was unwired → grid showed empty,
     # so every slot looked "closed" and nothing could be booked).

@@ -174,7 +174,7 @@ class ExpertProfile(models.Model):
     MODE_ONLINE = "online"
     CLASS_MODE_CHOICES = [
         (MODE_HOME, "At my place"),
-        (MODE_TRAVEL, "I can travel to the learner"),
+        (MODE_TRAVEL, "Home tutor (travels to the learner)"),
         (MODE_ONLINE, "Online only"),
     ]
     class_mode = models.CharField(

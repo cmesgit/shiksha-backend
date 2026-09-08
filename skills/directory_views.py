@@ -278,6 +278,59 @@ class DirectoryLocationsView(APIView):
         return Response(payload)
 
 
+class DirectoryLanguagesView(APIView):
+    """GET /skill/languages/ — the languages experts actually teach in.
+
+    Same reasoning as DirectoryLocationsView: the frontend carried a hardcoded
+    `LANGS = ["Mizo", "English", "Hindi"]`, so an expert teaching in Manipuri
+    or Bengali was reachable by search but invisible to the language filter.
+
+    `ExpertProfile.languages` is a free-text JSON list written from a comma
+    string, so the same language arrives spelled several ways ("english",
+    "English ", "ENGLISH"). Values are stripped and compared case-insensitively;
+    the first spelling seen wins as the display form, so an expert who wrote
+    "Manipuri" is not shown twice next to someone who wrote "manipuri".
+
+    Returns a flat sorted list. Which languages get pinned as always-visible
+    chips is a UI decision and deliberately lives in the frontend, not here.
+
+        {"languages": ["Bengali", "English", "Hindi", "Mizo"]}
+    """
+    permission_classes = [AllowAny]
+    CACHE_KEY = "skill:directory-languages:v1"
+    CACHE_SECONDS = 3600
+
+    def get(self, request):
+        from django.core.cache import cache
+
+        cached = cache.get(self.CACHE_KEY)
+        if cached:
+            return Response(cached)
+
+        seen = {}
+        rows = (
+            ExpertProfile.objects
+            .filter(is_listed=True)
+            .values_list("languages", flat=True)
+        )
+        for langs in rows:
+            # Defensive: the column is a JSONField with a list default, but it
+            # is written from user input and a null/str row would crash the
+            # loop and take the whole filter rail down with it.
+            if not isinstance(langs, list):
+                continue
+            for raw in langs:
+                if not isinstance(raw, str):
+                    continue
+                name = raw.strip()
+                if name:
+                    seen.setdefault(name.casefold(), name)
+
+        payload = {"languages": sorted(seen.values(), key=str.casefold)}
+        cache.set(self.CACHE_KEY, payload, self.CACHE_SECONDS)
+        return Response(payload)
+
+
 class DirectoryStatsView(APIView):
     """GET /skill/directory-stats/ — the hero "at a glance" panel.
 
