@@ -52,11 +52,33 @@ for cand in "$REPO/venv/bin/python" "$REPO/.venv/bin/python"; do
 done
 [ -n "$PY" ] || { echo "FATAL: no venv found under $REPO" >&2; exit 1; }
 
-# Whichever web service this box actually runs.
+# Whichever web service this box actually SERVES FROM.
+#
+# ⚠ Getting this wrong is a silent mis-deploy: restart the wrong unit and the
+# real server keeps running the old code while the script reports success.
+#
+# Three traps, all of them live right now:
+#   · `systemctl list-unit-files uvicorn.service` exits 0 even with no match
+#     (it just prints "0 unit files listed"), so it cannot be used as a test.
+#   · `systemctl is-active` reports **active** for a unit in
+#     `activating (auto-restart)` — i.e. a crash loop looks healthy.
+#   · dev has BOTH units installed, both pointed at 127.0.0.1:8001. gunicorn
+#     wins the port; uvicorn has crash-looped 800+ times on
+#     "[Errno 98] address already in use" and has never served a request.
+#     Picking the first name in a list therefore chose uvicorn on dev — the
+#     one unit that does nothing.
+#
+# So: LoadState must be `loaded` AND SubState must be `running`. That picks
+# gunicorn on dev and uvicorn on prod, which is right in both cases.
 WEB=""
-for svc in uvicorn gunicorn; do
-  systemctl list-unit-files "$svc.service" >/dev/null 2>&1 \
-    && systemctl cat "$svc" >/dev/null 2>&1 && { WEB="$svc"; break; }
+STALE_WEB=""
+for svc in uvicorn gunicorn daphne; do
+  [ "$(systemctl show "$svc" -p LoadState --value 2>/dev/null)" = "loaded" ] || continue
+  if [ "$(systemctl show "$svc" -p SubState --value 2>/dev/null)" = "running" ]; then
+    WEB="${WEB:+$WEB }$svc"
+  else
+    STALE_WEB="${STALE_WEB:+$STALE_WEB }$svc"
+  fi
 done
 SERVICES="${WEB:+$WEB }celery celery-beat"
 
@@ -70,6 +92,18 @@ echo "  repo:     $REPO"
 echo "  python:   $PY"
 echo "  branch:   $BRANCH"
 echo "  services: ${SERVICES:-<none detected>}"
+if [ -n "$STALE_WEB" ]; then
+  echo "  WARNING:  web unit(s) installed but NOT running: $STALE_WEB"
+  for s in $STALE_WEB; do
+    echo "            $s: $(systemctl show "$s" -p SubState --value) after $(systemctl show "$s" -p NRestarts --value) restarts"
+  done
+  echo "            Not restarting those — a crash-looping unit is a config"
+  echo "            problem, and restarting it just resets its counter."
+fi
+if [ -z "$WEB" ]; then
+  echo "  WARNING:  no RUNNING web server found. Code will be deployed and"
+  echo "            migrated, but nothing will pick it up."
+fi
 [ "$DRY_RUN" = 1 ] && echo "  MODE:     DRY RUN — nothing will change"
 
 # A dirty tree means someone edited files on the server. A pull would either
