@@ -127,13 +127,48 @@ class FAQItemSerializer(serializers.ModelSerializer):
 
 
 class AnnouncementSerializer(serializers.ModelSerializer):
+    """Public ticker item. Serves the navbar strip and every card slot.
+
+    The ticker fields are **additive** — the six keys the navbar strip has
+    always read are unchanged in name, meaning and value, and
+    `test_the_navbar_payload_is_unchanged` pins that. A card slot needs
+    `kind`/`body`/`img`/`metric`; the strip ignores them.
+
+    `slots` is deliberately **not** exposed. The server decides what belongs
+    in a slot; a client that re-derives it would drift the moment the rule
+    changes, and it would also publish the whole placement plan for
+    unreleased surfaces to anyone with curl.
+    """
+
+    img = serializers.SerializerMethodField()
+    metric = serializers.SerializerMethodField()
+
     class Meta:
         model = Announcement
         # updated_at is what lets the navbar key its "dismissed" flag on
         # (id, updated_at) instead of id alone. Without it, editing a live
         # announcement kept it hidden forever for anyone who had already
         # dismissed the previous wording — the row id never changes.
-        fields = ["id", "message", "link_url", "link_label", "level", "updated_at"]
+        fields = [
+            "id", "message", "link_url", "link_label", "level", "updated_at",
+            "kind", "body", "img", "metric", "pinned",
+        ]
+
+    def get_img(self, obj):
+        if obj.image:
+            return _absolute(self.context.get("request"), obj.image.url)
+        return obj.image_url or ""
+
+    def get_metric(self, obj):
+        """`{"value": "21", "label": "DAYS LEFT"}`, or null.
+
+        Computed, not stored — a deadline's number is counted from `ends_at`
+        on every read. Sent as its own object rather than folded into
+        `message` so the client never has to parse a number back out of copy
+        an admin typed.
+        """
+        pair = obj.resolved_metric
+        return {"value": pair[0], "label": pair[1]} if pair else None
 
 
 class ShowcaseCourseSerializer(serializers.ModelSerializer):

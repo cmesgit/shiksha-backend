@@ -546,12 +546,23 @@ class AnnouncementQuerySet(models.QuerySet):
         values `clean()` has already restricted to the enum. This table holds
         single-digit rows, so losing the index is not a cost worth a second
         code path.
+
+        ⚠ **An empty `slots` counts as navbar.** Migration 0036 backfills the
+        rows that existed, but the field defaults to `[]`, so anything created
+        by a path that does not set it — the Django admin, a fixture, a
+        management command, a test — would otherwise be written successfully
+        and then be invisible on the strip, with no error anywhere. That is
+        the same silent-emptying this feature is supposed to prevent, just
+        moved from old rows to new ones. A plain announcement with no ticker
+        targeting IS a strip announcement; the backfill and this fallback are
+        deliberately belt and braces.
         """
+        match = Q(_slots_text__contains=f'"{slot}"')
+        if slot == TickerSlot.NAVBAR:
+            match |= Q(slots=[])
         return self.live().annotate(
             _slots_text=Cast("slots", models.TextField())
-        ).filter(_slots_text__contains=f'"{slot}"').order_by(
-            "-pinned", "order", "-starts_at"
-        )
+        ).filter(match).order_by("-pinned", "order", "-starts_at")
 
 
 class Announcement(StatusedContentModel):

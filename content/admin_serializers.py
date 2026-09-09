@@ -123,6 +123,32 @@ class FullCleanMixin:
         return attrs
 
 
+
+class ResolvedImageMixin:
+    """Resolves the same read-only `img` the public serializers expose.
+
+    The admin screens need it to render a thumbnail of what is currently
+    saved: the editor writes `image` (an upload) or `image_url` (a link), but
+    neither is much use as a preview src on its own — `image` is a relative
+    path and only one of the two is ever set. Without this, the admin form's
+    `previewUrl={row?.img}` was always undefined and no existing image ever
+    showed up next to the upload control.
+
+    Note each serializer must still declare `img = SerializerMethodField()`
+    itself — DRF's SerializerMetaclass only harvests declared fields from
+    bases that are Serializers, so a field defined on a plain mixin like this
+    one is silently ignored and you get "Field name `img` is not valid for
+    model ..." from build_unknown_field. Only the resolver lives here.
+    """
+
+    def get_img(self, obj):
+        if obj.image:
+            request = self.context.get("request")
+            url = obj.image.url
+            return request.build_absolute_uri(url) if request else url
+        return obj.image_url or ""
+
+
 # ── Blog ──────────────────────────────────────────────────────────
 
 class BlogPostAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
@@ -218,12 +244,29 @@ class FAQItemAdminSerializer(serializers.ModelSerializer):
         fields = ["id", "page", "question", "answer_html", "order", "status"]
 
 
-class AnnouncementAdminSerializer(FullCleanMixin, serializers.ModelSerializer):
+class AnnouncementAdminSerializer(
+    ResolvedImageMixin, FullCleanMixin, serializers.ModelSerializer
+):
+    """Admin view of a ticker item — every field, including `slots`.
+
+    `FullCleanMixin` stays first-class here: `Announcement.clean()` carries
+    all the ticker rules (unknown slot, missing kind on a card slot, a stored
+    deadline metric), and without it they surface as a 500 instead of a
+    readable 400.
+    """
+
+    # Declared here, not inherited — ResolvedImageMixin supplies only the
+    # resolver. DRF's metaclass ignores fields defined on a plain mixin, so
+    # omitting this line yields "Field name `img` is not valid for model".
+    img = serializers.SerializerMethodField()
+
     class Meta:
         model = Announcement
         fields = [
             "id", "message", "link_url", "link_label", "level",
             "starts_at", "ends_at", "status", "order",
+            "slots", "kind", "body", "image", "image_url", "img",
+            "pinned", "metric_value", "metric_label",
         ]
 
 
@@ -369,31 +412,6 @@ class ContentTagSerializer(serializers.ModelSerializer):
 
 
 # ── Homepage content ───────────────────────────────────────────────
-
-class ResolvedImageMixin:
-    """Resolves the same read-only `img` the public serializers expose.
-
-    The admin screens need it to render a thumbnail of what is currently
-    saved: the editor writes `image` (an upload) or `image_url` (a link), but
-    neither is much use as a preview src on its own — `image` is a relative
-    path and only one of the two is ever set. Without this, the admin form's
-    `previewUrl={row?.img}` was always undefined and no existing image ever
-    showed up next to the upload control.
-
-    Note each serializer must still declare `img = SerializerMethodField()`
-    itself — DRF's SerializerMetaclass only harvests declared fields from
-    bases that are Serializers, so a field defined on a plain mixin like this
-    one is silently ignored and you get "Field name `img` is not valid for
-    model ..." from build_unknown_field. Only the resolver lives here.
-    """
-
-    def get_img(self, obj):
-        if obj.image:
-            request = self.context.get("request")
-            url = obj.image.url
-            return request.build_absolute_uri(url) if request else url
-        return obj.image_url or ""
-
 
 class HomeContentBlockAdminSerializer(
     ResolvedImageMixin, FullCleanMixin, serializers.ModelSerializer

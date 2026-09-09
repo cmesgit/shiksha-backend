@@ -15,6 +15,7 @@ from django.db.models import F, Prefetch, Q
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import generics
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -25,7 +26,7 @@ from django.core.cache import cache
 from .models import (
     Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
     HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
-    Locale, PublishStatus, ShowcaseCourse,
+    Locale, PublishStatus, ShowcaseCourse, TickerSlot,
 )
 from .serializers import (
     AnnouncementSerializer, BlogPostDetailSerializer, BlogPostListSerializer,
@@ -191,13 +192,33 @@ class FAQListView(CachedListAPIView):
 
 
 class AnnouncementListView(CachedListAPIView):
-    """GET /api/content/announcements/ — currently-live only."""
+    """GET /api/content/announcements/[?slot=] — currently-live only.
+
+    `slot` defaults to **navbar**, which is what keeps the existing strip
+    working unchanged: the site-wide strip has always called this endpoint
+    with no parameters, and must keep getting exactly the rows it always did.
+    Every other ticker surface passes its own slot.
+
+    Caching is safe here — `list_cache_key` (content/cache.py:34-37) already
+    folds the sorted query string into the key, so `?slot=hero` cannot be
+    served a cached navbar response.
+    """
 
     serializer_class = AnnouncementSerializer
     pagination_class = None
 
     def get_queryset(self):
-        return Announcement.objects.live()
+        slot = self.request.query_params.get("slot") or TickerSlot.NAVBAR
+        if slot not in TickerSlot.values:
+            # 400 rather than an empty list. A typo'd slot returning [] is
+            # indistinguishable from "nothing is scheduled here", which is the
+            # same failure mode as admin.js's safe() turning an outage into
+            # empty content — the bug that once read as "there is no content".
+            raise DRFValidationError({
+                "slot": f"Unknown slot '{slot}'. Valid: "
+                        f"{', '.join(TickerSlot.values)}.",
+            })
+        return Announcement.objects.for_slot(slot)
 
 
 class ShowcaseListView(CachedListAPIView):

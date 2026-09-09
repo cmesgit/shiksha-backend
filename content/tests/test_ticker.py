@@ -215,13 +215,21 @@ class BackfillMigrationTest(TestCase):
         fn = mod.set_navbar_slot if direction == "forward" else mod.clear_navbar_slot
         fn(real_apps, None)
 
-    def test_it_puts_pre_ticker_rows_into_the_navbar_slot(self):
+    def test_it_makes_the_navbar_slot_explicit(self):
+        """The backfill writes down what the fallback already infers.
+
+        Both exist on purpose. The fallback in `for_slot` is what stops a row
+        created without slots from vanishing; the backfill is what makes the
+        value real, so the Phase 2 admin form shows "navbar" ticked instead of
+        nothing, and so the data does not depend on a query-time rule that a
+        later refactor could drop.
+        """
         a = Announcement.objects.create(message="legacy", slots=[])
-        self.assertEqual(Announcement.objects.for_slot(TickerSlot.NAVBAR).count(), 0,
-                         "unreachable before the backfill — the bug 0036 exists for")
+        self.assertEqual(Announcement.objects.for_slot(TickerSlot.NAVBAR).count(), 1,
+                         "the fallback already covers it")
         self._run()
         a.refresh_from_db()
-        self.assertEqual(a.slots, ["navbar"])
+        self.assertEqual(a.slots, ["navbar"], "now explicit, not inferred")
         self.assertEqual(Announcement.objects.for_slot(TickerSlot.NAVBAR).count(), 1)
 
     def test_status_defaults_to_published_so_the_backfill_is_immediately_live(self):
@@ -285,3 +293,235 @@ class ExistingBehaviourUnchangedTest(TestCase):
 
     def test_default_ordering_is_untouched(self):
         self.assertEqual(Announcement._meta.ordering, ["order", "-starts_at"])
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Phase 1b — serializers and endpoints
+# ══════════════════════════════════════════════════════════════════════
+
+class PublicEndpointTest(TestCase):
+    """GET /api/content/announcements/[?slot=]"""
+
+    URL = "/api/content/announcements/"
+
+    def setUp(self):
+        from django.core.cache import cache
+        # The list view memoises on (content version, path, query). Rows
+        # created in setUp bump the version, but clearing keeps each test
+        # honest about what it is actually asserting.
+        cache.clear()
+
+    def test_the_navbar_payload_is_unchanged(self):
+        """⚠ THE REGRESSION THAT MATTERS. The site-wide strip has always
+        called this endpoint with no parameters. Phase 1 must not change one
+        key it reads, one value, or which rows come back. The ticker fields
+        are additive — present, but nothing the strip looks at moved."""
+        a = _pub(message="hi", link_url="/courses", link_label="See",
+                 slots=[TickerSlot.NAVBAR])
+        res = self.client.get(self.URL)
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        self.assertEqual(len(body), 1)
+        row = body[0]
+        for key, expected in [
+            ("id", a.id), ("message", "hi"), ("link_url", "/courses"),
+            ("link_label", "See"), ("level", "info"),
+        ]:
+            self.assertEqual(row[key], expected, f"{key} changed")
+        self.assertIn("updated_at", row,
+                      "the navbar keys its dismissed flag on (id, updated_at)")
+
+    def test_no_slot_param_means_navbar_only(self):
+        _pub(message="strip", slots=[TickerSlot.NAVBAR])
+        _pub(message="card", slots=[TickerSlot.HERO], kind=TickerKind.MILESTONE)
+        self.assertEqual([r["message"] for r in self.client.get(self.URL).json()],
+                         ["strip"])
+
+    def test_slot_param_selects_a_surface(self):
+        _pub(message="strip", slots=[TickerSlot.NAVBAR])
+        _pub(message="card", slots=[TickerSlot.HERO], kind=TickerKind.MILESTONE)
+        res = self.client.get(self.URL, {"slot": TickerSlot.HERO})
+        self.assertEqual([r["message"] for r in res.json()], ["card"])
+
+    def test_an_unknown_slot_is_a_400_not_an_empty_list(self):
+        """An empty list would be indistinguishable from 'nothing scheduled
+        here' — the same failure shape as an outage rendering as no content."""
+        res = self.client.get(self.URL, {"slot": "nonsense"})
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertIn("slot", res.json())
+
+    def test_slots_is_never_exposed_publicly(self):
+        """The server decides placement. Publishing the plan would also leak
+        which unreleased surfaces are being staged."""
+        _pub(message="x", slots=[TickerSlot.NAVBAR, TickerSlot.HERO],
+             kind=TickerKind.MILESTONE)
+        self.assertNotIn("slots", self.client.get(self.URL).json()[0])
+
+    def test_a_card_slot_carries_kind_body_and_metric(self):
+        _pub(message="2,400 students", slots=[TickerSlot.HERO],
+             kind=TickerKind.MILESTONE, body="since April",
+             metric_value="2,400", metric_label="STUDENTS")
+        row = self.client.get(self.URL, {"slot": TickerSlot.HERO}).json()[0]
+        self.assertEqual(row["kind"], "milestone")
+        self.assertEqual(row["body"], "since April")
+        self.assertEqual(row["metric"], {"value": "2,400", "label": "STUDENTS"})
+
+    def test_a_deadline_metric_is_computed_at_read_time(self):
+        _pub(message="closes soon", slots=[TickerSlot.HERO],
+             kind=TickerKind.DEADLINE,
+             ends_at=timezone.now() + timedelta(days=21, hours=1))
+        row = self.client.get(self.URL, {"slot": TickerSlot.HERO}).json()[0]
+        self.assertEqual(row["metric"], {"value": "21", "label": "DAYS LEFT"})
+
+    def test_metric_is_null_when_there_is_none(self):
+        _pub(message="x", slots=[TickerSlot.HERO], kind=TickerKind.NEW_COURSE)
+        self.assertIsNone(
+            self.client.get(self.URL, {"slot": TickerSlot.HERO}).json()[0]["metric"])
+
+    def test_the_cache_does_not_serve_one_slot_to_another(self):
+        """`list_cache_key` folds the query string in. If it ever stopped,
+        the hero would silently render the navbar's content."""
+        _pub(message="strip", slots=[TickerSlot.NAVBAR])
+        _pub(message="card", slots=[TickerSlot.HERO], kind=TickerKind.MILESTONE)
+        first = self.client.get(self.URL).json()            # populates cache
+        second = self.client.get(self.URL, {"slot": TickerSlot.HERO}).json()
+        self.assertEqual([r["message"] for r in first], ["strip"])
+        self.assertEqual([r["message"] for r in second], ["card"])
+
+
+class AdminEndpointTest(TestCase):
+    """PUT/POST /api/content/admin/announcements/ — the Phase 2 form's API."""
+
+    URL = "/api/content/admin/announcements/"
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from django.core.cache import cache
+
+        from content.permissions import IsStudioEditor
+        # The Studio permission caches content_studio_enabled, and Django rolls
+        # back the DB but not the cache between tests.
+        cache.delete(IsStudioEditor.CACHE_KEY)
+        cache.clear()
+        self.editor = get_user_model().objects.create_user(
+            username="ticker-ed", email="ticker-ed@example.com",
+            password="x", is_staff=True,
+        )
+
+    def _client(self):
+        from rest_framework.test import APIClient
+        c = APIClient()
+        c.force_authenticate(user=self.editor)
+        return c
+
+    def test_slots_round_trip(self):
+        res = self._client().post(self.URL, {
+            "message": "card", "slots": ["hero", "footer"], "kind": "milestone",
+            "metric_value": "2,400", "metric_label": "STUDENTS",
+        }, format="json")
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(res.json()["slots"], ["hero", "footer"])
+        self.assertEqual(Announcement.objects.get().slots, ["hero", "footer"])
+
+    def test_an_unknown_slot_is_a_400_not_a_500(self):
+        """FullCleanMixin is what turns Announcement.clean() into a readable
+        field error. Without it this is an uncaught ValidationError — a 500."""
+        res = self._client().post(self.URL, {
+            "message": "x", "slots": ["nope"],
+        }, format="json")
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertIn("slots", res.json())
+
+    def test_a_card_slot_without_a_kind_is_a_400(self):
+        res = self._client().post(self.URL, {
+            "message": "x", "slots": ["hero"],
+        }, format="json")
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertIn("kind", res.json())
+
+    def test_a_stored_deadline_metric_is_a_400(self):
+        res = self._client().post(self.URL, {
+            "message": "x", "slots": ["hero"], "kind": "deadline",
+            "metric_value": "21",
+            "ends_at": (timezone.now() + timedelta(days=21)).isoformat(),
+        }, format="json")
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertIn("metric_value", res.json())
+
+    def test_ends_at_before_starts_at_is_still_a_400(self):
+        now = timezone.now()
+        res = self._client().post(self.URL, {
+            "message": "x", "starts_at": now.isoformat(), "ends_at": now.isoformat(),
+        }, format="json")
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertIn("ends_at", res.json())
+
+    def test_the_admin_sees_img_and_every_ticker_field(self):
+        """The Phase 2 form needs `img` for its thumbnail — the mixin supplies
+        only the resolver, so a missing `img = SerializerMethodField()`
+        declaration would drop it silently."""
+        _pub(message="x", slots=[TickerSlot.HERO], kind=TickerKind.MILESTONE,
+             image_url="https://cdn.example.com/a.png", metric_value="9")
+        row = self._client().get(self.URL).json()
+        row = (row["results"] if isinstance(row, dict) else row)[0]
+        for key in ("slots", "kind", "body", "image", "image_url", "img",
+                    "pinned", "metric_value", "metric_label", "status"):
+            self.assertIn(key, row, f"admin serializer is missing {key}")
+        self.assertEqual(row["img"], "https://cdn.example.com/a.png")
+
+    def test_a_draft_ticker_item_never_reaches_the_public_endpoint(self):
+        self._client().post(self.URL, {
+            "message": "unpublished", "slots": ["hero"], "kind": "milestone",
+            "status": "draft",
+        }, format="json")
+        res = self.client.get("/api/content/announcements/", {"slot": "hero"})
+        self.assertEqual(res.json(), [])
+
+
+class EmptySlotsFallsBackToNavbarTest(TestCase):
+    """⚠ CAUGHT BY AN EXISTING TEST, NOT A NEW ONE.
+
+    `content.tests.test_content.OtherEndpointTests.test_announcement_live_window`
+    creates announcements with no `slots` and expects them on the public
+    endpoint. It failed the moment `for_slot` started filtering, because the
+    field defaults to `[]`.
+
+    Migration 0036 backfills the rows that existed at migration time, but
+    nothing stops a NEW row being created without slots — the Django admin, a
+    fixture, a management command, a seeding script. Each would save fine and
+    then be invisible on the live strip with no error raised anywhere. So an
+    empty `slots` is treated as navbar-only, which is also what the field's
+    own help_text promises.
+    """
+
+    def test_a_row_with_no_slots_is_on_the_navbar(self):
+        Announcement.objects.create(
+            message="untargeted", status=PublishStatus.PUBLISHED,
+            starts_at=timezone.now() - timedelta(hours=1),
+        )
+        self.assertEqual(
+            [a.message for a in Announcement.objects.for_slot(TickerSlot.NAVBAR)],
+            ["untargeted"])
+
+    def test_a_row_with_no_slots_is_NOT_on_a_card_slot(self):
+        """The fallback is navbar-only. An untargeted row must not leak onto
+        the homepage hero — it has no kind, so there is no card to render."""
+        Announcement.objects.create(
+            message="untargeted", status=PublishStatus.PUBLISHED,
+            starts_at=timezone.now() - timedelta(hours=1),
+        )
+        for slot in TickerSlot.values:
+            if slot == TickerSlot.NAVBAR:
+                continue
+            with self.subTest(slot=slot):
+                self.assertEqual(Announcement.objects.for_slot(slot).count(), 0)
+
+    def test_it_reaches_the_public_endpoint(self):
+        from django.core.cache import cache
+        cache.clear()
+        Announcement.objects.create(
+            message="untargeted", status=PublishStatus.PUBLISHED,
+            starts_at=timezone.now() - timedelta(hours=1),
+        )
+        res = self.client.get("/api/content/announcements/")
+        self.assertEqual([r["message"] for r in res.json()], ["untargeted"])
