@@ -30,6 +30,7 @@ OWNED_IMAGE_FIELDS = [
     ("content", "ShowcaseCourse", "image"),
     ("content", "HomeContentBlock", "image"),
     ("content", "HomeListItem", "image"),
+    ("content", "Announcement", "image"),
     # Cross-app on purpose. `Course.thumbnail` is the picture BOTH public
     # surfaces read — /courses reads it directly and the homepage's featured
     # grid prefers it ahead of the showcase card's own image — so it is the
@@ -190,6 +191,9 @@ _USAGE_URLS = {
     "showcasecourse": lambda usage: "/content/cards",
     "homecontentblock": lambda usage: "/content/pages/home",
     "homelistitem": lambda usage: "/content/pages/home",
+    # The ticker queue lives on the notices screen until Phase 2 gives it a
+    # screen of its own; point there rather than leave the "Open" button dead.
+    "announcement": lambda usage: "/content/questions",
     # Courses and boards are both edited on the same Admin screen; it has no
     # per-row route, so the destination is the list itself. An empty string
     # here would render an "Open" button that goes nowhere.

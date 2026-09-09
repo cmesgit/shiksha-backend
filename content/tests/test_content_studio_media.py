@@ -198,20 +198,33 @@ class BackfillMigrationTest(MediaTestCase):
         from importlib import import_module
         return import_module("content.migrations.0032_backfill_course_media_usages")
 
+    def _announcement_migration(self):
+        from importlib import import_module
+        return import_module(
+            "content.migrations.0037_backfill_announcement_media_usages")
+
     def test_every_owned_field_is_covered_by_some_backfill(self):
         """The migrations hardcode their own copies (historical models can't
         import the live one). If they drift, the backfill silently misses a
         field — that field's pictures then report "used on 0 pages" forever and
         the 409 delete guard cannot protect them.
 
-        The backfill is split across two migrations because the `courses`
+        The backfill is split across three migrations because the `courses`
         fields could not be added until 0031 widened `object_id` to hold their
-        UUID primary keys. The invariant is the UNION, not either list alone.
+        UUID primary keys, and `Announcement.image` did not exist until 0035.
+        The invariant is the UNION, not any list alone.
+
+        ⚠ The order below follows `OWNED_IMAGE_FIELDS`, not migration
+        chronology: 0037 is spliced between 0023 and 0032 because the live list
+        groups the `content` fields together ahead of the cross-app `courses`
+        ones. Append a new field to the end of its group and add its backfill
+        in the matching position here.
         """
         from content.media import OWNED_IMAGE_FIELDS
 
         covered = [
             *self._migration().OWNED_IMAGE_FIELDS,
+            *self._announcement_migration().ANNOUNCEMENT_IMAGE_FIELDS,
             *self._course_migration().COURSE_IMAGE_FIELDS,
         ]
         self.assertEqual(covered, OWNED_IMAGE_FIELDS)

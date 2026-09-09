@@ -24,6 +24,7 @@ from django.db import models
 
 from .validators import validate_cms_image
 from django.db.models import Q
+from django.db.models.functions import Cast
 from django.utils import timezone
 from django.utils.text import slugify
 
@@ -473,6 +474,52 @@ class AnnouncementLevel(models.TextChoices):
     WARNING = "warning", "Warning"
 
 
+class TickerSlot(models.TextChoices):
+    """Where a ticker item may appear (design_handoff_live_ticker §1).
+
+    Deliberately NOT a reuse of `HomeSection`: six of these eight are not
+    homepage sections at all. Kept next to `Announcement` rather than beside
+    `HomeSection` because these are that model's fields.
+    """
+
+    NAVBAR = "navbar", "Navbar strip (site-wide)"
+    HERO = "hero", "Homepage hero circle"
+    HOME_BAND = "home_band", "Homepage band"
+    COURSES = "courses", "Courses rail"
+    DASHBOARD = "dashboard", "Student dashboard rail"
+    FOOTER = "footer", "Footer strip"
+    AUTH_LOGIN = "auth_login", "Auth · login"
+    AUTH_SIGNUP = "auth_signup", "Auth · signup"
+
+
+class TickerKind(models.TextChoices):
+    """The eight card treatments the design actually draws.
+
+    ⚠ This is NOT the eight content types from the design Q&A — those named a
+    blog-post card the design never drew, and never named MILESTONE or
+    MENTOR_SPOTLIGHT. Decided 2026-09-10 (handoff README §14 #11): follow what
+    is drawn, so every value has a rendering. Adding `blog_post` later is one
+    line plus a card design.
+    """
+
+    NEW_COURSE = "new_course", "New course"
+    ENROLMENT = "enrolment", "Enrolment"
+    NEW_MENTOR = "new_mentor", "New mentor"
+    PRACTICE = "practice", "Practice set"
+    DEADLINE = "deadline", "Deadline"
+    MILESTONE = "milestone", "Milestone"
+    CURRENT_AFFAIRS = "current_affairs", "Current affairs"
+    # The odd one out: it aggregates ("Three new mentors") and carries its own
+    # section headline, and only ever targets the two auth slots.
+    MENTOR_SPOTLIGHT = "mentor_spotlight", "Mentor spotlight"
+
+
+#: Kinds that render a glyph or an avatar instead of a big number.
+KINDS_WITHOUT_METRIC = frozenset({
+    TickerKind.NEW_COURSE, TickerKind.CURRENT_AFFAIRS, TickerKind.NEW_MENTOR,
+})
+
+
 class AnnouncementQuerySet(models.QuerySet):
     def live(self):
         now = timezone.now()
@@ -482,6 +529,28 @@ class AnnouncementQuerySet(models.QuerySet):
             status=PublishStatus.PUBLISHED, starts_at__lte=now,
         ).filter(
             Q(ends_at__isnull=True) | Q(ends_at__gte=now)
+        )
+
+    def for_slot(self, slot):
+        """Live items targeting one `TickerSlot`, pinned ones first.
+
+        ⚠ Matches the JSON as TEXT rather than using `slots__contains=[slot]`.
+        That lookup is **PostgreSQL-only — it raises NotSupportedError on
+        SQLite**, which is what `config.settings_test` runs on. A vendor branch
+        would be worse than this: the Postgres arm would be the one serving
+        production and the one no test ever executes. Measured both ways on
+        both engines 2026-09-10.
+
+        The needle is quoted (`"navbar"`, not `navbar`) so one slot name can
+        never match inside another, and `contains` is case-sensitive against
+        values `clean()` has already restricted to the enum. This table holds
+        single-digit rows, so losing the index is not a cost worth a second
+        code path.
+        """
+        return self.live().annotate(
+            _slots_text=Cast("slots", models.TextField())
+        ).filter(_slots_text__contains=f'"{slot}"').order_by(
+            "-pinned", "order", "-starts_at"
         )
 
 
@@ -502,15 +571,118 @@ class Announcement(StatusedContentModel):
     )
     order = models.PositiveSmallIntegerField(default=0)
 
+    # ── Live ticker (design_handoff_live_ticker Phase 1) ──────────────────
+    # This model was already ~70% of a ticker item and already rendered the
+    # navbar strip, so the ticker extends it rather than adding a second
+    # table. See the handoff README §0 — a parallel model has been proposed
+    # and refused here three times before.
+    slots = models.JSONField(
+        default=list, blank=True,
+        help_text="Which surfaces this may appear on. Empty behaves as navbar-only.",
+    )
+    # Blank is meaningful: a plain strip announcement has no card treatment.
+    # `clean()` requires a kind only once a card slot is targeted, which is
+    # what lets every pre-ticker row stay valid untouched.
+    kind = models.CharField(
+        max_length=24, choices=TickerKind.choices, blank=True, default="",
+        help_text="Card treatment. Required for any slot other than the navbar strip.",
+    )
+    body = models.TextField(
+        blank=True, default="",
+        help_text="Optional second line on card slots. The navbar strip ignores it.",
+    )
+    # Same dual field/URL pair as HomeListItem, resolved to one `img` by the
+    # serializer. Registered in content/media.py so the Pictures screen counts
+    # it and the 409 delete guard protects it.
+    image = models.ImageField(
+        upload_to="content/ticker/", blank=True, null=True,
+        validators=[validate_cms_image],
+    )
+    image_url = models.URLField(
+        blank=True, default="", help_text="Used if no image file is uploaded.",
+    )
+    pinned = models.BooleanField(
+        default=False, help_text="Sorts ahead of everything else in its slots.",
+    )
+    metric_value = models.CharField(
+        max_length=16, blank=True, default="",
+        help_text="The big number on the card, e.g. 2,400. Text, not a number — "
+                  "the design renders thousands separators. Leave empty for a "
+                  "deadline; that one is derived from the end time.",
+    )
+    metric_label = models.CharField(
+        max_length=24, blank=True, default="",
+        help_text="Its unit, e.g. STUDENTS or QUESTIONS.",
+    )
+
     objects = AnnouncementQuerySet.as_manager()
 
     class Meta:
         ordering = ["order", "-starts_at"]
 
+    @property
+    def resolved_metric(self):
+        """``(value, label)`` for the card's big number, or ``None``.
+
+        DEADLINE is **derived, never stored** (handoff README §14 #12): a
+        stored "21 DAYS LEFT" is wrong tomorrow and nothing would ever correct
+        it. Every other kind uses what the admin typed.
+        """
+        if self.kind == TickerKind.DEADLINE:
+            if not self.ends_at:
+                return None
+            days = (self.ends_at - timezone.now()).days
+            if days < 0:
+                return None
+            label = self.metric_label or ("DAY LEFT" if days == 1 else "DAYS LEFT")
+            return (str(days), label)
+        if self.metric_value:
+            return (self.metric_value, self.metric_label)
+        return None
+
     def clean(self):
         super().clean()
         if self.ends_at and self.ends_at <= self.starts_at:
             raise ValidationError({"ends_at": "Must be after the start time."})
+
+        if not isinstance(self.slots, list):
+            raise ValidationError({"slots": "Must be a JSON list."})
+        # Validated against the enum, and ALL of it — mirroring the rule on
+        # ShowcaseCourse.categories. A slot whose surface is not built yet, or
+        # is switched off, must still be saveable; rejecting it here would turn
+        # "that surface is off" into "these items can no longer be edited".
+        invalid = sorted(set(self.slots) - set(TickerSlot.values))
+        if invalid:
+            raise ValidationError({
+                "slots": f"Unknown slot{'s' if len(invalid) > 1 else ''}: "
+                         f"{', '.join(invalid)}. Valid: "
+                         f"{', '.join(TickerSlot.values)}.",
+            })
+
+        card_slots = set(self.slots) - {TickerSlot.NAVBAR}
+        if card_slots and not self.kind:
+            raise ValidationError({
+                "kind": "Required once this appears anywhere but the navbar "
+                        f"strip (targets {', '.join(sorted(card_slots))}). The "
+                        "strip renders a line of text; every other slot renders "
+                        "a card, and the card's treatment comes from the kind.",
+            })
+
+        # Refuse rather than silently ignore. A stored deadline metric is
+        # discarded by `resolved_metric`, so accepting it would mean an admin
+        # types 21, sees it vanish from the card, and has nothing to debug.
+        if self.kind == TickerKind.DEADLINE and self.metric_value:
+            raise ValidationError({
+                "metric_value": "Leave empty for a deadline — the days-left "
+                                "number is counted from the end time on every "
+                                "read, so a stored one would be wrong tomorrow.",
+            })
+        if self.kind in KINDS_WITHOUT_METRIC and self.metric_value:
+            raise ValidationError({
+                "metric_value": f"A '{TickerKind(self.kind).label}' card shows a "
+                                "glyph or an avatar, not a number — this would "
+                                "never be rendered.",
+            })
 
     def __str__(self):
         return self.message
