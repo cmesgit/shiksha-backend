@@ -279,9 +279,16 @@ class ShowcaseCourseAdminSerializer(FullCleanMixin, serializers.ModelSerializer)
     # check still runs regardless and still catches genuinely malformed input.
     full_clean_exclude = ("categories",)
     course_title = serializers.SerializerMethodField()
+    board_name = serializers.SerializerMethodField()
 
     def get_course_title(self, obj):
         return obj.course.title if obj.course_id else None
+
+    def get_board_name(self, obj):
+        # The card editor seeds its Board select from this, exactly as it does
+        # from `course_title`. Without it a board-linked card opened as
+        # "— Not linked —", so saving the form silently unlinked the board.
+        return obj.board.name if obj.board_id else None
 
     def validate_gradient_css(self, value):
         """`gradient_css` holds the STOPS ONLY — the public card interpolates
@@ -317,7 +324,8 @@ class ShowcaseCourseAdminSerializer(FullCleanMixin, serializers.ModelSerializer)
             "fact_line", "price_label", "tutor_name", "is_explore_card",
             "use_own_details", "coming_soon_override",
             "categories", "gradient_css", "image", "image_url", "icon",
-            "link_path", "link_state", "course", "course_title", "board",
+            "link_path", "link_state", "course", "course_title",
+            "board", "board_name",
             "order", "status",
             "created_at", "updated_at",
         ]

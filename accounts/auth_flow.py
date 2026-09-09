@@ -945,6 +945,7 @@ class MeView(APIView):
                 # screen where /me/ has not been called — see the field's
                 # docstring in global_settings/models.py.
                 "google_oauth_enabled": gs.google_oauth_enabled,
+                "public_quiz_hub_enabled": gs.public_quiz_hub_enabled,
             },
         })
 

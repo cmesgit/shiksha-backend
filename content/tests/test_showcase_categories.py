@@ -273,3 +273,107 @@ class CardReorderTests(TestCase):
     def test_empty_list_is_refused(self):
         r = self.client_.post(REORDER_URL, {"cards": []}, format="json")
         self.assertEqual(r.status_code, 400)
+
+
+class LegacyAllSentinelTests(TestCase):
+    """The reserved "all" sentinel made legacy cards permanently unsaveable.
+
+    Seed data once tagged three cards `[..., "all"]` through `create()`/
+    `save()`, neither of which runs `clean()`. `"all"` can never become a
+    valid `ShowcaseCategory` — the model reserves it — so `clean()` rejected
+    those rows forever. Because the admin serializer's `FullCleanMixin`
+    validates the whole stored instance on a PATCH, the show/hide toggle
+    (a one-key `{"status": ...}` write) failed on exactly the cards that
+    predate the fix, while newly created cards were fine.
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        from content.permissions import IsStudioEditor
+        cache.delete(IsStudioEditor.CACHE_KEY)
+        cache.clear()
+        self.editor = User.objects.create_user(
+            username="ed2", email="ed2@example.com", password="x", is_staff=True,
+        )
+        self.client_ = APIClient()
+        self.client_.force_authenticate(user=self.editor)
+
+    def _detail(self, card):
+        return f"/api/content/admin/showcase/{card.pk}/"
+
+    def test_all_can_never_be_made_valid(self):
+        # The premise of the whole bug: you cannot fix the data by adding the
+        # tab, so the slug has to come off the cards.
+        with self.assertRaises(ValidationError):
+            ShowcaseCategory(slug="all", label="All").full_clean()
+
+    def test_stored_all_sentinel_blocks_a_status_only_patch(self):
+        """Reproduces the reported bug on an unpruned row."""
+        card = make_card("Legacy", ["competitive", "all"])
+
+        r = self.client_.patch(
+            self._detail(card), {"status": PublishStatus.DRAFT}, format="json",
+        )
+
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("categories", r.data)
+        card.refresh_from_db()
+        self.assertEqual(card.status, PublishStatus.PUBLISHED)  # toggle lost
+
+    def test_pruning_restores_the_toggle(self):
+        card = make_card("Legacy", ["competitive", "all"])
+
+        _prune_unknown_categories()
+
+        card.refresh_from_db()
+        self.assertEqual(card.categories, ["competitive"])
+        r = self.client_.patch(
+            self._detail(card), {"status": PublishStatus.DRAFT}, format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.data)
+        card.refresh_from_db()
+        self.assertEqual(card.status, PublishStatus.DRAFT)
+
+    def test_pruning_keeps_every_valid_slug_and_leaves_clean_cards_alone(self):
+        legacy = make_card("Legacy", ["boards", "all", "class8-12"])
+        clean_card = make_card("Fine", ["competitive"], order=1)
+        untagged = make_card("Untagged", [], order=2)
+
+        _prune_unknown_categories()
+
+        legacy.refresh_from_db()
+        clean_card.refresh_from_db()
+        untagged.refresh_from_db()
+        # Order preserved, only the invalid slug removed.
+        self.assertEqual(legacy.categories, ["boards", "class8-12"])
+        self.assertEqual(clean_card.categories, ["competitive"])
+        self.assertEqual(untagged.categories, [])
+        legacy.full_clean()  # must not raise
+
+    def test_pruning_does_nothing_when_the_taxonomy_is_empty(self):
+        """An empty table must not be read as "every tag is invalid"."""
+        card = make_card("Legacy", ["competitive", "all"])
+        ShowcaseCategory.objects.all().delete()
+
+        _prune_unknown_categories()
+
+        card.refresh_from_db()
+        self.assertEqual(card.categories, ["competitive", "all"])
+
+
+def _prune_unknown_categories():
+    """Run 0033's data function against the live app registry.
+
+    Imported by path because the module name starts with a digit. Calling the
+    migration's own function keeps these tests honest — they exercise the code
+    that actually runs on deploy, not a reimplementation of it.
+    """
+    import importlib
+
+    from django.apps import apps as global_apps
+
+    module = importlib.import_module(
+        "content.migrations.0033_prune_unknown_showcase_categories"
+    )
+    module.prune_unknown_categories(global_apps, None)

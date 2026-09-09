@@ -24,6 +24,32 @@ from rest_framework import serializers
 from .models import Activity
 
 
+def course_names_for(activities):
+    """`{subject_id: course_title}` for a page of Activity rows, in ONE query.
+
+    Resolved at READ time rather than stored, which is the whole point: the
+    notification titles are denormalised at write time, so editing them fixes
+    new rows only and every notification already in a student's bell stays
+    nameless. This map fixes history too.
+
+    There is deliberately no `course` column on Activity — the model's own
+    docstring rejects one because resolving it per row is "a query per row".
+    That objection is about per-row lookups, not about the axis itself, so
+    this is the bulk form: collect the distinct subject_ids off the page and
+    ask once.
+    """
+    subject_ids = {a.subject_id for a in activities if a.subject_id}
+    if not subject_ids:
+        return {}
+    from courses.models import Subject
+    return {
+        sid: title or ""
+        for sid, title in Subject.objects
+        .filter(id__in=subject_ids)
+        .values_list("id", "course__title")
+    }
+
+
 class ActivitySerializer(serializers.ModelSerializer):
     """Returned by GET /activity/feed/ — see module docstring."""
 
@@ -32,6 +58,17 @@ class ActivitySerializer(serializers.ModelSerializer):
     type    = serializers.SerializerMethodField()   # lowercase mobile map
     subject = serializers.SerializerMethodField()
     message = serializers.CharField(source="title", read_only=True)
+
+    # Which course this belongs to. Every notification named the item and the
+    # subject ("New assignment: Ch 4 Worksheet" / "Physics") and nothing named
+    # the course, so a student enrolled in two courses — or one with two
+    # children on one account — could not tell which one it was about.
+    #
+    # Read-time, from `course_names` in the serializer context, so it fixes
+    # rows already in the database. Empty string when the context wasn't
+    # supplied or the subject has since been deleted, never a KeyError:
+    # a missing course label must degrade to the old display, not a 500.
+    course_name = serializers.SerializerMethodField()
 
     # ── Canonical additions ───────────────────────────────────────────
     raw_type = serializers.CharField(source="type", read_only=True)
@@ -80,6 +117,7 @@ class ActivitySerializer(serializers.ModelSerializer):
             "subject_id",
             "subject_name",
             "subject",
+            "course_name",
             "object_id",
             "object_type",
             # Server-authored click target. Both bells already prefer this
@@ -113,6 +151,11 @@ class ActivitySerializer(serializers.ModelSerializer):
 
     def get_subject(self, obj):
         return obj.subject_name or ""
+
+    def get_course_name(self, obj):
+        if not obj.subject_id:
+            return ""
+        return self.context.get("course_names", {}).get(obj.subject_id, "")
 
     def get_learner_profile_id(self, obj):
         return str(obj.learner_profile_id) if obj.learner_profile_id else None

@@ -192,3 +192,152 @@ class ContentStudioFeatureFlagTest(TestCase):
         )
         self.assertEqual(res.status_code, 403, res.content)
         self.assertFalse(GlobalSettings.objects.get(pk=1).content_studio_enabled)
+
+
+class PublicQuizHubFeatureFlagTest(TestCase):
+    """design_handoff_public_quiz_hub — the flag, after Phase 9.
+
+    ⚠ THIS CONTRACT INVERTED IN PHASE 9. Through Phases 0–8 the flag shipped
+    OFF and this class asserted that, so a half-built hub could not reach a
+    visitor mid-rebuild. The hub has now shipped, migration 0012 flips the
+    default to True, and the flag's job changed from launch gate to KILL
+    SWITCH.
+
+    What still matters, and is still asserted below: only an admin can move
+    it, and the key is present in `feature_flags` whatever its value.
+    """
+
+    URL = "/api/admin/settings/"
+
+    def _client(self, user):
+        from rest_framework.test import APIClient
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def test_ships_on_by_default_after_phase_9(self):
+        self.assertTrue(GlobalSettings.load().public_quiz_hub_enabled)
+
+    def test_admin_can_flip_it_via_patch(self):
+        from accounts.models import User
+
+        admin = User.objects.create_user(
+            username="admin3", email="admin3@example.com", password="x", is_staff=True,
+        )
+        res = self._client(admin).patch(
+            self.URL, {"public_quiz_hub_enabled": True}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertTrue(res.json()["public_quiz_hub_enabled"])
+        self.assertTrue(GlobalSettings.objects.get(pk=1).public_quiz_hub_enabled)
+
+    def test_non_admin_cannot_turn_it_off(self):
+        """The direction that matters flipped with the default: the risk is no
+        longer a stranger launching the hub early, it is a stranger taking a
+        live public page down."""
+        from accounts.models import User
+
+        GlobalSettings.load()
+        student = User.objects.create_user(
+            username="student3", email="student3@example.com", password="x",
+        )
+        res = self._client(student).patch(
+            self.URL, {"public_quiz_hub_enabled": False}, format="json",
+        )
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertTrue(GlobalSettings.objects.get(pk=1).public_quiz_hub_enabled)
+
+    def test_exposed_read_only_in_feature_flags_on_me(self):
+        """Every app reads flags off /accounts/me/, so the key must be present
+        even while False — an absent key and a False one are different bugs to
+        debug, and each AuthContext defaults differently when it is missing."""
+        from accounts.models import User
+
+        user = User.objects.create_user(
+            username="learner3", email="learner3@example.com", password="x",
+        )
+        res = self._client(user).get("/api/accounts/me/")
+        self.assertEqual(res.status_code, 200, res.content)
+        flags = res.json()["feature_flags"]
+        self.assertIn("public_quiz_hub_enabled", flags)
+        self.assertTrue(flags["public_quiz_hub_enabled"])
+
+    def test_the_phase_9_migration_flips_a_row_that_already_exists(self):
+        """⚠ THE POINT OF THIS TEST. Changing a model default only affects
+        rows CREATED afterwards, and GlobalSettings is a singleton whose row
+        already exists on dev and prod holding False. Without the data step in
+        migration 0012, "the default is now True" would be true of a fresh
+        database and of nothing that is actually deployed — the hub would stay
+        dark everywhere it matters and look like a broken flag.
+
+        Running the migration end to end here is not possible on SQLite — the
+        executor cannot unapply inside the test's transaction — so this calls
+        the migration's own data function against a row that says False, which
+        is exactly the situation on dev and prod.
+        """
+        import importlib
+
+        from django.apps import apps as real_apps
+
+        # importlib, because a module whose name starts with a digit cannot
+        # be reached by an import statement.
+        _mod = importlib.import_module(
+            "global_settings.migrations.0012_public_quiz_hub_on_by_default")
+
+        GlobalSettings.load()
+        GlobalSettings.objects.update(public_quiz_hub_enabled=False)
+
+        _mod.turn_on(real_apps, None)
+
+        self.assertTrue(GlobalSettings.objects.get(pk=1).public_quiz_hub_enabled)
+
+
+class PublicConfigViewTest(TestCase):
+    """The anonymous flag allowlist behind /api/public-config/.
+
+    The marketing site is browsable by guests, so the Quiz Hub's switch has to
+    be readable without a login. The risk that creates is over-exposure, which
+    is what most of these tests are about.
+    """
+
+    URL = "/api/public-config/"
+
+    def _client(self):
+        from rest_framework.test import APIClient
+        return APIClient()
+
+    def test_an_anonymous_visitor_can_read_it(self):
+        res = self._client().get(self.URL)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertIn("public_quiz_hub_enabled", res.json())
+
+    def test_it_reflects_the_current_value(self):
+        GlobalSettings.load()
+        GlobalSettings.objects.filter(pk=1).update(public_quiz_hub_enabled=True)
+        self.assertTrue(self._client().get(self.URL).json()["public_quiz_hub_enabled"])
+        GlobalSettings.objects.filter(pk=1).update(public_quiz_hub_enabled=False)
+        self.assertFalse(self._client().get(self.URL).json()["public_quiz_hub_enabled"])
+
+    def test_it_leaks_nothing_beyond_the_allowlist(self):
+        """THE reason this view hand-builds its dict instead of using
+        GlobalSettingsSerializer. That model carries the Razorpay key id, the
+        platform UPI payee name and VPA, the contact email and every live
+        session limit. A serializer dump here publishes all of it to anyone
+        with curl, and it would look completely innocuous in review."""
+        GlobalSettings.objects.filter(pk=1).update(
+            razorpay_key_id="rzp_live_SHOULD_NOT_LEAK",
+            upi_id="shiksha@okaxis",
+            upi_payee_name="ShikshaCom",
+            platform_email="ops@shikshacom.com",
+        )
+        body = self._client().get(self.URL).json()
+        self.assertEqual(set(body), {"public_quiz_hub_enabled"})
+        blob = str(body)
+        for secret in ("rzp_live", "okaxis", "ShikshaCom", "ops@shikshacom.com"):
+            self.assertNotIn(secret, blob)
+
+    def test_it_is_read_only(self):
+        """No PATCH/POST handler — the admin endpoint is the only writer."""
+        self.assertEqual(
+            self._client().patch(self.URL, {"public_quiz_hub_enabled": True},
+                                 format="json").status_code, 405)

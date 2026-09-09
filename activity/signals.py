@@ -44,7 +44,7 @@ from quizzes.models import Quiz, QuizAttempt
 from quizzes.visibility import quiz_batch_ids
 
 from .models import Activity
-from .serializers import ActivitySerializer
+from .serializers import ActivitySerializer, course_names_for
 
 
 # =====================================================
@@ -66,10 +66,17 @@ def _display_name(user):
     return user.email
 
 
-def _ws_payload(activity, extra=None):
+def _ws_payload(activity, extra=None, course_names=None):
     """The WS frame body == the REST feed row, plus optional extras.
-    Serializing the saved row guarantees the frontend sees ONE shape."""
-    data = dict(ActivitySerializer(activity).data)
+    Serializing the saved row guarantees the frontend sees ONE shape.
+
+    `course_names` carries the same `{subject_id: course_title}` map the feed
+    builds, so `course_name` is present on the pushed frame too. It has to be
+    passed in: this runs once per recipient, so resolving it here would be a
+    query per notified student. The callers already have the course in hand.
+    """
+    context = {"course_names": course_names or {}}
+    data = dict(ActivitySerializer(activity, context=context).data)
     if extra:
         data.update(extra)
     return data
@@ -121,10 +128,27 @@ def _enrollments_for_batches(course, batch_ids):
 
 def _bulk_notify_students(enrollments, obj, activity_type, title, due_date,
                           subject_id, subject_name, extra=None, verb=None,
-                          link_url=""):
+                          link_url="", course_name=""):
     """One Activity per (account, learner_profile) enrollment row, then a
     targeted WS push per row. UUID pks are generated client-side, so the
     objects passed to bulk_create already have ids we can serialize.
+
+    `course_name` names the course the item belongs to. It does two things,
+    and deliberately NOT a third:
+
+      · it goes into the WS frame's `course_name`, matching what the REST
+        feed resolves at read time (see serializers.course_names_for);
+      · it becomes the durable Notification's `body`, which every render
+        surface already has a slot for and which no verb has ever filled —
+        `cc-notif-text` in the Communication Center is rendered and always
+        empty (NotificationsView.jsx). That slot is the only place the
+        notifications API can carry the course, since Notification has no
+        subject or course column of its own.
+
+    It is NOT appended to `title`. The title is denormalised into both
+    Activity.title and Notification.title at write time, so baking the course
+    in would fix new rows only, would leave every existing notification
+    nameless, and would push some titles at the 255-char cap.
 
     `verb` opts the batch into DURABLE notifications.Notification rows as
     well. Until now this whole path was Activity + a fire-and-forget WS
@@ -162,6 +186,10 @@ def _bulk_notify_students(enrollments, obj, activity_type, title, due_date,
     ]
     Activity.objects.bulk_create(activities)
 
+    # "Physics · Class 10 Science", or just one of them, or "" — never a
+    # dangling separator, which is how these meta lines usually go wrong.
+    body = " · ".join(p for p in (subject_name, course_name) if p)
+
     if verb:
         from notifications.services import notify
         for e in rows:
@@ -173,6 +201,7 @@ def _bulk_notify_students(enrollments, obj, activity_type, title, due_date,
                 recipient=e.user,
                 verb=verb,
                 title=title,
+                body=body,
                 link_url=link_url,
                 payload={"object_id": str(obj.id),
                          "subject_id": str(subject_id) if subject_id else ""},
@@ -187,7 +216,13 @@ def _bulk_notify_students(enrollments, obj, activity_type, title, due_date,
         # stamp a value so the WS frame always has created_at.
         if act.created_at is None:
             act.created_at = now
-        push_ws_notification(act.user_id, _ws_payload(act, extra))
+        push_ws_notification(
+            act.user_id,
+            _ws_payload(
+                act, extra,
+                course_names={subject_id: course_name} if subject_id else None,
+            ),
+        )
 
 
 def _notify_teacher(teacher, obj, activity_type, title, due_date,
@@ -228,7 +263,12 @@ def _notify_teacher(teacher, obj, activity_type, title, due_date,
             push_ws=False,   # the Activity frame below already carries it
         )
 
-    push_ws_notification(teacher.id, _ws_payload(act, extra))
+    # One Activity, so one lookup — the per-recipient concern that makes
+    # _bulk_notify_students pass the map in doesn't apply here, and resolving
+    # it keeps the WS frame identical to what the REST feed will return.
+    push_ws_notification(
+        teacher.id, _ws_payload(act, extra, course_names=course_names_for([act])),
+    )
 
 
 # =====================================================
@@ -273,6 +313,7 @@ def assignment_created(sender, instance, created, **kwargs):
         due_date=instance.due_date,
         subject_id=subject.id,
         subject_name=subject.name,
+        course_name=course.title,
         verb="assignment.posted",
         # Matches the student bell's ASSIGNMENT branch and the
         # subjects/:subjectId/assignments route.
@@ -424,6 +465,7 @@ def quiz_published(sender, instance, created, **kwargs):
         due_date=None,  # quizzes have no due date
         subject_id=subject.id,
         subject_name=subject.name,
+        course_name=course.title,
         verb="quiz.posted",
         # Same path quizzes/views.py already uses for quiz.reminder, so a
         # "posted" and a "reminder" about one quiz land on the same page.
@@ -507,6 +549,7 @@ def session_created(sender, instance, created, **kwargs):
         due_date=instance.start_time,
         subject_id=subject_id,
         subject_name=subject_name,
+        course_name=course.title if course else "",
         extra={"start_time": instance.start_time.isoformat()
                if instance.start_time else None},
         # The same destination the learner bell's SESSION branch already

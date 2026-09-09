@@ -1,6 +1,7 @@
 from django.db import transaction
 from rest_framework import serializers
 
+from accounts.display import display_name_for
 from .board_display import board_name_via
 from .models import Batch, Chapter
 from .models_recordings import SessionRecording, RecordingNote
@@ -70,13 +71,7 @@ class SessionRecordingSerializer(serializers.ModelSerializer):
         return serialize_tags(obj)
 
     def get_uploaded_by_name(self, obj):
-        user = obj.uploaded_by
-        if not user:
-            return None
-        profile = getattr(user, "profile", None)
-        if profile and getattr(profile, "full_name", None):
-            return profile.full_name
-        return user.get_full_name() or user.username
+        return display_name_for(obj.uploaded_by)
 
 
 class SessionRecordingUpdateSerializer(ChapterTagWriteMixin,

@@ -1127,8 +1127,15 @@ class ForumMeView(APIView):
             # deleted (or deactivated) is silently dropped rather than 500ing.
             categories = ForumCategory.objects.filter(slug__in=followed_category_slugs)
             by_slug = {c.slug: c for c in categories}
+            # `id` is the SLUG, not the numeric pk. The slug is this app's
+            # public id everywhere else — ForumCategorySerializer declares
+            # `id = CharField(source="slug")` and FollowCategoryView looks up
+            # by slug only. Emitting the pk here meant the client hydrated its
+            # followed-set with pks and then compared them against slug-keyed
+            # cards, so every card read "Follow" again after a refresh, and
+            # unfollowing posted a pk to a slug-only route and 404'd.
             following["categories"] = [
-                {"id": by_slug[slug].id, "slug": slug, "name": by_slug[slug].name}
+                {"id": slug, "slug": slug, "name": by_slug[slug].name}
                 for slug in followed_category_slugs if slug in by_slug
             ]
         if followed_question_ids:

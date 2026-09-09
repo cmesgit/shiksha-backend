@@ -498,6 +498,7 @@ def _notify_recording_published(recording):
             None,                   # recordings have no due date
             subject.id,
             subject.name,
+            course_name=subject.course.title,
             verb="recording.uploaded",
             link_url=f"/subjects/recordings/{subject.id}",
         )

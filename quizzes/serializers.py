@@ -2,7 +2,7 @@ from .models import Quiz
 
 from datetime import timedelta
 from decimal import Decimal
-from django.db.models import Avg, Max, Min, Count
+from django.db.models import Avg, Max, Min, Count, Q
 import uuid
 from django.db import transaction
 from django.utils import timezone
@@ -22,6 +22,10 @@ from .models import (
     Choice,
     QuizAttempt,
     StudentAnswer,
+    QuestionTag,
+    PracticeSet,
+    PublicAttempt,
+    PublicAttemptAnswer,
 )
 
 # Absorbs real network/render lag on a legitimate last-second auto-submit;
@@ -950,13 +954,23 @@ class BankQuestionSerializer(serializers.ModelSerializer):
     current teacher QuizBank.jsx screen consumes this response shape as-is.
     """
     choices = ChoiceAdminSerializer(many=True, read_only=True)
-    quiz_id = serializers.UUIDField(source="quiz.id", read_only=True)
-    quiz_title = serializers.CharField(source="quiz.title", read_only=True)
-    subject_id = serializers.UUIDField(source="quiz.subject.id", read_only=True)
-    subject_name = serializers.CharField(source="quiz.subject.name", read_only=True)
+    # ⚠ EVERY ONE OF THESE NEEDS default=None. Question.quiz is nullable as of
+    # the public Quiz Hub work, and a standalone bank question has no quiz to
+    # borrow a title, subject or author from. DRF resolves a dotted source by
+    # walking the chain with getattr, so `quiz.subject.name` against a NULL
+    # quiz raises AttributeError; the default is what turns that into a null
+    # in the payload instead of a 500 on the bank list.
+    quiz_id = serializers.UUIDField(source="quiz.id", read_only=True, default=None)
+    quiz_title = serializers.CharField(source="quiz.title", read_only=True, default=None)
+    subject_id = serializers.UUIDField(source="quiz.subject.id", read_only=True, default=None)
+    subject_name = serializers.CharField(
+        source="quiz.subject.name", read_only=True, default=None)
     author_name = serializers.CharField(
         source="quiz.created_by.email", read_only=True, default=None)
     author_id = serializers.UUIDField(source="quiz.created_by.id", read_only=True, default=None)
+    # The classification a standalone question carries in its own right,
+    # rather than inheriting from a quiz it does not have.
+    tags = serializers.SerializerMethodField()
     # T3's chapter chip. A Question has no chapter of its own — Phase 3 put
     # chapter tagging on the quiz — so this is the quiz's first tag, which is
     # what the question is actually filed under. `chapter_is_custom` drives the
@@ -965,7 +979,18 @@ class BankQuestionSerializer(serializers.ModelSerializer):
     chapter_label = serializers.SerializerMethodField()
     chapter_is_custom = serializers.SerializerMethodField()
 
+    def get_tags(self, obj):
+        return [
+            {"id": str(t.id), "kind": t.kind, "label": t.label, "slug": t.slug}
+            for t in obj.tags.all()
+        ]
+
     def _first_tag(self, obj):
+        # A standalone bank question has no quiz, so no chapter tag either —
+        # chapter classification lives on the Quiz, not the Question. Bail
+        # before touching serialize_tags(None), which would raise.
+        if obj.quiz_id is None:
+            return None
         # Prefer the map the list view builds (one query for the whole page).
         # select_related gives every Question its OWN Quiz instance, so
         # attach_chapter_tags() on a deduped list would not reach them —
@@ -996,6 +1021,9 @@ class BankQuestionSerializer(serializers.ModelSerializer):
             "bank_state", "suggest_to_bank", "bank_feedback",
             # Phase 6 (T3) additions.
             "chapter_label", "chapter_is_custom",
+            # Public Quiz Hub additions — a standalone bank question carries
+            # its own classification rather than inheriting a quiz's.
+            "tags", "year", "question_type",
         ]
 
 
@@ -1009,6 +1037,269 @@ class QuestionBankStateSerializer(serializers.Serializer):
     admin's existing accept/request-changes decision).
     """
     suggest_to_bank = serializers.BooleanField()
+
+
+# =====================================================
+# ADMIN — standalone bank questions (design_handoff_public_quiz_hub)
+# =====================================================
+
+class AdminBankQuestionWriteSerializer(serializers.ModelSerializer):
+    """Create/edit a STANDALONE bank question (quiz=None) from the new admin
+    authoring screens. Read responses use BankQuestionSerializer instead —
+    this one is write-only shape, matching the "write serializer in, read
+    serializer out" convention this file already uses for question review
+    (see _apply_bank_review's call sites in views.py).
+
+    Two deliberate divergences from the older QuestionCreateSerializer
+    (teacher builder, requires a `quiz` in context):
+
+      * `explanation` is OPTIONAL here. QuestionCreateSerializer's own
+        validate() hard-requires it; this serializer has no such check, and
+        relies on Question.explanation's model-level `blank=True` to make it
+        genuinely optional end to end. Previous-year imports legitimately
+        arrive with a stem and an answer key but no written explanation, and
+        must still be storable — see Question.objects.publishable(), which
+        is what actually keeps an unexplained row off the public hub. This
+        is the intended split: "in the bank" and "servable to a learner" are
+        different questions with different answers.
+      * `question_type` is validated to reject anything but "single" — see
+        validate_question_type(). The column exists for future multi/numeric
+        widening (Question.question_type's own comment in models.py) but
+        every consumer downstream (StudentAnswer.selected_choice, the
+        exactly-one-correct-choice rule below) only knows how to handle
+        single-select today, so accepting the other two values would create
+        a question nothing could ever grade.
+    """
+    choices = ChoiceAdminSerializer(many=True)
+    tag_ids = serializers.PrimaryKeyRelatedField(
+        source="tags", queryset=QuestionTag.objects.all(),
+        many=True, required=False,
+    )
+
+    class Meta:
+        model = Question
+        fields = [
+            "id", "text", "explanation", "difficulty", "year", "topic",
+            "question_type", "tag_ids", "choices", "bank_state", "created_at",
+        ]
+        read_only_fields = ["id", "bank_state", "created_at"]
+
+    def validate_question_type(self, value):
+        if value != Question.TYPE_SINGLE:
+            raise ValidationError(
+                'Only "single" is implemented today — see '
+                "Question.question_type's comment in models.py. Multi/"
+                "numeric answers have no grading path yet."
+            )
+        return value
+
+    def validate(self, attrs):
+        # `choices` is present in `attrs` only when the caller actually sent
+        # it. On create the spec requires it in the body, so this always
+        # runs there; on a PATCH that only touches e.g. `difficulty`, the
+        # existing choices must be left alone rather than forced to be
+        # resent.
+        choices = attrs.get("choices")
+        if choices is None and self.instance is None:
+            raise ValidationError({"choices": "At least two choices required."})
+        if choices is not None:
+            if len(choices) < 2:
+                raise ValidationError({"choices": "At least two choices required."})
+            correct_count = sum(1 for c in choices if c.get("is_correct"))
+            if correct_count != 1:
+                raise ValidationError(
+                    {"choices": "Exactly one correct answer required."})
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        choices_data = validated_data.pop("choices")
+        tags = validated_data.pop("tags", [])
+        # Any `bank_state` the caller sent is ignored on create (it isn't in
+        # `validated_data` at all — see Meta.read_only_fields). An admin
+        # authoring or importing a question here IS the review; there is no
+        # teacher on the other end for it to be "suggested" to, and the
+        # existing review queue (AdminQuestionBankQueueView) explicitly
+        # excludes quiz__isnull rows, so a standalone question left at the
+        # model's default bank_state="suggested" would sit in a queue that
+        # can never show it to anybody. "Accepted" here is necessary but not
+        # sufficient for the question to reach the public hub — it still
+        # needs an explanation and valid choices, which is exactly what
+        # Question.objects.publishable() checks independently.
+        admin = self.context["request"].user
+        question = Question.objects.create(
+            quiz=None,
+            bank_state=Question.BANK_STATE_ACCEPTED,
+            bank_reviewed_by=admin,
+            bank_reviewed_at=timezone.now(),
+            **validated_data,
+        )
+        if tags:
+            question.tags.set(tags)
+        Choice.objects.bulk_create([
+            Choice(question=question, **choice) for choice in choices_data
+        ])
+        return question
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        choices_data = validated_data.pop("choices", None)
+        tags = validated_data.pop("tags", None)
+        # setattr + save(), never queryset.update() — Question.save() runs
+        # the suggest_to_bank/bank_state invariant (models.py) on every
+        # write, and .update() would bypass it entirely.
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if tags is not None:
+            instance.tags.set(tags)
+        if choices_data is not None:
+            # Full replace, not a per-choice merge — there is no sane
+            # partial-choice semantics ("choice A becomes choice B"? kept
+            # in place but re-ordered? still correct?), so like
+            # TeacherQuizSectionsView's section replace, the client always
+            # sends the complete list and this treats it as authoritative.
+            instance.choices.all().delete()
+            Choice.objects.bulk_create([
+                Choice(question=instance, **choice) for choice in choices_data
+            ])
+        return instance
+
+
+def _bank_question_usage(question):
+    """What real learner activity references `question`, keyed by kind ->
+    count. Empty dict means "safe to hard-delete".
+
+    Mirrors the Content Studio media-delete precedent (409 + `used_in[]`
+    rather than a silent cascade or a bare 400) — see
+    content/studio_views.py's media delete view. A DELETE here is refused,
+    not archived: there is no "archived" bank_state value and adding one
+    would be a migration, which this task is explicitly not allowed to make.
+    Refusing with the usage breakdown at least tells the admin why, and
+    editing (PATCH) or simply leaving the question in place both remain
+    available.
+    """
+    usage = {}
+    student_answers = StudentAnswer.objects.filter(question=question).count()
+    if student_answers:
+        usage["student_answers"] = student_answers
+    practice_answers = question.practice_answers.count()
+    if practice_answers:
+        usage["practice_answers"] = practice_answers
+    # M2M related_name from PracticeSession.questions (models.py) — a
+    # session that served this question as one of its set, whether or not
+    # the learner ever answered it.
+    practice_sessions = question.practice_sessions.count()
+    if practice_sessions:
+        usage["practice_sessions"] = practice_sessions
+    # Phase 6. Without this the admin sees "safe to delete", the DELETE then
+    # hits PublicAttemptAnswer.question's PROTECT, and a friendly 409 becomes
+    # a 500. The point of the guard is to answer BEFORE the database does.
+    public_attempt_answers = question.public_attempt_answers.count()
+    if public_attempt_answers:
+        usage["public_attempt_answers"] = public_attempt_answers
+    return usage
+
+
+# =====================================================
+# ADMIN — tag / rail taxonomy (design_handoff_public_quiz_hub)
+# =====================================================
+
+def _tags_with_counts(queryset):
+    """Annotate a QuestionTag queryset with `question_count` — the number of
+    PUBLISHABLE questions carrying each tag — in ONE query for the whole
+    page rather than one query per row.
+
+    `Question.objects.publishable()` already does its own aggregation
+    (choice counts) to decide what counts as publishable; reusing it as a
+    `.values("id")` subquery for the `IN` filter, rather than re-deriving
+    "is this question publishable" here in different words, is what keeps
+    the two definitions from drifting apart the next time publishable() changes.
+    """
+    publishable_ids = Question.objects.publishable().values("id")
+    return queryset.annotate(
+        question_count=Count(
+            "questions",
+            filter=Q(questions__in=publishable_ids),
+            distinct=True,
+        )
+    )
+
+
+class AdminQuestionTagSerializer(serializers.ModelSerializer):
+    """A subject/exam/topic/custom tag, from the admin taxonomy screens.
+
+    Surfaces BOTH the admin's stored `status` and the server-computed
+    `effective_status`, plus `status_downgraded` — never silently resolving
+    a disagreement between them. See QuestionTag.effective_status()'s own
+    docstring: `live` is a floor an admin can fail to reach, never an
+    override they can force with nothing behind it.
+    """
+    question_count = serializers.SerializerMethodField()
+    effective_status = serializers.SerializerMethodField()
+    status_downgraded = serializers.SerializerMethodField()
+
+    class Meta:
+        model = QuestionTag
+        fields = [
+            "id", "kind", "label", "slug", "content_tag", "course",
+            "status", "effective_status", "status_downgraded",
+            "display_order", "icon", "color", "cover_image",
+            "question_count", "created_at",
+        ]
+        read_only_fields = ["id", "slug", "created_at"]
+
+    def _count(self, obj):
+        # Prefer the annotation _tags_with_counts() attaches (one query for
+        # the whole list/detail queryset). A serializer instantiated around
+        # a plain `QuestionTag.objects.create(...)` result right after POST
+        # carries no such annotation — fall back to a direct count, which
+        # only costs one extra query on that single-object response, never
+        # on a list.
+        cached = getattr(obj, "question_count", None)
+        if cached is not None:
+            return cached
+        return Question.objects.publishable().filter(tags=obj).count()
+
+    def get_question_count(self, obj):
+        return self._count(obj)
+
+    def get_effective_status(self, obj):
+        return obj.effective_status(self._count(obj))
+
+    def get_status_downgraded(self, obj):
+        # Only "live" can ever disagree with the computed answer — "soon"
+        # and "hidden" are both honoured unconditionally by
+        # effective_status(), so there is nothing to warn about there.
+        return (
+            obj.status == QuestionTag.STATUS_LIVE
+            and self.get_effective_status(obj) != QuestionTag.STATUS_LIVE
+        )
+
+    def validate(self, attrs):
+        # ContentTag/CourseCategory precedent (CLAUDE.md Content Studio note
+        # 18, and content/studio_views.py's label-create path): a slug
+        # collision on save() would raise IntegrityError (UniqueConstraint
+        # on kind+slug) rather than a readable 400. Check for the collision
+        # ourselves, before it reaches the DB, the same way the Labels
+        # screen's create endpoint already does for ContentTag.
+        kind = attrs.get("kind", getattr(self.instance, "kind", None))
+        label = attrs.get("label", getattr(self.instance, "label", None))
+        if kind and label:
+            from django.utils.text import slugify
+            slug = slugify(label)
+            existing = QuestionTag.objects.filter(kind=kind, slug=slug)
+            if self.instance is not None:
+                existing = existing.exclude(pk=self.instance.pk)
+            existing = existing.first()
+            if existing is not None:
+                raise ValidationError({
+                    "label": (
+                        f"A {existing.get_kind_display().lower()} tag named "
+                        f"“{existing.label}” already exists."
+                    ),
+                })
+        return attrs
 
 
 # =====================================================
@@ -1070,4 +1361,268 @@ class AdminQuizReviewActionSerializer(serializers.Serializer):
     def validate(self, attrs):
         if attrs["action"] == self.ACTION_REJECT and not attrs.get("reason", "").strip():
             raise ValidationError("A reason is required when rejecting a quiz.")
+        return attrs
+
+
+# =====================================================
+# PUBLIC — the Quiz Hub (design_handoff_public_quiz_hub Phase 5)
+#
+# ⚠ EVERYTHING BELOW IS SERVED TO ANONYMOUS VISITORS. The admin/teacher
+# serializers further up expose `is_correct` and `explanation`, which is
+# correct for them and fatal here — a learner who can read the answer key
+# before answering has no reason to answer. So these build on
+# QuestionPublicSerializer / ChoicePublicSerializer, which omit both, and
+# nothing here may be "reused" from the admin side to save a few lines.
+# =====================================================
+
+class PracticeSetCardSerializer(serializers.ModelSerializer):
+    """The card on the hub's grid. No questions — a list of 20 sets must not
+    drag 200 questions and their choices behind it."""
+
+    subject = serializers.CharField(source="subject_tag.label", read_only=True)
+    subject_slug = serializers.CharField(source="subject_tag.slug", read_only=True)
+    exam = serializers.CharField(
+        source="exam_tag.label", read_only=True, default=None)
+    # The number it can ACTUALLY serve today, not the target. Advertising 10
+    # and serving 3 is the specific lie this field exists to prevent.
+    question_count = serializers.IntegerField(
+        source="available_count", read_only=True)
+    # Phase 6 made this real. It counts SUBMITTED attempts only — a row is
+    # created the moment someone opens a set, and counting those would
+    # advertise "312 attempts" for a set 312 people bounced off.
+    # Annotated by the list view; the fallback keeps a bare instance usable.
+    attempt_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PracticeSet
+        fields = [
+            "id", "slug", "title", "description", "subject", "subject_slug",
+            "exam", "difficulty", "minutes", "question_count", "attempt_count",
+            # Lets the card's "New this week" badge be a real fact rather than
+            # the fixture's hand-set `fresh` flag.
+            "created_at",
+        ]
+
+    def get_attempt_count(self, obj):
+        cached = getattr(obj, "submitted_attempts", None)
+        if cached is not None:
+            return cached
+        return obj.attempts.filter(submitted_at__isnull=False).count()
+
+
+class PracticeSetDetailSerializer(PracticeSetCardSerializer):
+    """The set plus the paper. Still no answers and no explanations."""
+
+    questions = serializers.SerializerMethodField()
+
+    class Meta(PracticeSetCardSerializer.Meta):
+        fields = PracticeSetCardSerializer.Meta.fields + ["questions"]
+
+    def get_questions(self, obj):
+        return QuestionPublicSerializer(obj.pick_questions(), many=True).data
+
+
+class PublicRailSerializer(serializers.ModelSerializer):
+    """A subject or exam chip on the hub.
+
+    `status` is NOT exposed — the public site has no business knowing what an
+    admin intended. It gets `effective_status`, which is the server's verdict
+    after the degrade rule (a `live` tag with nothing publishable comes back
+    `soon`), so a chip can never be clickable onto an empty grid.
+    """
+
+    status = serializers.SerializerMethodField()
+    question_count = serializers.SerializerMethodField()
+    cover_image = serializers.SerializerMethodField()
+    set_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = QuestionTag
+        fields = ["id", "kind", "label", "slug", "status", "question_count",
+                  "set_count", "icon", "color", "cover_image", "display_order"]
+
+    def get_set_count(self, obj):
+        """Published sets on this subject. Annotated by the view in one query.
+
+        The subject tile advertises this, so it counts PUBLISHED sets only —
+        a tile reading "6 sets" that opens onto three is the same class of
+        lie as `question_count` advertising a target it cannot serve.
+        """
+        cached = getattr(obj, "published_set_count", None)
+        return cached if cached is not None else 0
+
+    def get_cover_image(self, obj):
+        """Absolute URL of the tag's cover art, or None.
+
+        None is a real answer, not a failure: the hub falls back to the tag's
+        `color` as a flat tile. Returning a broken path instead would render
+        an empty frame on the most visible part of the page.
+        """
+        image = obj.cover_image
+        if not image or not image.file:
+            return None
+        url = image.file.url
+        request = self.context.get("request")
+        return request.build_absolute_uri(url) if request else url
+
+    def _count(self, obj):
+        # Annotated by the view in one query; the fallback keeps the
+        # serializer usable on a bare instance (e.g. in tests).
+        cached = getattr(obj, "publishable_count", None)
+        if cached is not None:
+            return cached
+        return Question.objects.publishable().filter(
+            quiz__isnull=True, tags=obj).distinct().count()
+
+    def get_question_count(self, obj):
+        return self._count(obj)
+
+    def get_status(self, obj):
+        return obj.effective_status(self._count(obj))
+
+
+class PublicAttemptAnswerReviewSerializer(serializers.ModelSerializer):
+    """One reviewed question. ⚠ REVEALS THE ANSWER — only ever nested inside
+    PublicAttemptReviewSerializer, which the view returns exclusively for a
+    SUBMITTED attempt."""
+
+    question_id = serializers.UUIDField(source="question.id", read_only=True)
+    text = serializers.CharField(source="question.text", read_only=True)
+    explanation = serializers.CharField(
+        source="question.explanation", read_only=True)
+    choices = ChoicePublicSerializer(
+        source="question.choices", many=True, read_only=True)
+    correct_choice_id = serializers.SerializerMethodField()
+    selected_choice_id = serializers.UUIDField(read_only=True, allow_null=True)
+    was_blank = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PublicAttemptAnswer
+        fields = ["question_id", "order", "text", "choices", "explanation",
+                  "selected_choice_id", "selected_text", "correct_choice_id",
+                  "is_correct", "was_blank"]
+
+    def get_correct_choice_id(self, obj):
+        correct = next(
+            (c for c in obj.question.choices.all() if c.is_correct), None)
+        return str(correct.id) if correct else None
+
+    def get_was_blank(self, obj):
+        """Distinguishes "left blank" from "picked an option that has since
+        been edited away" — both have a NULL selected_choice, and conflating
+        them would tell a learner they skipped a question they answered."""
+        return obj.selected_choice_id is None and not obj.selected_text
+
+
+class PublicAttemptReviewSerializer(serializers.ModelSerializer):
+    set_title = serializers.CharField(
+        source="practice_set.title", read_only=True)
+    set_slug = serializers.CharField(source="practice_set.slug", read_only=True)
+    answers = PublicAttemptAnswerReviewSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = PublicAttempt
+        fields = ["id", "set_title", "set_slug", "score", "total",
+                  "started_at", "submitted_at", "answers"]
+
+
+class PublicAttemptSubmitSerializer(serializers.Serializer):
+    """`answers` maps question id → chosen choice id, or null for blank.
+
+    A question the client omits entirely is treated as blank, so a learner
+    who closes the tab half way still gets a scored, reviewable attempt
+    rather than an error.
+    """
+
+    answers = serializers.ListField(child=serializers.DictField(), default=list)
+
+    def validate_answers(self, rows):
+        cleaned = []
+        for row in rows:
+            qid = row.get("question")
+            if not qid:
+                raise ValidationError(
+                    "Every answer needs a `question` id.")
+            cleaned.append({"question": str(qid),
+                            "choice": row.get("choice") or None})
+        return cleaned
+
+
+class AdminPracticeSetSerializer(serializers.ModelSerializer):
+    """Author a public practice set.
+
+    ⚠ A set does not hold questions — it holds the CRITERIA that select them
+    (see PracticeSet's docstring). So the admin is choosing a subject, an
+    optional exam and difficulty, and a size; the paper follows from the
+    bank. `available_count` is therefore the number that matters on screen,
+    and it moves on its own as curation lands.
+    """
+
+    subject = serializers.CharField(source="subject_tag.label", read_only=True)
+    exam = serializers.CharField(
+        source="exam_tag.label", read_only=True, default=None)
+    # What it can serve RIGHT NOW, which is not `question_count` (the target).
+    available_count = serializers.IntegerField(read_only=True)
+    attempt_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PracticeSet
+        fields = [
+            "id", "slug", "title", "description", "subject_tag", "subject",
+            "exam_tag", "exam", "difficulty", "question_count", "minutes",
+            "seed", "status", "display_order", "created_at",
+            "available_count", "attempt_count",
+        ]
+        read_only_fields = ["id", "slug", "created_at"]
+
+    def get_attempt_count(self, obj):
+        return obj.attempts.filter(submitted_at__isnull=False).count()
+
+    def validate_subject_tag(self, tag):
+        if tag.kind != QuestionTag.KIND_SUBJECT:
+            raise ValidationError(
+                f'"{tag.label}" is a {tag.kind} label, not a subject.')
+        return tag
+
+    def validate_exam_tag(self, tag):
+        if tag is not None and tag.kind != QuestionTag.KIND_EXAM:
+            raise ValidationError(
+                f'"{tag.label}" is a {tag.kind} label, not an exam.')
+        return tag
+
+    def validate(self, attrs):
+        """Refuse to PUBLISH a set that would serve nothing.
+
+        Same principle as QuestionTag's degrade rule: an admin may not put
+        something on the public page that opens empty. Here it has to be a
+        hard refusal rather than a silent downgrade, because unlike a chip a
+        set has no "Soon" state — it is either on the page or it is not.
+
+        Evaluated against the MERGED result, not the incoming payload, so
+        changing difficulty alone on an existing published set is checked
+        against the combination that will actually be stored.
+        """
+        merged = PracticeSet(
+            subject_tag=attrs.get(
+                "subject_tag", getattr(self.instance, "subject_tag", None)),
+            exam_tag=attrs.get(
+                "exam_tag", getattr(self.instance, "exam_tag", None)),
+            difficulty=attrs.get(
+                "difficulty", getattr(self.instance, "difficulty", "")),
+            question_count=attrs.get(
+                "question_count", getattr(self.instance, "question_count", 10)),
+        )
+        status_value = attrs.get(
+            "status", getattr(self.instance, "status", PracticeSet.STATUS_DRAFT))
+        if status_value == PracticeSet.STATUS_PUBLISHED:
+            if merged.subject_tag is None:
+                raise ValidationError({"subject_tag": "Pick a subject."})
+            if merged.question_queryset().count() == 0:
+                raise ValidationError({
+                    "status":
+                        "Nothing in the bank matches this yet, so publishing "
+                        "it would put an empty set on the site. Accept some "
+                        "questions for this subject first, or save it as a "
+                        "draft.",
+                })
         return attrs

@@ -58,7 +58,13 @@ def _on_owner_deleted(sender, instance, **kwargs):
 
     try:
         ct = ContentType.objects.get_for_model(sender)
-        MediaUsage.objects.filter(content_type=ct, object_id=instance.pk).delete()
+        # str() — object_id is a CharField now that owners span UUID-PK
+        # models in `courses`. Passing a raw UUID here matches nothing, so
+        # deleting a course would strand its usage row and permanently block
+        # that picture from ever being deleted from the library.
+        MediaUsage.objects.filter(
+            content_type=ct, object_id=str(instance.pk),
+        ).delete()
     except Exception:  # noqa: BLE001
         pass
 

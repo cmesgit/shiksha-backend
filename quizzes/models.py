@@ -4,6 +4,7 @@ from django.db import models
 from django.db.models import Q
 from django.conf import settings
 from django.utils import timezone
+from django.utils.text import slugify
 from courses.models_chapter_tags import (
     chapter_note_field,
     no_specific_chapter_field,
@@ -324,7 +325,200 @@ class QuizSection(models.Model):
 # 2️⃣ QUESTION
 # -------------------------------------------------------
 
+class QuestionTag(models.Model):
+    """One optional classification facet on a bank question.
+
+    Every axis the public Quiz Hub filters on — subject, exam, topic, and
+    whatever comes next — is a ROW here rather than a column on Question.
+    That is the whole point: adding "exam stage" or "paper" later is an
+    INSERT, not a migration, which is what "tags stay optional as this
+    scales" has to mean in practice.
+
+    ``year`` is the deliberate exception and lives on Question as a real
+    integer column — it is range-queried and sorted ("2019 onwards"), and a
+    string tag would make that a text comparison.
+
+    Two optional links keep this from forking a second vocabulary:
+
+      * ``content_tag`` points at content.ContentTag, which Content Studio's
+        Labels screen already manages (create / rename / merge). Its slug is
+        unique and derived from the name, so "Biology" and "  biology  "
+        cannot both exist — exactly the property wanted here.
+      * ``course`` points at the real competitive-exam Course, so an "SSC
+        CGL" tag and the catalog agree on what SSC CGL is. An exam is a
+        Course in this codebase, never a free string.
+
+    The presentation fields (icon / color / cover_image / display_order) and
+    ``status`` are meaningful only for the subject and exam rails the hub
+    renders; they stay NULL/blank for topic tags. They live here rather than
+    in a separate table so the "a new facet is a row" property survives.
+    """
+
+    KIND_SUBJECT = "subject"
+    KIND_EXAM = "exam"
+    KIND_TOPIC = "topic"
+    KIND_CUSTOM = "custom"
+    KIND_CHOICES = [
+        (KIND_SUBJECT, "Subject"),
+        (KIND_EXAM, "Exam"),
+        (KIND_TOPIC, "Topic"),
+        (KIND_CUSTOM, "Custom"),
+    ]
+
+    # The rails the public hub renders. See effective_status() below — the
+    # server, not the admin, has the last word on what a visitor sees.
+    STATUS_LIVE = "live"
+    STATUS_SOON = "soon"
+    STATUS_HIDDEN = "hidden"
+    STATUS_CHOICES = [
+        (STATUS_LIVE, "Live — clickable, shows its question count"),
+        (STATUS_SOON, "Soon — greyed out, not clickable"),
+        (STATUS_HIDDEN, "Hidden — not rendered at all"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    kind = models.CharField(max_length=12, choices=KIND_CHOICES, db_index=True)
+    label = models.CharField(max_length=120)
+    slug = models.SlugField(max_length=140, blank=True)
+
+    content_tag = models.ForeignKey(
+        "content.ContentTag",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="question_tags",
+        help_text="Optional link to the CMS label of the same name.",
+    )
+    course = models.ForeignKey(
+        "courses.Course",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="question_tags",
+        help_text="For kind='exam': the competitive-exam Course this names.",
+    )
+
+    # ── Presentation, for the subject / exam rails only ──────────────────
+    status = models.CharField(
+        max_length=8, choices=STATUS_CHOICES, default=STATUS_SOON,
+        help_text=(
+            "What a visitor sees. Defaults to 'soon' so a newly created "
+            "subject never appears clickable before it has questions."
+        ),
+    )
+    display_order = models.PositiveSmallIntegerField(default=0)
+    icon = models.CharField(
+        max_length=40, blank=True, default="",
+        help_text="Sprite id from the hub's inline SVG sheet, e.g. 'qi-book'.",
+    )
+    color = models.CharField(
+        max_length=9, blank=True, default="",
+        help_text="Accent hex for the subject card, e.g. '#0F9D6B'.",
+    )
+    cover_image = models.ForeignKey(
+        "content.ContentImage",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="question_tag_covers",
+        help_text="Cover art for the recommendation cards, from the CMS library.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["kind", "display_order", "label"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["kind", "slug"], name="uniq_question_tag_per_kind"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["kind", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.get_kind_display()}: {self.label}"
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = slugify(self.label)
+        super().save(*args, **kwargs)
+
+    def effective_status(self, live_question_count):
+        """What a visitor actually sees, given how many live questions exist.
+
+        ``live`` is a FLOOR, not an override. An admin may force a rail to
+        ``soon`` or ``hidden`` for any reason — content is thin, the subject
+        is being retired, a paper is embargoed. An admin may NOT force
+        ``live`` onto a facet with no questions behind it, because that
+        renders a clickable chip that opens an empty grid, which is precisely
+        the lie this page exists to avoid.
+
+        The disagreement is not swallowed: the admin screens surface it as a
+        warning ("set to live but has 0 questions — still showing as Soon")
+        so a human sees why their setting did not take.
+        """
+        if self.status == self.STATUS_HIDDEN:
+            return self.STATUS_HIDDEN
+        if self.status == self.STATUS_LIVE and live_question_count > 0:
+            return self.STATUS_LIVE
+        return self.STATUS_SOON
+
+
+class QuestionQuerySet(models.QuerySet):
+    """Home for query-time rules that must never drift from being re-derived
+    ad hoc at each call site — see publishable() below."""
+
+    def publishable(self):
+        """Questions safe to serve to the public Quiz Hub.
+
+        This is intentionally STRICTER than "bank_state == accepted" alone,
+        because "accepted" and "actually renderable" are not the same thing
+        on this data:
+
+          * Prod today has 10 accepted questions but only 11 WITH an
+            explanation platform-wide (design_handoff_public_quiz_hub/
+            README.md §5) — accepted rows with no explanation exist for
+            real, and the whole reason the admin bank-question create
+            endpoint leaves `explanation` optional is so previous-year
+            imports can land before anyone has written one. A question with
+            no explanation must not reach a learner who is about to be told
+            "here's why you got that wrong" and shown nothing.
+          * >=2 choices and exactly-one-is_correct are enforced at
+            CREATE time by the serializers (this file's admin write
+            serializer, and the older QuestionCreateSerializer). This
+            re-asserts the same invariant at READ time so a row that
+            reached a degenerate shape via some other path (a bad direct
+            DB write, a half-finished migration/backfill, choices deleted
+            out from under an otherwise-fine question) can't slip through
+            silently — better an accepted-looking question quietly does not
+            appear than one appears with zero or several correct answers.
+
+        distinct=True on both counts because two annotations both joining
+        the same `choices` relation would otherwise multiply rows against
+        each other the way CLAUDE.md's "don't count joined relations without
+        distinct=True" note warns about generally in this codebase.
+        """
+        return (
+            self.exclude(explanation="")
+            .filter(bank_state=self.model.BANK_STATE_ACCEPTED)
+            .annotate(
+                _choice_count=models.Count("choices", distinct=True),
+                _correct_choice_count=models.Count(
+                    "choices",
+                    filter=Q(choices__is_correct=True),
+                    distinct=True,
+                ),
+            )
+            .filter(_choice_count__gte=2, _correct_choice_count=1)
+        )
+
+
 class Question(models.Model):
+    # Custom manager ONLY to add .publishable() (see QuestionQuerySet above).
+    # `QuestionQuerySet.as_manager()` keeps every default manager method
+    # (create/filter/get/...) working exactly as before — this is additive,
+    # not a behaviour change to any existing `Question.objects.*` call site.
+    objects = QuestionQuerySet.as_manager()
+
     DIFFICULTY_EASY = "easy"
     DIFFICULTY_MEDIUM = "medium"
     DIFFICULTY_HARD = "hard"
@@ -336,10 +530,28 @@ class Question(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
+    # NULL = a STANDALONE BANK QUESTION, owned by no quiz.
+    #
+    # This was non-nullable until the public Quiz Hub work. Every bank
+    # question used to be a physical child of exactly one Quiz, so the "bank"
+    # was only ever a query-time view (filter on bank_state) and reuse was
+    # copy-on-pick — "add from bank" creates a fresh row and edits never
+    # propagate. That is fine for a teacher assembling a class test, but a
+    # public practice question belongs to no course, no subject and no batch,
+    # so under the old shape it had nowhere to live.
+    #
+    # ⚠ THE FAILURE MODE HERE IS SILENT. Roughly twenty filters across
+    # views.py reach classification through the quiz (quiz__subject,
+    # quiz__created_by, quiz__chapter_tags). Against a NULL quiz those joins
+    # match nothing, so a standalone question does not error — it simply
+    # never appears. Every one of those call sites has a test asserting a
+    # NULL-quiz question IS returned; do not remove them.
     quiz = models.ForeignKey(
         Quiz,
         on_delete=models.CASCADE,
         related_name="questions",
+        null=True,
+        blank=True,
     )
 
     # Which mock-paper section this question sits in. NULL = the flat list,
@@ -369,6 +581,43 @@ class Question(models.Model):
     topic = models.CharField(max_length=120, blank=True, default="")
     difficulty = models.CharField(
         max_length=10, choices=DIFFICULTY_CHOICES, default=DIFFICULTY_MEDIUM,
+    )
+
+    # Optional classification. Every facet is a QuestionTag row (subject,
+    # exam, topic, …) so a new axis costs an INSERT rather than a migration.
+    # blank=True is load-bearing: a question must be insertable with NO tags
+    # at all and still be servable — bulk-imported rows arrive untagged and
+    # get classified afterwards.
+    tags = models.ManyToManyField(
+        "QuestionTag", blank=True, related_name="questions",
+    )
+
+    # The one facet that is a real column rather than a tag, because it is
+    # range-queried and sorted ("2019 onwards", "newest first") and a string
+    # tag would make that a text comparison.
+    year = models.PositiveSmallIntegerField(
+        null=True, blank=True, db_index=True,
+        help_text="Exam year this question is from, when known.",
+    )
+
+    # ⚠ ONLY "single" IS IMPLEMENTED. The column exists now so that adding
+    # multi-select or numeric answers later is a widening of the choices
+    # rather than a schema rewrite of every consumer — but the serializers
+    # reject anything else today, deliberately. Single-select is baked deep:
+    # exactly one Choice.is_correct is enforced in the serializers, and
+    # StudentAnswer.selected_choice is a single non-null FK that cannot
+    # represent two selections or a typed value. Shipping a choice the code
+    # cannot honour would be worse than not having the column.
+    TYPE_SINGLE = "single"
+    TYPE_MULTI = "multi"
+    TYPE_NUMERIC = "numeric"
+    TYPE_CHOICES = [
+        (TYPE_SINGLE, "Single correct answer"),
+        (TYPE_MULTI, "Multiple correct answers (not implemented)"),
+        (TYPE_NUMERIC, "Numeric answer (not implemented)"),
+    ]
+    question_type = models.CharField(
+        max_length=10, choices=TYPE_CHOICES, default=TYPE_SINGLE,
     )
 
     # Provenance for the builder's per-question badge (AI-drafted, imported
@@ -441,6 +690,11 @@ class Question(models.Model):
         ]
 
     def __str__(self):
+        # quiz is nullable now — a standalone bank question has no title to
+        # borrow, and dereferencing it here would blow up the admin changelist
+        # and every error message that interpolates a Question.
+        if self.quiz_id is None:
+            return f"Bank question: {self.text[:60]}"
         return f"Question {self.order} - {self.quiz.title}"
 
     def save(self, *args, **kwargs):
@@ -655,6 +909,156 @@ class PracticeSession(models.Model):
         return f"Practice {self.chapter_id} · {self.learner_profile_id}"
 
 
+class PracticeSet(models.Model):
+    """A public Quiz Hub practice set (design_handoff_public_quiz_hub Phase 5).
+
+    ⚠ NOT `PracticeSession`, which is above and is a different feature — that
+    is one learner's run through a course CHAPTER. This is a course-less,
+    batch-less, subject-less-in-the-`courses`-sense set that anybody on the
+    public site can practise, including signed-out visitors.
+
+    It deliberately CANNOT be a `Quiz`: `Quiz.subject` is a required FK to
+    `courses.Subject`, which is scoped to one course, so every public set
+    would have to be filed under some arbitrary course and would inherit that
+    course's batch visibility rules.
+
+    ── Why membership is a QUERY, not a stored list ────────────────────────
+    The reference design settles this itself. Its own fixture builds a set as
+    an AUTHORED description over a GENERATED selection:
+
+        q.questions = rotate(BANK[q.subject], q.seed)
+
+    …while `title`, `desc`, `diff`, `mins` and `exams` are written by hand.
+    So this model stores the editorial half and resolves the questions at
+    read time:
+
+    * A title like "Ancient India — SSC History Quiz 01" cannot be derived
+      from tags, so it has to be stored.
+    * Pinning an explicit question list would freeze a set at the moment it
+      was made. Curation is ongoing — 3,793 rows arrive `suggested` and are
+      accepted over time — so a stored list would be mostly-empty on day one
+      and permanently stale afterwards. A query grows as the bank is curated,
+      with no further human work.
+
+    The cost of that choice, stated plainly: a set's questions can CHANGE
+    between two attempts as curation lands. That is why Phase 6 must record
+    the questions it actually served on the attempt itself rather than
+    re-deriving them from the set — otherwise a learner's review screen would
+    show questions they never saw.
+    """
+
+    STATUS_DRAFT = "draft"
+    STATUS_PUBLISHED = "published"
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, "Draft — not on the public site"),
+        (STATUS_PUBLISHED, "Published — anyone can practise it"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=160)
+    slug = models.SlugField(max_length=180, unique=True, blank=True)
+    description = models.TextField(blank=True)
+
+    # The rail this set belongs to. Required: a set with no subject has
+    # nowhere to appear on the page.
+    subject_tag = models.ForeignKey(
+        QuestionTag,
+        on_delete=models.PROTECT,
+        related_name="practice_sets",
+        help_text="A kind='subject' tag. Drives both the card and the query.",
+    )
+    # Optional narrowing. `exam_tag` doubles as the card's exam chip.
+    exam_tag = models.ForeignKey(
+        QuestionTag,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="practice_sets_by_exam",
+    )
+    # "" means "any difficulty" — a real state, not a missing value, so this
+    # is blank-able rather than nullable.
+    difficulty = models.CharField(
+        max_length=10, blank=True, choices=Question.DIFFICULTY_CHOICES)
+
+    question_count = models.PositiveSmallIntegerField(
+        default=10, help_text="How many questions to serve, at most.")
+    minutes = models.PositiveSmallIntegerField(default=10)
+    # Two sets over the same subject show different questions by starting at
+    # different offsets — exactly what the design's `seed` does.
+    seed = models.PositiveSmallIntegerField(default=0)
+
+    status = models.CharField(
+        max_length=10, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    display_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["display_order", "title"]
+        indexes = [models.Index(fields=["status", "display_order"])]
+
+    def __str__(self):
+        return self.title
+
+    def save(self, *args, **kwargs):
+        # Derived once and then left alone: re-deriving on rename would break
+        # every link and bookmark already pointing at the old slug. Same
+        # reasoning as QuestionTag.slug.
+        if not self.slug:
+            base = slugify(self.title)[:170] or "practice-set"
+            slug, n = base, 2
+            while PracticeSet.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base}-{n}"
+                n += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
+
+    def question_queryset(self):
+        """Every bank question eligible for this set.
+
+        `publishable()` is what keeps a half-curated bank off the public site:
+        it demands `accepted` AND an explanation AND exactly one correct
+        choice. A `suggested` row can never leak here.
+
+        ⚠ The two `.filter(tags=…)` calls are chained, not combined into a
+        single `tags__in`: chained means "has the subject tag AND the exam
+        tag", `tags__in` would mean "either". `.distinct()` because each
+        join can otherwise repeat a row per matching tag.
+        """
+        qs = (Question.objects.publishable()
+              .filter(quiz__isnull=True, tags=self.subject_tag))
+        if self.exam_tag_id:
+            qs = qs.filter(tags=self.exam_tag)
+        if self.difficulty:
+            qs = qs.filter(difficulty=self.difficulty)
+        return qs.distinct()
+
+    def pick_questions(self):
+        """The questions this set serves, in a STABLE order.
+
+        Stability is the whole point — ordering by `id` is arbitrary but
+        repeatable, so the same set serves the same questions in the same
+        order on every request. Anything random here would mean a learner
+        who reloads mid-attempt gets a different paper.
+        """
+        ids = list(self.question_queryset().order_by("id")
+                   .values_list("id", flat=True))
+        if not ids:
+            return []
+        start = self.seed % len(ids)
+        chosen = (ids[start:] + ids[:start])[:self.question_count]
+        by_id = {
+            q.id: q for q in
+            Question.objects.filter(id__in=chosen).prefetch_related("choices")
+        }
+        return [by_id[i] for i in chosen if i in by_id]
+
+    @property
+    def available_count(self):
+        """How many questions it can actually serve right now — which is not
+        `question_count` when the bank has not been curated that far yet.
+        The card must show this, or it advertises 10 questions and serves 3."""
+        return min(self.question_count, self.question_queryset().count())
+
+
 class PracticeAnswer(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     session = models.ForeignKey(
@@ -679,3 +1083,115 @@ class PracticeAnswer(models.Model):
 
     def __str__(self):
         return f"PracticeAnswer {self.question_id}"
+
+
+class PublicAttempt(models.Model):
+    """One run at a PracticeSet from the public Quiz Hub
+    (design_handoff_public_quiz_hub Phase 6).
+
+    ── Why this is not QuizAttempt ─────────────────────────────────────────
+    `QuizAttempt` carries two conditional unique constraints keyed on
+    (quiz, learner_profile|student, attempt_number), so it cannot represent
+    "the same anonymous visitor, twice, with no user at all". And its
+    `StudentAnswer.selected_choice` is NOT NULL, so it cannot record a
+    question left BLANK — which is half of what a review screen has to show.
+
+    ── Anonymous rows are real rows ────────────────────────────────────────
+    `account` is nullable and a signed-out attempt is still stored. That is
+    what makes an honest `attempt_count` possible on the set card (the design
+    wants social proof; Phase 5 deliberately shipped no such field rather
+    than fake one). It also means the id below is a CAPABILITY: whoever holds
+    the UUID can read that attempt's review. For a signed-in attempt the view
+    additionally checks ownership, so a leaked id cannot expose someone's
+    account history.
+
+    ⚠ Creating a row is an ANONYMOUS WRITE, so the start endpoint carries a
+    ScopedRateThrottle (`quiz_attempt_start`, 100/hour per IP). One call
+    writes this row plus one PublicAttemptAnswer per served question, which
+    is what made an unthrottled version trivially floodable.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    practice_set = models.ForeignKey(
+        "PracticeSet", on_delete=models.PROTECT, related_name="attempts")
+    # The ACCOUNT, not a LearnerProfile: the public site is not profile-scoped
+    # and a visitor may hold no learner profile at all (a teacher, or someone
+    # who only ever reads the marketing site). Requiring one would make the
+    # hub unusable for exactly the people the page is advertised to.
+    account = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="public_attempts")
+    started_at = models.DateTimeField(auto_now_add=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    # Frozen at submit. Never recomputed — see PublicAttemptAnswer.is_correct.
+    score = models.PositiveSmallIntegerField(default=0)
+    total = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-started_at"]
+        indexes = [
+            models.Index(fields=["account", "-started_at"]),
+            models.Index(fields=["practice_set", "submitted_at"]),
+        ]
+
+    def __str__(self):
+        return f"PublicAttempt {self.id} · {self.practice_set_id}"
+
+    @property
+    def is_submitted(self):
+        return self.submitted_at is not None
+
+
+class PublicAttemptAnswer(models.Model):
+    """One question as it was SERVED, plus what was chosen for it.
+
+    ⚠ THIS IS THE SNAPSHOT PHASE 5 REQUIRES. A PracticeSet resolves its
+    questions with a query, so its membership changes as curation lands. If
+    the review screen re-derived the paper from the set, a learner could
+    submit ten questions and be shown a review of a different ten. These rows
+    are written when the attempt STARTS, one per question served, and the
+    review reads only these.
+
+    Three fields exist purely so a later admin edit cannot rewrite history:
+
+    * `selected_choice` is SET_NULL because the admin bank editor replaces a
+      question's choices WHOLESALE (delete-all + bulk_create) on every PATCH
+      that includes them. Without SET_NULL that edit would cascade away a
+      submitted answer; with it, the FK goes null — which is why…
+    * `selected_text` snapshots what the learner actually picked, so the
+      review still reads correctly after the options have been rewritten. A
+      NULL choice with text tells you "their option no longer exists", which
+      is different from…
+    * `selected_choice IS NULL AND selected_text = ''`, which means LEFT
+      BLANK — the state QuizAttempt structurally cannot store.
+
+    `is_correct` is likewise frozen at submit rather than derived on read: an
+    admin correcting an answer key next week must not silently change a score
+    somebody already saw.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    attempt = models.ForeignKey(
+        PublicAttempt, on_delete=models.CASCADE, related_name="answers")
+    # PROTECT, not CASCADE: a bank question with attempts against it must not
+    # be deletable out from under them. _bank_question_usage() lists this
+    # relation so the admin gets a readable 409 long before PROTECT fires.
+    question = models.ForeignKey(
+        Question, on_delete=models.PROTECT, related_name="public_attempt_answers")
+    order = models.PositiveSmallIntegerField(default=0)
+    selected_choice = models.ForeignKey(
+        Choice, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="public_attempt_answers")
+    selected_text = models.CharField(max_length=500, blank=True)
+    is_correct = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["order"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["attempt", "question"],
+                name="uniq_public_attempt_question"),
+        ]
+
+    def __str__(self):
+        return f"{self.attempt_id} · q{self.order}"

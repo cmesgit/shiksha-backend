@@ -120,6 +120,40 @@ class Assignment(models.Model):
                   "and silent. Publishing notifies the class.",
     )
 
+    # Who wrote it. NULLABLE, and never an authorization source.
+    #
+    # Assignment was the only one of the four teacher-authored content models
+    # (StudyMaterial.uploaded_by, SessionRecording.uploaded_by,
+    # Quiz.created_by) with no owner column at all, so "assignments I made"
+    # was not expressible — the teacher screens derived ownership from
+    # TeachingAssignment on the subject, which is really "assignments my
+    # colleagues and I made".
+    #
+    # NULL is a real and permanent state, not a backfill that hasn't run yet:
+    # every row that existed before this column did has no recoverable author,
+    # and guessing one from current staffing would attribute a departed
+    # teacher's work to whoever holds the subject today. Readers must render
+    # NULL as "unknown", never as the caller.
+    #
+    # SET_NULL rather than CASCADE — deleting the account of a teacher who has
+    # left must not delete the class's assignments (and the submissions that
+    # cascade off them). This is the same reasoning as Quiz.created_by.
+    #
+    # Authorization still hangs off `subject` + TeachingAssignment, exactly as
+    # before. Nothing gates on this field: a co-teacher must keep being able to
+    # edit shared subject content, and quizzes already demonstrate the failure
+    # mode of gating on a nullable owner — a NULL-owner Quiz is uneditable and
+    # undeletable by every non-staff user.
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_assignments",
+        help_text="Teacher who authored this. NULL for rows predating the "
+                  "column, and for rows whose author's account was deleted.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     # --- Flexible chapter tagging (courses.models_chapter_tags) ---

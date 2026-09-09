@@ -90,6 +90,16 @@ class StudyMaterial(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # Last edit. Added alongside the PATCH endpoint below — until that shipped
+    # a material was create-only, so "created" and "last changed" were the same
+    # instant and a separate column would have been noise.
+    #
+    # auto_now backfills to the migration's run time for existing rows, NOT to
+    # their created_at. Readers that want "edited" must compare the two and
+    # treat a difference under a second as "never edited", rather than trusting
+    # updated_at alone.
+    updated_at = models.DateTimeField(auto_now=True)
+
     # --- Flexible chapter tagging (courses.models_chapter_tags) ---
     # The rich multi-chapter placement lives in ContentChapterTag, keyed on
     # (content_type, object_id). These two are the scalar companions; see

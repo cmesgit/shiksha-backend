@@ -6,11 +6,123 @@
 # SubjectTeacher-based lookups to is_teacher_of(); student-facing content
 # querysets wrap themselves in scope_to_enrollment().
 
+import uuid
+
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.shortcuts import get_object_or_404
 
 from .models import Chapter, TeachingAssignment
+
+
+def require_authoring_context(request):
+    """The Step-2B gate, stated so it cannot be skipped by being staff.
+
+    Anyone holding the TEACHER role must be in TEACHER context to author
+    content. A pure admin (staff, no TEACHER role) has no teacher context to be
+    in and is allowed through — but an account that is BOTH staff and a teacher
+    is still gated, because the threat the gate exists for is a learner-context
+    token on that teacher's own account (a child on a shared device), and being
+    an admin does not make that token safe.
+
+    Written as one rule rather than `if not request.user.is_staff:
+    require_teacher_context(...)`, which is what let exactly that case through.
+    """
+    from accounts.permissions import require_teacher_context
+
+    if request.user.has_role("TEACHER") or not request.user.is_staff:
+        require_teacher_context(request)
+
+
+def resolve_content_author(request):
+    """Who a new piece of academy content is filed under.
+
+    Returns a User. Every staffing check downstream must then run against the
+    RETURNED user rather than `request.user` — that is the whole point: a
+    teacher files under themselves, an admin files under a teacher they name,
+    and in both cases the content has to belong to somebody who actually
+    teaches the subject.
+
+    Three paths:
+
+      * No `teacher_id` → filing under yourself, and the teacher-context gate
+        applies exactly as before. Nothing that ships today sends
+        `teacher_id`, so every existing client keeps the code path it had,
+        including a staff member who also holds the TEACHER role and uploads
+        from the teacher dashboard. Branching on `is_staff` instead would have
+        broken precisely those accounts. A PURE admin here gets a form error,
+        not "switch to your teacher profile" — they have no teacher profile to
+        switch to, so that advice would be unactionable.
+
+      * `teacher_id` naming YOURSELF → still the self-authoring path, so the
+        gate still applies. Without this an admin who is also a teacher could
+        author from a learner-context token just by passing their own id,
+        which is the exact bypass the gate exists to prevent.
+
+      * `teacher_id` naming SOMEBODY ELSE → only an admin may do it, and only
+        for a usable teaching account. Teacher context is NOT required, because
+        the caller is acting as an admin and an admin's token carries no
+        `context` claim at all.
+
+    Raises PermissionDenied (403) when the caller may not do this, and DRF
+    ValidationError (400) when the named teacher is unusable — a bad
+    `teacher_id` is a form error the admin can fix, not an access failure.
+    """
+    # Imported here, not at module scope: accounts.permissions is a thin
+    # module but courses.services is imported by half the codebase, and a
+    # top-level accounts import from here has bitten this project before.
+    from django.contrib.auth import get_user_model
+    from rest_framework.exceptions import PermissionDenied
+    from rest_framework.exceptions import ValidationError as DRFValidationError
+
+    from accounts.permissions import require_teacher_context
+
+    raw = request.data.get("teacher_id")
+    if raw in (None, ""):
+        if request.user.is_staff and not request.user.has_role("TEACHER"):
+            raise DRFValidationError(
+                {"teacher_id": ["Choose the teacher this belongs to."]}
+            )
+        require_teacher_context(request)
+        return request.user
+
+    try:
+        teacher_id = uuid.UUID(str(raw))
+    except (ValueError, TypeError, AttributeError):
+        # A UUIDField comparison against junk raises Django's own
+        # ValidationError, which DRF does not translate — it surfaces as a
+        # 500. Same guard, same reason, as dashboard/teacher_resources.py's
+        # _parse_ids.
+        raise DRFValidationError({"teacher_id": ["Not a valid teacher id."]})
+
+    if teacher_id == request.user.id:
+        # Naming yourself is authoring your own content, whoever you are.
+        require_teacher_context(request)
+        return request.user
+
+    if not request.user.is_staff:
+        raise PermissionDenied(
+            "Only an admin can file content under another teacher."
+        )
+
+    teacher = get_user_model().objects.filter(id=teacher_id).first()
+    if teacher is None:
+        raise DRFValidationError({"teacher_id": ["No such teacher."]})
+    if not teacher.has_role("TEACHER"):
+        # Checked separately from "no such teacher" so the admin can tell a
+        # typo'd id from an account that simply is not a teacher.
+        raise DRFValidationError(
+            {"teacher_id": ["That account is not a teacher."]}
+        )
+    if not teacher.is_active:
+        # A deactivated owner cannot log in, so filing under them produces the
+        # one thing this whole design exists to prevent: content nobody can
+        # look after. Their TeachingAssignment rows often outlive the
+        # deactivation, so `teaches_subject` alone would have accepted them.
+        raise DRFValidationError(
+            {"teacher_id": ["That account is deactivated."]}
+        )
+    return teacher
 
 
 def is_teacher_of(user, batch, subject):

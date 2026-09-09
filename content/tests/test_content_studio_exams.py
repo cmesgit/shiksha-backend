@@ -17,7 +17,14 @@ User = get_user_model()
 URL = "/api/content/admin/exams/readiness/"
 
 
-class ExamReadinessTest(TestCase):
+class ExamFixture:
+    """Shared setup only — no tests.
+
+    The classes below used to subclass `ExamReadinessTest` for its fixture,
+    which silently re-ran that class's whole suite once per subclass. Splitting
+    the fixture out keeps every test but runs each of them once.
+    """
+
     def setUp(self):
         # The Studio permission caches content_studio_enabled. Django rolls the
         # DB back between tests but NOT the cache, so a test that flips the flag
@@ -57,6 +64,17 @@ class ExamReadinessTest(TestCase):
     def body(self):
         return self.client_for(self.editor).get(URL).json()
 
+    def stocked(self, course):
+        """Give a course the subject + material that make it `live`."""
+        from materials.models import StudyMaterial
+        subject = Subject.objects.create(course=course, name="History")
+        StudyMaterial.objects.create(
+            subject=subject, title="Notes 1", uploaded_by=self.editor,
+        )
+        return subject
+
+
+class ExamReadinessTest(ExamFixture, TestCase):
     # ── what counts as an exam ────────────────────────────────────
 
     def test_finds_a_course_linked_only_by_category(self):
@@ -177,7 +195,7 @@ class ExamReadinessTest(TestCase):
         self.assertEqual(self.client_for(self.outsider).get(URL).status_code, 403)
 
 
-class ExamReadinessQueryCountTest(ExamReadinessTest):
+class ExamReadinessQueryCountTest(ExamFixture, TestCase):
     """The screen loads every exam at once, so a per-exam query is an N+1 that
     grows with the product. It was 3 queries per exam before this was pinned:
     two count() calls plus _is_competitive's category lookup."""
@@ -222,7 +240,7 @@ class ExamReadinessQueryCountTest(ExamReadinessTest):
         )
 
 
-class ExamNavbarVisibilityTest(ExamReadinessTest):
+class ExamNavbarVisibilityTest(ExamFixture, TestCase):
     """A DRAFT or ARCHIVED course is not in the navbar, whatever its kind says.
 
     Prod carries two such rows — a stray "hy" and a duplicate "NEET" — and
@@ -278,3 +296,120 @@ class ExamNavbarVisibilityTest(ExamReadinessTest):
         self.assertEqual(body["summary"]["total"], 2)
         self.assertEqual(body["summary"]["coming_soon"], 1)
         self.assertEqual(body["summary"]["in_navbar"], 1)
+
+
+class ExamComingSoonLabelTest(ExamFixture, TestCase):
+    """"Published but empty" is not "Coming soon".
+
+    The chip used to be derived from content counts alone:
+
+        state = "live" if subjects and material else "coming_soon"
+
+    which consulted neither `Course.status` nor enrolment. So a PUBLISHED exam
+    with a paying enrolled student and no StudyMaterial rows was labelled
+    "Coming soon" by this screen, while visitors saw an ordinary published
+    course — because every other coming-soon label in the platform keys
+    strictly on `status == COMING_SOON` (courses/views.py:1914, :2121, :2202,
+    :2332). This was the only label anywhere that could contradict a published
+    course.
+    """
+
+    def test_a_published_but_empty_exam_is_not_labelled_coming_soon(self):
+        """The bug, stated as a test."""
+        course = self.exam("NEET Preparation", status=Course.STATUS_PUBLISHED)
+        exam = self.body()["exams"][0]
+
+        self.assertEqual(exam["material_count"], 0)
+        self.assertEqual(
+            exam["state"], "empty",
+            "published with nothing in it is its own problem, not Coming soon",
+        )
+        self.assertFalse(
+            exam["visitor_coming_soon"],
+            "a visitor sees a published course; nothing says Coming soon",
+        )
+
+    def test_a_coming_soon_exam_is_labelled_coming_soon_even_when_stocked(self):
+        """The real status wins. Content has nothing to do with this label."""
+        course = self.exam("UPSC Prelims", status=Course.STATUS_COMING_SOON)
+        self.stocked(course)
+
+        exam = self.body()["exams"][0]
+        self.assertEqual(exam["material_count"], 1)
+        self.assertEqual(exam["state"], "coming_soon")
+        self.assertTrue(exam["visitor_coming_soon"])
+
+    def test_a_stocked_published_exam_is_live(self):
+        course = self.exam("SSC CGL", status=Course.STATUS_PUBLISHED)
+        self.stocked(course)
+        exam = self.body()["exams"][0]
+        self.assertEqual(exam["state"], "live")
+        self.assertTrue(exam["has_content"])
+        self.assertFalse(exam["visitor_coming_soon"])
+
+    def test_an_unreachable_exam_gets_no_visitor_facing_label(self):
+        """DRAFT/ARCHIVED rows had `state == "coming_soon"`, so the chip made a
+        claim about visitors for a course no visitor can load."""
+        for status in (Course.STATUS_DRAFT, Course.STATUS_ARCHIVED):
+            with self.subTest(status=status):
+                Course.objects.all().delete()
+                self.exam("hy", status=status)
+                exam = self.body()["exams"][0]
+                self.assertEqual(exam["state"], "hidden")
+                self.assertFalse(exam["visitor_coming_soon"])
+
+    def test_a_card_override_beats_the_course_status(self):
+        """On the homepage card `coming_soon_override` wins outright
+        (courses/views.py:2329-2332), so a screen reporting what visitors see
+        has to consult it. Fixing `status` alone changes nothing here."""
+        course = self.exam("NEET Preparation", status=Course.STATUS_PUBLISHED)
+        self.stocked(course)
+        ShowcaseCourse.objects.create(
+            title="NEET", level_label="Coaching", course=course,
+            coming_soon_override=True,
+        )
+
+        exam = self.body()["exams"][0]
+        self.assertEqual(
+            exam["state"], "live", "the course itself is published and stocked",
+        )
+        self.assertTrue(
+            exam["visitor_coming_soon"],
+            "but the card overrides it, and the card is what visitors see",
+        )
+        self.assertTrue(exam["coming_soon_overridden"])
+        self.assertEqual(self.body()["summary"]["coming_soon"], 1)
+
+    def test_an_override_can_also_clear_the_badge(self):
+        course = self.exam("UPSC Prelims", status=Course.STATUS_COMING_SOON)
+        ShowcaseCourse.objects.create(
+            title="UPSC", level_label="Coaching", course=course,
+            coming_soon_override=False,
+        )
+        exam = self.body()["exams"][0]
+        self.assertEqual(exam["state"], "coming_soon")
+        self.assertFalse(exam["visitor_coming_soon"])
+        self.assertTrue(exam["coming_soon_overridden"])
+
+    def test_summary_separates_the_two_meanings(self):
+        soon = self.exam("UPSC Prelims", status=Course.STATUS_COMING_SOON)
+        empty = self.exam("NEET Preparation", status=Course.STATUS_PUBLISHED)
+        done = self.exam("SSC CGL", status=Course.STATUS_PUBLISHED)
+        self.stocked(done)
+
+        summary = self.body()["summary"]
+        self.assertEqual(summary["total"], 3)
+        self.assertEqual(summary["in_navbar"], 3)
+        self.assertEqual(summary["coming_soon"], 1, "only the COMING_SOON one")
+        self.assertEqual(summary["empty"], 1, "only the published-and-bare one")
+        self.assertEqual(summary["live"], 1)
+
+    def test_a_finished_coming_soon_exam_is_not_suggested(self):
+        """`suggested` keyed on `state != "live"`, which asked someone to go
+        "set up" an exam that was already fully stocked."""
+        soon = self.exam("UPSC Prelims", status=Course.STATUS_COMING_SOON)
+        self.stocked(soon)
+        self.assertIsNone(self.body()["suggested_id"])
+
+        bare = self.exam("NEET Preparation", status=Course.STATUS_PUBLISHED)
+        self.assertEqual(self.body()["suggested_id"], str(bare.id))

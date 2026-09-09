@@ -30,6 +30,15 @@ OWNED_IMAGE_FIELDS = [
     ("content", "ShowcaseCourse", "image"),
     ("content", "HomeContentBlock", "image"),
     ("content", "HomeListItem", "image"),
+    # Cross-app on purpose. `Course.thumbnail` is the picture BOTH public
+    # surfaces read — /courses reads it directly and the homepage's featured
+    # grid prefers it ahead of the showcase card's own image — so it is the
+    # single most load-bearing image on the site, and until now the library
+    # had never heard of it: no usage count, and the 409 delete guard could
+    # not protect it. `Board.logo` is the featured grid's second fallback and
+    # has the same problem.
+    ("courses", "Course", "thumbnail"),
+    ("courses", "Board", "logo"),
 ]
 
 # Fields whose *content* embeds pictures by URL rather than owning one in a
@@ -137,8 +146,11 @@ def sync_usages_for(obj, field_names=None):
     for field in fields:
         stored = getattr(obj, field, None)
         name = getattr(stored, "name", None) or ""
+        # str() because object_id is a CharField spanning integer-PK content
+        # models and UUID-PK courses models — see MediaUsage's docstring.
+        pk = str(obj.pk)
         existing = MediaUsage.objects.filter(
-            content_type=ct, object_id=obj.pk, field_name=field,
+            content_type=ct, object_id=pk, field_name=field,
         )
         if not name:
             existing.delete()
@@ -146,7 +158,7 @@ def sync_usages_for(obj, field_names=None):
         asset, _ = asset_for_file(name)
         existing.exclude(asset=asset).delete()
         MediaUsage.objects.get_or_create(
-            asset=asset, content_type=ct, object_id=obj.pk, field_name=field,
+            asset=asset, content_type=ct, object_id=pk, field_name=field,
         )
 
 
@@ -159,14 +171,14 @@ def _sync_embedded(obj, field, ct):
     referenced = assets_referenced_in(getattr(obj, field, None))
     keep = {a.pk for a in referenced}
     rows = MediaUsage.objects.filter(
-        content_type=ct, object_id=obj.pk, field_name=field,
+        content_type=ct, object_id=str(obj.pk), field_name=field,
     )
     # Removing the stale half matters as much as adding: deleting an image from
     # a post must release it, or it can never be deleted from the library.
     rows.exclude(asset_id__in=keep).delete()
     for asset in referenced:
         MediaUsage.objects.get_or_create(
-            asset=asset, content_type=ct, object_id=obj.pk, field_name=field,
+            asset=asset, content_type=ct, object_id=str(obj.pk), field_name=field,
         )
 
 
@@ -178,6 +190,11 @@ _USAGE_URLS = {
     "showcasecourse": lambda usage: "/content/cards",
     "homecontentblock": lambda usage: "/content/pages/home",
     "homelistitem": lambda usage: "/content/pages/home",
+    # Courses and boards are both edited on the same Admin screen; it has no
+    # per-row route, so the destination is the list itself. An empty string
+    # here would render an "Open" button that goes nowhere.
+    "course": lambda usage: "/courses",
+    "board": lambda usage: "/courses",
 }
 
 
@@ -191,7 +208,10 @@ def usage_payload(asset):
         label = usage.content_type.name
         title = ""
         if target is not None:
-            for candidate in ("title", "heading", "question", "message", "label"):
+            # "name" is last and exists for courses.Board, whose label field
+            # is `name`. Without it a board usage reads "Board #<uuid>", which
+            # tells an editor nothing about which board they would break.
+            for candidate in ("title", "heading", "question", "message", "label", "name"):
                 value = getattr(target, candidate, "")
                 if value:
                     title = str(value)

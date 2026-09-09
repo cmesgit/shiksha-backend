@@ -1,6 +1,7 @@
 from courses.models import Subject
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
+from accounts.display import display_name_for
 from accounts.permissions import IsTeacherContext
 from rest_framework.response import Response
 from rest_framework import status
@@ -9,13 +10,18 @@ from django.shortcuts import get_object_or_404
 from django.core.exceptions import ValidationError as DjangoValidationError
 
 from .models import StudyMaterial, MaterialFile
-from .serializers import StudyMaterialSerializer
+from .serializers import StudyMaterialSerializer, StudyMaterialUpdateSerializer
 from .validators import validate_material_file
 from django.db.models import Q
 from django.core.exceptions import PermissionDenied
 
 from courses.models import Chapter, Batch
-from courses.services import resolve_or_create_chapter, teaches_subject
+from courses.services import (
+    require_authoring_context,
+    resolve_content_author,
+    resolve_or_create_chapter,
+    teaches_subject,
+)
 from courses.chapter_tags import (
     primary_chapter,
     resolve_tags,
@@ -174,10 +180,36 @@ class ChapterMaterials(APIView):
 # ===============================
 
 class UploadStudyMaterial(APIView):
-    permission_classes = [IsAuthenticated, IsTeacherContext]
+    # NOT IsTeacherContext at the class gate — resolve_content_author() below
+    # applies it to the teacher path itself, and applying it here as well
+    # would reject a pure admin before the admin branch could run. That is
+    # the same mistake DeleteStudyMaterial's docstring records: the class gate
+    # turned its `is_staff` branch into unreachable dead code, so no admin
+    # could touch a material however staff they were. Authorization belongs in
+    # the rule, not the decorator.
+    permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, chapter_id=None):
+        # A cheap gate BEFORE anything reads request.data. Reading the body
+        # makes MultiPartParser spool the entire upload to temp storage, so a
+        # caller who cannot possibly be authorized — a plain student — has to
+        # be refused first; the class-level IsTeacherContext used to do that
+        # for free. There are no throttles on this endpoint. The real
+        # per-subject decision still happens below, against `author`.
+        if not (request.user.is_staff or request.user.has_role("TEACHER")):
+            raise PermissionDenied(
+                "You are not assigned to teach this subject."
+            )
+
+        # `author` is who this material is FILED UNDER — request.user for a
+        # teacher uploading their own, the named teacher when an admin uploads
+        # on their behalf. Every check below runs against `author`, so an
+        # admin cannot attach content to a subject the chosen teacher does not
+        # teach. The one deliberate exception is the temp-file claim at the
+        # bottom, which stays on request.user: the ADMIN uploaded those bytes.
+        author = resolve_content_author(request)
+
         chapter_id = request.data.get("chapter_id")
         custom_chapter = request.data.get("custom_chapter")
 
@@ -204,9 +236,17 @@ class UploadStudyMaterial(APIView):
         # Checked BEFORE any chapter is minted, so an unauthorized request
         # cannot leave a stray Chapter row behind under a subject this teacher
         # has no claim to.
-        if not teaches_subject(request.user, subject):
+        if not teaches_subject(author, subject):
+            # Two wordings, because the two callers can act on two different
+            # mistakes: a teacher picked a subject that isn't theirs, an admin
+            # picked a teacher who isn't on it. Naming the teacher is what
+            # makes the admin's version fixable without guessing.
             raise PermissionDenied(
                 "You are not assigned to teach this subject."
+                if author.id == request.user.id
+                else f"{display_name_for(author)} is not assigned to teach "
+                     f"{subject.name}. Assign them to it first, or pick "
+                     f"another teacher."
             )
 
         if chapter is None and custom_chapter:
@@ -215,7 +255,7 @@ class UploadStudyMaterial(APIView):
             # reuses the existing row instead of hitting
             # unique_chapter_per_subject with a 500.
             chapter = resolve_or_create_chapter(
-                subject, custom_title=custom_chapter, created_by=request.user,
+                subject, custom_title=custom_chapter, created_by=author,
             )
 
         # New multi-value payload. Validated before anything is written so a
@@ -225,7 +265,7 @@ class UploadStudyMaterial(APIView):
         try:
             validate_tag_payload(raw_tags, no_specific)
             resolved_tags = resolve_tags(
-                subject, raw_tags, teacher=request.user,
+                subject, raw_tags, teacher=author,
                 save_to_course=_parse_bool(
                     request.data.get("save_chapters_to_course")
                 ),
@@ -275,7 +315,7 @@ class UploadStudyMaterial(APIView):
             description=request.data.get("description", ""),
             chapter_note=request.data.get("chapter_note", ""),
             no_specific_chapter=no_specific,
-            uploaded_by=request.user
+            uploaded_by=author
         )
         if raw_tags:
             set_tags(material, resolved_tags)
@@ -285,6 +325,12 @@ class UploadStudyMaterial(APIView):
             # NULL-uploader row, grandfathered per the model's own comment)
             # can be attached — stops claiming/re-parenting another
             # teacher's file by guessing or reading its UUID.
+            #
+            # request.user, NOT `author`: this is the one line in the method
+            # that is about who UPLOADED THE BYTES rather than who owns the
+            # material. When an admin files under a teacher, the temp rows
+            # belong to the admin, and matching on `author` would 404 every
+            # one of them.
             file = get_object_or_404(
                 MaterialFile.objects.filter(
                     Q(uploaded_by=request.user) | Q(uploaded_by__isnull=True)
@@ -334,6 +380,7 @@ class UploadStudyMaterial(APIView):
             None,                       # materials have no due date
             subject.id,
             subject.name,
+            course_name=course.title,
             extra={"chapter": chapter.title if chapter else None},
             verb="materials.uploaded",
             # ?course= is not decoration. The learner app's Study Material
@@ -615,16 +662,108 @@ class StudyMaterialDetail(APIView):
         )
         return Response(serializer.data)
 
+    def patch(self, request, material_id):
+        """Edit a material's metadata. Files are NOT touched here.
+
+        StudyMaterial was create/read/delete only — the one content model of
+        the four with no edit path at all — so fixing a typo in a title meant
+        deleting the row and re-uploading every attached file. That is also why
+        `updated_at` only arrives with this method.
+
+        Deliberately metadata-only. Attachments live in MaterialFile rows and
+        are added through the validated upload flow (UploadTempFile →
+        UploadStudyMaterial); accepting raw files here would be a second,
+        unvalidated write path to the same table — the exact hole that let a
+        `.exe` reach students through assignments' create endpoint. Removing a
+        file remains a delete-and-reupload, which is unchanged behaviour, not a
+        regression this introduces.
+
+        Authorization is _require_material_editor, the SAME rule delete uses,
+        for the reason in its docstring: the list this is reached from returns
+        colleagues' materials, so an editor rule narrower than the list rule
+        renders buttons that can only 403.
+        """
+        material = get_object_or_404(
+            StudyMaterial.objects
+            .select_related("subject__course__board", "chapter", "batch")
+            .prefetch_related("files"),
+            id=material_id,
+        )
+        _require_material_editor(request, material)
+
+        serializer = StudyMaterialUpdateSerializer(
+            material,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+
+        chapter_changed = "chapter" in serializer.validated_data
+        serializer.save()
+
+        # KEEP THE ADDITIVE INVARIANT (courses/chapter_tags.py:208).
+        #
+        # The rich placement lives in ContentChapterTag rows; the scalar
+        # `chapter` FK is supposed to equal primary_chapter() of those rows. The
+        # upload path maintains that with set_tags(); writing the FK alone here
+        # would leave the two disagreeing, and the response proves it — the SAME
+        # payload carries chapter_title from the FK and chapter_tags from the
+        # rows, so a single edit returned a material filed under two different
+        # chapters at once, and the per-chapter listing
+        # (ChapterMaterials, which filters on the FK) moved it while every
+        # tag-reading surface kept it where it was.
+        #
+        # Only runs when the chapter actually changed: set_tags() DELETES and
+        # re-creates the rows, so doing it on a title-only edit would churn them
+        # (and discard any multi-chapter or free-text placement) for nothing.
+        if chapter_changed:
+            chapter = serializer.validated_data.get("chapter")
+            # set_tags takes (chapter, label, order) triples, the shape
+            # resolve_tags emits — not bare Chapter objects. One triple here
+            # because this form edits a single chapter; clearing it to None
+            # empties the tag set, which is what "No specific chapter" means.
+            set_tags(
+                material,
+                [(chapter, "", 0)] if chapter is not None else [],
+            )
+            # A material with a chapter cannot also be "no specific chapter" —
+            # validate_tag_payload refuses that combination on create, so the
+            # edit path must not be able to manufacture it.
+            if chapter is not None and material.no_specific_chapter:
+                material.no_specific_chapter = False
+                material.save(update_fields=["no_specific_chapter"])
+
+        # Re-read through the full serializer so the response is the same shape
+        # the list and detail endpoints return — the caller updates its row from
+        # this rather than refetching.
+        material.refresh_from_db()
+        return Response(
+            StudyMaterialSerializer(
+                material, context={"request": request}
+            ).data
+        )
+
 
 # ===============================
 # TEMP FILE UPLOAD (validated)
 # ===============================
 
 class UploadTempFile(APIView):
-    permission_classes = [IsAuthenticated, IsTeacherContext]
+    # Staff OR a teacher in teacher context. A temp file is not bound to a
+    # subject yet, so there is nothing subject-level to check here — the
+    # staffing gate lives in UploadStudyMaterial, which is the only thing that
+    # can turn one of these rows into student-visible content. An orphan temp
+    # row is unreachable: every read path goes through its material.
+    permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
+        # Before request.FILES, deliberately: touching the body makes
+        # MultiPartParser spool the whole upload to temp storage, and a caller
+        # who can never be authorized must be refused without paying for that.
+        require_authoring_context(request)
+
         file = request.FILES.get("file")
         if not file:
             return Response({"detail": "File required"}, status=400)

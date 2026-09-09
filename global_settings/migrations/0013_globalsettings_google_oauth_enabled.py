@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('global_settings', '0010_alter_globalsettings_content_studio_enabled'),
+        ('global_settings', '0012_public_quiz_hub_on_by_default'),
     ]
 
     operations = [

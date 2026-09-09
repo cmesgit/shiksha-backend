@@ -6,7 +6,11 @@ from django.db import IntegrityError
 from django.http import HttpResponse
 
 from courses.models import Subject, TeachingAssignment, Batch
-from courses.services import teaches_subject, is_teacher_of
+from courses.services import (
+    is_teacher_of,
+    resolve_content_author,
+    teaches_subject,
+)
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -358,9 +362,16 @@ class TeacherCreateAssignmentView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request):
-        user = request.user
-
-        require_teacher_context(request)
+        # Who this assignment is FILED UNDER: request.user for a teacher
+        # creating their own, the named teacher when an admin creates it on
+        # their behalf. resolve_content_author() applies the teacher-context
+        # gate on the first path, so this is a drop-in replacement for the
+        # bare require_teacher_context() that used to be here.
+        #
+        # The serializer's staffing guard reads `author` out of its context
+        # and checks THAT user against the batch, which is what stops an
+        # admin filing work under a teacher who does not teach it.
+        user = resolve_content_author(request)
 
         # ── Idempotency check ────────────────────────────────────────
         # Frontend sends a per-session UUID so accidental double-clicks
@@ -398,12 +409,15 @@ class TeacherCreateAssignmentView(APIView):
             validate_assignment_file(f)
 
         serializer = TeacherAssignmentCreateSerializer(
-            data=request.data, context={"request": request}
+            data=request.data, context={"request": request, "author": user}
         )
         serializer.is_valid(raise_exception=True)
 
         try:
-            assignment = serializer.save()
+            # created_by is set HERE, not on the serializer, and is absent from
+            # its `fields` — so a client cannot post someone else's id and
+            # attribute its work to another teacher.
+            assignment = serializer.save(created_by=user)
         except IntegrityError:
             # Race condition: two requests with same key hit simultaneously
             existing = Assignment.objects.filter(
