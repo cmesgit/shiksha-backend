@@ -13,6 +13,10 @@ Wired in as STORAGES["default"] only when BUNNY_STORAGE_ZONE and
 BUNNY_STORAGE_API_KEY are both set (see settings_base.py) — local/test
 environments without real Bunny credentials keep using local disk unchanged.
 """
+import posixpath
+import re
+import secrets
+
 import requests
 from django.conf import settings
 from django.core.files.storage import Storage
@@ -57,8 +61,10 @@ class BunnyStorage(Storage):
     # Both methods below were written with `requests.head`, so:
     #   · exists() ALWAYS returned False  → get_available_name() never saw a
     #     collision, so same-named uploads silently overwrote each other on
-    #     Bunny — the exact thing the note under get_available_name promises
-    #     cannot happen.
+    #     Bunny. That is no longer what protects against an overwrite —
+    #     get_available_name now appends 128 random bits and does not probe at
+    #     all (see its own note below) — but exists() is still public API and
+    #     still has callers, so the fix stands on its own.
     #   · size() ALWAYS raised HTTPError  → any code touching `.size` on a
     #     Bunny-backed file 500'd. That is what made every PATCH to a
     #     ShowcaseCourse carrying an image fail on prod (18 of 19 cards),
@@ -101,9 +107,68 @@ class BunnyStorage(Storage):
             raise OSError(f"Bunny storage returned {status} for {name!r}")
         return int(length or 0)
 
-    # get_available_name is intentionally NOT overridden — the base Storage
-    # implementation already calls exists() (implemented above) and appends
-    # a suffix on collision, same as local FileSystemStorage. Two different
-    # uploads that happen to share a filename (e.g. two categories both
-    # getting a phone photo named "photo.jpg") must not silently overwrite
-    # each other on Bunny.
+    # ⚠ SECURITY: the stored key MUST NOT be predictable from the upload.
+    #
+    # This used to defer to base Storage.get_available_name, which keeps the
+    # caller's filename and only appends a suffix ON COLLISION. Combined with
+    # url() below — a flat, unauthenticated CDN URL — that made every private
+    # document reachable by guessing its name. `upload_to` is a fixed prefix
+    # per field, so a faculty applicant uploading "aadhaar.pdf" landed at
+    # exactly `teachers/id_proofs/aadhaar.pdf`, and the same held for
+    # learners/photos/ (children's pictures), scholarship/guardian_docs/ and
+    # enrollment_receipts/. Verified against prod: the storage zone has no
+    # token authentication, so a private prefix answers 404 for a missing key
+    # rather than 403 — i.e. any key that exists is served to anyone.
+    #
+    # Appending 128 bits of entropy (32 hex chars) makes the key
+    # unguessable, which is the
+    # only defence that works while url() stays unsigned. It is NOT a
+    # replacement for turning on Bunny token authentication and signing
+    # private URLs — and it does NOT retroactively protect the files already
+    # stored under their original names. Both remain outstanding.
+    #
+    # The readable stem is kept (slugified, truncated) because it costs
+    # nothing against a random suffix and keeps CDN URLs debuggable and
+    # SEO-sane for the public CMS images that share this backend.
+    #
+    # exists() is deliberately NOT consulted any more: with a 128-bit token a
+    # collision is not a real event, and skipping it removes a network
+    # round-trip from every single upload.
+    STEM_MAX = 40
+
+    def get_available_name(self, name, max_length=None):
+        dirname, basename = posixpath.split(name)
+        stem, ext = posixpath.splitext(basename)
+
+        # `..` segments are DROPPED, not resolved. The caller's filename can
+        # contain slashes, so posixpath.split leaves them in dirname — and
+        # normpath() would happily walk out of the upload_to prefix
+        # ("teachers/id_proofs/../../etc" -> "teachers/etc"), which lands the
+        # file outside the tree media_security.py classifies it by. Dropping
+        # instead keeps it under the intended prefix. Django validates this
+        # upstream too; this is the second lock, not the only one.
+        dirname = "/".join(s for s in dirname.split("/") if s not in ("", ".", ".."))
+
+        ext = ext.lower()
+        stem = re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")[: self.STEM_MAX]
+        # token_hex, NOT token_urlsafe: urlsafe's alphabet includes "-",
+        # which is also the stem/token separator here — that made the
+        # boundary ambiguous and any test that split on it flaky.
+        token = secrets.token_hex(16)
+
+        def build(s):
+            return posixpath.join(dirname, f"{s}-{token}{ext}" if s else f"{token}{ext}")
+
+        candidate = build(stem)
+        if max_length is not None and len(candidate) > max_length:
+            # Give room back from the stem first, and drop it entirely if the
+            # prefix plus the token already fills the column. Never truncate
+            # the token — that is the part doing the security work. The -1 is
+            # the "-" that build() inserts between stem and token.
+            #
+            # If build("") alone still exceeds max_length the prefix itself
+            # does not fit; return it anyway rather than shortening the token,
+            # and let the DB raise instead of storing a guessable key.
+            room = max_length - len(build("")) - 1
+            candidate = build(stem[:room].strip("-") if room > 0 else "")
+        return candidate
