@@ -191,9 +191,22 @@ class TeacherDashboardView(APIView):
         }
 
         # Profile-completeness nudges the dashboard can surface.
+        #
+        # The two flags below are narrow and neither answers the question that
+        # actually matters to a new expert: "why can nobody find me?"
+        # ExpertProfile.refresh_listing only sets is_listed once completeness()
+        # passes, so a freshly added Skill Dev track is UNLISTED with a blank
+        # profile — and until 2026-09-09 nothing in any frontend read `missing`
+        # at all, so the expert was never told. Serving the full picture here
+        # keeps it in the dashboard's existing single request rather than
+        # making every client fetch /skill/teacher/profile/ a second time.
+        completeness = ep.completeness()
         profile_todo = {
             "needs_payment":  not bool(ep.payment_upi),
             "needs_location": ep.has_offline_class() and not bool(ep.class_location),
+            "is_listed":      ep.is_listed,
+            "is_complete":    completeness["is_complete"],
+            "missing":        completeness["missing"],
         }
 
         # ── Dashboard stat tiles + 7-day chart (design_handoff_skilldev) ──
