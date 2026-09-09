@@ -656,10 +656,20 @@ class DeleteAccountView(APIView):
     written. The user is signed out and can no longer log in — from their side
     it is gone.
 
-    What happens later: a purge job hard-deletes after
-    AccountDeletionRequest.GRACE_DAYS. That deferral is deliberate — see the
-    model docstring — and means support can reverse a hostile or mistaken
-    deletion inside the window.
+    What happens later: NOTHING, YET. This docstring used to say "a purge job
+    hard-deletes after AccountDeletionRequest.GRACE_DAYS", which is not true —
+    no task, management command or beat entry consumes the row, so `pending`
+    requests accumulate and the data is retained indefinitely. The model
+    docstring (accounts/settings_models.py) is the accurate one.
+
+    The 30-day deferral is deliberate, so support can reverse a hostile or
+    mistaken deletion inside the window. The missing purge is not.
+
+    This matters beyond housekeeping: /privacy §14 in shiksha-frontend tells
+    users, in as many words, that closing an account is not yet an erasure and
+    that they must email us to have it carried out by hand. If you build the
+    purge job, update that section in the same change — and do not "correct"
+    it to match this docstring the other way round.
 
     Refuses while paid access is still live, matching ProfileDetailView.delete's
     existing rule: closing an account someone has paid for should be a support
