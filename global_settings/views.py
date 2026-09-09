@@ -37,7 +37,11 @@ class PublicConfigView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
 
-    PUBLIC_FLAGS = ("public_quiz_hub_enabled",)
+    # live_ticker_enabled is public for the same reason public_quiz_hub_enabled
+    # is: the ticker's Auth · login and Auth · signup slots render on pre-auth
+    # screens, so gating them on the authenticated feature_flags would leave
+    # them ungated for every visitor who actually sees them.
+    PUBLIC_FLAGS = ("public_quiz_hub_enabled", "live_ticker_enabled")
 
     def get(self, request):
         gs = GlobalSettings.load()

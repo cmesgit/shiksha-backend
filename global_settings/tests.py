@@ -292,6 +292,95 @@ class PublicQuizHubFeatureFlagTest(TestCase):
         self.assertTrue(GlobalSettings.objects.get(pk=1).public_quiz_hub_enabled)
 
 
+class LiveTickerFeatureFlagTest(TestCase):
+    """design_handoff_live_ticker Phase 0 groundwork — the CMS promo ticker
+    ships behind one admin-controlled flag, OFF, and nothing consumes it yet.
+
+    A REAL gate, like content_studio_enabled: every one of the eight ticker
+    slots checks it, and the rollout phase flips the default. Pinned here so a
+    later phase cannot quietly ship a half-built ticker on by default.
+
+    ⚠ This is the FIRST flag to be published both authenticated (feature_flags
+    on /accounts/me/) and anonymous (/api/public-config/). It has to be: the
+    Auth · login and Auth · signup slots render before anyone has logged in.
+    Both halves are asserted below, because dropping either one is a silent
+    failure on exactly one set of screens.
+    """
+
+    URL = "/api/admin/settings/"
+
+    def _client(self, user):
+        from rest_framework.test import APIClient
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return c
+
+    def test_is_off_by_default(self):
+        self.assertFalse(GlobalSettings.load().live_ticker_enabled)
+
+    def test_admin_can_flip_it_via_patch(self):
+        """Without the field in GlobalSettingsSerializer.Meta.fields the PATCH
+        returns 200 and silently discards it — which reads as a dead switch in
+        the admin UI, not as an error."""
+        from accounts.models import User
+
+        admin = User.objects.create_user(
+            username="admin4", email="admin4@example.com", password="x", is_staff=True,
+        )
+        res = self._client(admin).patch(
+            self.URL, {"live_ticker_enabled": True}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertTrue(res.json()["live_ticker_enabled"])
+        self.assertTrue(GlobalSettings.objects.get(pk=1).live_ticker_enabled)
+
+    def test_non_admin_cannot_turn_it_on(self):
+        from accounts.models import User
+
+        GlobalSettings.load()
+        student = User.objects.create_user(
+            username="student4", email="student4@example.com", password="x",
+        )
+        res = self._client(student).patch(
+            self.URL, {"live_ticker_enabled": True}, format="json",
+        )
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertFalse(GlobalSettings.objects.get(pk=1).live_ticker_enabled)
+
+    def test_exposed_read_only_in_feature_flags_on_me_while_false(self):
+        """The key must be present even while False — an absent key and a False
+        one are different bugs, and each app's AuthContext defaults differently
+        when it is missing."""
+        from accounts.models import User
+
+        user = User.objects.create_user(
+            username="learner4", email="learner4@example.com", password="x",
+        )
+        res = self._client(user).get("/api/accounts/me/")
+        self.assertEqual(res.status_code, 200, res.content)
+        flags = res.json()["feature_flags"]
+        self.assertIn("live_ticker_enabled", flags)
+        self.assertFalse(flags["live_ticker_enabled"])
+
+    def test_an_anonymous_visitor_can_read_it(self):
+        """⚠ THE POINT OF THIS TEST. feature_flags requires a login, and two of
+        the eight slots are the login and signup screens themselves. If this
+        flag were authenticated-only, those two slots would be ungated for
+        every visitor who can actually see them — the gate would appear to work
+        everywhere it was tested and fail exactly where it wasn't."""
+        from rest_framework.test import APIClient
+
+        # load() first — the singleton row does not exist until something
+        # creates it, and .filter(pk=1).update() on no rows is a silent no-op.
+        GlobalSettings.load()
+        GlobalSettings.objects.filter(pk=1).update(live_ticker_enabled=True)
+        body = APIClient().get("/api/public-config/").json()
+        self.assertTrue(body["live_ticker_enabled"])
+        GlobalSettings.objects.filter(pk=1).update(live_ticker_enabled=False)
+        self.assertFalse(
+            APIClient().get("/api/public-config/").json()["live_ticker_enabled"])
+
+
 class PublicConfigViewTest(TestCase):
     """The anonymous flag allowlist behind /api/public-config/.
 
@@ -331,7 +420,8 @@ class PublicConfigViewTest(TestCase):
             platform_email="ops@shikshacom.com",
         )
         body = self._client().get(self.URL).json()
-        self.assertEqual(set(body), {"public_quiz_hub_enabled"})
+        self.assertEqual(
+            set(body), {"public_quiz_hub_enabled", "live_ticker_enabled"})
         blob = str(body)
         for secret in ("rzp_live", "okaxis", "ShikshaCom", "ops@shikshacom.com"):
             self.assertNotIn(secret, blob)

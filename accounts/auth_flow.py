@@ -946,6 +946,10 @@ class MeView(APIView):
                 # docstring in global_settings/models.py.
                 "google_oauth_enabled": gs.google_oauth_enabled,
                 "public_quiz_hub_enabled": gs.public_quiz_hub_enabled,
+                # Also published unauthenticated via /api/public-config/ —
+                # two of the ticker's eight slots are the pre-auth login and
+                # signup screens, which never call this endpoint.
+                "live_ticker_enabled": gs.live_ticker_enabled,
             },
         })
 

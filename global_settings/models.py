@@ -262,6 +262,35 @@ class GlobalSettings(models.Model):
         ),
     )
 
+    # ── Live Ticker (design_handoff_live_ticker) ────────────────────────
+    # Gates the CMS-driven promo ticker across all eight of its slots: the
+    # navbar strip, the homepage hero grid and band, the courses rail, the
+    # footer, the student dashboard rail, and the two auth screens.
+    #
+    # Like content_studio_enabled and unlike quiz_v2_enabled, this is a REAL
+    # gate: every ticker surface checks it. It ships OFF and stays OFF until
+    # the rollout phase flips the default, so a half-built ticker never
+    # reaches a visitor mid-build.
+    #
+    # ⚠ Unlike every other flag here, this one is ALSO in
+    # PublicConfigView.PUBLIC_FLAGS (global_settings/views.py). Two of the
+    # eight slots — Auth · login and Auth · signup — are pre-auth screens,
+    # and `feature_flags` only rides the authenticated GET /accounts/me/.
+    # Gating those on feature_flags alone would leave them ungated for
+    # exactly the visitors who see them. Adding it to the allowlist is a
+    # deliberate decision to make this one flag public; read that view's
+    # docstring before adding a second.
+    live_ticker_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Master switch for the CMS live ticker across all its slots — the "
+            "navbar strip, homepage hero and band, courses rail, footer, "
+            "student dashboard rail and the login/signup screens. While OFF, "
+            "none of them render and the existing announcement strip is "
+            "unaffected."
+        ),
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
