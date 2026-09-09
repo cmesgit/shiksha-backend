@@ -39,6 +39,29 @@ class User(AbstractUser):
     accepted_terms_version = models.CharField(max_length=20, blank=True)
     terms_accepted_at = models.DateTimeField(null=True, blank=True)
 
+    # ── "Land where you left off" (account-model simplification, Phase 5) ──
+    # WHO the person last was, and WHAT they were last doing. Two axes, kept
+    # separate on purpose — that separation is the whole point of the phase.
+    #
+    # The profile picker used to appear for ANY account holding a teacher
+    # identity, even one with a single learner profile and a single approved
+    # track, because it conflated "which person is this" (a people question)
+    # with "am I learning or teaching" (a mode question). A teacher with one
+    # profile answered a two-option question on every single login.
+    #
+    # These let login restore the last state instead of asking. They are a
+    # CONVENIENCE and never an authority: every gate still runs on restore, so
+    # a revoked track, a deactivated profile or a PIN all still stop it. See
+    # `issue_login_session`.
+    last_context = models.CharField(max_length=10, blank=True, default="")
+    last_track   = models.CharField(max_length=10, blank=True, default="")
+    last_profile = models.ForeignKey(
+        "accounts.LearnerProfile",
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username"]
 
@@ -592,6 +615,55 @@ class EmailVerificationToken(models.Model):
 
 
 # =====================================================
+# GOOGLE IDENTITY
+# =====================================================
+
+class GoogleIdentity(models.Model):
+    """A Google account linked to a ShikshaCom account.
+
+    MATCHED ON `sub`, NEVER ON EMAIL. Google's `sub` is a stable, immutable
+    per-account identifier; the email on a Google account can be changed by
+    its owner at any time. Matching on email would mean that changing a Gmail
+    address either silently orphans the link or — worse — hands the account to
+    whoever next receives the old address.
+
+    Email is therefore used exactly once: to find the existing ShikshaCom
+    account to attach to on the very first sign-in. `email_at_link` records
+    what that address was, for support and audit only. It is deliberately not
+    kept in sync afterwards, and nothing should ever look an account up by it.
+
+    One Google account maps to one User (`sub` is unique) and one User has at
+    most one Google account (OneToOne).
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="google_identity",
+    )
+
+    # Google's subject identifier. Opaque, stable, and the only safe join key.
+    sub = models.CharField(max_length=255, unique=True, db_index=True)
+
+    # What the Google account's email was when the link was made. Audit trail
+    # only — never a lookup key. See the class docstring.
+    email_at_link = models.EmailField()
+
+    linked_at     = models.DateTimeField(auto_now_add=True)
+    last_login_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name        = "Google identity"
+        verbose_name_plural = "Google identities"
+        indexes = [
+            models.Index(fields=["sub"]),
+        ]
+
+    def __str__(self):
+        return f"Google identity for {self.user.email}"
+
+
+# =====================================================
 # PASSWORD RESET CODE
 # =====================================================
 #
@@ -883,6 +955,32 @@ class TeacherProfile(models.Model):
     skill_status = models.CharField(
         max_length=10, choices=TRACK_STATUS_CHOICES, default=TRACK_LOCKED
     )
+
+    # ── Teacher-mode PIN ──────────────────────────────────────────────────
+    # Optional, hashed, and deliberately identical in shape and behaviour to
+    # LearnerProfile.pin — same helpers, same "blank means open" rule, same
+    # throttle on the check.
+    #
+    # WHY A PIN AND NOT THE ACCOUNT PASSWORD (2026-09-06)
+    # Entering teacher mode used to demand the full account password, every
+    # time, minutes after logging in with it. That protected nothing an
+    # attacker holding the session could not already do, and it was the worst
+    # friction on the teacher path.
+    #
+    # But it could not simply be dropped. One account can carry up to five
+    # learner profiles including a teacher's own children, so an ungated
+    # "Teach" tile on a shared family laptop puts a child straight into a
+    # gradebook full of other students' personal data. A PIN is the right
+    # instrument for that: cheap for the owner, effective against the
+    # household, and a mechanism this product already uses for exactly this
+    # purpose.
+    #
+    # BLANK BY DEFAULT = INSTANT ENTRY, matching how profiles behave. Setting,
+    # changing or clearing it still requires the account password (see
+    # verify_account_password), because that is a genuinely destructive action
+    # and is also the forgot-PIN path.
+    pin = models.CharField(max_length=128, blank=True, default="")
+
     # When the academy (faculty) application is rejected, the admin's reason is
     # stored here so the teacher can see why and re-apply.
     # T4's auto-suggest row (design_handoff_quiz_system §T4). The teacher-level
@@ -999,6 +1097,22 @@ class TeacherProfile(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 
+    # ── PIN helpers ───────────────────────────────────────────────────────
+    # Identical semantics to LearnerProfile's, including "no PIN configured
+    # means entry is open". Kept as their own methods rather than shared with
+    # LearnerProfile because the two models have no common base and inventing
+    # one for three lines would be worse than the repetition.
+    def set_pin(self, raw_pin):
+        self.pin = make_password(raw_pin) if raw_pin else ""
+
+    def check_pin(self, raw_pin):
+        if not self.pin:
+            return True
+        return check_password(raw_pin, self.pin)
+
+    def has_pin(self):
+        return bool(self.pin)
+
     # ── Track helpers ─────────────────────────────────────────────────────
     def track_status(self, track):
         """Status for 'academy' or 'skill'."""
@@ -1077,49 +1191,46 @@ class TeacherProfile(models.Model):
             self.teacher_type = self.TYPE_FACULTY
         self.is_approved = bool(self.approved_tracks())
 
-    # ── Track-add policy (the asymmetric Faculty / Guest rule) ─────────────
+    # ── Track-add policy ───────────────────────────────────────────────────
     #
-    # Business rule (single source of truth — encoded purely from status so
-    # the signup, add-track, switcher and settings paths can never drift):
-    #   • A teacher who FIRST became Faculty (academy) can NOT later add the
-    #     Skill / Guest-expert track — faculty stay faculty-only, one dashboard.
-    #   • A teacher who FIRST became a Guest expert (skill) CAN later add the
-    #     Faculty (academy) track — they then get the two-dashboard switcher.
+    # Single source of truth, encoded purely from status so the signup,
+    # add-track, switcher and settings paths can never drift.
     #
-    #   ⇒ the Skill track may be added only when Academy was never taken
-    #     (academy_status == locked) AND Skill isn't already held.
-    #   ⇒ the Academy track may be added whenever it isn't already held;
-    #     holding the Skill track does NOT block it.
+    # Rule: **either track may be added whenever it is not already held.**
+    #
+    # HISTORY — the asymmetry that used to live here (2026-09-06)
+    # ───────────────────────────────────────────────────────────
+    # This previously refused to let a Faculty (academy) teacher add the
+    # Skill / Guest-expert track, while allowing the reverse. It was removed
+    # deliberately, not by accident. Nothing in the data model needed it:
+    # `academy_status` and `skill_status` are independent, `approved_tracks()`
+    # already handles holding both, `sync_type_from_tracks()` has always had a
+    # TYPE_BOTH case, and the two-dashboard switcher was already built for
+    # guest→faculty. The rule only ever expressed a policy preference, and it
+    # produced a confusing dead end: a faculty member who wanted to offer paid
+    # one-off sessions was told to make a second account.
+    #
+    # The asymmetry that REMAINS is the real one and must not be removed:
+    # academy applications land as PENDING for admin review, skill applications
+    # auto-approve. That reflects employment versus a marketplace listing.
     def holds_track(self, track):
         """True if the track is already live or in review (i.e. 'held')."""
         return self.track_status(track) in (self.TRACK_PENDING, self.TRACK_APPROVED)
 
     def can_apply_track(self, track):
         """Whether this profile is allowed to ADD `track` right now."""
-        if track == self.TRACK_ACADEMY:
-            # Faculty can always be added if not already held.
-            return not self.holds_track(self.TRACK_ACADEMY)
-        if track == self.TRACK_SKILL:
-            # Skill / Guest only if Academy was never held and Skill isn't held.
-            return (
-                not self.holds_track(self.TRACK_ACADEMY)
-                and not self.holds_track(self.TRACK_SKILL)
-            )
-        return False
+        if track not in (self.TRACK_ACADEMY, self.TRACK_SKILL):
+            return False
+        return not self.holds_track(track)
 
     def track_add_block_reason(self, track):
         """Human-readable reason `track` can't be added, or '' if it can."""
         if self.can_apply_track(track):
             return ""
-        if track == self.TRACK_SKILL and self.holds_track(self.TRACK_ACADEMY):
-            return (
-                "Faculty accounts can't add the Skill Dev (Guest expert) track. "
-                "Guest experts can add Faculty, but not the other way around."
-            )
         if self.holds_track(track):
             nice = ("Academy (Faculty)" if track == self.TRACK_ACADEMY
                     else "Skill (Guest expert)")
-            return f"You're already set up for {nice} on this account. Log in instead."
+            return f"You're already set up for {nice} on this account."
         return "That track can't be added to this account."
 
     def record_agreement_signature(self, request=None, signer_name="", key="faculty"):

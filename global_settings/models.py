@@ -245,6 +245,23 @@ class GlobalSettings(models.Model):
         ),
     )
 
+    # ── Google sign-in (design_handoff_google_oauth) ────────────────────
+    # A REAL gate: the OAuth endpoint refuses outright while this is OFF.
+    #
+    # ⚠ This flag CANNOT gate the button on the login screen. `feature_flags`
+    # only rides the authenticated GET /accounts/me/, and there is no public
+    # settings endpoint — the login screen is pre-auth, so it has nothing to
+    # read. The button is gated client-side on the build-time
+    # VITE_GOOGLE_CLIENT_ID instead, and this flag is the server-side half.
+    # Both are required; neither alone is sufficient.
+    google_oauth_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Master switch for Google sign-in. While OFF the OAuth endpoint "
+            "refuses every request, regardless of what the frontend renders."
+        ),
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

@@ -35,6 +35,10 @@ from .rbac_views import (
     ModActionsHistoryView,
 )
 
+from .registration import RegisterView
+from .oauth_views import GoogleSignInView
+from .identity_views import TeacherIdentityView
+
 from .auth_flow import (
     LoginView,
     MeView,
@@ -42,6 +46,7 @@ from .auth_flow import (
     TeacherContextView,
     TeacherTrackSwitchView,
     ProfilePinView,
+    TeacherPinView,
     ProfileListCreateView,
     ProfileDetailView,
     ProfileEmailLookupView,
@@ -80,6 +85,19 @@ from .views import (
 )
 
 urlpatterns = [
+    # Account-first registration (email + password + terms). The `signup/`
+    # route below is the older role-first path; both are live until Phase 8
+    # retires the old one. See design_handoff_account_model/BUILD_GUIDE.md.
+    path("register/", RegisterView.as_view()),
+
+    # Google sign-in. Gated by GlobalSettings.google_oauth_enabled (OFF by
+    # default) AND by GOOGLE_OAUTH_CLIENT_ID being set.
+    path("oauth/google/", GoogleSignInView.as_view()),
+
+    # Add a teacher identity from inside the product. Replaces the
+    # add-to-existing branches of /signup/ (Phase 2).
+    path("identities/teacher/", TeacherIdentityView.as_view()),
+
     path("signup/",  SignupView.as_view()),
     path("login/",   LoginView.as_view()),
     path("logout/",  LogoutView.as_view()),
@@ -93,11 +111,17 @@ urlpatterns = [
     path("profiles/",                    ProfileListCreateView.as_view()),
     path("profiles/<uuid:profile_id>/",  ProfileDetailView.as_view()),
     path("profiles/pin/",                ProfilePinView.as_view()),
+    # Teacher-mode PIN. Setting it needs the account password; entering
+    # teacher mode with it does not (see TeacherContextView).
+    path("context/teacher/pin/",         TeacherPinView.as_view()),
 
-    # Teacher context — uses ACCOUNT password (no separate teacher password)
+    # Teacher context — takes the teacher-mode PIN if one is set, and nothing
+    # if it isn't. It no longer asks for the account password (2026-09-06).
     path("context/teacher/", TeacherContextView.as_view()),
     path("context/teacher/track/", TeacherTrackSwitchView.as_view()),
-    # context/teacher/password/ REMOVED — single-password model
+    # context/teacher/password/ REMOVED — there has never been a separate
+    # teacher password, and entering teacher mode no longer uses the account
+    # one either. See context/teacher/pin/ above.
 
     path("verify-email/",        VerifyEmailView.as_view()),
     path("resend-verification/", ResendVerificationEmailView.as_view()),
