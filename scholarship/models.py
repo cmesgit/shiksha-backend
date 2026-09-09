@@ -54,7 +54,19 @@ class ScholarshipSettings(models.Model):
 
     # ── Identity verification (parent/guardian-anchored — see
     # memory/instant-scholarship-module-scoping.md for why) ───────────────
-    allow_digilocker = models.BooleanField(default=True)
+    # ⚠ DEFAULT FLIPPED TO False, 2026-09-09 (migration 0002). This was
+    # `True`, and `Verify.jsx` labelled it "Recommended" and auto-selected it
+    # — for a method that CANNOT COMPLETE. There is no callback route, so the
+    # record never leaves `pending` and the screen polls forever. That was
+    # live on prod. The migration fixes existing rows too: changing `default=`
+    # alone does not touch the already-created singleton.
+    #
+    # Turning this back on requires building the OAuth2/OIDC callback against
+    # Meri Pehchaan first. Note the org-onboarding gate is the real cost, not
+    # the code: GSTN verification at API Setu signup, registration by a nodal
+    # officer, an Indian mobile and a server located in India, per-document
+    # scope access granted by email, and NO SANDBOX to rehearse against.
+    allow_digilocker = models.BooleanField(default=False)
     # Requires a licensed reseller (see active_kyc_provider below) — a
     # documented stub until one is wired. Default off since turning it on
     # today would offer a method that can never actually complete.
@@ -66,10 +78,13 @@ class ScholarshipSettings(models.Model):
     active_kyc_provider = models.CharField(
         max_length=30, blank=True,
         help_text=(
-            "Licensed reseller handling DigiLocker/Aadhaar OTP calls "
-            "(e.g. setu, digio, surepass, hyperverge). ShikshaCom must never "
-            "call UIDAI directly or store an Aadhaar number/hash — only the "
-            "reseller's opaque, non-reversible verification reference."
+            "Reseller handling Aadhaar OTP calls (e.g. setu, digio, surepass, "
+            "hyperverge). ShikshaCom must never call UIDAI directly or store "
+            "an Aadhaar number/hash — only the reseller's opaque, "
+            "non-reversible verification reference. NOTE: this does NOT apply "
+            "to DigiLocker, which a company integrates with directly via API "
+            "Setu / Meri Pehchaan and needs no reseller and no AUA/KUA "
+            "licence — an earlier version of this text claimed otherwise."
         ),
     )
 

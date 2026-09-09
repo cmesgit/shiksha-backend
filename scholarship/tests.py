@@ -530,6 +530,50 @@ class AadhaarOfflineViewTest(TestCase):
         self.assertEqual(res.status_code, 400)
 
 
+class DigiLockerDisabledTest(TestCase):
+    """DigiLocker must stay off until it can actually complete.
+
+    It shipped to prod enabled, auto-selected and badged "Recommended" while
+    having no callback route — `GuardianVerificationCreateView` files a
+    `pending` record and nothing on earth ever moves it to `verified`, so the
+    screen polls forever. These tests pin BOTH halves of the fix, because
+    either one alone leaves the bug reachable: the default (a fresh install)
+    and the endpoint's refusal (an admin who flips it on by hand).
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="STUDENT")
+        cls.parent = User.objects.create_user(
+            username="dlparent", email="dlparent@test.com", password="x", is_verified=True,
+        )
+
+    def test_digilocker_is_off_by_default(self):
+        self.assertFalse(ScholarshipSettings.load().allow_digilocker)
+
+    def test_config_endpoint_does_not_offer_digilocker(self):
+        """The screen builds its method list from this, so absence here is
+        what actually hides the option — not anything in the frontend."""
+        c = APIClient()
+        c.force_authenticate(user=self.parent, token={"context": "account"})
+        res = c.get("/api/scholarship/config/")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.json()["verification_methods"]["digilocker"])
+
+    def test_digilocker_submission_is_refused(self):
+        c = APIClient()
+        c.force_authenticate(user=self.parent, token={"context": "account"})
+        res = c.post("/api/scholarship/verification/", {"method": "digilocker"})
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(GuardianVerification.objects.filter(account=self.parent).exists())
+
+    def test_a_working_method_is_still_available(self):
+        """Turning DigiLocker off must not leave the funnel with no way
+        through — that would be a worse bug than the one being fixed."""
+        settings_obj = ScholarshipSettings.load()
+        self.assertTrue(settings_obj.allow_aadhaar_offline or settings_obj.allow_manual_review)
+
+
 class ManualDocumentValidationTest(TestCase):
     """manual_document previously accepted ANY file with no type/size check
     at all — this is a sensitive KYC-document review queue an admin opens

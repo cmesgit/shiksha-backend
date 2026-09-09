@@ -465,6 +465,86 @@ class SignupSerializer(serializers.Serializer):
         elif track == TeacherProfile.TRACK_ACADEMY:
             self._provision_faculty(tp, faculty_payload)
 
+    # ── Profile photo attached at signup / add-track ───────────────────────
+    # Kept separate from _SIGNUP_DOC_TYPES on purpose: those are faculty
+    # EVIDENCE an admin opens by hand (and include PDF), this is an image
+    # rendered straight into every learner's browser on the public expert
+    # directory. Different blast radius, different rules.
+    _SIGNUP_PHOTO_TYPES = {
+        "image/jpeg": (".jpg", {"JPEG"}),
+        "image/jpg":  (".jpg", {"JPEG"}),
+        "image/png":  (".png", {"PNG"}),
+        "image/webp": (".webp", {"WEBP"}),
+    }
+    _SIGNUP_PHOTO_MAX_BYTES = 5 * 1024 * 1024
+
+    @classmethod
+    def _save_signup_photo(cls, learner, doc):
+        """Decode one {name, type, data} base64 image onto learner.profile_photo.
+
+        Returns "profile_photo" when an image was attached, else None.
+
+        ⚠ THIS VERIFIES THE BYTES, WHICH `_save_signup_document` DOES NOT.
+        That helper trusts the caller's declared MIME type, which is fine for
+        a PDF an admin downloads and opens deliberately. This file is served
+        back to every visitor browsing the expert directory, so a blob that
+        merely CLAIMS to be image/png must not land on disk named .png — that
+        is the shape of a stored-XSS/polyglot upload. Pillow's verify() is
+        what makes the declared type load-bearing rather than decorative, and
+        the decoded format must also match what was claimed.
+
+        Best-effort like the rest of the signup-time provisioning: a bad image
+        is dropped rather than raised, so it can never cost someone their
+        account. That is safe HERE specifically because completeness() still
+        counts profile_photo as missing, so the confirmation screen tells them
+        it did not stick instead of implying they are done.
+        """
+        if not isinstance(doc, dict):
+            return None
+        declared = (doc.get("type") or "").strip().lower()
+        spec = cls._SIGNUP_PHOTO_TYPES.get(declared)
+        if not spec:
+            return None
+        ext, allowed_formats = spec
+
+        raw = doc.get("data")
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        raw = raw.strip()
+        # FileReader.readAsDataURL yields "data:<mime>;base64,<payload>".
+        if raw.startswith("data:") and "," in raw:
+            raw = raw.split(",", 1)[1]
+        try:
+            blob = base64.b64decode(raw, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+        if not blob or len(blob) > cls._SIGNUP_PHOTO_MAX_BYTES:
+            return None
+
+        # The actual gate. verify() consumes the file object, so the caller
+        # must not reuse it afterwards — we only need the format string.
+        try:
+            from io import BytesIO
+            from PIL import Image, UnidentifiedImageError
+            try:
+                img = Image.open(BytesIO(blob))
+                fmt = (img.format or "").upper()
+                img.verify()
+            except (UnidentifiedImageError, OSError, ValueError, SyntaxError):
+                return None
+            if fmt not in allowed_formats:
+                return None
+        except ImportError:
+            # Pillow is a hard dependency (LearnerProfile.profile_photo is an
+            # ImageField), so this cannot happen — but refuse rather than
+            # silently downgrading to "trust the declared type" if it ever does.
+            return None
+
+        learner.profile_photo.save(
+            f"{learner.pk}_profile_photo{ext}", ContentFile(blob), save=False
+        )
+        return "profile_photo"
+
     # ── Expert-profile provisioning (guest track) ──────────────────────────
     def _provision_expert(self, teacher_profile, payload):
         """Create the ExpertProfile for a guest teacher (idempotent) and apply
@@ -498,6 +578,16 @@ class SignupSerializer(serializers.Serializer):
                     p_fields = ops.apply_personal_fields(learner, payload)
                 except ValidationError:
                     p_fields = []
+                # `apply_personal_fields` reads profile_photo from `files`,
+                # which a JSON body can never carry — so the photo arrives as
+                # a base64 {name,type,data} object beside the text fields, the
+                # same shape faculty documents use. Without this the photo was
+                # the ONE completeness field an applicant could not supply
+                # here, and refresh_listing() below therefore always left a
+                # brand-new expert unlisted.
+                photo_field = self._save_signup_photo(learner, payload.get("profile_photo"))
+                if photo_field:
+                    p_fields = list(p_fields) + [photo_field]
                 if p_fields:
                     learner.save()
 

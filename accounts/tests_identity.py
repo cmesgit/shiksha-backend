@@ -200,3 +200,117 @@ class AddSecondTrackTest(TestCase):
         self.assertFalse(body["can_add"]["skill"])
         self.assertTrue(body["can_add"]["academy"])
         self.assertTrue(body["blocked_reason"]["skill"])
+
+
+class ExpertPhotoAtApplyTimeTest(TestCase):
+    """A base64 profile photo attached to the skill track.
+
+    WHY THIS MATTERS MORE THAN IT LOOKS
+    ───────────────────────────────────
+    `profile_photo` is the ninth and last completeness field, and it was the
+    only one an applicant could not supply here — `apply_personal_fields`
+    reads it from `files`, and this endpoint is JSON. So before this, a
+    brand-new expert who filled in EVERY field the form offered still ended up
+    with `is_listed=False`: findable by nobody, with no indication why beyond
+    a "1 thing left" note. The first test below is the whole point of the
+    feature; the rest exist because this file is served straight back to every
+    visitor browsing the expert directory.
+    """
+
+    # A real 1x1 PNG. Not a fixture file: the point is that these bytes
+    # actually survive Pillow's verify(), which a hand-written blob does not.
+    PNG_B64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+
+    def _apply(self, user, photo):
+        return client_for(user).post(
+            URL,
+            {
+                "track": "skill",
+                "expert_profile": {
+                    "full_name": "Rin Lalthanpuii",
+                    "date_of_birth": "1994-04-12",
+                    "phone": "9876543210",
+                    "subject_description": "Classical guitar for beginners",
+                    "languages": "English, Mizo",
+                    "bio": "Nine years teaching fingerstyle guitar to absolute beginners.",
+                    "class_mode": "online",
+                    "profile_photo": photo,
+                },
+            },
+            format="json",
+        )
+
+    def _expert(self, user):
+        user.refresh_from_db()
+        return user.teacher_profile.expert_profile
+
+    def test_a_complete_profile_with_a_photo_is_actually_LISTED(self):
+        user = make_user("photo-ok@test.com")
+        res = self._apply(user, {"name": "me.png", "type": "image/png",
+                                 "data": self.PNG_B64})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+        learner = user.learner_profiles.get(is_default=True)
+        self.assertTrue(learner.profile_photo, "photo did not attach")
+        self.assertTrue(learner.profile_photo.name.endswith(".png"))
+        # The payoff: visible to learners, not merely "set up".
+        self.assertTrue(self._expert(user).is_listed)
+
+    def test_data_url_prefix_is_accepted(self):
+        """FileReader.readAsDataURL sends the whole 'data:<mime>;base64,...'
+        string, and the form forwards it verbatim."""
+        user = make_user("photo-dataurl@test.com")
+        self._apply(user, {"name": "me.png", "type": "image/png",
+                           "data": "data:image/png;base64," + self.PNG_B64})
+        self.assertTrue(user.learner_profiles.get(is_default=True).profile_photo)
+
+    def test_bytes_that_only_CLAIM_to_be_png_are_refused(self):
+        """The stored-XSS/polyglot shape: a declared image/png carrying
+        markup. `_save_signup_document` would accept this; this must not."""
+        import base64 as _b64
+        payload = _b64.b64encode(b"<svg onload=alert(1)></svg>").decode()
+        user = make_user("photo-forged@test.com")
+        res = self._apply(user, {"name": "x.png", "type": "image/png",
+                                 "data": payload})
+        # The track is still added — a bad photo must never cost an account.
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(user.learner_profiles.get(is_default=True).profile_photo)
+        # …and the person is TOLD, because completeness still counts it.
+        self.assertFalse(self._expert(user).is_listed)
+
+    def test_a_real_png_declared_as_jpeg_is_refused(self):
+        """Declared type must match the decoded format, or the extension on
+        disk lies about the contents."""
+        user = make_user("photo-mismatch@test.com")
+        res = self._apply(user, {"name": "me.jpg", "type": "image/jpeg",
+                                 "data": self.PNG_B64})
+        # Pinned so a future 400 cannot make this pass vacuously.
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(user.learner_profiles.get(is_default=True).profile_photo)
+
+    def test_an_oversized_photo_is_refused(self):
+        import base64 as _b64
+        user = make_user("photo-big@test.com")
+        res = self._apply(user, {"name": "big.png", "type": "image/png",
+                                 "data": _b64.b64encode(b"\x89PNG" + b"\0" * (5 * 1024 * 1024)).decode()})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(user.learner_profiles.get(is_default=True).profile_photo)
+
+    def test_an_unsupported_type_is_refused(self):
+        user = make_user("photo-pdf@test.com")
+        res = self._apply(user, {"name": "cv.pdf", "type": "application/pdf",
+                                 "data": self.PNG_B64})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(user.learner_profiles.get(is_default=True).profile_photo)
+
+    def test_no_photo_still_works_and_leaves_the_listing_hidden(self):
+        """The skip path: everything else saved, one gap named, not listed."""
+        user = make_user("photo-none@test.com")
+        res = self._apply(user, None)
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        learner = user.learner_profiles.get(is_default=True)
+        self.assertEqual(learner.full_name, "Rin Lalthanpuii")
+        self.assertFalse(learner.profile_photo)
+        self.assertFalse(self._expert(user).is_listed)
