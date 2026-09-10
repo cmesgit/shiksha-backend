@@ -1999,27 +1999,34 @@ def _nav_row(link):
     }
 
 
-def _derived_nav_preview(request):
-    """What the public endpoint would return with nothing curated.
+def _derived_nav_preview():
+    """What the catalogue derives, ignoring curation entirely.
 
     Called so the editor can show "here is what visitors see today" and
     offer to start from it, rather than presenting an empty column whose
     only options are "leave alone" or "invent from scratch".
-    """
-    from courses.views import PublicNavMenuView
 
-    view = PublicNavMenuView()
-    view.request = request
-    resp = view.get(request)
-    out = {}
-    for cat in resp.data.get("categories", []):
-        groups = cat.get("tabs") or cat.get("sections") or []
-        out[cat["key"]] = [
-            {"heading": g.get("heading") or g.get("label") or "",
-             "links": g.get("links", [])}
-            for g in groups
-        ]
-    return out
+    ⚠ Must call `derive_nav_categories()` directly, NOT read the public
+    endpoint's response. Once a column is curated, the public response's
+    `tabs`/`sections` key holds the CURATED content, not the derived
+    content — reading it back here would show an admin their own curation
+    reflected as if it were "what curation dropped," which defeats the one
+    reason this preview exists.
+    """
+    from courses.views import derive_nav_categories
+
+    tabs, competitive_links = derive_nav_categories()
+    return {
+        "school": [
+            {"heading": t.get("heading") or t.get("label") or "",
+             "links": t.get("links", [])}
+            for t in tabs
+        ],
+        "competitive": [
+            {"heading": "Competitive Exams", "links": competitive_links},
+        ],
+        # "skill" has no derived form — deliberately absent.
+    }
 
 
 def _nav_href_from_derived(link):
@@ -2063,7 +2070,7 @@ class NavMenuListView(APIView):
         for link in links:
             rows.setdefault(link.group, []).append(_nav_row(link))
 
-        derived = _derived_nav_preview(request)
+        derived = _derived_nav_preview()
         groups = []
         for key, label in NavMenuLink.GROUP_CHOICES:
             mine = rows.get(key, [])
@@ -2225,7 +2232,7 @@ class NavMenuAdoptView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        sections = _derived_nav_preview(request).get(group) or []
+        sections = _derived_nav_preview().get(group) or []
         if not sections:
             return Response(
                 {"detail": "There's nothing to copy — this column has no "
