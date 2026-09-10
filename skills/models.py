@@ -125,6 +125,11 @@ class ExpertProfile(models.Model):
         choices=INTRO_VIDEO_STATUS_CHOICES, null=True, blank=True
     )
     intro_video_thumbnail_url = models.URLField(blank=True)
+    # Seconds, as reported by Bunny once it has processed the file. Null means
+    # "not known yet" (still transcoding, or uploaded before this field
+    # existed) — never "zero seconds". skills/intro_video.py enforces
+    # MAX_INTRO_VIDEO_SECONDS against it.
+    intro_video_duration = models.PositiveIntegerField(null=True, blank=True)
 
     # Rate is stored in paise for consistency with courses/payments.
     hourly_rate = models.PositiveIntegerField(default=0, help_text="Paise (₹1 = 100)")

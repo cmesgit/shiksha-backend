@@ -400,6 +400,7 @@ def serialize_expert(ep):
         # intro video (advertising clip, not a listing requirement)
         "intro_video_status":      ep.intro_video_status,
         "intro_video_embed_url":  ep.intro_video_embed_url(),
+        "intro_video_duration":   ep.intro_video_duration,
     }
 
 

@@ -48,6 +48,8 @@ class SkillListing(models.Model):
     intro_video_bunny_id = models.CharField(max_length=255, blank=True)
     intro_video_status = models.IntegerField(null=True, blank=True)
     intro_video_thumbnail_url = models.URLField(blank=True)
+    # Seconds, per Bunny. See ExpertProfile.intro_video_duration.
+    intro_video_duration = models.PositiveIntegerField(null=True, blank=True)
 
     mastery_target = models.PositiveSmallIntegerField(default=3)
 
