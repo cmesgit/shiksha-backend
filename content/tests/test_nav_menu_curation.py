@@ -195,6 +195,35 @@ class NavCurationTestCase(TestCase):
         )
         self.assertTrue(any(c["title"] == "NEET" for c in r.data["courses"]))
 
+    def test_derived_preview_survives_curating_the_same_column(self):
+        """The "what your catalogue would show instead" preview must keep
+        showing genuine catalogue truth after curation — that is the ONLY
+        way an admin can see what curating a column dropped. It must not
+        start reflecting the admin's own curated rows back at them, which
+        would happen if it were read off the public endpoint's response
+        instead of derived independently (the public response's `sections`
+        key holds curated content once curated)."""
+        self.admin.post(
+            ADMIN_URL,
+            {"group": "competitive", "label": "Only This One", "href": "/x"},
+            format="json",
+        )
+        r = self.admin.get(ADMIN_URL)
+        self.assertEqual(r.status_code, 200, r.content)
+        competitive = {g["key"]: g for g in r.data["groups"]}["competitive"]
+        self.assertTrue(competitive["curated"])
+        derived_links = [
+            link["label"]
+            for section in competitive["derived"]
+            for link in section["links"]
+        ]
+        self.assertIn(
+            "NEET", derived_links,
+            "derived preview must still show the real catalogue (NEET), "
+            "not the curated row",
+        )
+        self.assertNotIn("Only This One", derived_links)
+
     def test_new_rows_append_rather_than_displace(self):
         first = self.admin.post(
             ADMIN_URL, {"group": "skill", "label": "A", "href": "/a"},

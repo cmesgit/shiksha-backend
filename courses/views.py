@@ -2430,6 +2430,119 @@ def _curated_nav_sections(group):
     return sections
 
 
+def _board_class_links(board, group_key):
+    """One nav link per class this board actually offers.
+
+    Labels come from `class_level`/`stream` rather than the course title,
+    so the menu reads "Class 11 · Science · CBSE" regardless of how a given
+    course happens to be titled in the catalog. Courses with no class_level
+    (the coaching/competitive rows) are skipped — they belong to the
+    separate "competitive" category below, not under a board.
+
+    The board name is ALWAYS appended — never conditionally. The mobile
+    drawer flattens every tab into one list (Navbar.jsx does
+    `cat.tabs.flatMap(t => t.links)`), so on prod, where CBSE and MBSE each
+    offer the same nine classes, the flattened list carried nine duplicated
+    labels: "Class 9" twice over with nothing to tell the boards apart, and
+    colliding React keys behind it. A qualifier applied only when one TAB
+    holds several boards cannot fix that — the ambiguity is created ACROSS
+    tabs, downstream of this payload."""
+    courses = (
+        Course.objects
+        .filter(board=board, status__in=PUBLIC_COURSE_STATUSES,
+                class_level__isnull=False)
+        .select_related("stream")
+        .order_by("class_level", "stream__name", "title")
+    )
+    links = []
+    for c in courses:
+        label = f"Class {c.class_level}"
+        if c.stream and c.stream.name:
+            label += f" · {c.stream.name.title()}"
+        label = f"{label} · {board.name}"
+        if c.status == Course.STATUS_COMING_SOON:
+            links.append({"label": label, "soon": True})
+        else:
+            links.append({"label": label, "to": f"/courses/{c.slug}"})
+    return links
+
+
+def derive_nav_categories():
+    """The catalogue-derived Courses-menu content, ignoring curation entirely.
+
+    Shared by `PublicNavMenuView` (which layers curation on top of this) and
+    the Studio editor's "what your catalogue would show instead" preview.
+    That preview has to call THIS, not the public endpoint — once a column
+    is curated, the public response's `tabs`/`sections` key holds the
+    curated content, not the derived content, so re-deriving from that
+    response would show an admin their own curation reflected back as if it
+    were "what curation dropped."
+
+    Returns (tabs, competitive_links); "skill" has no derived form at all.
+    """
+    # --- "school" category: one tab per board_type present ---
+    boards = list(Board.objects.order_by("display_order", "name"))
+    type_display = dict(Board.TYPE_CHOICES)  # {"CENTRAL": "Central", ...}
+
+    tabs = []
+    seen_types = []
+    for b in boards:
+        if b.board_type not in seen_types:
+            seen_types.append(b.board_type)
+    for board_type in seen_types:
+        group_key = board_type.lower()
+        disp = type_display.get(board_type, board_type.title())
+        label = f"{disp} Boards"
+        group_boards = [b for b in boards if b.board_type == board_type]
+
+        links = []
+        for b in group_boards:
+            if not b.is_active:
+                links.append({"label": b.name, "soon": True})
+                continue
+            links.append({
+                "label": b.name,
+                "to": "/courses",
+                "state": {"selectedBoardGroup": group_key, "selectedBoard": b.slug},
+            })
+            # ...then the individual classes offered by that board. Without
+            # these the menu only ever offers a whole board, which is a
+            # regression the frontend can't paper over: mergeLiveNavMenu()
+            # replaces its static tabs wholesale as soon as this endpoint
+            # answers, so anything omitted here simply vanishes from the nav.
+            links.extend(_board_class_links(b, group_key))
+        tabs.append({
+            "id": group_key,
+            "label": label,
+            "heading": f"{disp} Board Courses",
+            "links": links,
+            "viewAll": {
+                "label": f"View All {label}",
+                "to": "/courses",
+                "state": {"selectedBoardGroup": group_key},
+            },
+        })
+
+    # --- "competitive" category: courses tagged group == "competitive" ---
+    competitive_courses = (
+        Course.objects
+        .filter(
+            status__in=PUBLIC_COURSE_STATUSES,
+            categories__group=CourseCategory.GROUP_COMPETITIVE,
+        )
+        .order_by("display_order", "title")
+        .distinct()
+    )
+    competitive_links = []
+    for c in competitive_courses:
+        if c.status == Course.STATUS_COMING_SOON:
+            competitive_links.append({"label": c.title, "soon": True})
+        else:
+            competitive_links.append({"label": c.title, "to": f"/courses/{c.slug}"})
+
+    return tabs, competitive_links
+
+
 class PublicNavMenuView(APIView):
     """GET /courses/public/nav-menu/ — the navbar Courses mega-menu payload.
     Returns exactly two categories the backend can back with data: "school"
@@ -2439,108 +2552,13 @@ class PublicNavMenuView(APIView):
     "Skill & Career" category client-side; it is deliberately NOT returned here."""
     permission_classes = [AllowAny]
 
-    @staticmethod
-    def _class_links(board, group_key):
-        """One nav link per class this board actually offers.
-
-        Labels come from `class_level`/`stream` rather than the course title,
-        so the menu reads "Class 11 · Science · CBSE" regardless of how a given
-        course happens to be titled in the catalog. Courses with no class_level
-        (the coaching/competitive rows) are skipped — they belong to the
-        separate "competitive" category below, not under a board.
-
-        The board name is ALWAYS appended — never conditionally. The mobile
-        drawer flattens every tab into one list (Navbar.jsx does
-        `cat.tabs.flatMap(t => t.links)`), so on prod, where CBSE and MBSE each
-        offer the same nine classes, the flattened list carried nine duplicated
-        labels: "Class 9" twice over with nothing to tell the boards apart, and
-        colliding React keys behind it. A qualifier applied only when one TAB
-        holds several boards cannot fix that — the ambiguity is created ACROSS
-        tabs, downstream of this payload."""
-        courses = (
-            Course.objects
-            .filter(board=board, status__in=PUBLIC_COURSE_STATUSES,
-                    class_level__isnull=False)
-            .select_related("stream")
-            .order_by("class_level", "stream__name", "title")
-        )
-        links = []
-        for c in courses:
-            label = f"Class {c.class_level}"
-            if c.stream and c.stream.name:
-                label += f" · {c.stream.name.title()}"
-            label = f"{label} · {board.name}"
-            if c.status == Course.STATUS_COMING_SOON:
-                links.append({"label": label, "soon": True})
-            else:
-                links.append({"label": label, "to": f"/courses/{c.slug}"})
-        return links
-
     def get(self, request):
         key = list_cache_key(request)
         cached = cache.get(key)
         if cached is not None:
             return Response(cached)
 
-        # --- "school" category: one tab per board_type present ---
-        boards = list(Board.objects.order_by("display_order", "name"))
-        type_display = dict(Board.TYPE_CHOICES)  # {"CENTRAL": "Central", ...}
-
-        tabs = []
-        seen_types = []
-        for b in boards:
-            if b.board_type not in seen_types:
-                seen_types.append(b.board_type)
-        for board_type in seen_types:
-            group_key = board_type.lower()
-            disp = type_display.get(board_type, board_type.title())
-            label = f"{disp} Boards"
-            group_boards = [b for b in boards if b.board_type == board_type]
-
-            links = []
-            for b in group_boards:
-                if not b.is_active:
-                    links.append({"label": b.name, "soon": True})
-                    continue
-                links.append({
-                    "label": b.name,
-                    "to": "/courses",
-                    "state": {"selectedBoardGroup": group_key, "selectedBoard": b.slug},
-                })
-                # ...then the individual classes offered by that board. Without
-                # these the menu only ever offers a whole board, which is a
-                # regression the frontend can't paper over: mergeLiveNavMenu()
-                # replaces its static tabs wholesale as soon as this endpoint
-                # answers, so anything omitted here simply vanishes from the nav.
-                links.extend(self._class_links(b, group_key))
-            tabs.append({
-                "id": group_key,
-                "label": label,
-                "heading": f"{disp} Board Courses",
-                "links": links,
-                "viewAll": {
-                    "label": f"View All {label}",
-                    "to": "/courses",
-                    "state": {"selectedBoardGroup": group_key},
-                },
-            })
-
-        # --- "competitive" category: courses tagged group == "competitive" ---
-        competitive_courses = (
-            Course.objects
-            .filter(
-                status__in=PUBLIC_COURSE_STATUSES,
-                categories__group=CourseCategory.GROUP_COMPETITIVE,
-            )
-            .order_by("display_order", "title")
-            .distinct()
-        )
-        competitive_links = []
-        for c in competitive_courses:
-            if c.status == Course.STATUS_COMING_SOON:
-                competitive_links.append({"label": c.title, "soon": True})
-            else:
-                competitive_links.append({"label": c.title, "to": f"/courses/{c.slug}"})
+        tabs, competitive_links = derive_nav_categories()
 
         # --- curation overrides, per column ---
         #
