@@ -268,9 +268,12 @@ class GlobalSettings(models.Model):
     # footer, the student dashboard rail, and the two auth screens.
     #
     # Like content_studio_enabled and unlike quiz_v2_enabled, this is a REAL
-    # gate: every ticker surface checks it. It ships OFF and stays OFF until
-    # the rollout phase flips the default, so a half-built ticker never
-    # reaches a visitor mid-build.
+    # gate: every ticker surface checks it.
+    #
+    # ⚠ DEFAULT FLIPPED TO True IN PHASE 9 (migration 0015). It is no longer
+    # a launch gate — all eight slots have shipped — it is a KILL SWITCH.
+    # Turning it off makes every ticker surface render nothing and leaves the
+    # navbar strip exactly as it was before this feature existed.
     #
     # ⚠ Unlike every other flag here, this one is ALSO in
     # PublicConfigView.PUBLIC_FLAGS (global_settings/views.py). Two of the
@@ -281,7 +284,7 @@ class GlobalSettings(models.Model):
     # deliberate decision to make this one flag public; read that view's
     # docstring before adding a second.
     live_ticker_enabled = models.BooleanField(
-        default=False,
+        default=True,
         help_text=(
             "Master switch for the CMS live ticker across all its slots — the "
             "navbar strip, homepage hero and band, courses rail, footer, "

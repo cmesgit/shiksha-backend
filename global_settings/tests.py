@@ -315,8 +315,12 @@ class LiveTickerFeatureFlagTest(TestCase):
         c.force_authenticate(user=user)
         return c
 
-    def test_is_off_by_default(self):
-        self.assertFalse(GlobalSettings.load().live_ticker_enabled)
+    def test_is_on_by_default_since_phase_9(self):
+        """⚠ THIS CONTRACT INVERTED IN PHASE 9 (migration 0015). Through
+        Phases 0–8 the flag shipped OFF as a launch gate; now all eight slots
+        have shipped and it is a KILL SWITCH. Turning it off renders no
+        ticker anywhere and leaves the navbar strip exactly as it was."""
+        self.assertTrue(GlobalSettings.load().live_ticker_enabled)
 
     def test_admin_can_flip_it_via_patch(self):
         """Without the field in GlobalSettingsSerializer.Meta.fields the PATCH
@@ -334,7 +338,10 @@ class LiveTickerFeatureFlagTest(TestCase):
         self.assertTrue(res.json()["live_ticker_enabled"])
         self.assertTrue(GlobalSettings.objects.get(pk=1).live_ticker_enabled)
 
-    def test_non_admin_cannot_turn_it_on(self):
+    def test_non_admin_cannot_turn_it_off(self):
+        """The direction that matters flipped with the default: the risk is no
+        longer a stranger launching the ticker early, it is a stranger taking
+        live surfaces down."""
         from accounts.models import User
 
         GlobalSettings.load()
@@ -342,15 +349,15 @@ class LiveTickerFeatureFlagTest(TestCase):
             username="student4", email="student4@example.com", password="x",
         )
         res = self._client(student).patch(
-            self.URL, {"live_ticker_enabled": True}, format="json",
+            self.URL, {"live_ticker_enabled": False}, format="json",
         )
         self.assertEqual(res.status_code, 403, res.content)
-        self.assertFalse(GlobalSettings.objects.get(pk=1).live_ticker_enabled)
+        self.assertTrue(GlobalSettings.objects.get(pk=1).live_ticker_enabled)
 
-    def test_exposed_read_only_in_feature_flags_on_me_while_false(self):
-        """The key must be present even while False — an absent key and a False
-        one are different bugs, and each app's AuthContext defaults differently
-        when it is missing."""
+    def test_exposed_read_only_in_feature_flags_on_me(self):
+        """The key must be present whatever its value — an absent key and a
+        set one are different bugs, and each app's AuthContext defaults
+        differently when it is missing."""
         from accounts.models import User
 
         user = User.objects.create_user(
@@ -360,7 +367,24 @@ class LiveTickerFeatureFlagTest(TestCase):
         self.assertEqual(res.status_code, 200, res.content)
         flags = res.json()["feature_flags"]
         self.assertIn("live_ticker_enabled", flags)
-        self.assertFalse(flags["live_ticker_enabled"])
+        self.assertTrue(flags["live_ticker_enabled"])
+
+    def test_the_phase_9_migration_flips_a_row_that_already_exists(self):
+        """⚠ THE POINT. Changing a model default only affects rows CREATED
+        afterwards, and GlobalSettings is a singleton whose row already exists
+        on dev and prod holding False. Without the data step in 0015, "the
+        default is now True" would be true of a fresh database and of nothing
+        that is actually deployed."""
+        import importlib
+
+        from django.apps import apps as real_apps
+
+        mod = importlib.import_module(
+            "global_settings.migrations.0015_live_ticker_on_by_default")
+        GlobalSettings.load()
+        GlobalSettings.objects.update(live_ticker_enabled=False)
+        mod.turn_on(real_apps, None)
+        self.assertTrue(GlobalSettings.objects.get(pk=1).live_ticker_enabled)
 
     def test_an_anonymous_visitor_can_read_it(self):
         """⚠ THE POINT OF THIS TEST. feature_flags requires a login, and two of
