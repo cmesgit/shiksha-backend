@@ -23,6 +23,7 @@ from assignments.models import Assignment
 from courses.progress_stats import average_quiz_score_pct
 from .board_display import board_name_for
 from .models import Course, Subject, Board, CourseDetail, Batch, CourseCategory, Stream, BoardNotifyRequest, CourseNotifyRequest
+from .models import NavMenuLink
 from content.models import ContentImage, ShowcaseCategory, ShowcaseCourse, PublishStatus
 from .serializers import (
     CourseSerializer, SubjectSerializer, BoardSerializer, CourseDetailSerializer,
@@ -2395,6 +2396,40 @@ class PublicFeaturedView(APIView):
         return Response(data)
 
 
+def _curated_nav_sections(group):
+    """Curated rows for one mega-menu column, or None to stay derived.
+
+    None (not []) means "nobody has curated this column" — the caller keeps
+    the catalogue-derived menu. An empty list would mean "curated to nothing",
+    which is a different and much more destructive statement.
+    """
+    rows = list(
+        NavMenuLink.objects.filter(group=group, is_active=True)
+        .select_related("course")
+        .order_by("order", "id")
+    )
+    if not rows:
+        return None
+
+    sections, index = [], {}
+    for r in rows:
+        link = {"label": r.label}
+        href = r.resolved_href
+        if href:
+            link["to"] = href
+        else:
+            # No destination and not marked soon cannot happen past clean(),
+            # but a row edited straight in the DB could get here. Render it
+            # inert rather than as a link to nowhere.
+            link["soon"] = True
+        heading = r.heading or ""
+        if heading not in index:
+            index[heading] = {"heading": heading, "links": []}
+            sections.append(index[heading])
+        index[heading]["links"].append(link)
+    return sections
+
+
 class PublicNavMenuView(APIView):
     """GET /courses/public/nav-menu/ — the navbar Courses mega-menu payload.
     Returns exactly two categories the backend can back with data: "school"
@@ -2507,16 +2542,48 @@ class PublicNavMenuView(APIView):
             else:
                 competitive_links.append({"label": c.title, "to": f"/courses/{c.slug}"})
 
-        data = {
-            "categories": [
-                {"key": "school", "tabs": tabs},
-                {
-                    "key": "competitive",
-                    "sections": [
-                        {"heading": "Competitive Exams", "links": competitive_links},
-                    ],
-                },
-            ]
-        }
+        # --- curation overrides, per column ---
+        #
+        # A column with no active NavMenuLink rows stays exactly as derived
+        # above; one row and the admin owns that column. "skill" has no
+        # derived form at all — it was hardcoded in Navbar.jsx — so it is
+        # emitted ONLY when curated, and the frontend keeps its static
+        # fallback until then.
+        curated_school = _curated_nav_sections(NavMenuLink.GROUP_SCHOOL)
+        curated_comp = _curated_nav_sections(NavMenuLink.GROUP_COMPETITIVE)
+        curated_skill = _curated_nav_sections(NavMenuLink.GROUP_SKILL)
+
+        if curated_school is not None:
+            # The school column renders as tabs, so each curated heading
+            # becomes a tab rather than a section.
+            school_category = {"key": "school", "curated": True, "tabs": [
+                {"id": f"t{i}", "label": sec["heading"] or "Courses",
+                 "heading": sec["heading"] or "Courses", "links": sec["links"]}
+                for i, sec in enumerate(curated_school)
+            ]}
+        else:
+            school_category = {"key": "school", "curated": False, "tabs": tabs}
+
+        # ⚠ `curated` is load-bearing on the client, not decoration. The
+        # derived competitive payload is one section that Navbar.jsx folds
+        # into its own "Exam tracks" heading; a CURATED one owns its
+        # headings and must replace that block wholesale. Without this flag
+        # the frontend cannot tell those two cases apart, and curating two
+        # sections would silently show only the first.
+        categories = [
+            school_category,
+            {
+                "key": "competitive",
+                "curated": curated_comp is not None,
+                "sections": curated_comp if curated_comp is not None else [
+                    {"heading": "Competitive Exams", "links": competitive_links},
+                ],
+            },
+        ]
+        if curated_skill is not None:
+            categories.append(
+                {"key": "skill", "curated": True, "sections": curated_skill})
+
+        data = {"categories": categories}
         cache.set(key, data, LIST_TTL)
         return Response(data)
