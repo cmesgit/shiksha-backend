@@ -442,6 +442,14 @@ def _admin_expert_row(ep, request=None):
         "is_suspended": ep.is_suspended,
         "subscription": _sub_summary(ep),
         "photo":        _absolute_url(ep.photo, request),
+        # The Skill track lists directly with no approval, so this is here for
+        # MODERATION, not screening — an admin needs to be able to watch what
+        # is already public in order to suspend it. Learners could see this
+        # clip long before any admin could.
+        "intro_video_embed_url":     ep.intro_video_embed_url(),
+        "intro_video_thumbnail_url": ep.intro_video_thumbnail_url or None,
+        "intro_video_status":        ep.intro_video_status,
+        "intro_video_duration":      ep.intro_video_duration,
     }
 
 

@@ -21,7 +21,7 @@ class SkillListingCardSerializer(serializers.ModelSerializer):
             "category_slug", "category_label",
             "price_rupees", "rating", "reviews_count", "sessions_count",
             "mastery_target", "intro_video_status", "intro_video_thumbnail_url",
-            "intro_video_embed_url",
+            "intro_video_embed_url", "intro_video_duration",
             "is_active", "is_suspended", "open_slots", "order",
         ]
 
@@ -60,12 +60,13 @@ class SkillListingWriteSerializer(serializers.ModelSerializer):
             "description", "skill_tags",
             "price_rupees", "mastery_target", "is_active",
             "intro_video_status", "intro_video_thumbnail_url",
+            "intro_video_duration",
             "rating", "reviews_count", "sessions_count", "open_slots",
             "is_suspended", "order",
         ]
         read_only_fields = ["id", "rating", "sessions_count", "is_suspended",
                             "intro_video_status", "intro_video_thumbnail_url",
-                            "order"]
+                            "intro_video_duration", "order"]
 
     def get_reviews_count(self, obj):
         return ExpertReview.objects.filter(

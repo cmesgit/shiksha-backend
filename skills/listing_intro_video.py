@@ -3,8 +3,8 @@
 The point of multi-skill is that a guitar clip does not advertise a welding
 class, so the intro video moves from "one per expert" to "one per listing".
 
-Mirrors views_intro_video.py's expert-level flow exactly — same three steps,
-same Bunny calls, same status codes — but scoped to a listing the caller owns:
+Mirrors views_intro_video.py's expert-level flow — same steps, same status
+codes — but scoped to a listing the caller owns:
 
     POST /skill/teacher/listings/<id>/intro-video/            → {video_id, library_id, expire, signature}
     POST /skill/teacher/listings/<id>/intro-video/save/       ← {video_id}
@@ -15,19 +15,24 @@ splits create + sign across two calls; there is no reason for a second hop).
 The browser then resumable-uploads the file straight to Bunny's TUS endpoint
 using that per-video signature (never the master AccessKey) — see
 config/bunny_signing.py and the frontend's useBunnyUpload hook.
-"""
-import logging
 
-import requests
-from django.conf import settings
+The Bunny calls and the duration limit live in skills/intro_video.py.
+"""
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .listing_views import expert_or_403
+from .intro_video import (
+    BunnyUnavailable,
+    attach,
+    create_bunny_video,
+    needs_sync,
+    restore,
+    snapshot,
+    sync_intro_video,
+)
 from config.bunny_signing import bunny_tus_ticket
-
-log = logging.getLogger(__name__)
 
 
 def _listing_or_404(request, listing_id):
@@ -39,29 +44,35 @@ def _listing_or_404(request, listing_id):
     return listing
 
 
+def _video_state(listing):
+    return {
+        "intro_video_status": listing.intro_video_status,
+        "intro_video_thumbnail_url": listing.intro_video_thumbnail_url,
+        "intro_video_duration": listing.intro_video_duration,
+        "intro_video_embed_url": listing.intro_video_embed_url(),
+    }
+
+
 class ListingIntroVideoView(APIView):
     """POST — create the Bunny video and hand back a direct-upload ticket."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request, listing_id):
         listing = _listing_or_404(request, listing_id)
-        url = f"https://video.bunnycdn.com/library/{settings.BUNNY_LIBRARY_ID}/videos"
-        headers = {"AccessKey": settings.BUNNY_API_KEY, "Content-Type": "application/json"}
         title = request.data.get("title") or f"{listing.title} — intro"
         try:
-            r = requests.post(url, json={"title": title}, headers=headers, timeout=20)
-        except requests.RequestException as e:
-            log.warning("Bunny listing intro-video create failed: %s", e)
-            return Response({"error": "Could not reach the video service."}, status=502)
-        if r.status_code not in (200, 201):
-            return Response({"error": r.text}, status=502)
-
-        video_id = r.json()["guid"]
+            video_id = create_bunny_video(title)
+        except BunnyUnavailable as e:
+            return Response({"error": str(e)}, status=502)
         return Response(bunny_tus_ticket(video_id))
 
 
 class ListingIntroVideoSaveView(APIView):
-    """POST — record the uploaded video against the listing (status 1 = Uploaded)."""
+    """POST — record the uploaded video against the listing.
+
+    Asks Bunny for the real status instead of assuming "Uploaded", and
+    refuses a clip longer than the limit.
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request, listing_id):
@@ -69,17 +80,21 @@ class ListingIntroVideoSaveView(APIView):
         video_id = request.data.get("video_id")
         if not video_id:
             return Response({"error": "video_id is required."}, status=400)
-        listing.intro_video_bunny_id = video_id
-        listing.intro_video_status = 1
-        listing.intro_video_thumbnail_url = ""
-        listing.save(update_fields=[
-            "intro_video_bunny_id", "intro_video_status",
-            "intro_video_thumbnail_url", "updated_at",
-        ])
-        return Response({
-            "intro_video_status": listing.intro_video_status,
-            "intro_video_thumbnail_url": listing.intro_video_thumbnail_url,
-        })
+
+        previous = snapshot(listing)
+        attach(listing, video_id)
+
+        _, error = sync_intro_video(listing)
+        if error:
+            # A rejected replacement is a no-op — put the previous clip back.
+            restore(listing, previous)
+            return Response({"error": error}, status=400)
+
+        if listing.intro_video_status is None:
+            listing.intro_video_status = 1  # Uploaded; still transcoding.
+            listing.save(update_fields=["intro_video_status", "updated_at"])
+
+        return Response(_video_state(listing))
 
 
 class ListingIntroVideoStatusView(APIView):
@@ -88,37 +103,6 @@ class ListingIntroVideoStatusView(APIView):
 
     def get(self, request, listing_id):
         listing = _listing_or_404(request, listing_id)
-        if not listing.intro_video_bunny_id or listing.intro_video_status == 4:
-            return Response({
-                "intro_video_status": listing.intro_video_status,
-                "intro_video_thumbnail_url": listing.intro_video_thumbnail_url,
-                "intro_video_embed_url": listing.intro_video_embed_url(),
-            })
-
-        url = (
-            f"https://video.bunnycdn.com/library/"
-            f"{settings.BUNNY_LIBRARY_ID}/videos/{listing.intro_video_bunny_id}"
-        )
-        try:
-            r = requests.get(url, headers={"AccessKey": settings.BUNNY_API_KEY}, timeout=20)
-            if r.status_code == 200:
-                data = r.json()
-                listing.intro_video_status = data.get("status", 0)
-                if listing.intro_video_status == 4 and not listing.intro_video_thumbnail_url:
-                    thumb = data.get("thumbnailFileName", "")
-                    cdn_host = getattr(settings, "BUNNY_CDN_HOST", "")
-                    if thumb and cdn_host:
-                        listing.intro_video_thumbnail_url = (
-                            f"https://{cdn_host}/{listing.intro_video_bunny_id}/{thumb}"
-                        )
-                listing.save(update_fields=[
-                    "intro_video_status", "intro_video_thumbnail_url", "updated_at",
-                ])
-        except requests.RequestException as e:
-            log.warning("Bunny listing intro-video status check failed: %s", e)
-
-        return Response({
-            "intro_video_status": listing.intro_video_status,
-            "intro_video_thumbnail_url": listing.intro_video_thumbnail_url,
-            "intro_video_embed_url": listing.intro_video_embed_url(),
-        })
+        if needs_sync(listing):
+            sync_intro_video(listing)
+        return Response(_video_state(listing))
