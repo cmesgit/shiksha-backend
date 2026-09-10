@@ -606,3 +606,53 @@ class TickerBandSectionTest(TestCase):
              kind=TickerKind.MILESTONE, metric_value="9")
         self.assertEqual(
             Announcement.objects.for_slot(TickerSlot.HOME_BAND).count(), 1)
+
+
+class ImageDownscaleTest(TestCase):
+    """A ticker picture is downscaled and recompressed on upload.
+
+    ⚠ The point: `validate_cms_image` CAPS uploads at 2560px/5MB but never
+    shrank them, so a phone photo was served at full weight into a 168px
+    card — the most expensive image on the homepage doing the least work.
+    """
+
+    def _png(self, w, h):
+        from io import BytesIO
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+        buf = BytesIO()
+        Image.new("RGB", (w, h), (10, 120, 90)).save(buf, format="PNG")
+        return SimpleUploadedFile("big.png", buf.getvalue(), content_type="image/png")
+
+    def _open(self, a):
+        from PIL import Image
+        a.image.open()
+        return Image.open(a.image)
+
+    def test_a_wide_upload_is_downscaled_and_converted(self):
+        a = Announcement.objects.create(message="x", image=self._png(2400, 1200))
+        with self._open(a) as im:
+            self.assertEqual(im.width, 1600, "should cap at TICKER_MAX_WIDTH")
+            self.assertEqual(im.height, 800, "aspect ratio must be preserved")
+            self.assertEqual((im.format or "").upper(), "WEBP")
+
+    def test_a_small_upload_is_not_enlarged(self):
+        a = Announcement.objects.create(message="x", image=self._png(400, 300))
+        with self._open(a) as im:
+            self.assertEqual(im.width, 400, "must never upscale")
+            self.assertEqual(im.height, 300)
+
+    def test_resaving_does_not_recompress(self):
+        """⚠ Guarded on _committed. Without it, every unrelated edit — the
+        row's on/off switch, say — would re-open and re-encode the same
+        image, losing quality on each save."""
+        a = Announcement.objects.create(message="x", image=self._png(2400, 1200))
+        first = a.image.name
+        a.status = PublishStatus.DRAFT
+        a.save()
+        a.refresh_from_db()
+        self.assertEqual(a.image.name, first, "the file should not be rewritten")
+
+    def test_an_item_with_no_image_saves_normally(self):
+        a = Announcement.objects.create(message="x")
+        self.assertFalse(a.image)

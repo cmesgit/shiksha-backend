@@ -651,6 +651,27 @@ class Announcement(StatusedContentModel):
             return (self.metric_value, self.metric_label)
         return None
 
+    def save(self, *args, **kwargs):
+        """Downscale a newly-uploaded ticker picture before it is stored.
+
+        Guarded on `_committed`: a FieldFile that has already been saved is
+        committed, so this only fires for a file arriving on THIS save. Without
+        that check every unrelated edit — flipping `status` from the row's
+        switch, say — would re-open and re-compress the same image, losing a
+        little quality each time.
+        """
+        img = self.image
+        if img and not getattr(img, "_committed", True):
+            from .validators import downscale_for_ticker
+
+            smaller = downscale_for_ticker(img)
+            if smaller is not None:
+                name = (img.name or "ticker").rsplit("/", 1)[-1].rsplit(".", 1)[0]
+                # save=False: we are already inside save(), and letting the
+                # FieldFile save itself here would recurse.
+                self.image.save(f"{name}.webp", smaller, save=False)
+        super().save(*args, **kwargs)
+
     def clean(self):
         super().clean()
         if self.ends_at and self.ends_at <= self.starts_at:

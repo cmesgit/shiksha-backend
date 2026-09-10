@@ -133,3 +133,62 @@ class CmsImageValidator:
 
 
 validate_cms_image = CmsImageValidator()
+
+
+# ── Downscale on upload ──────────────────────────────────────────────
+#
+# The validator above CAPS uploads at 2560px / 5 MB but never shrinks them,
+# so a phone photo dropped onto a ticker card was stored and served at full
+# weight — then scaled by the browser into a 168px card. On the homepage
+# that is the most expensive image on the page doing the least work.
+#
+# This downscales to something a card can actually use and recompresses.
+# Deliberately NOT applied to every CMS image: blog covers and course
+# artwork are viewed large, and silently degrading an editor's upload is
+# only defensible where the display size is fixed and small, which is
+# exactly the ticker's case.
+TICKER_MAX_WIDTH = 1600
+TICKER_QUALITY = 82
+
+
+def downscale_for_ticker(fieldfile, max_width=TICKER_MAX_WIDTH, quality=TICKER_QUALITY):
+    """Return a ContentFile of `fieldfile` resized/recompressed, or None.
+
+    None means "leave the original alone" — not an error. Anything
+    unexpected (an unreadable file, a format Pillow will not write back)
+    falls through to the original rather than losing the upload, because a
+    heavier image is a much smaller problem than a lost one.
+    """
+    from io import BytesIO
+
+    from django.core.files.base import ContentFile
+
+    try:
+        from PIL import Image
+
+        fieldfile.open()
+        with Image.open(fieldfile) as im:
+            fmt = (im.format or "").upper()
+            if fmt not in {"JPEG", "PNG", "WEBP"}:
+                return None
+            if im.width <= max_width and fmt == "WEBP":
+                return None          # already small and already efficient
+
+            im = im.convert("RGBA" if fmt == "PNG" else "RGB")
+            if im.width > max_width:
+                h = round(im.height * (max_width / im.width))
+                im = im.resize((max_width, h), Image.LANCZOS)
+
+            buf = BytesIO()
+            # WebP for everything: it handles both the photographic and the
+            # flat-graphic cases better than the original format would, and
+            # every browser this site supports reads it.
+            im.save(buf, format="WEBP", quality=quality, method=4)
+            return ContentFile(buf.getvalue())
+    except Exception:
+        return None
+    finally:
+        try:
+            fieldfile.seek(0)
+        except Exception:
+            pass
