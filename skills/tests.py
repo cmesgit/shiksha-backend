@@ -58,10 +58,16 @@ class IntroVideoFlowTests(TestCase):
         client.force_authenticate(user=user, token=token)
         return client
 
-    @patch("skills.views_intro_video.requests.post")
-    def test_create_and_save_intro_video(self, mock_post):
-        mock_post.return_value.status_code = 201
-        mock_post.return_value.json.return_value = {"guid": "abc123"}
+    # The Bunny round trip moved to skills/intro_video.py, so that is where
+    # `requests` is patched now.
+    @patch("skills.intro_video.requests")
+    def test_create_and_save_intro_video(self, mock_requests):
+        mock_requests.post.return_value.status_code = 201
+        mock_requests.post.return_value.json.return_value = {"guid": "abc123"}
+        # Freshly uploaded: Bunny has the file but has not processed it, so it
+        # reports "Uploaded" and no length yet.
+        mock_requests.get.return_value.status_code = 200
+        mock_requests.get.return_value.json.return_value = {"status": 1, "length": 0}
 
         client = self.client_for(self.teacher_user)
         r = client.post("/api/skill/teacher/intro-video/create/", {"title": "intro"})
@@ -1294,7 +1300,8 @@ class IntroVideoSignedUploadUrlOwnershipTest(TestCase):
 
     def test_create_slot_records_ownership(self):
         from unittest.mock import patch, Mock
-        with patch("skills.views_intro_video.requests.post") as mock_post:
+        # The Bunny call lives in skills/intro_video.py now.
+        with patch("skills.intro_video.requests.post") as mock_post:
             mock_post.return_value = Mock(status_code=201, json=lambda: {"guid": "vid-new"})
             r = self._client(self.expert_a_user).post(
                 "/api/skill/teacher/intro-video/create/", {}, format="json")
