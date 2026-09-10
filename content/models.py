@@ -996,12 +996,15 @@ class HomeSection(models.TextChoices):
 
 
 HOMEPAGE_SECTIONS = [
-    HomeSection.HERO, HomeSection.WHY_SHIKSHA, HomeSection.TEACHERS_STUDENTS,
-    HomeSection.BROWSE_CATEGORIES, HomeSection.FEATURED_COURSES,
-    HomeSection.WHY_CHOOSE, HomeSection.RESOURCES, HomeSection.COLLABORATE,
+    HomeSection.HERO, HomeSection.TEACHERS_STUDENTS, HomeSection.COLLABORATE,
+    HomeSection.FEATURED_COURSES, HomeSection.BROWSE_CATEGORIES,
+    HomeSection.RESOURCES, HomeSection.WHY_CHOOSE, HomeSection.WHY_SHIKSHA,
     HomeSection.FAQ, HomeSection.CTA, HomeSection.TICKER_BAND,
-]  # excludes COURSES_HERO — matches ShikshaHome.jsx's current hardcoded
-   # render order exactly; HomeSectionOrder's seed migration uses this list.
+]  # excludes COURSES_HERO — matches ShikshaHome.jsx's DEFAULT_ORDER exactly;
+   # HomeSectionOrder's seed migration uses this list, so this order is what a
+   # FRESH database gets. It does NOT touch a database that has already been
+   # seeded (0008 has run there) — use `manage.py reorder_homepage_sections`
+   # for those, which is the only thing that changes a live site.
 
 
 # Sections whose public component actually RENDERS HomeListItem rows.
