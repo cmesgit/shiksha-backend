@@ -964,13 +964,21 @@ class HomeSection(models.TextChoices):
     # on this section, so an office or number can be added or removed
     # rather than being fixed at four.
     CONTACT_HERO = "contact_hero", "Contact — Header & details"
+    # design_handoff_live_ticker Phase 4: a band of ticker cards between the
+    # homepage sections. A real homepage section so an admin positions it with
+    # the same drag-reorder as everything else — the alternative was a
+    # hardcoded index, which is precisely the thing HomeSectionOrder exists to
+    # avoid. Its CONTENT comes from the ticker queue, not from HomeListItem,
+    # so it is in LIST_CONTENT_ELSEWHERE below rather than
+    # SECTIONS_WITH_LIST_ITEMS.
+    TICKER_BAND = "ticker_band", "Homepage ticker band"
 
 
 HOMEPAGE_SECTIONS = [
     HomeSection.HERO, HomeSection.WHY_SHIKSHA, HomeSection.TEACHERS_STUDENTS,
     HomeSection.BROWSE_CATEGORIES, HomeSection.FEATURED_COURSES,
     HomeSection.WHY_CHOOSE, HomeSection.RESOURCES, HomeSection.COLLABORATE,
-    HomeSection.FAQ, HomeSection.CTA,
+    HomeSection.FAQ, HomeSection.CTA, HomeSection.TICKER_BAND,
 ]  # excludes COURSES_HERO — matches ShikshaHome.jsx's current hardcoded
    # render order exactly; HomeSectionOrder's seed migration uses this list.
 
@@ -1024,6 +1032,13 @@ LIST_CONTENT_ELSEWHERE = {
         "url": "/content/questions",
         "note": "The questions in this section come from your answers, not "
                 "from a list here. Edit them on the Questions & notices screen.",
+    },
+    HomeSection.TICKER_BAND: {
+        "label": "Ticker items",
+        "url": "/content/ticker",
+        "note": "The cards in this band come from the live ticker queue, not "
+                "from a list here. Add one on the Live ticker screen and tick "
+                "“Homepage band”.",
     },
 }
 

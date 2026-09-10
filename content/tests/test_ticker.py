@@ -525,3 +525,84 @@ class EmptySlotsFallsBackToNavbarTest(TestCase):
         )
         res = self.client.get("/api/content/announcements/")
         self.assertEqual([r["message"] for r in res.json()], ["untargeted"])
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Phase 4 — the homepage band as a real, orderable section
+# ══════════════════════════════════════════════════════════════════════
+
+class TickerBandSectionTest(TestCase):
+    """The band is a `HomeSection`, so an admin positions it with the same
+    drag-reorder as everything else instead of it living at a hardcoded index.
+    """
+
+    def test_it_is_a_homepage_section(self):
+        from content.models import HOMEPAGE_SECTIONS, HomeSection
+        self.assertIn(HomeSection.TICKER_BAND, HOMEPAGE_SECTIONS)
+
+    def test_it_does_not_offer_a_list_item_panel(self):
+        """Its cards come from the ticker queue, not HomeListItem. Offering
+        the panel would let an editor fill in rows that can never render —
+        the exact trap SECTIONS_WITH_LIST_ITEMS was introduced to close."""
+        from content.models import (
+            LIST_CONTENT_ELSEWHERE, SECTIONS_WITH_LIST_ITEMS, HomeSection,
+        )
+        self.assertNotIn(HomeSection.TICKER_BAND, SECTIONS_WITH_LIST_ITEMS)
+        # ...but it says where the content DOES come from, rather than just
+        # hiding the panel and leaving the editor to guess.
+        self.assertIn(HomeSection.TICKER_BAND, LIST_CONTENT_ELSEWHERE)
+        self.assertEqual(
+            LIST_CONTENT_ELSEWHERE[HomeSection.TICKER_BAND]["url"],
+            "/content/ticker")
+
+    def test_the_value_fits_the_column(self):
+        """`section` is max_length=24 across four models; a longer key would
+        need an AlterField on all of them."""
+        from content.models import HomeSection
+        self.assertLessEqual(len(HomeSection.TICKER_BAND.value), 24)
+
+    def test_the_migration_appends_an_order_row_without_renumbering(self):
+        """⚠ THE POINT. Without a HomeSectionOrder row the band can never
+        render — ShikshaHome.jsx builds its list from the order endpoint — and
+        `reorder/` 400s on a set that omits it. Appending rather than
+        inserting is what stops an existing arrangement being reshuffled."""
+        import importlib
+
+        from django.apps import apps as real_apps
+
+        from content.models import HomeSectionOrder
+
+        HomeSectionOrder.objects.all().delete()
+        HomeSectionOrder.objects.create(section="hero", order=0)
+        HomeSectionOrder.objects.create(section="cta", order=1)
+
+        mod = importlib.import_module(
+            "content.migrations.0039_ticker_band_section_order")
+        mod.add_row(real_apps, None)
+
+        row = HomeSectionOrder.objects.get(section="ticker_band")
+        self.assertEqual(row.order, 2, "should append, not insert")
+        self.assertTrue(row.is_visible)
+        # the pre-existing arrangement is untouched
+        self.assertEqual(HomeSectionOrder.objects.get(section="hero").order, 0)
+        self.assertEqual(HomeSectionOrder.objects.get(section="cta").order, 1)
+
+    def test_the_migration_is_idempotent(self):
+        import importlib
+
+        from django.apps import apps as real_apps
+
+        from content.models import HomeSectionOrder
+
+        mod = importlib.import_module(
+            "content.migrations.0039_ticker_band_section_order")
+        mod.add_row(real_apps, None)
+        mod.add_row(real_apps, None)
+        self.assertEqual(
+            HomeSectionOrder.objects.filter(section="ticker_band").count(), 1)
+
+    def test_the_band_slot_is_addressable(self):
+        _pub(message="band card", slots=[TickerSlot.HOME_BAND],
+             kind=TickerKind.MILESTONE, metric_value="9")
+        self.assertEqual(
+            Announcement.objects.for_slot(TickerSlot.HOME_BAND).count(), 1)
