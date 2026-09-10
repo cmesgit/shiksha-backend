@@ -39,7 +39,7 @@ def _register():
     # fully ready (apps.py imports us inside ready()).
     from .models import (
         Batch, Board, Chapter, Course, CourseCategory, CourseDetail,
-        Stream, Subject,
+        NavMenuLink, Stream, Subject,
     )
     # Cross-app on purpose: /courses/public/featured/ lives in this app and
     # serves content.ShowcaseCourse rows, so a card edit has to bump THIS
@@ -51,6 +51,9 @@ def _register():
     tracked = (
         Course, Subject, Chapter, Batch, Board,
         CourseDetail, CourseCategory, Stream, ShowcaseCourse, ShowcaseCategory,
+        # Curated mega-menu rows: without this a nav edit waits out the 300s
+        # TTL, which reads as "saving the navbar does nothing".
+        NavMenuLink,
     )
 
     def _bump(*args, **kwargs):

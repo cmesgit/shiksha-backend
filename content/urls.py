@@ -85,6 +85,19 @@ urlpatterns += [
         "admin/exams/",
         studio_views.ExamCreateView.as_view(), name="studio-exam-create",
     ),
+    path("admin/nav-menu/", studio_views.NavMenuListView.as_view(), name="studio-nav-menu"),
+    path(
+        "admin/nav-menu/reorder/",
+        studio_views.NavMenuReorderView.as_view(), name="studio-nav-menu-reorder",
+    ),
+    path(
+        "admin/nav-menu/adopt/",
+        studio_views.NavMenuAdoptView.as_view(), name="studio-nav-menu-adopt",
+    ),
+    path(
+        "admin/nav-menu/<int:pk>/",
+        studio_views.NavMenuDetailView.as_view(), name="studio-nav-menu-detail",
+    ),
     path("admin/labels/", studio_views.LabelListView.as_view(), name="studio-labels"),
     path("admin/labels/merge/", studio_views.LabelMergeView.as_view(), name="studio-labels-merge"),
     path(

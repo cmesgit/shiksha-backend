@@ -1,4 +1,5 @@
 import uuid
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.conf import settings
 from django.utils.text import slugify
@@ -636,3 +637,90 @@ class CourseNotifyRequest(models.Model):
 
     def __str__(self):
         return f"{self.email} → {self.course.title}"
+
+
+class NavMenuLink(models.Model):
+    """One curated row in the navbar's Courses mega-menu.
+
+    The menu is normally DERIVED from the catalogue — board tabs and their
+    classes for "school", competitive-tagged courses for "competitive" — and
+    that is why it has always tracked reality without anyone editing it.
+
+    This exists because derivation cannot express intent: it cannot hide a
+    course you would rather not feature, cannot reorder, and cannot say
+    anything at all about "Skill & Career", which had no catalogue backing
+    and was therefore hardcoded in Navbar.jsx.
+
+    ⚠ REPLACE, PER COLUMN — decided 2026-09-10. A column with NO active rows
+    behaves exactly as it does today. Add one row and you own that column
+    outright. The alternative (appending to the derived list) was rejected
+    because it gives no way to remove or reorder a derived entry, which is
+    most of the reason to want this at all.
+
+    A row points at either a real `course` or a free `href`. Preferring the
+    FK matters: a renamed course keeps its link, and an unpublished one can
+    be reported instead of silently becoming a dead menu entry — the exact
+    failure this codebase keeps meeting.
+    """
+
+    GROUP_SCHOOL = "school"
+    GROUP_COMPETITIVE = "competitive"
+    GROUP_SKILL = "skill"
+    GROUP_CHOICES = [
+        (GROUP_SCHOOL, "School Education"),
+        (GROUP_COMPETITIVE, "Competitive Exams"),
+        (GROUP_SKILL, "Skill & Career"),
+    ]
+
+    group = models.CharField(max_length=16, choices=GROUP_CHOICES, db_index=True)
+    # The sub-heading within the column: a board tab under "school", a
+    # section heading under the other two. One field covers all three because
+    # they are the same shape once rendered.
+    heading = models.CharField(
+        max_length=60, blank=True, default="",
+        help_text="Groups links under a sub-heading. Leave blank for a flat list.",
+    )
+    label = models.CharField(max_length=60)
+    course = models.ForeignKey(
+        "courses.Course", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="nav_menu_links",
+        help_text="Link to a real course — survives a rename.",
+    )
+    href = models.CharField(
+        max_length=300, blank=True, default="",
+        help_text="Used when no course is picked, e.g. /skill/browse",
+    )
+    soon = models.BooleanField(
+        default=False, help_text="Show as an inert “Coming Soon” row.",
+    )
+    order = models.PositiveSmallIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["group", "order", "id"]
+        verbose_name = "Navbar menu link"
+
+    def __str__(self):
+        return f"{self.get_group_display()} · {self.label}"
+
+    @property
+    def resolved_href(self):
+        """Where this row actually points, or None for a 'soon' row."""
+        if self.soon:
+            return None
+        if self.course_id and self.course:
+            return f"/courses/{self.course.slug}"
+        return self.href or None
+
+    def clean(self):
+        super().clean()
+        if self.course_id and self.href:
+            raise ValidationError({
+                "href": "Pick a course or type a link, not both — otherwise "
+                        "which one wins is invisible from the menu.",
+            })
+        if not self.soon and not self.course_id and not self.href:
+            raise ValidationError({
+                "href": "A link needs somewhere to go. Pick a course, type a "
+                        "link, or mark it “Coming Soon”.",
+            })

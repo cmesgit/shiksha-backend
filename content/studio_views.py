@@ -14,6 +14,7 @@ per section row per author, aggregated on read. ``PAGES`` below is the only
 place that mapping lives.
 """
 from datetime import datetime, timedelta
+from urllib.parse import urlencode
 
 from django.core.exceptions import FieldDoesNotExist
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -1968,3 +1969,294 @@ class PagePublishView(APIView):
             "published": published,
             "section_count": len(published),
         })
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Navbar mega-menu curation (courses.NavMenuLink)
+#
+# ⚠ REPLACE, PER COLUMN. A group with no active rows keeps the derived
+# menu; one row and the admin owns that column. See the model docstring.
+# ─────────────────────────────────────────────────────────────────────
+
+NAV_GROUPS = ("school", "competitive", "skill")
+
+
+def _nav_row(link):
+    course = link.course if link.course_id else None
+    return {
+        "id": link.id,
+        "group": link.group,
+        "heading": link.heading,
+        "label": link.label,
+        "course": course.id if course else None,
+        "course_title": course.title if course else "",
+        "course_status": course.status if course else "",
+        "href": link.href,
+        "soon": link.soon,
+        "order": link.order,
+        "is_active": link.is_active,
+        "resolved_href": link.resolved_href,
+    }
+
+
+def _derived_nav_preview(request):
+    """What the public endpoint would return with nothing curated.
+
+    Called so the editor can show "here is what visitors see today" and
+    offer to start from it, rather than presenting an empty column whose
+    only options are "leave alone" or "invent from scratch".
+    """
+    from courses.views import PublicNavMenuView
+
+    view = PublicNavMenuView()
+    view.request = request
+    resp = view.get(request)
+    out = {}
+    for cat in resp.data.get("categories", []):
+        groups = cat.get("tabs") or cat.get("sections") or []
+        out[cat["key"]] = [
+            {"heading": g.get("heading") or g.get("label") or "",
+             "links": g.get("links", [])}
+            for g in groups
+        ]
+    return out
+
+
+def _nav_href_from_derived(link):
+    """Flatten a derived link's router `state` into a query string.
+
+    The board rows all point at "/courses" and differ only by react-router
+    state, which a stored href can't carry. /courses reads the SAME filters
+    from `?group=`/`?board=` (Courses.jsx:82-85), so adopting them this way
+    keeps every row pointing where it used to instead of collapsing a whole
+    board tab onto one undifferentiated /courses link.
+    """
+    to = link.get("to") or ""
+    state = link.get("state") or {}
+    params = []
+    if state.get("selectedBoardGroup"):
+        params.append(("group", state["selectedBoardGroup"]))
+    if state.get("selectedBoard"):
+        params.append(("board", state["selectedBoard"]))
+    if state.get("openCourseId"):
+        params.append(("open", str(state["openCourseId"])))
+    if state.get("searchQuery"):
+        params.append(("q", state["searchQuery"]))
+    if to and params:
+        return f"{to}?{urlencode(params)}"
+    return to
+
+
+class NavMenuListView(APIView):
+    """GET the curated rows (+ what's derived today); POST a new row."""
+
+    permission_classes = [IsStudioEditor]
+
+    def get(self, request):
+        from courses.models import Course, NavMenuLink
+
+        links = (
+            NavMenuLink.objects.select_related("course")
+            .order_by("group", "order", "id")
+        )
+        rows = {g: [] for g in NAV_GROUPS}
+        for link in links:
+            rows.setdefault(link.group, []).append(_nav_row(link))
+
+        derived = _derived_nav_preview(request)
+        groups = []
+        for key, label in NavMenuLink.GROUP_CHOICES:
+            mine = rows.get(key, [])
+            groups.append({
+                "key": key,
+                "label": label,
+                "rows": mine,
+                # Curated only counts ACTIVE rows — the public endpoint's rule.
+                # Deactivating every row hands the column back to the catalogue,
+                # which is worth saying out loud in the UI.
+                "curated": any(r["is_active"] for r in mine),
+                "derived": derived.get(key, []),
+            })
+
+        courses = [
+            {"id": c.id, "title": c.title, "slug": c.slug, "status": c.status}
+            for c in Course.objects.order_by("title").only(
+                "id", "title", "slug", "status",
+            )
+        ]
+        return Response({"groups": groups, "courses": courses})
+
+    def post(self, request):
+        from courses.models import NavMenuLink
+
+        data = request.data
+        group = data.get("group")
+        if group not in NAV_GROUPS:
+            return Response(
+                {"detail": "Unknown menu column."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        link = NavMenuLink(
+            group=group,
+            heading=(data.get("heading") or "").strip(),
+            label=(data.get("label") or "").strip(),
+            href=(data.get("href") or "").strip(),
+            soon=bool(data.get("soon")),
+            is_active=data.get("is_active", True),
+        )
+        course_id = data.get("course")
+        if course_id:
+            link.course_id = course_id
+        if not link.label:
+            return Response(
+                {"label": ["Give the link a name — it's what visitors read."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Append to the end of its column so a new row never displaces one.
+        last = (
+            NavMenuLink.objects.filter(group=group)
+            .order_by("-order").values_list("order", flat=True).first()
+        )
+        link.order = (last or 0) + 1
+        try:
+            link.full_clean(exclude=["order"])
+        except DjangoValidationError as exc:
+            return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
+        link.save()
+        return Response(_nav_row(link), status=status.HTTP_201_CREATED)
+
+
+class NavMenuDetailView(APIView):
+    """PATCH or DELETE one curated row."""
+
+    permission_classes = [IsStudioEditor]
+
+    def _get(self, pk):
+        from courses.models import NavMenuLink
+
+        return NavMenuLink.objects.select_related("course").filter(pk=pk).first()
+
+    def patch(self, request, pk):
+        link = self._get(pk)
+        if link is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        data = request.data
+        for field in ("heading", "label", "href"):
+            if field in data:
+                setattr(link, field, (data.get(field) or "").strip())
+        for field in ("soon", "is_active"):
+            if field in data:
+                setattr(link, field, bool(data[field]))
+        if "course" in data:
+            link.course_id = data["course"] or None
+        try:
+            link.full_clean(exclude=["order"])
+        except DjangoValidationError as exc:
+            return Response(exc.message_dict, status=status.HTTP_400_BAD_REQUEST)
+        link.save()
+        return Response(_nav_row(link))
+
+    def delete(self, request, pk):
+        link = self._get(pk)
+        if link is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        link.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class NavMenuReorderView(APIView):
+    """POST {group, ids: [...]} — the complete ordered set for one column.
+
+    Partial lists are refused for the same reason `home-section-order`
+    refuses them: a stale tab must not be able to drop a link off the menu.
+    """
+
+    permission_classes = [IsStudioEditor]
+
+    @transaction.atomic
+    def post(self, request):
+        from courses.models import NavMenuLink
+
+        group = request.data.get("group")
+        ids = request.data.get("ids")
+        if group not in NAV_GROUPS or not isinstance(ids, list):
+            return Response(
+                {"detail": "group and ids[] are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        existing = list(
+            NavMenuLink.objects.filter(group=group).values_list("id", flat=True)
+        )
+        if sorted(int(i) for i in ids) != sorted(existing):
+            return Response(
+                {"detail": "Send every link in this column, in order — the "
+                           "list looks out of date. Reload and try again."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        for index, pk in enumerate(ids):
+            NavMenuLink.objects.filter(pk=pk).update(order=index + 1)
+        return Response({"detail": "Order saved."})
+
+
+class NavMenuAdoptView(APIView):
+    """POST {group} — copy today's derived menu into editable rows.
+
+    Curation replaces the whole column, so starting from a blank slate would
+    mean retyping a menu that is already correct. This makes the first edit
+    a small one.
+    """
+
+    permission_classes = [IsStudioEditor]
+
+    @transaction.atomic
+    def post(self, request):
+        from courses.models import Course, NavMenuLink
+
+        group = request.data.get("group")
+        if group not in NAV_GROUPS:
+            return Response(
+                {"detail": "Unknown menu column."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if NavMenuLink.objects.filter(group=group).exists():
+            return Response(
+                {"detail": "This column already has links — adopting would "
+                           "duplicate them."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        sections = _derived_nav_preview(request).get(group) or []
+        if not sections:
+            return Response(
+                {"detail": "There's nothing to copy — this column has no "
+                           "menu of its own yet."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Resolve /courses/<slug> back to the FK so an adopted row survives a
+        # rename, which is the whole reason the FK is preferred.
+        by_slug = {c.slug: c for c in Course.objects.only("id", "slug")}
+        created, order = [], 0
+        for section in sections:
+            for link in section.get("links", []):
+                order += 1
+                to = _nav_href_from_derived(link)
+                course = None
+                if to.startswith("/courses/"):
+                    course = by_slug.get(to[len("/courses/"):])
+                row = NavMenuLink(
+                    group=group,
+                    heading=section.get("heading") or "",
+                    label=link.get("label") or "Untitled",
+                    course=course,
+                    href="" if (course or link.get("soon")) else to,
+                    soon=bool(link.get("soon")) or not (course or to),
+                    order=order,
+                )
+                row.save()
+                created.append(_nav_row(row))
+        return Response(
+            {"detail": f"Copied {len(created)} links you can now edit.",
+             "rows": created},
+            status=status.HTTP_201_CREATED,
+        )
