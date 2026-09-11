@@ -30,6 +30,7 @@ from .models import ExpertProfile, SkillSession
 from .course_models import SkillCourseEnrollment
 from .review_models import ExpertReview
 from . import profile_ops
+from .intro_video import needs_sync, sync_intro_video
 from .notifications import push_skill_bell
 
 
@@ -589,6 +590,13 @@ class TeacherProfileUpdateView(APIView):
 
     def get(self, request):
         ep = _get_expert(request.user)
+        # A clip saved while Bunny was still transcoding only ever advanced via
+        # the status endpoint, which only the edit screen's poll calls — so an
+        # expert who closed the tab mid-transcode kept an unplayable clip
+        # forever. needs_sync() is False for a finished one, so this costs a
+        # Bunny request only while there is genuinely something left to learn.
+        if ep is not None and needs_sync(ep):
+            sync_intro_video(ep)
         return Response(profile_ops.serialize_expert(ep))
 
     def patch(self, request):
