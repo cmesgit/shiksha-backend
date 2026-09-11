@@ -1426,3 +1426,147 @@ class ListTeacherAsExpertTests(TestCase):
         )
         self.assertEqual(res.status_code, 403, res.content)
         self.assertFalse(ExpertProfile.objects.filter(teacher_profile=self.tp).exists())
+
+
+class SeedSkillCategoriesTests(TestCase):
+    """The catalog seeder must be purely additive.
+
+    These cases are modelled on production's actual rows, which the Skill CMS
+    created with a slug derived from the label and therefore capitalised:
+    ``Business`` (holding experts and a listing), ``Sports`` (labelled
+    "Football"), ``General`` and ``Painting``. An earlier version of the
+    command matched on an exact lowercase slug and then deleted every row it
+    did not recognise, which against that data meant duplicate categories
+    plus an attempted delete of rows real experts were attached to.
+    """
+
+    def setUp(self):
+        from .models import SkillCategory
+        self.SkillCategory = SkillCategory
+        for slug, label in [
+            ("Business", "Business"), ("Sports", "Football"),
+            ("General", "General"), ("Painting", "Painting"),
+        ]:
+            SkillCategory.objects.create(slug=slug, label=label, is_active=True)
+
+    def seed(self, **kw):
+        from django.core.management import call_command
+        from io import StringIO
+        out = StringIO()
+        call_command("seed_skill_categories", stdout=out, **kw)
+        return out.getvalue()
+
+    def test_dry_run_writes_nothing(self):
+        before = set(self.SkillCategory.objects.values_list("slug", "label"))
+        self.seed()
+        self.assertEqual(
+            set(self.SkillCategory.objects.values_list("slug", "label")), before
+        )
+
+    def test_existing_capitalised_slug_is_matched_not_duplicated(self):
+        self.seed(yes=True)
+        # The pre-existing row keeps its own slug, and no lowercase twin
+        # appears beside it — a duplicate would split the experts across two
+        # categories that look identical in the directory.
+        self.assertTrue(self.SkillCategory.objects.filter(slug="Business").exists())
+        self.assertFalse(self.SkillCategory.objects.filter(slug="business").exists())
+        self.assertEqual(
+            self.SkillCategory.objects.filter(slug__iexact="business").count(), 1
+        )
+
+    def test_nothing_is_ever_deleted(self):
+        self.SkillCategory.objects.create(
+            slug="bespoke", label="Something an admin added", is_active=True
+        )
+        self.seed(yes=True)
+        self.assertTrue(self.SkillCategory.objects.filter(slug="bespoke").exists())
+        for slug in ("Business", "Sports", "General", "Painting"):
+            self.assertTrue(self.SkillCategory.objects.filter(slug=slug).exists())
+
+    def test_football_is_relabelled_but_only_while_still_football(self):
+        self.seed(yes=True)
+        self.assertEqual(
+            self.SkillCategory.objects.get(slug="Sports").label, "Sports & Fitness"
+        )
+        # An admin's own later rename must survive a re-run.
+        self.SkillCategory.objects.filter(slug="Sports").update(label="Athletics")
+        self.seed(yes=True)
+        self.assertEqual(
+            self.SkillCategory.objects.get(slug="Sports").label, "Athletics"
+        )
+
+    def test_is_active_false_is_respected(self):
+        self.SkillCategory.objects.filter(slug="Painting").update(is_active=False)
+        self.seed(yes=True)
+        self.assertFalse(self.SkillCategory.objects.get(slug="Painting").is_active)
+
+    def test_is_idempotent(self):
+        self.seed(yes=True)
+        snapshot = set(
+            self.SkillCategory.objects.values_list("slug", "label", "order")
+        )
+        count = self.SkillCategory.objects.count()
+        self.seed(yes=True)
+        self.assertEqual(self.SkillCategory.objects.count(), count)
+        self.assertEqual(
+            set(self.SkillCategory.objects.values_list("slug", "label", "order")),
+            snapshot,
+        )
+
+
+class DirectoryStatsCategoryCountTests(TestCase):
+    """`stats.categories` counts what a learner can browse into.
+
+    The catalog is deliberately wider than current coverage so experts can
+    classify themselves at signup, so counting every active row would
+    advertise reach the directory cannot deliver — beside a rail that only
+    renders categories with experts.
+    """
+
+    def setUp(self):
+        from .models import SkillCategory
+        from django.core.cache import cache
+        # DirectoryStatsView caches its payload under a fixed key, and the
+        # test cache is per-process rather than per-test. Clearing only on
+        # the way in is not enough: this class's payload would outlive it and
+        # be served to the next test that calls the endpoint, which is
+        # exactly how SkillBrowseRedesignTests.test_directory_stats started
+        # reading this class's expert count instead of computing its own.
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.SkillCategory = SkillCategory
+        self.role = Role.objects.create(name="TEACHER")
+        self.staffed = SkillCategory.objects.create(slug="music", label="Music")
+        self.empty = SkillCategory.objects.create(slug="dance", label="Dance")
+
+        user = User.objects.create_user(
+            username="e1", email="e1@test.com", password="testpass123",
+        )
+        UserRole.objects.create(user=user, role=self.role, is_active=True, is_primary=True)
+        tp = TeacherProfile.objects.create(user=user, teacher_type=TeacherProfile.TYPE_GUEST)
+        self.expert = ExpertProfile.objects.create(
+            teacher_profile=tp, headline="Guitar", is_listed=True,
+            category=self.staffed, hourly_rate=50000,
+        )
+
+    def test_counts_only_categories_with_a_listed_expert(self):
+        res = APIClient().get("/api/skill/directory-stats/")
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.data["categories"], 1)
+
+    def test_an_unlisted_expert_does_not_make_a_category_browsable(self):
+        self.expert.is_listed = False
+        self.expert.save(update_fields=["is_listed"])
+        from django.core.cache import cache
+        cache.clear()
+        res = APIClient().get("/api/skill/directory-stats/")
+        self.assertEqual(res.data["categories"], 0)
+
+    def test_m2m_only_membership_counts_once(self):
+        # Listing writes mirror the primary category into the M2M, so a
+        # category reachable through both must not be counted twice.
+        self.expert.categories.add(self.staffed, self.empty)
+        from django.core.cache import cache
+        cache.clear()
+        res = APIClient().get("/api/skill/directory-stats/")
+        self.assertEqual(res.data["categories"], 2)
