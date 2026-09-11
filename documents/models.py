@@ -6,6 +6,8 @@
 # specific piece is the DuplicateFlag queue that powers the moderation panel's
 # "Duplicate Review" section.
 
+import hashlib
+
 from django.db import models
 from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
@@ -59,6 +61,28 @@ def _document_file_path(instance, filename):
     return f"explore/documents/{instance.owner_id}/{filename}"
 
 
+def compute_file_hash(uploaded_file):
+    """SHA-256 of an uploaded file's bytes, as lowercase hex.
+
+    Used to refuse a duplicate upload (the same person posting the same file
+    twice). Reads in chunks so a 50 MB PDF never lands in memory whole, and
+    rewinds the handle afterwards — Django has not saved the file yet at the
+    point we hash it, so leaving the pointer at EOF would silently store a
+    zero-byte document.
+    """
+    if not uploaded_file:
+        return ""
+    digest = hashlib.sha256()
+    pos = uploaded_file.tell() if hasattr(uploaded_file, "tell") else 0
+    try:
+        uploaded_file.seek(0)
+        for chunk in uploaded_file.chunks():
+            digest.update(chunk)
+    finally:
+        uploaded_file.seek(pos)
+    return digest.hexdigest()
+
+
 class Document(models.Model):
     """A single uploaded document (paper / book / notes / …)."""
 
@@ -83,6 +107,10 @@ class Document(models.Model):
     institution = models.CharField(max_length=160, blank=True, default="")
     filetype = models.CharField(max_length=10, blank=True, default="PDF")
     file = models.FileField(upload_to=_document_file_path, null=True, blank=True)
+    # SHA-256 of `file`, set on upload. Blank for the rows that predate this
+    # field and for documents with no file at all; the uniqueness constraint
+    # below excludes blanks so neither case blocks anything.
+    file_hash = models.CharField(max_length=64, blank=True, default="", db_index=True)
     pages = models.PositiveIntegerField(default=0)
     view_count = models.PositiveIntegerField(default=0)
     download_count = models.PositiveIntegerField(default=0)
@@ -102,6 +130,21 @@ class Document(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            # One copy of a given file per uploader. Two *different* people may
+            # each upload the same public paper — that is legitimate, and is
+            # what the moderation panel's Duplicate Review queue is for.
+            #
+            # The condition matters twice over: blank hashes (pre-existing rows,
+            # and documents with no file) must not collide with each other, and
+            # a soft-removed document must not permanently block its owner from
+            # re-uploading the same file.
+            models.UniqueConstraint(
+                fields=["owner", "file_hash"],
+                condition=models.Q(is_removed=False) & ~models.Q(file_hash=""),
+                name="documents_unique_owner_file_hash",
+            ),
+        ]
 
     def __str__(self):
         return self.title
