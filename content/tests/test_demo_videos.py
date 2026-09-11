@@ -37,6 +37,7 @@ class DemoVideoPublicAPITests(TestCase):
         defaults = dict(
             key="signup", title="Sign Up Demo", blurb="Create your account",
             bunny_video_id="guid-signup", order=0,
+            bunny_status=DemoVideo.BUNNY_FINISHED,
         )
         return DemoVideo.objects.create(**{**defaults, **kw})
 
@@ -65,6 +66,28 @@ class DemoVideoPublicAPITests(TestCase):
         no video is a play button that opens an empty player."""
         self._make(bunny_video_id="")
         self.assertEqual(self.client.get(self.url).json(), [])
+
+    def test_row_bunny_has_not_finished_encoding_is_withheld(self):
+        """The 2026-09-11 incident: an upload returned success, stored zero
+        bytes, and sat at status 2. The row had a guid and was published, so it
+        was served — and the homepage offered a demo that opened an empty
+        player. A guid proves a slot exists, not that it holds anything."""
+        for stuck in (0, 1, 2, 3, 5, 6):
+            with self.subTest(bunny_status=stuck):
+                cache.clear()
+                DemoVideo.objects.all().delete()
+                self._make(bunny_status=stuck)
+                self.assertEqual(self.client.get(self.url).json(), [])
+
+    def test_row_never_synced_is_withheld(self):
+        """`bunny_status` is null until `sync_demo_videos` runs. Unknown has to
+        mean hidden, or pasting a guid publishes something unverified."""
+        self._make(bunny_status=None)
+        self.assertEqual(self.client.get(self.url).json(), [])
+
+    def test_finished_row_is_served(self):
+        self._make(bunny_status=DemoVideo.BUNNY_FINISHED)
+        self.assertEqual(len(self.client.get(self.url).json()), 1)
 
     def test_draft_and_archived_are_withheld(self):
         self._make(key="a", status=PublishStatus.DRAFT)
@@ -147,6 +170,27 @@ class SyncDemoVideosCommandTests(TestCase):
         call_command("sync_demo_videos", stdout=out, stderr=out, **kw)
         return out.getvalue()
 
+    @patch("content.management.commands.sync_demo_videos.fetch_bunny_video")
+    def test_records_bunny_status_even_when_unfinished(self, fetch):
+        """The list endpoint gates on this, so a row that never finishes must
+        be storable as "not finished" rather than left null and ambiguous."""
+        fetch.return_value = {"status": 2, "length": 0}
+        self._run()
+        self.video.refresh_from_db()
+        self.assertEqual(self.video.bunny_status, 2)
+        self.assertFalse(self.video.is_playable)
+
+    @patch("content.management.commands.sync_demo_videos.fetch_bunny_video")
+    def test_status_regression_hides_a_previously_live_clip(self, fetch):
+        """A clip that was Finished and later is not must go back to hidden,
+        not keep serving on a stale value."""
+        DemoVideo.objects.update(bunny_status=4, duration_seconds=54)
+        fetch.return_value = {"status": 5, "length": 54}   # Error
+        self._run()
+        self.video.refresh_from_db()
+        self.assertEqual(self.video.bunny_status, 5)
+        self.assertFalse(self.video.is_playable)
+
     @override_settings(BUNNY_CDN_HOST="cdn.example.net")
     @patch("content.management.commands.sync_demo_videos.fetch_bunny_video")
     def test_writes_duration_and_thumbnail(self, fetch):
@@ -155,6 +199,7 @@ class SyncDemoVideosCommandTests(TestCase):
         }
         self._run()
         self.video.refresh_from_db()
+        self.assertEqual(self.video.bunny_status, 4)
         self.assertEqual(self.video.duration_seconds, 54)
         self.assertEqual(
             self.video.thumbnail_url,

@@ -25,8 +25,8 @@ from django.core.management.base import BaseCommand
 from content.models import DemoVideo
 from skills.intro_video import fetch_bunny_video
 
-# Bunny's status codes, from skills/models.py INTRO_VIDEO_STATUS_CHOICES.
-STATUS_FINISHED = 4
+# One definition, on the model, because the list endpoint gates on it too.
+STATUS_FINISHED = DemoVideo.BUNNY_FINISHED
 
 
 class Command(BaseCommand):
@@ -74,6 +74,13 @@ class Command(BaseCommand):
             length = data.get("length") or None
             changed = []
 
+            # Recorded even when it is not 4, because the list endpoint gates
+            # on it: a row that regresses (or never finishes) must go back to
+            # hidden rather than keep serving on a stale value.
+            if video.bunny_status != status:
+                video.bunny_status = status
+                changed.append("bunny_status")
+
             if length is not None and video.duration_seconds != length:
                 video.duration_seconds = length
                 changed.append("duration_seconds")
@@ -88,30 +95,33 @@ class Command(BaseCommand):
 
             if not changed:
                 skipped += 1
-                note = "already up to date"
-                if length is None:
-                    note = (f"still processing on Bunny (status {status}) — "
-                            f"re-run in a few minutes")
-                self.stdout.write(f"  {video.key}: {note}")
-                continue
-
-            if dry:
+                self.stdout.write(f"  {video.key}: already up to date")
+            elif dry:
+                synced += 1
                 self.stdout.write(self.style.WARNING(
                     f"  {video.key}: would set {', '.join(changed)} "
                     f"(runtime {self._fmt(video.duration_seconds)})"
                 ))
             else:
+                synced += 1
                 video.save(update_fields=changed + ["updated_at"])
                 self.stdout.write(self.style.SUCCESS(
                     f"  {video.key}: set {', '.join(changed)} "
                     f"(runtime {self._fmt(video.duration_seconds)})"
                 ))
-            synced += 1
 
+            # Keyed on the real condition, not on whether anything changed.
+            # It used to hang off the `not changed` branch, so the first sync
+            # of an unfinished clip — which always writes bunny_status — said
+            # nothing about it being unplayable.
             if status != STATUS_FINISHED:
                 self.stdout.write(self.style.WARNING(
-                    f"  {video.key}: Bunny status is {status}, not "
-                    f"{STATUS_FINISHED} (Finished) — the clip may not play yet"
+                    f"  {video.key}: still processing on Bunny (status "
+                    f"{status}, not {STATUS_FINISHED} Finished) — this clip is "
+                    f"HIDDEN from the site until it is. Re-run in a few "
+                    f"minutes; if it is stuck at 2 with storageSize 0 the "
+                    f"upload stored nothing, so re-upload via the Bunny "
+                    f"dashboard."
                 ))
 
         verb = "would update" if dry else "updated"

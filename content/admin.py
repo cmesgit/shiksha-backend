@@ -251,17 +251,38 @@ class DemoVideoAdmin(admin.ModelAdmin):
     silently overwrites is worse than no field at all.
     """
 
-    list_display = ("title", "key", "order", "status", "has_video", "runtime")
+    list_display = ("title", "key", "order", "status", "has_video",
+                    "on_the_site", "runtime")
     list_filter = ("status",)
     list_editable = ("order", "status")
     search_fields = ("title", "key", "blurb")
-    readonly_fields = ("duration_seconds", "thumbnail_url")
+    readonly_fields = ("duration_seconds", "thumbnail_url", "bunny_status")
     fields = ("key", "title", "blurb", "order", "status", "bunny_video_id",
-              "duration_seconds", "thumbnail_url")
+              "bunny_status", "duration_seconds", "thumbnail_url")
 
     @admin.display(boolean=True, description="Video uploaded")
     def has_video(self, obj):
         return bool(obj.bunny_video_id)
+
+    @admin.display(description="On the site")
+    def on_the_site(self, obj):
+        """Why a row is or is not live, in words.
+
+        "Published" plus a guid is not enough, and an editor who cannot see the
+        reason will assume the site is broken — which is exactly what happened
+        before this column existed.
+        """
+        if obj.status != PublishStatus.PUBLISHED:
+            return "No — not published"
+        if not obj.bunny_video_id:
+            return "No — no video uploaded"
+        if obj.bunny_status is None:
+            return "No — run sync_demo_videos"
+        if obj.bunny_status != obj.BUNNY_FINISHED:
+            return f"No — Bunny still at status {obj.bunny_status}"
+        if not obj.embed_url():
+            return "No — BUNNY_LIBRARY_ID unset"
+        return "Yes"
 
     @admin.display(description="Runtime")
     def runtime(self, obj):

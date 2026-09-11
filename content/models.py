@@ -1628,13 +1628,21 @@ class DemoVideo(StatusedContentModel):
     paths. Two marketing clips replaced once a year do not justify a third
     copy of that three-step TUS handshake.
 
-    ``duration_seconds`` and ``thumbnail_url`` are NOT typed in by hand — they
-    are synced from Bunny by ``manage.py sync_demo_videos``. The design mockup
-    for this feature hardcoded "0:40" and "0:28" for clips that were really
-    0:54 and 0:18, which is exactly what hand-entered durations drift into.
-    Null duration means "not known yet", never zero: Bunny reports
-    ``length: 0`` until it has finished processing, and the sync coerces that
-    to None rather than publishing a "0:00" label.
+    ``duration_seconds``, ``thumbnail_url`` and ``bunny_status`` are NOT typed
+    in by hand — they are synced from Bunny by ``manage.py sync_demo_videos``.
+    The design mockup for this feature hardcoded "0:40" and "0:28" for clips
+    that were really 0:54 and 0:18, which is exactly what hand-entered
+    durations drift into. Null duration means "not known yet", never zero:
+    Bunny reports ``length: 0`` until it has finished processing, and the sync
+    coerces that to None rather than publishing a "0:00" label.
+
+    ``bunny_status`` is what makes a row publishable. Having a guid only means
+    *a slot exists*, not that anything plays: a Bunny video can sit at status 2
+    ("Processing") with ``storageSize: 0`` forever if the upload silently
+    stored nothing. That happened on 2026-09-11 and put two menu entries on the
+    public homepage that opened an empty player — precisely the failure this
+    model's "withhold rows with no guid" rule was written to prevent, reached
+    by the other route. Playability is now asserted, not assumed.
     """
 
     key = models.SlugField(
@@ -1661,11 +1669,32 @@ class DemoVideo(StatusedContentModel):
         blank=True, default="",
         help_text="Synced from Bunny by `manage.py sync_demo_videos`.",
     )
+    bunny_status = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Bunny's encoding status, synced by "
+                  "`manage.py sync_demo_videos`. The site only shows a clip "
+                  "once this reads 4 (Finished) — a guid alone does not mean "
+                  "anything plays. Run the sync after uploading.",
+    )
     order = models.PositiveSmallIntegerField(default=0)
+
+    # Bunny's encoding states: 0 Created, 1 Uploaded, 2 Processing,
+    # 3 Transcoding, 4 Finished, 5 Error, 6 UploadFailed.
+    BUNNY_FINISHED = 4
 
     class Meta:
         ordering = ["order", "id"]
         verbose_name = "Landing demo video"
+
+    @property
+    def is_playable(self):
+        """True when this row would actually play for a visitor.
+
+        Needs all three: a guid, a configured library, and Bunny confirming the
+        encode finished. Read by the admin so an editor can see *why* a
+        published row is not on the site.
+        """
+        return bool(self.embed_url()) and self.bunny_status == self.BUNNY_FINISHED
 
     def embed_url(self):
         """Playable Bunny embed URL, or None if this row has no video yet.

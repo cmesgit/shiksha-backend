@@ -300,6 +300,15 @@ class DemoVideoListView(CachedListAPIView):
     Filtering here means the site's own "is there anything to show" check is
     just ``list.length``, so before any clip is uploaded the floating button
     does not render at all rather than rendering broken.
+
+    Also excludes rows Bunny has not finished encoding. A guid proves a slot
+    was created, not that it holds anything: on 2026-09-11 two uploads returned
+    success, stored zero bytes, and stuck at status 2 — so the homepage offered
+    two demos that opened an empty player. Requiring ``bunny_status == 4``
+    closes the second route to the exact failure the guid check was written to
+    prevent. The cost is that a freshly-pasted guid stays invisible until
+    ``sync_demo_videos`` runs, which is the safe direction: unknown means
+    hidden.
     """
 
     serializer_class = DemoVideoSerializer
@@ -316,6 +325,7 @@ class DemoVideoListView(CachedListAPIView):
             return DemoVideo.objects.none()
         return (
             DemoVideo.objects
-            .filter(status=PublishStatus.PUBLISHED)
+            .filter(status=PublishStatus.PUBLISHED,
+                    bunny_status=DemoVideo.BUNNY_FINISHED)
             .exclude(bunny_video_id="")
         )
