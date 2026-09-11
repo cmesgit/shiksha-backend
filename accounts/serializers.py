@@ -295,6 +295,13 @@ class StudentFormFillupSerializer(serializers.Serializer):
 # TEACHER FORM FILLUP SERIALIZER (REVAMPED)
 # =====================================================
 
+# Ceiling for a skill application's supporting document. Matches the "max
+# 50MB" the form has always shown; see validate() for why the framework was
+# not already enforcing it. The frontend checks the same number at pick time
+# so an oversized file costs one file input rather than the whole form.
+MAX_SKILL_FILE_BYTES = 50 * 1024 * 1024
+
+
 class TeacherFormFillupSerializer(serializers.Serializer):
     # --- Personal Info (stored on Profile) ---
     first_name = serializers.CharField(max_length=100)
@@ -417,6 +424,34 @@ class TeacherFormFillupSerializer(serializers.Serializer):
                 raise ValidationError(f"Skill {i+1}: Related subject is required.")
             if subj not in valid_subjects:
                 raise ValidationError(f"Skill {i+1}: Invalid subject.")
+
+        # The attachments are indexed against this same list (`skill_file_i`),
+        # so their size ceiling is checked here rather than in validate().
+        # Two reasons it belongs at field level: validate() only runs once
+        # EVERY field has passed, so an applicant with any other mistake in
+        # the form would have had to fix all of those before being told their
+        # file was too big; and this keeps the file error in the same
+        # response as the rest.
+        #
+        # It has to be checked somewhere in our code or it is not checked at
+        # all. Django does not limit uploads: FILE_UPLOAD_MAX_MEMORY_SIZE is
+        # only the point at which a file stops being buffered in memory and
+        # spills to a temp file, and MultiPartParser never applies
+        # DATA_UPLOAD_MAX_MEMORY_SIZE to FILE fields. Both are set to 50MB in
+        # this project, which is exactly what made the form's "max 50MB"
+        # label look enforced when nothing enforced it.
+        request = self.context.get("request")
+        if request is not None:
+            for key in getattr(request, "FILES", {}):
+                if not key.startswith("skill_file_"):
+                    continue
+                upload = request.FILES[key]
+                if upload.size > MAX_SKILL_FILE_BYTES:
+                    raise ValidationError(
+                        f"“{upload.name}” is "
+                        f"{upload.size / (1024 * 1024):.1f} MB. "
+                        f"The limit is {MAX_SKILL_FILE_BYTES // (1024 * 1024)} MB."
+                    )
         return data
 
 
@@ -490,8 +525,33 @@ class TeacherFormFillupSerializer(serializers.Serializer):
             )
 
         # --- Replace Skill Applications ---
+        #
+        # These rows are replaced wholesale, which used to silently destroy an
+        # attachment. A browser cannot pre-populate a file input, so an
+        # applicant who re-saves the form — to fix a typo, or because a later
+        # section failed validation — sends no `skill_file_i` for a skill they
+        # uploaded a document for weeks ago. The new row was then created with
+        # an empty file and the old one vanished, while the UI had been
+        # telling them "File already uploaded".
+        #
+        # Carry the stored file across the replace. Deleting the row does NOT
+        # delete the object from storage (there is no post_delete hook on this
+        # model), so the old name still resolves and can simply be re-pointed
+        # at — no re-upload, no read of the bytes.
+        #
+        # Matched on the skill name rather than on position: a row removed
+        # from the middle shifts every later index, which would re-file one
+        # applicant's document under a different skill. Same name twice is
+        # handled by consuming each stored file at most once.
         skill_apps = validated_data.get("skill_applications", [])
         request = self.context.get("request")
+
+        carried_files = {}
+        for old in tp.skill_applications.all():
+            if old.supporting_file:
+                key = (old.skill_name or "").strip().casefold()
+                carried_files.setdefault(key, []).append(old.supporting_file.name)
+
         tp.skill_applications.all().delete()
         for i, entry in enumerate(skill_apps):
             skill = TeacherSkillApplication.objects.create(
@@ -504,6 +564,15 @@ class TeacherFormFillupSerializer(serializers.Serializer):
             if request and file_key in request.FILES:
                 skill.supporting_file = request.FILES[file_key]
                 skill.save()
+            else:
+                previous = carried_files.get(
+                    (entry["skill_name"] or "").strip().casefold()
+                )
+                if previous:
+                    # Assigning the stored name re-points the field at the
+                    # existing object; it does not copy or re-upload it.
+                    skill.supporting_file = previous.pop(0)
+                    skill.save(update_fields=["supporting_file"])
 
         return user
 
