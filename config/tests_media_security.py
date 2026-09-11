@@ -170,3 +170,58 @@ class SessionFileMediaSecurityTest(TestCase):
 
     def test_unknown_session_file_path_is_denied(self):
         self.assertFalse(is_authorized(_req(self.outsider), "session_files/2026/08/20/ghost.pdf"))
+
+
+class SkillApplicationFileMediaSecurityTest(TestCase):
+    """`teachers/skills/files/` is mapped to _check_teacher_application_doc,
+    but that checker only ever queried TeacherProfile fields — and this
+    prefix is written by TeacherSkillApplication.supporting_file, a
+    different table. So the rule matched nothing and fell through to
+    staff-only: the applicant who uploaded the document was the one person
+    who could not read it back.
+
+    Fails closed rather than open, which is why it went unnoticed; there was
+    no coverage for this prefix at all.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from accounts.models import TeacherProfile, TeacherSkillApplication
+
+        cls.owner = User.objects.create_user(
+            username="skowner", email="skowner@test.com", password="x", is_verified=True)
+        cls.outsider = User.objects.create_user(
+            username="skout", email="skout@test.com", password="x", is_verified=True)
+        cls.staff = User.objects.create_user(
+            username="skstaff", email="skstaff@test.com", password="x", is_staff=True)
+
+        tp, _ = TeacherProfile.objects.get_or_create(user=cls.owner)
+        cls.name = "teachers/skills/files/portfolio.pdf"
+        TeacherSkillApplication.objects.create(
+            teacher_profile=tp, skill_name="Pottery", skill_description="d",
+            skill_related_subject="mathematics", supporting_file=cls.name,
+        )
+
+    def test_the_prefix_is_not_public(self):
+        self.assertFalse(is_public(self.name))
+
+    def test_the_applicant_can_read_their_own_upload(self):
+        """The regression. This returned False before the checker learned
+        about TeacherSkillApplication."""
+        self.assertTrue(is_authorized(_req(self.owner), self.name))
+
+    def test_another_teacher_cannot(self):
+        self.assertFalse(is_authorized(_req(self.outsider), self.name))
+
+    def test_staff_reviewing_the_application_can(self):
+        self.assertTrue(is_authorized(_req(self.staff), self.name))
+
+    def test_anonymous_cannot(self):
+        from django.contrib.auth.models import AnonymousUser
+        self.assertFalse(is_authorized(_req(AnonymousUser()), self.name))
+
+    def test_an_unclaimed_name_under_the_prefix_is_refused(self):
+        """Guessing a path must not work just because you have an
+        application of your own."""
+        self.assertFalse(
+            is_authorized(_req(self.owner), "teachers/skills/files/someone-else.pdf"))

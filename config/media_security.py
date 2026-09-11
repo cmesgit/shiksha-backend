@@ -59,17 +59,32 @@ def _check_teacher_application_doc(request, name):
     """teachers/certificates|id_proofs|agreements|skills/videos|skills/files —
     documents submitted as part of a teacher's own application (KYC, signed
     agreement, skill-application media). The applying teacher, or staff
-    reviewing the application."""
-    from accounts.models import TeacherProfile
+    reviewing the application.
+
+    Note the two models. Four of these prefixes are fields on TeacherProfile,
+    but `teachers/skills/files/` is written by TeacherSkillApplication
+    .supporting_file — a separate table reached through `skill_applications`.
+    The docstring claimed to cover skills/files long before anything did:
+    every Q() term below is a TeacherProfile field, so a skills/files name
+    matched nothing and the check fell through to staff-only. It failed
+    CLOSED, so it was never an exposure — but it meant the applicant who
+    uploaded the document was the one person who could not read it back."""
+    from accounts.models import TeacherProfile, TeacherSkillApplication
 
     user = request.user
     if not user.is_authenticated:
         return False
-    return _staff_or(user, TeacherProfile.objects.filter(user=user).filter(
+    if user.is_staff:
+        return True
+    if TeacherProfile.objects.filter(user=user).filter(
         Q(qualification_certificate=name) | Q(id_proof_front=name) |
         Q(id_proof_back=name) | Q(signed_agreement=name) |
         Q(skill_supporting_video=name)
-    ).exists())
+    ).exists():
+        return True
+    return TeacherSkillApplication.objects.filter(
+        teacher_profile__user=user, supporting_file=name
+    ).exists()
 
 
 # NOTE: there is deliberately no rule for "skills/applications/videos/".
