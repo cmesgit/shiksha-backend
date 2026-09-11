@@ -17,7 +17,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework import status
 from django.http import Http404
 from django.shortcuts import get_object_or_404
-from django.db.models import Count, Q, Exists, OuterRef, Sum
+from django.db.models import Count, Q, Exists, OuterRef, Sum, F
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
@@ -25,6 +25,7 @@ from django.contrib.contenttypes.models import ContentType
 from .models import (
     Document, DocumentCategory, Collection, Follow, Report,
     SavedDocument, DocumentLike, DocumentProfile, DocTag,
+    compute_file_hash,
 )
 from .serializers import (
     DocumentCardSerializer, DocumentDetailSerializer, DocumentCategorySerializer,
@@ -242,6 +243,21 @@ class DocumentsView(APIView):
                 "count": rows.count(),
             })
 
+        # `?mine=1` — the signed-in user's own uploads. My Uploads used to be
+        # driven off a localStorage id list written at publish time, so it was
+        # empty on any other browser or after a cache clear, and a document
+        # uploaded from another device never appeared at all. This is the real
+        # answer to "what have I published".
+        if p.get("mine") in ("1", "true", "yes"):
+            if not request.user.is_authenticated:
+                return Response({"detail": "Authentication required."},
+                                status=status.HTTP_401_UNAUTHORIZED)
+            rows = qs.filter(owner=request.user).order_by("-created_at")
+            return Response({
+                "results": DocumentCardSerializer(rows, many=True, context={"request": request}).data,
+                "count": rows.count(),
+            })
+
         category = p.get("category")
         if category and category != "All":
             qs = qs.filter(category__slug=category)
@@ -289,6 +305,28 @@ class DocumentsView(APIView):
         if slug:
             category = DocumentCategory.objects.filter(slug=slug, is_active=True).first()
 
+        # Refuse a re-upload of the same bytes by the same person. Checked here
+        # rather than relying on the DB constraint alone so the uploader gets a
+        # readable message naming the document they already have, instead of a
+        # 500 out of IntegrityError. The constraint still backstops a race.
+        upload = data.get("file")
+        file_hash = compute_file_hash(upload)
+        if file_hash:
+            existing = Document.objects.filter(
+                owner=request.user, file_hash=file_hash, is_removed=False
+            ).first()
+            if existing is not None:
+                return Response(
+                    {
+                        "detail": (
+                            f'You have already uploaded this file as "{existing.title}". '
+                            f"Delete that document first if you want to replace it."
+                        ),
+                        "duplicate_of": existing.id,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
         doc = Document.objects.create(
             owner=request.user,
             title=data["title"],
@@ -301,7 +339,8 @@ class DocumentsView(APIView):
             institution=data.get("institution", ""),
             filetype=data.get("filetype", "PDF"),
             pages=data.get("pages", 0),
-            file=data.get("file"),
+            file=upload,
+            file_hash=file_hash,
         )
         for name in [t.strip() for t in (data.get("tags") or "").split(",") if t.strip()]:
             tag, _ = DocTag.objects.get_or_create(name=name.lower())
@@ -329,6 +368,44 @@ class DocumentDetailView(APIView):
             "related": DocumentCardSerializer(related, many=True, context=ctx).data,
             "recommended": DocumentCardSerializer(recommended, many=True, context=ctx).data,
         })
+
+    def delete(self, request, document_id):
+        """Let an uploader take their own document down. Staff may also.
+
+        Soft-remove rather than a row delete, for the same reason moderation
+        does: `Report` reaches a document through a GenericForeignKey with a
+        plain `object_id` and no cascade, so a hard delete would strand open
+        reports in the moderation queue pointing at nothing.
+
+        The stored file IS deleted, though. The row surviving is a bookkeeping
+        detail; the bytes surviving is not — Explore media sits in a public
+        Bunny zone, so "I deleted it" has to mean the file stops being
+        retrievable, not just that it stops being listed.
+        """
+        if not request.user.is_authenticated:
+            return Response({"detail": "Authentication required."},
+                            status=status.HTTP_401_UNAUTHORIZED)
+        doc = get_object_or_404(Document, pk=document_id, is_removed=False)
+        if doc.owner_id != request.user.id and not request.user.is_staff:
+            return Response({"detail": "You can only delete your own uploads."},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        if doc.file:
+            # Never let a storage-backend hiccup strand the document as still
+            # visible — take it out of the library either way.
+            try:
+                doc.file.delete(save=False)
+            except Exception:
+                pass
+        doc.file = None
+        # Frees the (owner, file_hash) slot so the same file can be uploaded
+        # again later; the constraint already excludes removed rows, but
+        # clearing it keeps the column honest about what bytes still exist.
+        doc.file_hash = ""
+        doc.is_removed = True
+        doc.removed_at = timezone.now()
+        doc.save(update_fields=["file", "file_hash", "is_removed", "removed_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # =====================================================
@@ -365,8 +442,12 @@ class RecordViewView(APIView):
 
     def post(self, request, document_id):
         doc = get_object_or_404(Document, pk=document_id, is_removed=False)
-        Document.objects.filter(pk=doc.pk).update(view_count=doc.view_count + 1)
-        return Response({"views": doc.view_count + 1})
+        # F() rather than read-then-write: two readers opening the same
+        # document at once both computed `view_count + 1` from the same stale
+        # read and one increment was lost.
+        Document.objects.filter(pk=doc.pk).update(view_count=F("view_count") + 1)
+        doc.refresh_from_db(fields=["view_count"])
+        return Response({"views": doc.view_count})
 
 
 class RecordDownloadView(APIView):
@@ -374,8 +455,9 @@ class RecordDownloadView(APIView):
 
     def post(self, request, document_id):
         doc = get_object_or_404(Document, pk=document_id, is_removed=False)
-        Document.objects.filter(pk=doc.pk).update(download_count=doc.download_count + 1)
-        return Response({"downloads": doc.download_count + 1})
+        Document.objects.filter(pk=doc.pk).update(download_count=F("download_count") + 1)
+        doc.refresh_from_db(fields=["download_count"])
+        return Response({"downloads": doc.download_count})
 
 
 class CreateReportView(APIView):
@@ -423,7 +505,18 @@ class AuthorDetailView(APIView):
         user = get_object_or_404(User, username=author_key)
         ctx = {"request": request}
         docs = _base_documents(request.user).filter(owner=user).order_by("-created_at")
-        collections = Collection.objects.filter(curator=user).annotate(
+        # Only the curator (or staff) sees their private collections here.
+        # Without this filter the endpoint — which is AllowAny — listed every
+        # collection the author owned, private ones included, to anyone. That
+        # also made the count on a profile disagree with the owner's own My
+        # Library, which is how the discrepancy was first noticed.
+        collections = Collection.objects.filter(curator=user)
+        viewer_is_owner = request.user.is_authenticated and (
+            request.user.id == user.id or request.user.is_staff
+        )
+        if not viewer_is_owner:
+            collections = collections.filter(visibility=Collection.VIS_PUBLIC)
+        collections = collections.annotate(
             doc_count_annotated=Count("documents", filter=Q(documents__is_removed=False), distinct=True))
         author = _author_blob(user)
         if request.user.is_authenticated:
