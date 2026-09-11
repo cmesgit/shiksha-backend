@@ -25,12 +25,15 @@ Run with:
 """
 import json
 
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 
 from accounts.models import (
     LearnerProfile, TeacherProfile, TeacherSkillApplication, User,
 )
+from accounts.uploads import discard_superseded_upload
 from accounts.serializers import (
     MAX_SKILL_FILE_BYTES, TeacherFormFillupSerializer,
 )
@@ -223,3 +226,128 @@ class SkillApplicationFileSizeTests(TestCase):
 
     def test_a_normal_file_is_accepted(self):
         self.assertNotIn("limit is", self._skill_errors(1024))
+
+
+class SupersededUploadTests(TestCase):
+    """Replacing a file used to leave the old object in the bucket forever.
+
+    That matters more than storage cost: these are KYC scans in a bucket
+    that is publicly readable, so a blurred ID photo the applicant retook
+    outlived the one that replaced it, indefinitely.
+
+    The reference guard is the load-bearing part. Media has no backup — the
+    bucket is the only copy — and dev and prod share one Edge Storage zone,
+    so deleting a name any row still points at is unrecoverable.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="sup", email="sup@example.com", password="whatever-9")
+        LearnerProfile.objects.create(
+            account=self.user, display_name="Sup",
+            relationship="SELF", is_default=True)
+        self.tp, _ = TeacherProfile.objects.get_or_create(user=self.user)
+
+    def _store(self, name, body=b"bytes"):
+        return default_storage.save(name, ContentFile(body))
+
+    def test_an_unreferenced_file_is_deleted(self):
+        stored = self._store("teachers/skills/files/orphan.pdf")
+        self.assertTrue(default_storage.exists(stored))
+
+        self.assertTrue(discard_superseded_upload(stored))
+        self.assertFalse(default_storage.exists(stored))
+
+    def test_a_file_another_row_still_points_at_is_kept(self):
+        """The guard. Without it, a shared object is deleted out from under
+        whoever still references it — and there is no backup to restore."""
+        stored = self._store("teachers/skills/files/shared.pdf")
+        TeacherSkillApplication.objects.create(
+            teacher_profile=self.tp, skill_name="Pottery",
+            skill_description="d", skill_related_subject="mathematics",
+            supporting_file=stored,
+        )
+
+        self.assertFalse(discard_superseded_upload(stored))
+        self.assertTrue(default_storage.exists(stored))
+
+    def test_a_file_referenced_by_a_kyc_field_is_kept(self):
+        """The guard must span every model that can hold a name, not just
+        the one being edited."""
+        stored = self._store("teachers/id_proofs/front.jpg")
+        self.tp.id_proof_front = stored
+        self.tp.save(update_fields=["id_proof_front"])
+
+        self.assertFalse(discard_superseded_upload(stored))
+        self.assertTrue(default_storage.exists(stored))
+
+    def test_an_empty_name_is_a_no_op(self):
+        self.assertFalse(discard_superseded_upload(""))
+        self.assertFalse(discard_superseded_upload(None))
+
+    def test_a_missing_object_does_not_raise(self):
+        """Housekeeping must never cost the applicant their submission."""
+        self.assertFalse(
+            discard_superseded_upload("teachers/skills/files/never-existed.pdf"))
+
+    def test_removing_a_skill_discards_its_file(self):
+        """End to end through the serializer: drop the skill, lose the file."""
+        serializer = TeacherFormFillupSerializer(
+            context={"request": _FakeRequest(
+                {"skill_file_0": SimpleUploadedFile("gone.pdf", b"x",
+                                                    content_type="application/pdf")})})
+        serializer.update(self.user, {"skill_applications": [_entry("Pottery")]})
+        stored = self.tp.skill_applications.get().supporting_file.name
+        self.assertTrue(default_storage.exists(stored))
+
+        # Re-save with the skill removed entirely.
+        TeacherFormFillupSerializer(
+            context={"request": _FakeRequest()}
+        ).update(self.user, {"skill_applications": []})
+
+        self.assertEqual(self.tp.skill_applications.count(), 0)
+        self.assertFalse(default_storage.exists(stored))
+
+    def test_a_carried_over_file_is_NOT_discarded(self):
+        """The dangerous interaction: the carry-over re-points a new row at
+        the old name, so the cleanup must see the final state and leave it
+        alone. Getting this wrong deletes the file it just preserved."""
+        serializer = TeacherFormFillupSerializer(
+            context={"request": _FakeRequest(
+                {"skill_file_0": SimpleUploadedFile("keep.pdf", b"x",
+                                                    content_type="application/pdf")})})
+        serializer.update(self.user, {"skill_applications": [_entry("Pottery")]})
+        stored = self.tp.skill_applications.get().supporting_file.name
+
+        TeacherFormFillupSerializer(
+            context={"request": _FakeRequest()}
+        ).update(self.user, {"skill_applications": [_entry("Pottery")]})
+
+        self.assertEqual(self.tp.skill_applications.get().supporting_file.name, stored)
+        self.assertTrue(default_storage.exists(stored))
+
+
+class KycFileSizeTests(TestCase):
+    """The KYC documents had the same non-limit as the skill attachment."""
+
+    FIELDS = ["qualification_certificate", "id_proof_front",
+              "id_proof_back", "signed_agreement"]
+
+    def _errors_for(self, field, size):
+        upload = SimpleUploadedFile("scan.jpg", b"x" * size,
+                                    content_type="image/jpeg")
+        serializer = TeacherFormFillupSerializer(data={field: upload})
+        serializer.is_valid()
+        return " ".join(str(e) for e in serializer.errors.get(field, []))
+
+    def test_every_document_field_rejects_an_oversized_file(self):
+        for field in self.FIELDS:
+            with self.subTest(field=field):
+                self.assertIn(
+                    "limit is 50 MB",
+                    self._errors_for(field, MAX_SKILL_FILE_BYTES + 1))
+
+    def test_every_document_field_accepts_a_normal_file(self):
+        for field in self.FIELDS:
+            with self.subTest(field=field):
+                self.assertNotIn("limit is", self._errors_for(field, 1024))

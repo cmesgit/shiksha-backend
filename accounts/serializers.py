@@ -10,6 +10,7 @@ from courses.board_display import board_name_for
 
 from .signup_serializer import SignupSerializer
 from .models import User, LearnerProfile, Role, UserRole, TeacherProfile, TeacherCourseApplication, TeacherSkillApplication
+from .uploads import discard_superseded_upload
 
 
 def default_learner(user):
@@ -295,11 +296,38 @@ class StudentFormFillupSerializer(serializers.Serializer):
 # TEACHER FORM FILLUP SERIALIZER (REVAMPED)
 # =====================================================
 
-# Ceiling for a skill application's supporting document. Matches the "max
-# 50MB" the form has always shown; see validate() for why the framework was
-# not already enforcing it. The frontend checks the same number at pick time
-# so an oversized file costs one file input rather than the whole form.
+# Ceiling for an applicant-uploaded document. Matches the "max 50MB" the
+# form has always shown next to the skill attachment.
+#
+# Nothing in the framework applies this for us. Django does not limit file
+# uploads at all: FILE_UPLOAD_MAX_MEMORY_SIZE is only the point at which a
+# file stops being buffered in memory and spills to a temp file, and
+# MultiPartParser never applies DATA_UPLOAD_MAX_MEMORY_SIZE to FILE fields.
+# Both happen to be set to 50MB in this project, which is exactly what made
+# the limit look enforced when it was not.
 MAX_SKILL_FILE_BYTES = 50 * 1024 * 1024
+
+
+def _limited_file(**kwargs):
+    """A FileField that actually enforces MAX_SKILL_FILE_BYTES.
+
+    The KYC documents had the same non-limit as the skill attachment, and
+    the same consequence: an oversized scan is only rejected after the whole
+    multipart body has been uploaded, and it fails the entire application
+    rather than the one field.
+    """
+    validators = kwargs.pop("validators", [])
+    return serializers.FileField(
+        validators=[*validators, _reject_oversized_upload], **kwargs
+    )
+
+
+def _reject_oversized_upload(upload):
+    if upload is not None and upload.size > MAX_SKILL_FILE_BYTES:
+        raise ValidationError(
+            f"“{upload.name}” is {upload.size / (1024 * 1024):.1f} MB. "
+            f"The limit is {MAX_SKILL_FILE_BYTES // (1024 * 1024)} MB."
+        )
 
 
 class TeacherFormFillupSerializer(serializers.Serializer):
@@ -328,7 +356,7 @@ class TeacherFormFillupSerializer(serializers.Serializer):
         required=False,
         allow_empty=True,
     )
-    qualification_certificate = serializers.FileField(required=False, allow_null=True)
+    qualification_certificate = _limited_file(required=False, allow_null=True)
 
     # --- Teaching Experience ---
     experience_range = serializers.ChoiceField(choices=TeacherProfile.EXPERIENCE_CHOICES)
@@ -344,9 +372,9 @@ class TeacherFormFillupSerializer(serializers.Serializer):
     # --- Verification Documents ---
     govt_id_type = serializers.ChoiceField(choices=TeacherProfile.GOVT_ID_TYPE_CHOICES)
     id_number = serializers.CharField(max_length=50)
-    id_proof_front = serializers.FileField(required=True)
-    id_proof_back = serializers.FileField(required=False, allow_null=True)
-    signed_agreement = serializers.FileField(required=False, allow_null=True)
+    id_proof_front = _limited_file(required=True)
+    id_proof_back = _limited_file(required=False, allow_null=True)
+    signed_agreement = _limited_file(required=False, allow_null=True)
 
         # --- Course Applications (JSON string) ---
     course_applications = serializers.CharField(required=False, default="[]")
@@ -501,7 +529,12 @@ class TeacherFormFillupSerializer(serializers.Serializer):
         for field in ["qualification_certificate", "id_proof_front", "id_proof_back", "signed_agreement"]:
             value = validated_data.get(field)
             if value:
+                superseded = getattr(tp, field).name if getattr(tp, field) else ""
                 setattr(tp, field, value)
+                # The replaced scan would otherwise sit in the bucket forever.
+                # These are KYC documents — an ID card the applicant re-took
+                # because the first photo was blurred should not outlive it.
+                discard_superseded_upload(superseded)
 
         # This is the OTHER write path for the signed agreement (the one the
         # signup flow actually points faculty at — see FacultySignup.jsx) —
@@ -573,6 +606,14 @@ class TeacherFormFillupSerializer(serializers.Serializer):
                     # existing object; it does not copy or re-upload it.
                     skill.supporting_file = previous.pop(0)
                     skill.save(update_fields=["supporting_file"])
+
+        # Anything left in carried_files belonged to a skill the applicant has
+        # now removed, so nothing points at it. Done last, after every row has
+        # been recreated, so the reference check inside sees the final state
+        # and cannot delete a file that was just carried over to a new row.
+        for leftover in carried_files.values():
+            for stale in leftover:
+                discard_superseded_upload(stale)
 
         return user
 
