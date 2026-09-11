@@ -14,9 +14,9 @@ from django.utils import timezone
 from django.utils.html import format_html
 
 from .models import (
-    Announcement, BlogPost, ContactMessage, ContentTag, CurrentAffair, FAQItem,
-    HomeFloater, HomeContentBlock, HomeListItem, NewsletterSubscriber,
-    PublishStatus, ShowcaseCategory, ShowcaseCourse,
+    Announcement, BlogPost, ContactMessage, ContentTag, CurrentAffair,
+    DemoVideo, FAQItem, HomeFloater, HomeContentBlock, HomeListItem,
+    NewsletterSubscriber, PublishStatus, ShowcaseCategory, ShowcaseCourse,
 )
 
 # ── optional rich-text widget ────────────────────────────────────
@@ -240,6 +240,36 @@ class HomeFloaterAdmin(admin.ModelAdmin):
     list_display = ("section", "slot", "label", "status")
     list_filter = ("section", "status")
     search_fields = ("label", "sublabel")
+
+
+@admin.register(DemoVideo)
+class DemoVideoAdmin(admin.ModelAdmin):
+    """Where the two landing-page walkthroughs are configured.
+
+    `duration_seconds` and `thumbnail_url` are read-only on purpose — they are
+    owned by `manage.py sync_demo_videos`, and an editable field the next sync
+    silently overwrites is worse than no field at all.
+    """
+
+    list_display = ("title", "key", "order", "status", "has_video", "runtime")
+    list_filter = ("status",)
+    list_editable = ("order", "status")
+    search_fields = ("title", "key", "blurb")
+    readonly_fields = ("duration_seconds", "thumbnail_url")
+    fields = ("key", "title", "blurb", "order", "status", "bunny_video_id",
+              "duration_seconds", "thumbnail_url")
+
+    @admin.display(boolean=True, description="Video uploaded")
+    def has_video(self, obj):
+        return bool(obj.bunny_video_id)
+
+    @admin.display(description="Runtime")
+    def runtime(self, obj):
+        if not obj.duration_seconds:
+            # Bunny reports length 0 until it has finished processing, so
+            # "not synced yet" and "still transcoding" look the same here.
+            return "— run sync_demo_videos"
+        return f"{obj.duration_seconds // 60}:{obj.duration_seconds % 60:02d}"
 
 
 # ── Contact form inbox ────────────────────────────────────────────

@@ -35,6 +35,8 @@ urlpatterns = [
     path("home-list-items/", views.HomeListItemListView.as_view(), name="home-list-item-list"),
     path("home-floaters/", views.HomeFloaterListView.as_view(), name="home-floater-list"),
     path("home-section-order/", views.HomeSectionOrderListView.as_view(), name="home-section-order-list"),
+
+    path("demo-videos/", views.DemoVideoListView.as_view(), name="demo-video-list"),
 ]
 
 # ── Staff-only CMS admin API (content/admin_views.py) ──────────────

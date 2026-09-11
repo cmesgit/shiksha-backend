@@ -1606,3 +1606,85 @@ class NewsletterSubscriber(models.Model):
     def __str__(self):
         state = "unsubscribed" if self.unsubscribed_at else "subscribed"
         return f"{self.email} ({state})"
+
+
+# ── Landing-page demo videos ──────────────────────────────────────
+
+class DemoVideo(StatusedContentModel):
+    """A short product walkthrough offered from the public landing page.
+
+    Two rows today — "create your account" and "get back in" — surfaced by
+    shiksha-frontend's floating demo button. Deliberately its own small model
+    rather than the usual HomeContentBlock/HomeListItem reuse, because every
+    field here is video-specific and neither of those has anywhere to put a
+    Bunny guid. Squeezing one into ``HomeListItem.cta_href`` (the only spare
+    string) would have made a link field secretly mean "video id", which is
+    the sort of overload nobody finds again.
+
+    ``bunny_video_id`` is pasted in by an admin after uploading through the
+    Bunny dashboard. There is no upload endpoint here on purpose: the two
+    existing upload flows (``skills/views_intro_video.py``,
+    ``courses/views_recordings.py``) exist because *users* upload on those
+    paths. Two marketing clips replaced once a year do not justify a third
+    copy of that three-step TUS handshake.
+
+    ``duration_seconds`` and ``thumbnail_url`` are NOT typed in by hand — they
+    are synced from Bunny by ``manage.py sync_demo_videos``. The design mockup
+    for this feature hardcoded "0:40" and "0:28" for clips that were really
+    0:54 and 0:18, which is exactly what hand-entered durations drift into.
+    Null duration means "not known yet", never zero: Bunny reports
+    ``length: 0`` until it has finished processing, and the sync coerces that
+    to None rather than publishing a "0:00" label.
+    """
+
+    key = models.SlugField(
+        max_length=40, unique=True,
+        help_text="Stable identifier used by the frontend, e.g. signup / login. "
+                  "Changing it re-points whichever card refers to it.",
+    )
+    title = models.CharField(max_length=80)
+    blurb = models.CharField(
+        max_length=120, blank=True, default="",
+        help_text="One line under the title, e.g. “Create your account”.",
+    )
+    bunny_video_id = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Bunny Stream guid. Until this is set the video is hidden "
+                  "from the site even when published.",
+    )
+    duration_seconds = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Synced from Bunny by `manage.py sync_demo_videos`. "
+                  "Leave blank — anything typed here is overwritten.",
+    )
+    thumbnail_url = models.URLField(
+        blank=True, default="",
+        help_text="Synced from Bunny by `manage.py sync_demo_videos`.",
+    )
+    order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["order", "id"]
+        verbose_name = "Landing demo video"
+
+    def embed_url(self):
+        """Playable Bunny embed URL, or None if this row has no video yet.
+
+        A method, not a property, to match ``skills`` — four of that app's five
+        call sites are hand-rolled dicts where a property silently serialises
+        as a bound-method repr.
+
+        Unsigned, like ``skills/models.py:intro_video_embed_url``. These clips
+        are public marketing on an anonymous, cached endpoint, so a signed URL
+        with a 4-hour expiry (``config.bunny_signing.bunny_embed_url``) would
+        be cached past its own expiry and start 403ing. Guards
+        ``BUNNY_LIBRARY_ID`` explicitly — it has no default and is ``None``
+        when unset, which would otherwise render a working iframe pointed at
+        ``.../None/<guid>``.
+        """
+        if not (self.bunny_video_id and settings.BUNNY_LIBRARY_ID):
+            return None
+        return f"{settings.BUNNY_EMBED}/{settings.BUNNY_LIBRARY_ID}/{self.bunny_video_id}"
+
+    def __str__(self):
+        return f"{self.title} ({self.key})"

@@ -11,6 +11,7 @@
 #   • Detail endpoints — not cached: single-row unique-index lookups, and
 #     blog detail increments view_count.
 
+from django.conf import settings
 from django.db.models import F, Prefetch, Q
 from django.http import Http404
 from django.shortcuts import get_object_or_404
@@ -24,15 +25,16 @@ from .cache import LIST_TTL, list_cache_key
 from django.core.cache import cache
 
 from .models import (
-    Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
+    Announcement, BlogPost, ContentTag, CurrentAffair, DemoVideo, FAQItem,
     HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
     Locale, PublishStatus, ShowcaseCourse, TickerSlot,
 )
 from .serializers import (
     AnnouncementSerializer, BlogPostDetailSerializer, BlogPostListSerializer,
     CurrentAffairDetailSerializer, CurrentAffairListSerializer,
-    FAQItemSerializer, HomeContentBlockSerializer, HomeFloaterSerializer,
-    HomeListItemSerializer, HomeSectionOrderSerializer, ShowcaseCourseSerializer,
+    DemoVideoSerializer, FAQItemSerializer, HomeContentBlockSerializer,
+    HomeFloaterSerializer, HomeListItemSerializer, HomeSectionOrderSerializer,
+    ShowcaseCourseSerializer,
 )
 
 
@@ -287,3 +289,33 @@ class HomeSectionOrderListView(CachedListAPIView):
 
     def get_queryset(self):
         return HomeSectionOrder.objects.filter(is_visible=True)
+
+
+class DemoVideoListView(CachedListAPIView):
+    """GET /api/content/demo-videos/ — the landing page's walkthrough clips.
+
+    Excludes rows with no ``bunny_video_id``. Published-but-unconfigured is a
+    real state (an admin creates the row, then uploads), and a row that reaches
+    the frontend without a video renders a play button opening an empty player.
+    Filtering here means the site's own "is there anything to show" check is
+    just ``list.length``, so before any clip is uploaded the floating button
+    does not render at all rather than rendering broken.
+    """
+
+    serializer_class = DemoVideoSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        # BUNNY_LIBRARY_ID has no default in settings_base and is None when the
+        # environment does not set it, which makes embed_url() None for every
+        # row. Serving those would hand the frontend a menu of videos that
+        # cannot play. Checked here rather than per-row because it is a
+        # process-wide setting: either the whole library is configured or none
+        # of it is.
+        if not settings.BUNNY_LIBRARY_ID:
+            return DemoVideo.objects.none()
+        return (
+            DemoVideo.objects
+            .filter(status=PublishStatus.PUBLISHED)
+            .exclude(bunny_video_id="")
+        )
