@@ -332,15 +332,26 @@ class Board(models.Model):
     TYPE_CENTRAL = "CENTRAL"
 
     # A competitive exam (MPSC, UPSC, NEET, JEE, SSC, banking…) is not a
-    # school board and fits neither "State" nor "Central" — forcing one made
-    # the catalog claim, on a public page, that UPSC is a central *board*.
+    # school board and fits neither "State" nor "National" — forcing one made
+    # the catalog claim, on a public page, that UPSC is a national *board*.
     # It is otherwise the same shape: a syllabus authority a course hangs off,
     # with its own logo and its own courses.
     TYPE_COMPETITIVE = "COMPETITIVE"
 
+    # TYPE_CENTRAL displays as "National" — CBSE/ICSE/NIOS are national-level
+    # boards and that is what everyone calls them, while "Central" reads as
+    # the Union government rather than the board's reach.
+    #
+    # Only the LABEL changed. The stored value is still "CENTRAL", and it must
+    # stay that way: it is a wire value, not an internal detail. It is
+    # lowercased into the public `?group=` query param and the router's
+    # `selectedBoardGroup` state (see the nav-menu payload below and
+    # content/admin_serializers.py), so it is baked into shared links,
+    # homepage CMS `link_state` rows already saved in the database, and the
+    # seed fixtures. Renaming it would silently break every one of those.
     TYPE_CHOICES = [
         (TYPE_STATE, "State"),
-        (TYPE_CENTRAL, "Central"),
+        (TYPE_CENTRAL, "National"),
         (TYPE_COMPETITIVE, "Competitive exam"),
     ]
 

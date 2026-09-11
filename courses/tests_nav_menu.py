@@ -104,3 +104,75 @@ class NavMenuLabelTests(TestCase):
             status=Course.STATUS_DRAFT)
         cache.clear()
         self.assertNotIn("Class 7 · CBSE", self._flattened())
+
+
+class NavMenuBoardTypeLabelTests(TestCase):
+    """The navbar's board-group wording, and the wire value under it.
+
+    `_derive_courses_menu` builds three visitor-facing strings out of
+    `Board.TYPE_CHOICES`'s display label — the tab, its heading, and the
+    "View all" link. Nothing covered them, so relabelling the choice changed
+    the public navbar with no test saying a word.
+
+    The second half matters more than the first: the tab `id` and the
+    `selectedBoardGroup` it carries are the LOWERCASED STORED VALUE, not the
+    label. They travel in shared `?group=` links and in homepage CMS
+    `link_state` rows already saved in the database, so they must survive any
+    future rewording. A test that only checked the labels would let someone
+    "finish the rename" by changing the value and break all of those.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.cbse = Board.objects.create(
+            name="CBSE", board_type=Board.TYPE_CENTRAL, is_active=True)
+        cls.mbse = Board.objects.create(
+            name="MBSE", board_type=Board.TYPE_STATE, is_active=True)
+        Course.objects.create(
+            title="CBSE Class 9", board=cls.cbse, class_level=9,
+            status=Course.STATUS_PUBLISHED)
+        Course.objects.create(
+            title="MBSE Class 9", board=cls.mbse, class_level=9,
+            status=Course.STATUS_PUBLISHED)
+
+    def setUp(self):
+        cache.clear()
+
+    def _tab(self, tab_id):
+        r = self.client.get(NAV_URL)
+        self.assertEqual(r.status_code, 200, r.content)
+        school = next(c for c in r.data["categories"] if c["key"] == "school")
+        return next(t for t in school["tabs"] if t["id"] == tab_id)
+
+    def test_the_national_tab_reads_national_not_central(self):
+        tab = self._tab("central")
+        self.assertEqual(tab["label"], "National Boards")
+        self.assertEqual(tab["heading"], "National Board Courses")
+        self.assertEqual(tab["viewAll"]["label"], "View All National Boards")
+
+    def test_the_state_tab_is_untouched(self):
+        tab = self._tab("state")
+        self.assertEqual(tab["label"], "State Boards")
+        self.assertEqual(tab["heading"], "State Board Courses")
+
+    def test_the_word_central_is_gone_from_the_whole_payload(self):
+        """Belt and braces: the label is interpolated in three places and a
+        fourth could be added without updating the assertions above."""
+        body = self.client.get(NAV_URL).content.decode()
+        self.assertNotIn("Central", body)
+
+    def test_the_group_wire_value_is_still_central(self):
+        """The label moved; the value must not. This is the deep-link
+        contract shared links and saved CMS rows depend on."""
+        tab = self._tab("central")
+        self.assertEqual(tab["id"], "central")
+        self.assertEqual(
+            tab["viewAll"]["state"]["selectedBoardGroup"], "central")
+        board_link = next(l for l in tab["links"] if l["label"] == "CBSE")
+        self.assertEqual(board_link["state"]["selectedBoardGroup"], "central")
+
+    def test_the_stored_choice_value_is_still_central(self):
+        """Guards the model itself, not just the payload."""
+        self.assertEqual(Board.TYPE_CENTRAL, "CENTRAL")
+        self.assertEqual(
+            self.cbse.get_board_type_display(), "National")
