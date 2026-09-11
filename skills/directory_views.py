@@ -308,7 +308,21 @@ class DirectoryStatsView(APIView):
         from .models import SkillCategory
         payload = {
             "experts": listed.count(),
-            "categories": SkillCategory.objects.filter(is_active=True).count(),
+            # Categories a learner can actually browse into, not every row in
+            # the table. The catalog is deliberately wider than current
+            # coverage so an expert can classify themselves at signup (see
+            # seed_skill_categories), which means most categories have nobody
+            # in them yet — counting those would advertise reach the directory
+            # cannot deliver, right next to a rail that only shows the ones
+            # with experts.
+            #
+            # The OR matches CategoryListView's expert_count and the ?cat=
+            # filter: an expert counts through their primary `category` or the
+            # `categories` M2M. `.distinct()` is required — without it a
+            # category joined through both sides is counted twice.
+            "categories": SkillCategory.objects.filter(is_active=True).filter(
+                Q(experts__is_listed=True) | Q(multi_experts__is_listed=True)
+            ).distinct().count(),
             "offline": listed.exclude(class_mode=ExpertProfile.MODE_ONLINE).count(),
             "price_p25": pct(0.25),
             "price_p75": pct(0.75),
