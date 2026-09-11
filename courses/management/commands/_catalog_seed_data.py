@@ -25,7 +25,12 @@
 # ---------------------------------------------------------------------------
 CATEGORY_SEED = [
     # --- boards group ---
-    {"slug": "central-boards", "name": "Central Boards", "group": "boards",
+    # The slug stays "central-boards" even though the name now reads
+    # "National". It is matched on by seed_course_categories (so a changed
+    # slug would CREATE a duplicate rather than update this row) and it is a
+    # public `?category=` filter value — see courses/views.py's catalog
+    # filter. Same labels-only rule as Board.TYPE_CHOICES.
+    {"slug": "central-boards", "name": "National Boards", "group": "boards",
      "icon": "book", "blurb": "National curriculum boards (CBSE, ICSE and more).",
      "display_order": 0},
     {"slug": "state-boards", "name": "State Boards", "group": "boards",
