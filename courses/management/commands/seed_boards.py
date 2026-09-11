@@ -1,13 +1,19 @@
 # PLACEMENT: backend/courses/management/commands/seed_boards.py
 #
-# Creates the ~30 Board rows the public site needs from BOARD_OPTIONS
-# (Courses.jsx), transcribed into _catalog_seed_data.BOARD_SEED. All boards
-# except CBSE and MBSE are seeded is_active=False → the site renders them
-# "Coming Soon".
+# Creates the 31 Board rows the public navbar needs from
+# _catalog_seed_data.BOARD_SEED: India's three national boards (CBSE, CISCE,
+# NIOS) and the 28 state boards. All except CBSE and MBSE are seeded
+# is_active=False → the nav renders an inert "Coming Soon" row and the catalog
+# renders a locked chip with a Notify-me capture.
 #
 # Usage:
-#     python manage.py seed_boards            # dry run (default)
-#     python manage.py seed_boards --yes       # actually write
+#     python manage.py seed_boards                            # dry run
+#     python manage.py seed_boards --yes                      # create missing
+#     python manage.py seed_boards --yes --apply-curation     # + edit existing
+#
+# --apply-curation is what changes rows that already exist (BOARD_CURATION:
+# the MBSE rename and the CISCE deactivation). It is deliberately off by
+# default — see _curate()'s docstring.
 #
 # CRITICAL — the 2026-07-27 incident guard: CBSE and MBSE almost certainly
 # already exist as real Board rows (import_static_course_content requires
@@ -26,7 +32,7 @@ from django.db.models import Q
 
 from courses.models import Board
 
-from ._catalog_seed_data import BOARD_SEED
+from ._catalog_seed_data import BOARD_CURATION, BOARD_SEED
 
 
 class Command(BaseCommand):
@@ -41,6 +47,77 @@ class Command(BaseCommand):
             "--yes", action="store_true",
             help="Actually write. Without this flag, only reports what would happen.",
         )
+        parser.add_argument(
+            "--apply-curation", action="store_true",
+            help=(
+                "Also apply BOARD_CURATION — the explicit, per-slug edits to "
+                "boards that ALREADY EXIST. Off by default: the rest of this "
+                "command never mutates an existing row, and that guard is "
+                "load-bearing."
+            ),
+        )
+
+    def _curate(self, dry_run):
+        """Apply BOARD_CURATION: a fixed allow-list of edits to existing rows.
+
+        Separate from the seeding loop above, and opt-in, because that loop's
+        entire safety property is "an existing board is only ever reported,
+        never written" — the guard that stopped the 2026-07-27 duplicate-CBSE
+        incident. Rather than soften it into a general "update to match seed"
+        pass (which would let any future BOARD_SEED typo rewrite live rows),
+        the only mutations allowed are the ones named one-by-one in
+        BOARD_CURATION, keyed on slug.
+
+        Each entry asserts the CURRENT value before writing. That makes the
+        command idempotent (a second run reports "already applied" instead of
+        re-writing) and, more importantly, means an admin who has since
+        changed the field by hand is reported and left alone rather than
+        silently overwritten.
+        """
+        self.stdout.write("")
+        self.stdout.write(self.style.WARNING("--- curation of existing rows ---"))
+        applied = already = skipped = 0
+
+        for slug, field, expect, new, why in BOARD_CURATION:
+            board = Board.objects.filter(slug=slug).first()
+            if board is None:
+                skipped += 1
+                self.stdout.write(self.style.WARNING(
+                    f"  MISS    {slug:11} — no such board; nothing to curate."
+                ))
+                continue
+
+            current = getattr(board, field)
+            if current == new:
+                already += 1
+                self.stdout.write(
+                    f"  OK      {slug:11} {field}={new!r} — already applied."
+                )
+                continue
+            if current != expect:
+                # Somebody changed this by hand. Report, do not clobber.
+                skipped += 1
+                self.stdout.write(self.style.WARNING(
+                    f"  SKIP    {slug:11} {field} is {current!r}, expected "
+                    f"{expect!r} before setting {new!r}. Left alone — this row "
+                    f"was edited outside this command."
+                ))
+                continue
+
+            applied += 1
+            self.stdout.write(
+                f"  CURATE  {slug:11} {field}: {current!r} → {new!r}\n"
+                f"          why: {why}"
+            )
+            if not dry_run:
+                with transaction.atomic():
+                    setattr(board, field, new)
+                    board.save(update_fields=[field])
+
+        self.stdout.write(self.style.SUCCESS(
+            f"curation: applied={applied} already_applied={already} "
+            f"skipped={skipped} (of {len(BOARD_CURATION)})"
+        ))
 
     def handle(self, *args, **options):
         dry_run = not options["yes"]
@@ -100,5 +177,20 @@ class Command(BaseCommand):
             f"boards: created={created} matched(skipped)={matched} "
             f"display_order_backfilled={backfilled} (of {len(BOARD_SEED)})"
         ))
+
+        if options["apply_curation"]:
+            self._curate(dry_run)
+        else:
+            pending = [
+                f"{slug}.{field}" for slug, field, expect, new, _why in BOARD_CURATION
+                if (b := Board.objects.filter(slug=slug).first()) is not None
+                and getattr(b, field) == expect
+            ]
+            if pending:
+                self.stdout.write(self.style.WARNING(
+                    f"{len(pending)} curation edit(s) NOT applied "
+                    f"({', '.join(pending)}) — pass --apply-curation to include them."
+                ))
+
         if dry_run:
             self.stdout.write(self.style.WARNING("Dry run — re-run with --yes to write."))
