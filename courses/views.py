@@ -2446,7 +2446,17 @@ def _board_class_links(board, group_key):
     labels: "Class 9" twice over with nothing to tell the boards apart, and
     colliding React keys behind it. A qualifier applied only when one TAB
     holds several boards cannot fix that — the ambiguity is created ACROSS
-    tabs, downstream of this payload."""
+    tabs, downstream of this payload.
+
+    Only the ABBREVIATION is appended, not the full board name. State boards
+    are named "<abbr> · <state>" so that MBSE (Mizoram) and MBOSE (Meghalaya)
+    are distinguishable in the flattened drawer; appending that whole string
+    here would produce "Class 11 · Science · MBSE · Mizoram", which wraps to
+    two lines inside SiteNav.css's `minmax(190px, 1fr)` nav column and undoes
+    the label-wrapping fix of 2026-08-27. The abbreviation alone is enough to
+    disambiguate a CLASS row, because the qualifier it needs is "which board",
+    and the board's own row — sitting directly above these — carries the full
+    name that explains the abbreviation."""
     courses = (
         Course.objects
         .filter(board=board, status__in=PUBLIC_COURSE_STATUSES,
@@ -2454,12 +2464,17 @@ def _board_class_links(board, group_key):
         .select_related("stream")
         .order_by("class_level", "stream__name", "title")
     )
+    # "MBSE · Mizoram" → "MBSE". A board whose name has no " · " (every
+    # national board, and any board added before this convention) is used
+    # whole, so this is a no-op for CBSE.
+    board_abbr = board.name.split(" · ")[0].strip() or board.name
+
     links = []
     for c in courses:
         label = f"Class {c.class_level}"
         if c.stream and c.stream.name:
             label += f" · {c.stream.name.title()}"
-        label = f"{label} · {board.name}"
+        label = f"{label} · {board_abbr}"
         if c.status == Course.STATUS_COMING_SOON:
             links.append({"label": label, "soon": True})
         else:

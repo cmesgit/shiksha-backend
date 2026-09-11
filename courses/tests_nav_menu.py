@@ -176,3 +176,142 @@ class NavMenuBoardTypeLabelTests(TestCase):
         self.assertEqual(Board.TYPE_CENTRAL, "CENTRAL")
         self.assertEqual(
             self.cbse.get_board_type_display(), "National")
+
+
+class NavMenuQualifiedBoardNameTests(TestCase):
+    """State boards are named "<abbr> · <state>"; class rows must NOT inherit
+    the whole thing.
+
+    The names carry their state because MBSE (Mizoram) and MBOSE (Meghalaya)
+    are one letter apart and the drawer flattens both tabs into one list, so
+    the abbreviation alone identifies nothing. But appending that full name to
+    every class row produced "Class 11 · Science · MBSE · Mizoram", which
+    wraps to two lines in SiteNav.css's `minmax(190px, 1fr)` column and undoes
+    the 2026-08-27 wrapping fix. So the board's OWN row carries the full name
+    and its class rows carry only the abbreviation.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.mbse = Board.objects.create(
+            name="MBSE · Mizoram", slug="mbse",
+            board_type=Board.TYPE_STATE, is_active=True)
+        cls.mbose = Board.objects.create(
+            name="MBOSE · Meghalaya", slug="mbose",
+            board_type=Board.TYPE_STATE, is_active=True)
+        cls.cbse = Board.objects.create(
+            name="CBSE", slug="cbse",
+            board_type=Board.TYPE_CENTRAL, is_active=True)
+        cls.science = Stream.objects.create(name="science")
+
+        for board in (cls.mbse, cls.mbose, cls.cbse):
+            Course.objects.create(
+                title=f"{board.slug} Class 9", board=board, class_level=9,
+                status=Course.STATUS_PUBLISHED)
+        Course.objects.create(
+            title="mbse Class 11 Sci", board=cls.mbse, class_level=11,
+            stream=cls.science, status=Course.STATUS_PUBLISHED)
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+    def _flattened(self):
+        r = self.client.get(NAV_URL)
+        self.assertEqual(r.status_code, 200, r.content)
+        school = next(c for c in r.data["categories"] if c["key"] == "school")
+        return [l["label"] for t in school["tabs"] for l in t["links"]]
+
+    def test_the_board_row_carries_the_full_qualified_name(self):
+        labels = self._flattened()
+        self.assertIn("MBSE · Mizoram", labels)
+        self.assertIn("MBOSE · Meghalaya", labels)
+
+    def test_class_rows_carry_only_the_abbreviation(self):
+        labels = self._flattened()
+        self.assertIn("Class 9 · MBSE", labels)
+        self.assertIn("Class 9 · MBOSE", labels)
+        self.assertNotIn("Class 9 · MBSE · Mizoram", labels)
+        self.assertNotIn("Class 9 · MBOSE · Meghalaya", labels)
+
+    def test_a_stream_row_stays_short_too(self):
+        """The longest label the menu can produce is the one that wraps."""
+        self.assertIn("Class 11 · Science · MBSE", self._flattened())
+
+    def test_an_unqualified_board_name_is_used_whole(self):
+        """No " · " in the name means nothing to strip — CBSE is unaffected."""
+        self.assertIn("Class 9 · CBSE", self._flattened())
+
+    def test_the_two_similar_boards_stay_tellable_apart(self):
+        labels = self._flattened()
+        dupes = {l for l in labels if labels.count(l) > 1}
+        self.assertEqual(dupes, set(), f"duplicated in the drawer: {dupes}")
+
+
+class NavMenuInactiveBoardTests(TestCase):
+    """An inactive board is an inert "Coming Soon" row — and nothing else.
+
+    This is the whole mechanism behind populating the menu with boards that
+    have not launched: the row must not be clickable, and it must not drag a
+    class list along with it.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.cbse = Board.objects.create(
+            name="CBSE", slug="cbse",
+            board_type=Board.TYPE_CENTRAL, is_active=True, display_order=0)
+        cls.cisce = Board.objects.create(
+            name="CISCE", slug="cisce",
+            board_type=Board.TYPE_CENTRAL, is_active=False, display_order=1)
+        Course.objects.create(
+            title="CBSE Class 9", board=cls.cbse, class_level=9,
+            status=Course.STATUS_PUBLISHED)
+        # A published course under an INACTIVE board: the board is what is not
+        # launched, so the class must not appear either.
+        Course.objects.create(
+            title="CISCE Class 9", board=cls.cisce, class_level=9,
+            status=Course.STATUS_PUBLISHED)
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+    def _central_links(self):
+        r = self.client.get(NAV_URL)
+        self.assertEqual(r.status_code, 200, r.content)
+        school = next(c for c in r.data["categories"] if c["key"] == "school")
+        tab = next(t for t in school["tabs"] if t["id"] == "central")
+        return tab["links"]
+
+    def test_an_inactive_board_is_soon_and_has_no_destination(self):
+        row = next(l for l in self._central_links() if l["label"] == "CISCE")
+        self.assertTrue(row.get("soon"))
+        self.assertNotIn("to", row)
+        self.assertNotIn("state", row)
+
+    def test_an_inactive_board_contributes_no_class_rows(self):
+        """Otherwise the menu offers Class 9 under a board that has not
+        launched — a live link into an empty catalog."""
+        labels = [l["label"] for l in self._central_links()]
+        self.assertNotIn("Class 9 · CISCE", labels)
+
+    def test_the_active_board_beside_it_is_untouched(self):
+        links = self._central_links()
+        cbse = next(l for l in links if l["label"] == "CBSE")
+        self.assertEqual(cbse["state"]["selectedBoard"], "cbse")
+        self.assertIn("Class 9 · CBSE", [l["label"] for l in links])
+
+    def test_the_tab_still_appears_when_every_board_in_it_is_inactive(self):
+        """A group with nothing launched yet must still render its column,
+        or "all coming soon" silently becomes "no such menu"."""
+        Board.objects.create(
+            name="TBSE · Tripura", slug="tbse",
+            board_type=Board.TYPE_STATE, is_active=False, display_order=5)
+        cache.clear()
+        r = self.client.get(NAV_URL)
+        school = next(c for c in r.data["categories"] if c["key"] == "school")
+        state = next(t for t in school["tabs"] if t["id"] == "state")
+        self.assertEqual(
+            [l["label"] for l in state["links"]], ["TBSE · Tripura"])
+        self.assertTrue(state["links"][0].get("soon"))

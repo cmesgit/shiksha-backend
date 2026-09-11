@@ -56,62 +56,157 @@ CATEGORY_SEED = [
      "icon": "book", "blurb": "UPSC and state civil-services exams.", "display_order": 21},
     {"slug": "jee", "name": "IIT-JEE", "group": "competitive",
      "icon": "calc", "blurb": "Engineering entrance (JEE Main & Advanced).", "display_order": 22},
-    {"slug": "ssc", "name": "SSC & Banking", "group": "competitive",
-     "icon": "book", "blurb": "SSC, banking and government recruitment exams.", "display_order": 23},
+    # Renamed from "SSC & Banking" now that banking has its own row below.
+    # The SLUG stays "ssc" — it is the public `?category=` filter value, so
+    # changing it would create a duplicate category and break saved links.
+    {"slug": "ssc", "name": "SSC Exams", "group": "competitive",
+     "icon": "book", "blurb": "SSC CGL, CHSL, MTS and allied recruitment exams.", "display_order": 23},
     {"slug": "defence", "name": "Defence Exams", "group": "competitive",
      "icon": "book", "blurb": "NDA, CDS and allied defence exams.", "display_order": 24},
     {"slug": "ca", "name": "CA", "group": "competitive",
      "icon": "calc", "blurb": "Chartered Accountancy programme.", "display_order": 25},
     {"slug": "olympiad", "name": "Olympiad & Foundation", "group": "competitive",
      "icon": "flask", "blurb": "Olympiads and early foundation tracks.", "display_order": 26},
+
+    # --- competitive, added 2026-09-11 to fill out the exam menu ---
+    {"slug": "banking", "name": "Banking Exams", "group": "competitive",
+     "icon": "calc", "blurb": "IBPS, SBI and RBI recruitment exams.", "display_order": 27},
+    {"slug": "railways", "name": "Railway Exams", "group": "competitive",
+     "icon": "book", "blurb": "RRB NTPC, Group D and ALP.", "display_order": 28},
+    {"slug": "state-psc", "name": "State PSC", "group": "competitive",
+     "icon": "book", "blurb": "State public service commission exams.", "display_order": 29},
+    {"slug": "clat", "name": "CLAT & Law", "group": "competitive",
+     "icon": "book", "blurb": "CLAT, AILET and other law entrances.", "display_order": 30},
+    {"slug": "cat", "name": "CAT & MBA", "group": "competitive",
+     "icon": "calc", "blurb": "CAT, XAT and MBA entrance exams.", "display_order": 31},
+    {"slug": "gate", "name": "GATE", "group": "competitive",
+     "icon": "flask", "blurb": "Graduate Aptitude Test in Engineering.", "display_order": 32},
+    {"slug": "ctet", "name": "CTET & TET", "group": "competitive",
+     "icon": "book", "blurb": "Central and state teacher eligibility tests.", "display_order": 33},
+    {"slug": "ugc-net", "name": "UGC NET", "group": "competitive",
+     "icon": "book", "blurb": "UGC NET for lectureship and JRF.", "display_order": 34},
 ]
 
 # ---------------------------------------------------------------------------
-# 2. Board rows, transcribed 1:1 from BOARD_OPTIONS in Courses.jsx.
+# 2. Board rows — the school-education half of the navbar mega-menu.
 #
-# `slug` == the frontend's board `id` (the key Phase-E will match on, per the
-# plan: "Match boards by slug, not display name"). CBSE + MBSE are the only two
-# live boards today and are almost certainly already present as real rows
-# (import_static_course_content requires them); they are flagged pre_existing so
-# seed_boards never risks a duplicate. Everything else is inactive → the public
-# site renders it "Coming Soon".
+# `slug` == the frontend's board `id` and is a WIRE VALUE: it is lowercased
+# into the public `?group=`/`?board=` query params and into saved homepage CMS
+# `link_state` rows. Never change a slug to match a renamed board; rename the
+# `name` only. (Same rule as Board.TYPE_CHOICES — see courses/models.py.)
+#
+# CBSE and MBSE are the only two LIVE boards and already exist as real rows, so
+# they are flagged pre_existing and seed_boards will never re-create them.
+# Everything else is is_active=False → the nav renders an inert "Coming Soon"
+# row and the catalog renders a locked chip with a "Notify me" capture
+# (BoardNotifyRequest).
+#
+# ── Why the STATE names carry their state ──────────────────────────────────
+# MBSE (Mizoram) and MBOSE (Meghalaya) are one letter apart, and BSEB/BSEH/
+# BSEAP are barely more distinguishable at a glance. An abbreviation alone
+# does not identify a board to the parent reading this menu, and the mobile
+# drawer FLATTENS every board tab into one list (Navbar.jsx does
+# `cat.tabs.flatMap(t => t.links)`), so the tab heading is not there to
+# disambiguate either. The state is therefore part of the name.
+#
+# ⚠ The " · " separator is load-bearing: courses/views.py's
+# `_board_class_links` splits on it to keep per-class rows short
+# ("Class 9 · MBSE", not "Class 9 · MBSE · Mizoram"). Keep the abbreviation
+# FIRST and use " · " as the separator, or class labels grow and re-break the
+# nav-panel wrapping fixed on 2026-08-27.
+#
+# ── What is deliberately NOT here ──────────────────────────────────────────
+# * IB and Cambridge/CAIE — international boards, not Indian ones. This menu
+#   is scoped to India.
+# * AISSCE — that is the NAME OF CBSE'S CLASS 12 EXAM, not a board. Listing it
+#   beside CBSE advertised the same board twice.
+# * ICSE — also not a board. The board is CISCE; ICSE and ISC are its two
+#   certificates. A separate "icse" row would have sat next to the real
+#   `cisce` row as a silent duplicate.
+# * COHSEM — Manipur's higher-secondary council, a second body for a state
+#   BOSEM already covers. This list is one row per state, the same way Assam's
+#   SEBA+AHSEC collapse to ASSEB and Odisha's BSE+CHSE collapse to BSE Odisha.
+# * Arunachal Pradesh, Sikkim, Puducherry, Chandigarh, Ladakh, Andaman &
+#   Nicobar, Dadra & Nagar Haveli, Lakshadweep — these have no school board of
+#   their own; their schools sit under CBSE. A row for them would promise a
+#   syllabus that does not exist.
 # ---------------------------------------------------------------------------
 BOARD_SEED = [
     # slug, name, board_type, is_active, pre_existing
-    ("cbse", "CBSE", "CENTRAL", True, True),
-    ("icse", "ICSE", "CENTRAL", False, False),
-    ("ib", "IB", "CENTRAL", False, False),
-    ("nios", "NIOS", "CENTRAL", False, False),
-    ("aissce", "AISSCE", "CENTRAL", False, False),
 
-    ("mbse", "MBSE", "STATE", True, True),
-    ("bseap", "BSEAP", "STATE", False, False),
-    ("asseb", "ASSEB", "STATE", False, False),
-    ("bseb", "BSEB", "STATE", False, False),
-    ("cgbse", "CGBSE", "STATE", False, False),
-    ("gbshse", "GBSHSE", "STATE", False, False),
-    ("gseb", "GSEB", "STATE", False, False),
-    ("bseh", "BSEH", "STATE", False, False),
-    ("hpbose", "HPBOSE", "STATE", False, False),
-    ("jac", "JAC", "STATE", False, False),
-    ("kseab", "KSEAB", "STATE", False, False),
-    ("kbpe", "KBPE", "STATE", False, False),
-    ("mpbse", "MPBSE", "STATE", False, False),
-    ("msbshse", "MSBSHSE", "STATE", False, False),
-    ("bosem", "BOSEM", "STATE", False, False),
-    ("cohsem", "COHSEM", "STATE", False, False),
-    ("mbose", "MBOSE", "STATE", False, False),
-    ("nbse", "NBSE", "STATE", False, False),
-    ("bseodisha", "BSE Odisha", "STATE", False, False),
-    ("pseb", "PSEB", "STATE", False, False),
-    ("rbse", "RBSE", "STATE", False, False),
-    ("tnbse", "TNBSE", "STATE", False, False),
-    ("tsbse", "TSBSE", "STATE", False, False),
-    ("tbse", "TBSE", "STATE", False, False),
-    ("upmsp", "UPMSP", "STATE", False, False),
-    ("ubse", "UBSE", "STATE", False, False),
-    ("wbbse", "WBBSE", "STATE", False, False),
+    # --- National boards (board_type CENTRAL, displayed as "National") ---
+    # India has exactly three national-level school boards. No state suffix
+    # here: their reach IS national, so qualifying them would be noise.
+    ("cbse", "CBSE", "CENTRAL", True, True),
+    ("cisce", "CISCE", "CENTRAL", False, True),
+    ("nios", "NIOS", "CENTRAL", False, False),
+
+    # --- State boards, MBSE first (the live one), then by state name ---
+    ("mbse", "MBSE · Mizoram", "STATE", True, True),
+    ("bseap", "BSEAP · Andhra Pradesh", "STATE", False, False),
+    ("asseb", "ASSEB · Assam", "STATE", False, False),
+    ("bseb", "BSEB · Bihar", "STATE", False, False),
+    ("cgbse", "CGBSE · Chhattisgarh", "STATE", False, False),
+    ("dbse", "DBSE · Delhi", "STATE", False, False),
+    ("gbshse", "GBSHSE · Goa", "STATE", False, False),
+    ("gseb", "GSEB · Gujarat", "STATE", False, False),
+    ("bseh", "BSEH · Haryana", "STATE", False, False),
+    ("hpbose", "HPBOSE · Himachal Pradesh", "STATE", False, False),
+    ("jkbose", "JKBOSE · Jammu & Kashmir", "STATE", False, False),
+    ("jac", "JAC · Jharkhand", "STATE", False, False),
+    ("kseab", "KSEAB · Karnataka", "STATE", False, False),
+    ("kbpe", "KBPE · Kerala", "STATE", False, False),
+    ("mpbse", "MPBSE · Madhya Pradesh", "STATE", False, False),
+    ("msbshse", "MSBSHSE · Maharashtra", "STATE", False, False),
+    ("bosem", "BOSEM · Manipur", "STATE", False, False),
+    ("mbose", "MBOSE · Meghalaya", "STATE", False, False),
+    ("nbse", "NBSE · Nagaland", "STATE", False, False),
+    ("bseodisha", "BSE · Odisha", "STATE", False, False),
+    ("pseb", "PSEB · Punjab", "STATE", False, False),
+    ("rbse", "RBSE · Rajasthan", "STATE", False, False),
+    ("tnbse", "TNBSE · Tamil Nadu", "STATE", False, False),
+    ("tsbse", "TSBSE · Telangana", "STATE", False, False),
+    ("tbse", "TBSE · Tripura", "STATE", False, False),
+    ("upmsp", "UPMSP · Uttar Pradesh", "STATE", False, False),
+    ("ubse", "UBSE · Uttarakhand", "STATE", False, False),
+    ("wbbse", "WBBSE · West Bengal", "STATE", False, False),
 ]
+
+# NOTE — there is deliberately no BOARD_CURATION allow-list here.
+#
+# The first attempt at one was a list of (slug, field, expected_old, new)
+# tuples that asserted the current value before writing. A test killed it: on
+# a re-run, "the value I expect to replace" and "the value an admin has
+# deliberately restored" are the same string, so re-running would have
+# silently deactivated CISCE again the day it actually launched. Asserting the
+# old value protects against a stale seed; it cannot protect against a human
+# who disagreed with it.
+#
+# Both edits that were on that list are now expressed as their own REASON
+# instead, which makes them self-correcting:
+#
+#   * the CISCE deactivation → seed_boards._deactivate_empty_boards(), "an
+#     active board with no public courses is a nav link to an empty catalog".
+#     Give CISCE a course and the rule stops applying to it, by construction.
+#   * the MBSE rename → seed_boards._upgrade_names() against the forms below.
+
+
+def LEGACY_NAME_FORMS(name):
+    """The names an earlier seed could have written for a board now called
+    `name`, so seed_boards can upgrade it without a hand-written list.
+
+    dev ran the pre-2026-09 seed and carries 26 state boards under their bare
+    abbreviations ("BSEAP"), plus one written long-hand without the separator
+    ("BSE Odisha"). Prod has only three boards and never ran it, so there the
+    qualified names are created outright — which is exactly why dev would
+    otherwise render a mix of both styles and stop being a rehearsal for prod.
+
+    Returning a SET of exact strings, rather than doing a fuzzy match, is what
+    keeps this safe: a board whose name is none of these was renamed by a
+    person, and _upgrade_names leaves it alone and says so.
+    """
+    abbr = name.split(" · ")[0].strip()
+    return {name, abbr, name.replace(" · ", " ")}
 
 # ---------------------------------------------------------------------------
 # 3. The 7 competitive courses (kind=COACHING, status=COMING_SOON), carrying
@@ -141,6 +236,48 @@ COMPETITIVE_COURSE_SEED = [
     {"slug": "olympiad-foundation", "title": "Olympiad & Foundation", "category": "olympiad",
      "level": "Olympiads", "tutor": "R. Vanlalhriati",
      "fact": "Live + Recorded · Launching soon"},
+
+    # --- added 2026-09-11 ---------------------------------------------------
+    # Titles are deliberately SHORT. These render as nav rows inside a
+    # `minmax(190px, 1fr)` column that also has to fit a "Coming Soon" chip
+    # (SiteNav.css) — "SSC · CGL, CHSL & MTS" wraps to two lines there, so the
+    # detail lives in the category blurb and the course description instead.
+    #
+    # `tutor` is left blank on every row below: unlike the original seven,
+    # these have no mentor assigned yet, and inventing a name would put a
+    # fictional person's byline on a public catalog card.
+    #
+    # ⚠ "Government Exams" (slug government-exams) OVERLAPS the SSC / Banking /
+    # Railway rows added here. It is kept anyway because it backs homepage
+    # ShowcaseCourse order 14 — retiring it would blank a live homepage card.
+    # Worth a content decision later; not one to make silently here.
+    {"slug": "ssc-exams", "title": "SSC Exams", "category": "ssc",
+     "level": "SSC", "tutor": "",
+     "fact": "CGL · CHSL · MTS · Launching soon"},
+    {"slug": "banking-exams", "title": "Banking Exams", "category": "banking",
+     "level": "Banking", "tutor": "",
+     "fact": "IBPS · SBI · RBI · Launching soon"},
+    {"slug": "railway-exams", "title": "Railway Exams", "category": "railways",
+     "level": "Railways", "tutor": "",
+     "fact": "RRB NTPC · Group D · ALP · Launching soon"},
+    {"slug": "state-psc", "title": "State PSC", "category": "state-psc",
+     "level": "State Services", "tutor": "",
+     "fact": "State civil services · Launching soon"},
+    {"slug": "clat-law", "title": "CLAT & Law", "category": "clat",
+     "level": "Law", "tutor": "",
+     "fact": "CLAT · AILET · Launching soon"},
+    {"slug": "cat-mba", "title": "CAT & MBA", "category": "cat",
+     "level": "Management", "tutor": "",
+     "fact": "CAT · XAT · Launching soon"},
+    {"slug": "gate", "title": "GATE", "category": "gate",
+     "level": "Engineering", "tutor": "",
+     "fact": "All branches · Launching soon"},
+    {"slug": "ctet-tet", "title": "CTET & TET", "category": "ctet",
+     "level": "Teaching", "tutor": "",
+     "fact": "CTET · State TET · Launching soon"},
+    {"slug": "ugc-net", "title": "UGC NET", "category": "ugc-net",
+     "level": "Lectureship", "tutor": "",
+     "fact": "Paper I & II · Launching soon"},
 ]
 
 # ---------------------------------------------------------------------------

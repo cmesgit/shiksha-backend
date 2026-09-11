@@ -36,10 +36,14 @@ class Command(BaseCommand):
         )
 
     def _description(self, row):
+        # `tutor` is optional. The rows added in 2026-09 have no mentor
+        # assigned yet, and an unguarded f-string rendered the gap as a
+        # visible "Mentor: ." on the public catalog card.
+        mentor = f"Mentor: {row['tutor']}. " if row.get("tutor") else ""
         return (
             f"{row['fact']}\n\n"
             f"{row['title']} — {row['level']} track. "
-            f"Mentor: {row['tutor']}. Launching soon on ShikshaCom."
+            f"{mentor}Launching soon on ShikshaCom."
         )
 
     def handle(self, *args, **options):
