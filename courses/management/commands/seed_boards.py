@@ -11,9 +11,13 @@
 #     python manage.py seed_boards --yes                      # create missing
 #     python manage.py seed_boards --yes --apply-curation     # + edit existing
 #
-# --apply-curation is what changes rows that already exist (BOARD_CURATION:
-# the MBSE rename and the CISCE deactivation). It is deliberately off by
-# default — see _curate()'s docstring.
+# --apply-curation is what changes rows that ALREADY EXIST, and is off by
+# default because the rest of this command never mutates one. It does two
+# things, each keyed on a condition rather than on a list of slugs so that
+# re-running can never undo a later human decision:
+#   * _upgrade_names()          — legacy "BSEAP" → "BSEAP · Andhra Pradesh"
+#   * _deactivate_empty_boards() — an active board with no public courses is
+#                                  a nav link to an empty catalog
 #
 # CRITICAL — the 2026-07-27 incident guard: CBSE and MBSE almost certainly
 # already exist as real Board rows (import_static_course_content requires
@@ -23,16 +27,21 @@
 # reported, never written, even if somehow absent.
 #
 # Idempotent: existing boards (by slug or name) get display_order backfilled if
-# it is still 0; board_type / is_active on already-live boards are left ALONE
-# (they may have been curated in admin). New boards are created inactive.
+# it is still 0. Without --apply-curation, board_type / is_active / name on an
+# already-live board are left ALONE. New boards are created per BOARD_SEED.
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.db.models import Q
 
-from courses.models import Board
+from courses.models import Board, Course
 
-from ._catalog_seed_data import BOARD_CURATION, BOARD_SEED
+from ._catalog_seed_data import BOARD_SEED, LEGACY_NAME_FORMS
+
+# Mirrors courses.views.PUBLIC_COURSE_STATUSES. Defined here from the model
+# rather than imported, so a management command does not have to drag the
+# whole DRF view module (and its import graph) in behind it.
+PUBLIC_COURSE_STATUSES = [Course.STATUS_PUBLISHED, Course.STATUS_COMING_SOON]
 
 
 class Command(BaseCommand):
@@ -50,74 +59,100 @@ class Command(BaseCommand):
         parser.add_argument(
             "--apply-curation", action="store_true",
             help=(
-                "Also apply BOARD_CURATION — the explicit, per-slug edits to "
-                "boards that ALREADY EXIST. Off by default: the rest of this "
-                "command never mutates an existing row, and that guard is "
-                "load-bearing."
+                "Also upgrade legacy board NAMES and mark any active board "
+                "with no public courses as Coming Soon. Off by default: the "
+                "rest of this command never mutates an existing row, and "
+                "that guard is load-bearing."
             ),
         )
 
-    def _curate(self, dry_run):
-        """Apply BOARD_CURATION: a fixed allow-list of edits to existing rows.
+    def _upgrade_names(self, dry_run):
+        """Bring existing boards onto the "<abbr> · <state>" naming.
 
-        Separate from the seeding loop above, and opt-in, because that loop's
-        entire safety property is "an existing board is only ever reported,
-        never written" — the guard that stopped the 2026-07-27 duplicate-CBSE
-        incident. Rather than soften it into a general "update to match seed"
-        pass (which would let any future BOARD_SEED typo rewrite live rows),
-        the only mutations allowed are the ones named one-by-one in
-        BOARD_CURATION, keyed on slug.
+        A board created by the pre-2026-09 seed is called "BSEAP", which
+        identifies nothing once the mobile drawer flattens both board tabs
+        into one list — and MBSE/MBOSE are one letter apart. Only names that
+        exactly match a LEGACY_NAME_FORMS string are touched, so a board an
+        admin has renamed by hand is reported and left as it is.
 
-        Each entry asserts the CURRENT value before writing. That makes the
-        command idempotent (a second run reports "already applied" instead of
-        re-writing) and, more importantly, means an admin who has since
-        changed the field by hand is reported and left alone rather than
-        silently overwritten.
+        Slugs are never touched: they are the `?board=` wire value.
         """
         self.stdout.write("")
-        self.stdout.write(self.style.WARNING("--- curation of existing rows ---"))
-        applied = already = skipped = 0
+        self.stdout.write(self.style.WARNING("--- name upgrades on existing rows ---"))
+        upgraded = already = custom = 0
 
-        for slug, field, expect, new, why in BOARD_CURATION:
+        for slug, name, _bt, _act, _pre in BOARD_SEED:
             board = Board.objects.filter(slug=slug).first()
             if board is None:
-                skipped += 1
-                self.stdout.write(self.style.WARNING(
-                    f"  MISS    {slug:11} — no such board; nothing to curate."
-                ))
-                continue
-
-            current = getattr(board, field)
-            if current == new:
+                continue  # the seeding loop above will have created it
+            if board.name == name:
                 already += 1
-                self.stdout.write(
-                    f"  OK      {slug:11} {field}={new!r} — already applied."
-                )
                 continue
-            if current != expect:
-                # Somebody changed this by hand. Report, do not clobber.
-                skipped += 1
+            if board.name not in LEGACY_NAME_FORMS(name):
+                custom += 1
                 self.stdout.write(self.style.WARNING(
-                    f"  SKIP    {slug:11} {field} is {current!r}, expected "
-                    f"{expect!r} before setting {new!r}. Left alone — this row "
-                    f"was edited outside this command."
+                    f"  KEEP    {slug:11} {board.name!r} is not a name this "
+                    f"command wrote — left alone (would have been {name!r})."
                 ))
                 continue
 
-            applied += 1
+            upgraded += 1
+            self.stdout.write(f"  RENAME  {slug:11} {board.name!r} → {name!r}")
+            if not dry_run:
+                with transaction.atomic():
+                    board.name = name
+                    board.save(update_fields=["name"])
+
+        self.stdout.write(self.style.SUCCESS(
+            f"names: upgraded={upgraded} already_correct={already} "
+            f"left_as_customised={custom}"
+        ))
+
+    def _deactivate_empty_boards(self, dry_run):
+        """Mark an ACTIVE board that has no public courses as Coming Soon.
+
+        An active board is a clickable nav entry and an unlocked catalog chip.
+        With no PUBLISHED or COMING_SOON course behind it, both lead to an
+        empty page — prod's CISCE row was exactly that, and dev's junk "sds"
+        board still is. Inactive is the honest state: the nav renders an inert
+        "Coming Soon" row and the catalog chip becomes a Notify-me capture
+        (BoardNotifyRequest) instead of a dead end.
+
+        Stated as a REASON rather than a list of slugs on purpose. An earlier
+        draft asserted "is_active is currently True" before flipping CISCE,
+        which a test showed would re-deactivate it on the next run the day it
+        genuinely launched — "the value I mean to replace" and "the value an
+        admin restored" are the same value. Keyed on emptiness instead, the
+        rule stops applying to a board the moment it has a course, so it can
+        never un-launch anything.
+
+        CBSE and MBSE both carry courses and are untouched by construction.
+        """
+        self.stdout.write("")
+        self.stdout.write(self.style.WARNING(
+            "--- boards active with nothing to show ---"))
+
+        empty = [
+            b for b in Board.objects.filter(is_active=True)
+            if not b.courses.filter(status__in=PUBLIC_COURSE_STATUSES).exists()
+        ]
+        if not empty:
             self.stdout.write(
-                f"  CURATE  {slug:11} {field}: {current!r} → {new!r}\n"
-                f"          why: {why}"
+                "  none — every active board has at least one public course.")
+            return
+
+        for b in empty:
+            self.stdout.write(
+                f"  SOON    {b.slug:11} {b.name!r} is active with 0 public "
+                f"courses → is_active=False"
             )
             if not dry_run:
                 with transaction.atomic():
-                    setattr(board, field, new)
-                    board.save(update_fields=[field])
+                    b.is_active = False
+                    b.save(update_fields=["is_active"])
 
         self.stdout.write(self.style.SUCCESS(
-            f"curation: applied={applied} already_applied={already} "
-            f"skipped={skipped} (of {len(BOARD_CURATION)})"
-        ))
+            f"deactivated: {len(empty)} empty active board(s)"))
 
     def handle(self, *args, **options):
         dry_run = not options["yes"]
@@ -153,11 +188,16 @@ class Command(BaseCommand):
                 continue
 
             if pre_existing:
-                # Expected to exist but doesn't — report loudly, still create it
-                # (active) rather than silently leaving the live board missing.
+                # Expected to exist but doesn't — report loudly, still create
+                # it rather than silently leaving the live board missing.
+                #
+                # Report the flag actually being written, not a literal: CISCE
+                # is pre_existing (it is a real prod row) AND seeds inactive,
+                # so a hardcoded "(active)" here described the opposite of
+                # what the create below does.
                 self.stdout.write(self.style.WARNING(
                     f"  WARN    {slug:11} {name:12} — expected pre-existing but NOT FOUND; "
-                    f"would CREATE (active)."
+                    f"would CREATE ({'active' if is_active else 'inactive'})."
                 ))
 
             created += 1
@@ -179,17 +219,24 @@ class Command(BaseCommand):
         ))
 
         if options["apply_curation"]:
-            self._curate(dry_run)
+            self._upgrade_names(dry_run)
+            self._deactivate_empty_boards(dry_run)
         else:
-            pending = [
-                f"{slug}.{field}" for slug, field, expect, new, _why in BOARD_CURATION
+            stale = [
+                slug for slug, name, _bt, _a, _p in BOARD_SEED
                 if (b := Board.objects.filter(slug=slug).first()) is not None
-                and getattr(b, field) == expect
+                and b.name != name and b.name in LEGACY_NAME_FORMS(name)
             ]
-            if pending:
+            empty = [
+                b.slug for b in Board.objects.filter(is_active=True)
+                if not b.courses.filter(status__in=PUBLIC_COURSE_STATUSES).exists()
+            ]
+            if stale or empty:
                 self.stdout.write(self.style.WARNING(
-                    f"{len(pending)} curation edit(s) NOT applied "
-                    f"({', '.join(pending)}) — pass --apply-curation to include them."
+                    f"NOT applied without --apply-curation: "
+                    f"{len(stale)} name upgrade(s), "
+                    f"{len(empty)} empty active board(s)"
+                    + (f" ({', '.join(empty)})" if empty else "")
                 ))
 
         if dry_run:

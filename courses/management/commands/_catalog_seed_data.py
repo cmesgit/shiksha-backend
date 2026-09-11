@@ -172,22 +172,41 @@ BOARD_SEED = [
     ("wbbse", "WBBSE · West Bengal", "STATE", False, False),
 ]
 
-# Changes seed_boards must make to rows that ALREADY EXIST. Kept separate, and
-# applied only under --apply-curation, because seed_boards' safety story is
-# "never mutate an existing board" — that guard is what stopped the 2026-07-27
-# duplicate-CBSE incident and must not be softened into a general update pass.
-# This is an explicit, reviewable allow-list keyed on slug: a board not named
-# here can never be touched, whatever BOARD_SEED says.
-BOARD_CURATION = [
-    # slug, field, old value (asserted before writing), new value, why
-    ("mbse", "name", "MBSE", "MBSE · Mizoram",
-     "MBSE and Meghalaya's MBOSE are indistinguishable at a glance once the "
-     "mobile drawer flattens both board tabs into one list."),
-    ("cisce", "is_active", True, False,
-     "CISCE owns ZERO courses, so the live row was a clickable nav entry that "
-     "landed on an empty catalog. Coming Soon is the honest state, and it "
-     "turns the row into a Notify-me capture instead of a dead end."),
-]
+# NOTE — there is deliberately no BOARD_CURATION allow-list here.
+#
+# The first attempt at one was a list of (slug, field, expected_old, new)
+# tuples that asserted the current value before writing. A test killed it: on
+# a re-run, "the value I expect to replace" and "the value an admin has
+# deliberately restored" are the same string, so re-running would have
+# silently deactivated CISCE again the day it actually launched. Asserting the
+# old value protects against a stale seed; it cannot protect against a human
+# who disagreed with it.
+#
+# Both edits that were on that list are now expressed as their own REASON
+# instead, which makes them self-correcting:
+#
+#   * the CISCE deactivation → seed_boards._deactivate_empty_boards(), "an
+#     active board with no public courses is a nav link to an empty catalog".
+#     Give CISCE a course and the rule stops applying to it, by construction.
+#   * the MBSE rename → seed_boards._upgrade_names() against the forms below.
+
+
+def LEGACY_NAME_FORMS(name):
+    """The names an earlier seed could have written for a board now called
+    `name`, so seed_boards can upgrade it without a hand-written list.
+
+    dev ran the pre-2026-09 seed and carries 26 state boards under their bare
+    abbreviations ("BSEAP"), plus one written long-hand without the separator
+    ("BSE Odisha"). Prod has only three boards and never ran it, so there the
+    qualified names are created outright — which is exactly why dev would
+    otherwise render a mix of both styles and stop being a rehearsal for prod.
+
+    Returning a SET of exact strings, rather than doing a fuzzy match, is what
+    keeps this safe: a board whose name is none of these was renamed by a
+    person, and _upgrade_names leaves it alone and says so.
+    """
+    abbr = name.split(" · ")[0].strip()
+    return {name, abbr, name.replace(" · ", " ")}
 
 # ---------------------------------------------------------------------------
 # 3. The 7 competitive courses (kind=COACHING, status=COMING_SOON), carrying
