@@ -38,7 +38,7 @@ class AdminTeacherDirectoryShapeTests(TestCase):
         cls.cbse = Board.objects.create(name="CBSE", board_type=Board.TYPE_CENTRAL)
         cls.mbse = Board.objects.create(name="MBSE", board_type=Board.TYPE_STATE)
         cls.central = CourseCategory.objects.create(
-            name="Central Boards", group=CourseCategory.GROUP_BOARDS,
+            name="National Boards", group=CourseCategory.GROUP_BOARDS,
         )
 
         # The trap this screen exists for: two DIFFERENT courses with the SAME
@@ -111,7 +111,7 @@ class AdminTeacherDirectoryShapeTests(TestCase):
     def test_a_subject_carries_its_course_category_and_status(self):
         _, row = self._row()
         cbse = next(g for g in row["courses"] if g["board"] == "CBSE")
-        self.assertEqual(cbse["categories"], ["Central Boards"])
+        self.assertEqual(cbse["categories"], ["National Boards"])
         self.assertEqual(cbse["status"], "PUBLISHED")
 
         draft = next(g for g in row["courses"] if g["course_title"] == "NEET")
