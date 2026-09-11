@@ -25,7 +25,7 @@ from .intro_video import (
     snapshot,
     sync_intro_video,
 )
-from config.bunny_signing import bunny_tus_ticket
+from config.bunny_signing import bunny_tus_ticket, upload_expiry_for_size
 
 
 class CreateIntroVideoSlotView(APIView):
@@ -61,7 +61,12 @@ class IntroVideoSignedUploadUrlView(APIView):
         if not (owns_pending or owns_current):
             return Response({"error": "Not allowed."}, status=403)
 
-        return Response(bunny_tus_ticket(video_id))
+        # introVideoRules.js allows a 4 GB file, which a flat one-hour ticket
+        # cannot cover on a slow uplink — Bunny then rejects every remaining
+        # chunk with no resume path. Size the ticket to the declared file, the
+        # same way courses/views_recordings.py does.
+        expiry = upload_expiry_for_size(request.data.get("file_size"))
+        return Response(bunny_tus_ticket(video_id, expiry_seconds=expiry))
 
 
 class SaveIntroVideoView(APIView):

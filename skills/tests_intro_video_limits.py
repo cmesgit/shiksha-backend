@@ -107,6 +107,57 @@ class IntroVideoLimitTests(TestCase):
         self.assertEqual(r.status_code, 200)
         mock_requests.get.assert_not_called()
 
+    # ── the profile-GET backstop ────────────────────────────────────────
+
+    @patch("skills.intro_video.requests")
+    def test_profile_get_advances_a_stranded_clip(self, mock_requests):
+        """Loading the edit screen must heal a clip left mid-transcode.
+
+        The status endpoint is only ever called by that screen's poll, so an
+        expert who closed the tab while Bunny was still transcoding kept an
+        unplayable clip forever — nothing else in the system would ever ask
+        Bunny again. The profile GET is the one request that is guaranteed to
+        happen next, so it carries the backstop.
+        """
+        self.expert.intro_video_bunny_id = "vid-abandoned"
+        self.expert.intro_video_status = 1
+        self.expert.save()
+        mock_requests.get.return_value.status_code = 200
+        mock_requests.get.return_value.json.return_value = bunny_video(status=4, length=18)
+
+        r = self.client_.get("/api/skill/teacher/profile/")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data["intro_video_status"], 4)
+        self.assertTrue(r.data["intro_video_embed_url"].endswith("/vid-abandoned"))
+        self.expert.refresh_from_db()
+        self.assertEqual(self.expert.intro_video_status, 4)
+
+    @patch("skills.intro_video.requests")
+    def test_profile_get_does_not_call_bunny_once_settled(self, mock_requests):
+        """The backstop must not cost a Bunny request on every page load."""
+        self.expert.intro_video_bunny_id = "vid-settled"
+        self.expert.intro_video_status = 4
+        self.expert.intro_video_duration = 20
+        self.expert.intro_video_thumbnail_url = "https://cdn.example/vid-settled/t.jpg"
+        self.expert.save()
+
+        r = self.client_.get("/api/skill/teacher/profile/")
+
+        self.assertEqual(r.status_code, 200)
+        mock_requests.get.assert_not_called()
+
+    def test_profile_get_never_leaks_the_bunny_id(self):
+        """The dashboard must not be tempted to key UI state off this again.
+
+        ExpertProfileEdit.jsx decided "is a clip still transcoding" by testing
+        intro_video_bunny_id, which this payload has never carried — so the
+        test was always false and the poll never restarted after a reload.
+        """
+        self.assertNotIn("intro_video_bunny_id", self.client_.get(
+            "/api/skill/teacher/profile/"
+        ).data)
+
     # ── the duration limit ──────────────────────────────────────────────
 
     @patch("skills.intro_video.requests")
