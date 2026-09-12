@@ -18,12 +18,16 @@ minutes later. That is reported as a skip, not a success — see
 ``skills/intro_video.py`` which coerces the same 0 for the same reason.
 
 Reads only. This never creates, deletes or uploads anything on Bunny.
+
+The rules themselves live in ``content/demo_video_bunny.py``, shared with the
+upload flow on the admin change form — which attaches a guid and then asks the
+same question this command asks. Only the reporting below is the command's own.
 """
 
 from django.core.management.base import BaseCommand
 
+from content.demo_video_bunny import sync_demo_video
 from content.models import DemoVideo
-from skills.intro_video import fetch_bunny_video
 
 # One definition, on the model, because the list endpoint gates on it too.
 STATUS_FINISHED = DemoVideo.BUNNY_FINISHED
@@ -59,7 +63,9 @@ class Command(BaseCommand):
         synced = skipped = unreachable = 0
 
         for video in rows:
-            data = fetch_bunny_video(video.bunny_video_id)
+            # save=False on a dry run sets the fields in memory so they can be
+            # reported, and writes nothing.
+            changed, data = sync_demo_video(video, save=not dry)
             if data is None:
                 # None means "we learned nothing" — never "the video is gone".
                 # Leave the stored values alone rather than blanking a good
@@ -71,27 +77,6 @@ class Command(BaseCommand):
                 continue
 
             status = data.get("status")
-            length = data.get("length") or None
-            changed = []
-
-            # Recorded even when it is not 4, because the list endpoint gates
-            # on it: a row that regresses (or never finishes) must go back to
-            # hidden rather than keep serving on a stale value.
-            if video.bunny_status != status:
-                video.bunny_status = status
-                changed.append("bunny_status")
-
-            if length is not None and video.duration_seconds != length:
-                video.duration_seconds = length
-                changed.append("duration_seconds")
-
-            thumb = data.get("thumbnailFileName", "")
-            cdn_host = self._cdn_host()
-            if thumb and cdn_host:
-                url = f"https://{cdn_host}/{video.bunny_video_id}/{thumb}"
-                if video.thumbnail_url != url:
-                    video.thumbnail_url = url
-                    changed.append("thumbnail_url")
 
             if not changed:
                 skipped += 1
@@ -104,7 +89,7 @@ class Command(BaseCommand):
                 ))
             else:
                 synced += 1
-                video.save(update_fields=changed + ["updated_at"])
+                # Already written by sync_demo_video(save=True) above.
                 self.stdout.write(self.style.SUCCESS(
                     f"  {video.key}: set {', '.join(changed)} "
                     f"(runtime {self._fmt(video.duration_seconds)})"
@@ -120,8 +105,8 @@ class Command(BaseCommand):
                     f"{status}, not {STATUS_FINISHED} Finished) — this clip is "
                     f"HIDDEN from the site until it is. Re-run in a few "
                     f"minutes; if it is stuck at 2 with storageSize 0 the "
-                    f"upload stored nothing, so re-upload via the Bunny "
-                    f"dashboard."
+                    f"upload stored nothing, so upload the clip again from "
+                    f"the row in Django admin."
                 ))
 
         verb = "would update" if dry else "updated"
@@ -130,11 +115,6 @@ class Command(BaseCommand):
         )
         if dry and synced:
             self.stdout.write(self.style.WARNING("Dry run — nothing written."))
-
-    @staticmethod
-    def _cdn_host():
-        from django.conf import settings
-        return getattr(settings, "BUNNY_CDN_HOST", "")
 
     @staticmethod
     def _fmt(seconds):

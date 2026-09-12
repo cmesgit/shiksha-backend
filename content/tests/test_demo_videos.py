@@ -170,7 +170,7 @@ class SyncDemoVideosCommandTests(TestCase):
         call_command("sync_demo_videos", stdout=out, stderr=out, **kw)
         return out.getvalue()
 
-    @patch("content.management.commands.sync_demo_videos.fetch_bunny_video")
+    @patch("content.demo_video_bunny.fetch_bunny_video")
     def test_records_bunny_status_even_when_unfinished(self, fetch):
         """The list endpoint gates on this, so a row that never finishes must
         be storable as "not finished" rather than left null and ambiguous."""
@@ -180,7 +180,7 @@ class SyncDemoVideosCommandTests(TestCase):
         self.assertEqual(self.video.bunny_status, 2)
         self.assertFalse(self.video.is_playable)
 
-    @patch("content.management.commands.sync_demo_videos.fetch_bunny_video")
+    @patch("content.demo_video_bunny.fetch_bunny_video")
     def test_status_regression_hides_a_previously_live_clip(self, fetch):
         """A clip that was Finished and later is not must go back to hidden,
         not keep serving on a stale value."""
@@ -192,7 +192,7 @@ class SyncDemoVideosCommandTests(TestCase):
         self.assertFalse(self.video.is_playable)
 
     @override_settings(BUNNY_CDN_HOST="cdn.example.net")
-    @patch("content.management.commands.sync_demo_videos.fetch_bunny_video")
+    @patch("content.demo_video_bunny.fetch_bunny_video")
     def test_writes_duration_and_thumbnail(self, fetch):
         fetch.return_value = {
             "status": 4, "length": 54, "thumbnailFileName": "thumb.jpg",
@@ -206,7 +206,7 @@ class SyncDemoVideosCommandTests(TestCase):
             "https://cdn.example.net/guid-signup/thumb.jpg",
         )
 
-    @patch("content.management.commands.sync_demo_videos.fetch_bunny_video")
+    @patch("content.demo_video_bunny.fetch_bunny_video")
     def test_length_zero_means_unknown_not_zero(self, fetch):
         """Bunny reports length 0 until processing finishes. Storing that
         would publish a '0:00' label on a real video."""
@@ -216,7 +216,7 @@ class SyncDemoVideosCommandTests(TestCase):
         self.assertIsNone(self.video.duration_seconds)
         self.assertIn("still processing", out)
 
-    @patch("content.management.commands.sync_demo_videos.fetch_bunny_video")
+    @patch("content.demo_video_bunny.fetch_bunny_video")
     def test_unreachable_bunny_leaves_existing_values_alone(self, fetch):
         """None means 'we learned nothing', never 'the video is gone'. A
         network blip must not blank a good duration."""
@@ -227,7 +227,7 @@ class SyncDemoVideosCommandTests(TestCase):
         self.assertEqual(self.video.duration_seconds, 54)
         self.assertIn("unreachable", out)
 
-    @patch("content.management.commands.sync_demo_videos.fetch_bunny_video")
+    @patch("content.demo_video_bunny.fetch_bunny_video")
     def test_dry_run_writes_nothing(self, fetch):
         fetch.return_value = {"status": 4, "length": 54}
         out = self._run(dry_run=True)
@@ -235,7 +235,7 @@ class SyncDemoVideosCommandTests(TestCase):
         self.assertIsNone(self.video.duration_seconds)
         self.assertIn("Dry run", out)
 
-    @patch("content.management.commands.sync_demo_videos.fetch_bunny_video")
+    @patch("content.demo_video_bunny.fetch_bunny_video")
     def test_skips_rows_with_no_guid(self, fetch):
         DemoVideo.objects.update(bunny_video_id="")
         out = self._run()

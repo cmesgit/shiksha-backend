@@ -8,11 +8,16 @@
 #     configured, body fields upgrade automatically; otherwise a large
 #     monospace textarea (fine for HTML fragments) is used.
 
+import json
+
 from django import forms
 from django.contrib import admin
+from django.http import JsonResponse
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.html import format_html
 
+from . import demo_video_bunny
 from .models import (
     Announcement, BlogPost, ContactMessage, ContentTag, CurrentAffair,
     DemoVideo, FAQItem, HomeFloater, HomeContentBlock, HomeListItem,
@@ -242,6 +247,20 @@ class HomeFloaterAdmin(admin.ModelAdmin):
     search_fields = ("label", "sublabel")
 
 
+def _json_body(request):
+    """The request's JSON body as a dict, or an empty dict.
+
+    Malformed JSON is not distinguished from an empty body on purpose: every
+    field these endpoints read is validated individually anyway, so the caller
+    gets "video_id required" rather than a parser error it cannot act on.
+    """
+    try:
+        body = json.loads(request.body or b"{}")
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
 @admin.register(DemoVideo)
 class DemoVideoAdmin(admin.ModelAdmin):
     """Where the two landing-page walkthroughs are configured.
@@ -249,6 +268,26 @@ class DemoVideoAdmin(admin.ModelAdmin):
     `duration_seconds` and `thumbnail_url` are read-only on purpose — they are
     owned by `manage.py sync_demo_videos`, and an editable field the next sync
     silently overwrites is worse than no field at all.
+
+    ## Uploading
+
+    The change form carries a file picker (see `demo_video_upload.js`) that
+    sends the clip from this browser straight to Bunny and fills in the guid
+    itself. The three endpoints behind it are wired in `get_urls` below.
+
+    `bunny_video_id` stays an ordinary editable text field anyway. Pasting a
+    guid from the Bunny dashboard was the only way to configure a row for the
+    first six months of this feature's life, it still works, and it is the
+    fallback when an upload fails for a reason nobody has met yet.
+
+    Two things the upload deliberately does NOT do:
+
+    * **It does not delete the clip it replaced.** Bunny keeps the old video
+      and something else may still point at it; orphan cleanup is a separate
+      job with separate consequences, not a side effect of picking a new file.
+    * **It does not cap duration.** `skills` caps intro clips at 60s because
+      those are user-submitted adverts on a public profile. These two clips are
+      ours, and a walkthrough that needs 90 seconds should get 90 seconds.
     """
 
     list_display = ("title", "key", "order", "status", "has_video",
@@ -256,9 +295,158 @@ class DemoVideoAdmin(admin.ModelAdmin):
     list_filter = ("status",)
     list_editable = ("order", "status")
     search_fields = ("title", "key", "blurb")
-    readonly_fields = ("duration_seconds", "thumbnail_url", "bunny_status")
-    fields = ("key", "title", "blurb", "order", "status", "bunny_video_id",
-              "bunny_status", "duration_seconds", "thumbnail_url")
+    readonly_fields = ("upload_panel", "duration_seconds", "thumbnail_url",
+                       "bunny_status")
+    fields = ("key", "title", "blurb", "order", "status", "upload_panel",
+              "bunny_video_id", "bunny_status", "duration_seconds",
+              "thumbnail_url")
+
+    class Media:
+        js = ("content/tus.min.js", "content/demo_video_upload.js")
+        css = {"all": ("content/demo_video_upload.css",)}
+
+    # ── the upload endpoints ─────────────────────────────────────
+
+    def get_urls(self):
+        """Three JSON endpoints, under this model's own admin URL space.
+
+        Plain admin views rather than DRF: the only caller is the change form
+        on the other side of `self.admin_site.admin_view`, so it already
+        carries a session and a CSRF token, and routing it through DRF would
+        mean a second authentication story for one page.
+
+        Prepended, not appended — `ModelAdmin.get_urls` ends in a
+        `<path:object_id>/` catch-all that would otherwise swallow these.
+        """
+        from django.urls import path
+
+        mine = [
+            path("<path:object_id>/upload-slot/",
+                 self.admin_site.admin_view(self.upload_slot_view),
+                 name="content_demovideo_upload_slot"),
+            path("<path:object_id>/attach/",
+                 self.admin_site.admin_view(self.attach_view),
+                 name="content_demovideo_attach"),
+            path("<path:object_id>/state/",
+                 self.admin_site.admin_view(self.state_view),
+                 name="content_demovideo_state"),
+        ]
+        return mine + super().get_urls()
+
+    def _editable_or_404(self, request, object_id):
+        """The row this request may change, or an error response.
+
+        `admin_view` proves the caller is staff and nothing more. Change
+        permission on *this model* is a separate question, and a read-only
+        admin reaching the upload endpoint directly must not be able to
+        repoint a homepage video.
+        """
+        obj = self.get_object(request, object_id)
+        if obj is None:
+            return None, JsonResponse({"error": "No such demo video."}, status=404)
+        if not self.has_change_permission(request, obj):
+            return None, JsonResponse(
+                {"error": "You do not have permission to change this."}, status=403)
+        return obj, None
+
+    def _state(self, obj, *, reachable=True):
+        """Everything the widget renders, derived in one place.
+
+        The panel and the list columns must never disagree about whether a
+        clip is live, so both read `on_the_site`.
+        """
+        return {
+            "video_id": obj.bunny_video_id,
+            "bunny_status": obj.bunny_status,
+            "status_label": demo_video_bunny.status_label(obj.bunny_status),
+            "duration_seconds": obj.duration_seconds,
+            "runtime": self.runtime(obj),
+            "thumbnail_url": obj.thumbnail_url,
+            "embed_url": obj.embed_url(),
+            "is_playable": obj.is_playable,
+            "on_the_site": self.on_the_site(obj),
+            "finished": obj.bunny_status == obj.BUNNY_FINISHED,
+            # False means "Bunny did not answer", which is not the same as
+            # "the clip is broken" — the widget says so rather than reporting
+            # a state it did not actually learn.
+            "reachable": reachable,
+        }
+
+    def upload_slot_view(self, request, object_id):
+        """Mint an empty Bunny video and sign a ticket for it."""
+        if request.method != "POST":
+            return JsonResponse({"error": "POST only."}, status=405)
+        obj, err = self._editable_or_404(request, object_id)
+        if err:
+            return err
+
+        payload = _json_body(request)
+        # Bunny's dashboard shows this, so name it after the row rather than
+        # leaving sixteen videos called "video".
+        title = payload.get("filename") or f"{obj.key} — {obj.title}"
+        try:
+            ticket = demo_video_bunny.create_upload_slot(
+                title, payload.get("size"))
+        except demo_video_bunny.BunnyUnavailable as e:
+            return JsonResponse({"error": str(e)}, status=502)
+        return JsonResponse(ticket)
+
+    def attach_view(self, request, object_id):
+        """Point the row at an uploaded clip and ask Bunny how it went."""
+        if request.method != "POST":
+            return JsonResponse({"error": "POST only."}, status=405)
+        obj, err = self._editable_or_404(request, object_id)
+        if err:
+            return err
+
+        video_id = (_json_body(request).get("video_id") or "").strip()
+        if not video_id:
+            return JsonResponse({"error": "video_id required."}, status=400)
+
+        demo_video_bunny.attach(obj, video_id)
+        # Bunny is almost never finished this early — the widget polls
+        # `state/` from here. Syncing now is what records status 1/2 so the
+        # panel can say "processing" instead of "not checked yet".
+        _, data = demo_video_bunny.sync_demo_video(obj)
+        self.log_change(request, obj, f"Uploaded a new clip ({video_id}).")
+        return JsonResponse(self._state(obj, reachable=data is not None))
+
+    def state_view(self, request, object_id):
+        """Re-read Bunny's state for this row. Polled while a clip encodes."""
+        obj, err = self._editable_or_404(request, object_id)
+        if err:
+            return err
+        if not obj.bunny_video_id:
+            return JsonResponse(self._state(obj))
+        _, data = demo_video_bunny.sync_demo_video(obj)
+        return JsonResponse(self._state(obj, reachable=data is not None))
+
+    # ── the change-form panel ────────────────────────────────────
+
+    @admin.display(description="Upload a clip")
+    def upload_panel(self, obj):
+        """The mount point the JS takes over.
+
+        Rendered server-side so that with JS disabled — or if the vendored
+        tus bundle ever fails to load — the form still explains what to do
+        instead of showing an inert empty box.
+        """
+        if obj is None or not obj.pk:
+            return format_html(
+                '<p class="dv-hint">{}</p>',
+                "Save this row first, then upload a clip.")
+        state = self._state(obj)
+        return format_html(
+            '<div class="dv-upload" data-slot-url="{}" data-attach-url="{}" '
+            'data-state-url="{}" data-state="{}">'
+            '<p class="dv-hint">Choose a video file and it uploads straight to '
+            "Bunny. The guid, runtime and thumbnail below fill in by "
+            "themselves.</p></div>",
+            reverse("admin:content_demovideo_upload_slot", args=[obj.pk]),
+            reverse("admin:content_demovideo_attach", args=[obj.pk]),
+            reverse("admin:content_demovideo_state", args=[obj.pk]),
+            json.dumps(state),
+        )
 
     @admin.display(boolean=True, description="Video uploaded")
     def has_video(self, obj):
@@ -277,7 +465,11 @@ class DemoVideoAdmin(admin.ModelAdmin):
         if not obj.bunny_video_id:
             return "No — no video uploaded"
         if obj.bunny_status is None:
-            return "No — run sync_demo_videos"
+            # Reached from two places now — this column, and the upload panel
+            # while a fresh clip encodes. "Run sync_demo_videos" was the only
+            # answer before the panel existed and is now wrong half the time,
+            # so say what is true in both: nobody has asked Bunny yet.
+            return "No — not checked with Bunny yet"
         if obj.bunny_status != obj.BUNNY_FINISHED:
             return f"No — Bunny still at status {obj.bunny_status}"
         if not obj.embed_url():
@@ -289,7 +481,7 @@ class DemoVideoAdmin(admin.ModelAdmin):
         if not obj.duration_seconds:
             # Bunny reports length 0 until it has finished processing, so
             # "not synced yet" and "still transcoding" look the same here.
-            return "— run sync_demo_videos"
+            return "— not known yet"
         return f"{obj.duration_seconds // 60}:{obj.duration_seconds % 60:02d}"
 
 
