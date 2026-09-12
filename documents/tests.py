@@ -3,8 +3,10 @@
 Run with: DJANGO_SETTINGS_MODULE=config.settings_test ... manage.py test documents
 """
 import json
+from unittest import mock
 import os
 
+from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, Client
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -299,7 +301,8 @@ class OwnerDeleteTests(TestCase):
     def test_owner_can_delete_and_it_leaves_the_library(self):
         doc = self._upload(self.owner)
         r = auth_client(self.owner).delete(f"/api/explore/documents/{doc.id}/")
-        self.assertEqual(r.status_code, 204)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["deleted"])
         doc.refresh_from_db()
         self.assertTrue(doc.is_removed)
         self.assertIsNotNone(doc.removed_at)
@@ -328,7 +331,7 @@ class OwnerDeleteTests(TestCase):
     def test_staff_can_delete(self):
         doc = self._upload(self.owner)
         self.assertEqual(
-            auth_client(self.staff).delete(f"/api/explore/documents/{doc.id}/").status_code, 204)
+            auth_client(self.staff).delete(f"/api/explore/documents/{doc.id}/").status_code, 200)
 
     def test_deleting_frees_the_file_for_re_upload(self):
         """Otherwise "delete and re-upload the corrected version" is impossible
@@ -414,3 +417,68 @@ class ViewCountTests(TestCase):
     def test_download_endpoint_increments(self):
         r = Client().post(f"/api/explore/documents/{self.doc.id}/download/")
         self.assertEqual(r.json()["downloads"], 1)
+
+
+class BunnyDeletePurgeTests(TestCase):
+    """Deleting from Edge Storage is not enough — the CDN keeps serving.
+
+    Measured against the live zone: after a successful storage delete the
+    origin answers 404 while the pull zone still answers 200, more than a
+    minute later. Explore files are served with NO authentication, so an
+    un-purged delete leaves the document downloadable by anyone who ever had
+    the URL. These tests pin the purge behaviour so it can't quietly regress.
+    """
+
+    def setUp(self):
+        from config.bunny_storage import BunnyStorage
+        self.storage = BunnyStorage()
+
+    def test_delete_also_purges_the_cdn(self):
+        with mock.patch("config.bunny_storage.requests") as rq, \
+             self.settings(BUNNY_ACCOUNT_API_KEY="acct-key",
+                           BUNNY_STORAGE_CDN_HOST="cdn.example.net"):
+            rq.delete.return_value = mock.Mock(status_code=200)
+            rq.post.return_value = mock.Mock(status_code=200, text="")
+            rq.RequestException = Exception
+            self.storage.delete("explore/documents/1/a.pdf")
+
+        rq.delete.assert_called_once()
+        rq.post.assert_called_once()
+        args, kwargs = rq.post.call_args
+        self.assertEqual(args[0], "https://api.bunny.net/purge")
+        self.assertEqual(kwargs["params"]["url"],
+                         "https://cdn.example.net/explore/documents/1/a.pdf")
+        # The ACCOUNT key, not the storage-zone key — the storage key and the
+        # Stream library key both 401 on this endpoint.
+        self.assertEqual(kwargs["headers"]["AccessKey"], "acct-key")
+
+    def test_missing_account_key_does_not_silently_claim_success(self):
+        with mock.patch("config.bunny_storage.requests") as rq, \
+             self.settings(BUNNY_ACCOUNT_API_KEY="",
+                           BUNNY_STORAGE_CDN_HOST="cdn.example.net"):
+            rq.RequestException = Exception
+            self.assertFalse(self.storage.purge("explore/documents/1/a.pdf"))
+            rq.post.assert_not_called()
+
+    def test_a_rejected_purge_reports_failure(self):
+        with mock.patch("config.bunny_storage.requests") as rq, \
+             self.settings(BUNNY_ACCOUNT_API_KEY="wrong-key",
+                           BUNNY_STORAGE_CDN_HOST="cdn.example.net"):
+            rq.post.return_value = mock.Mock(status_code=401, text="denied")
+            rq.RequestException = Exception
+            self.assertFalse(self.storage.purge("explore/documents/1/a.pdf"))
+
+    def test_delete_endpoint_reports_when_the_file_is_not_really_gone(self):
+        """A caller must be able to tell a complete delete from a partial one."""
+        owner = User.objects.create(email="pg@t.com", username="pgowner", is_verified=True)
+        doc = Document.objects.create(owner=owner, title="Purge me")
+        doc.file.save("p.pdf", ContentFile(b"%PDF-1.4 purge"), save=True)
+
+        with self.settings(BUNNY_ACCOUNT_API_KEY=""):
+            r = auth_client(owner).delete(f"/api/explore/documents/{doc.id}/")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["deleted"])
+        # Local storage has no purge() at all, so nothing is left on a CDN and
+        # this correctly stays True. The flag only goes False for a CDN-backed
+        # store with no account key — which is prod's current state.
+        self.assertIn("file_purged", r.json())

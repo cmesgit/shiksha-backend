@@ -7,6 +7,7 @@
 # and ScopedRateThrottle on the write-heavy endpoints. Endpoint set matches the
 # frontend's exploreApi.js header.
 
+import logging
 from datetime import timedelta
 
 from rest_framework.views import APIView
@@ -15,6 +16,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework import status
+from django.conf import settings
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, Q, Exists, OuterRef, Sum, F
@@ -36,6 +38,7 @@ from .utils import contributor_badge
 from . import constants
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 # =====================================================
@@ -381,6 +384,14 @@ class DocumentDetailView(APIView):
         detail; the bytes surviving is not — Explore media sits in a public
         Bunny zone, so "I deleted it" has to mean the file stops being
         retrievable, not just that it stops being listed.
+
+        BunnyStorage.delete() removes the object from Edge Storage *and* purges
+        it from the CDN edge — deleting from storage alone leaves the pull zone
+        serving its cached copy indefinitely (measured: origin 404, CDN still
+        200 a minute later). The purge needs BUNNY_ACCOUNT_API_KEY. When that
+        is unset the delete still happens but the file stays downloadable by
+        anyone holding the URL, so the response says `file_purged: false`
+        instead of reporting a clean removal.
         """
         if not request.user.is_authenticated:
             return Response({"detail": "Authentication required."},
@@ -390,13 +401,26 @@ class DocumentDetailView(APIView):
             return Response({"detail": "You can only delete your own uploads."},
                             status=status.HTTP_403_FORBIDDEN)
 
+        file_removed = True
         if doc.file:
+            storage = doc.file.storage
             # Never let a storage-backend hiccup strand the document as still
             # visible — take it out of the library either way.
             try:
-                doc.file.delete(save=False)
+                doc.file.delete(save=False)   # origin delete, then CDN purge
             except Exception:
-                pass
+                logger.exception("Could not delete stored file for document %s", doc.pk)
+                file_removed = False
+            else:
+                # Deliberately reports whether purging is CONFIGURED, not the
+                # result of this particular purge call: the storage object is
+                # shared across concurrent requests, so per-call state stashed
+                # on it would be read by the wrong request. A missing account
+                # key is the real, actionable condition anyway — and it is a
+                # constant, so this answer is never wrong for the wrong reason.
+                file_removed = not (
+                    hasattr(storage, "purge") and not getattr(settings, "BUNNY_ACCOUNT_API_KEY", "")
+                )
         doc.file = None
         # Frees the (owner, file_hash) slot so the same file can be uploaded
         # again later; the constraint already excludes removed rows, but
@@ -405,7 +429,8 @@ class DocumentDetailView(APIView):
         doc.is_removed = True
         doc.removed_at = timezone.now()
         doc.save(update_fields=["file", "file_hash", "is_removed", "removed_at"])
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response({"deleted": True, "file_purged": file_removed},
+                        status=status.HTTP_200_OK)
 
 
 # =====================================================

@@ -13,10 +13,14 @@ Wired in as STORAGES["default"] only when BUNNY_STORAGE_ZONE and
 BUNNY_STORAGE_API_KEY are both set (see settings_base.py) — local/test
 environments without real Bunny credentials keep using local disk unchanged.
 """
+import logging
+
 import requests
 from django.conf import settings
 from django.core.files.storage import Storage
 from django.utils.deconstruct import deconstructible
+
+logger = logging.getLogger(__name__)
 
 
 @deconstructible
@@ -85,7 +89,58 @@ class BunnyStorage(Storage):
         return status == 200
 
     def delete(self, name):
-        requests.delete(self._storage_url(name), headers=self._headers(), timeout=self.TIMEOUT)
+        """Remove the object from Edge Storage AND from the CDN edge.
+
+        Deleting from storage alone is NOT enough. Measured against the live
+        zone: after a successful delete the origin answers 404 while the pull
+        zone keeps serving its cached copy — still 200 a minute later, with no
+        sign of expiring on its own. These files are served with no
+        authentication, so an un-purged delete leaves the file downloadable
+        forever by anyone who ever saw the URL. "Deleted" has to mean gone.
+
+        Failures here are logged, never raised: a delete that already succeeded
+        at origin must not surface as a 500, and the caller has usually already
+        committed to removing the row.
+        """
+        try:
+            requests.delete(self._storage_url(name), headers=self._headers(), timeout=self.TIMEOUT)
+        except requests.RequestException:
+            logger.exception("Bunny storage delete failed for %r", name)
+            raise
+        self.purge(name)
+
+    def purge(self, name):
+        """Drop `name` from the CDN edge cache. Returns True if Bunny accepted it.
+
+        Needs the ACCOUNT API key (Bunny dashboard → Account Settings → API).
+        The storage-zone key and the Stream library key both 401 here — that
+        was tested, not assumed — so this is a third credential, and when it is
+        absent the only honest thing to do is say the file is still reachable
+        rather than pretend the delete was complete.
+        """
+        key = getattr(settings, "BUNNY_ACCOUNT_API_KEY", "")
+        target = self.url(name)
+        if not key:
+            logger.warning(
+                "BUNNY_ACCOUNT_API_KEY is not set — %s was deleted from storage but "
+                "REMAINS SERVABLE from the CDN edge cache. Set the account API key "
+                "so deletes actually remove the file.", target,
+            )
+            return False
+        try:
+            r = requests.post(
+                "https://api.bunny.net/purge",
+                params={"url": target},
+                headers={"AccessKey": key},
+                timeout=self.TIMEOUT,
+            )
+        except requests.RequestException:
+            logger.exception("Bunny CDN purge request failed for %s", target)
+            return False
+        if r.status_code >= 400:
+            logger.error("Bunny CDN purge for %s returned %s: %s", target, r.status_code, r.text[:200])
+            return False
+        return True
 
     def url(self, name):
         host = settings.BUNNY_STORAGE_CDN_HOST.rstrip("/")

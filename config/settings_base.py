@@ -153,6 +153,22 @@ BUNNY_STORAGE_HOSTNAME = os.getenv("BUNNY_STORAGE_HOSTNAME", "storage.bunnycdn.c
 # pull zone instead.
 BUNNY_STORAGE_CDN_HOST = os.getenv("BUNNY_STORAGE_CDN_HOST", "")
 
+# Bunny ACCOUNT-level API key, used only to purge a URL from the CDN edge after
+# the object is deleted from Edge Storage.
+#
+# This is a THIRD, separate credential — not BUNNY_STORAGE_API_KEY (the storage
+# zone key) and not BUNNY_API_KEY (a Stream *library* key). Both of those were
+# tested against https://api.bunny.net/purge and answer 401; only the account
+# key from Bunny's dashboard (Account Settings → API) can purge.
+#
+# Why it matters: deleting from Edge Storage makes the ORIGIN 404 but the pull
+# zone keeps serving its cached copy — measured still 200 more than a minute
+# later, with no sign of expiring. Since these files are served with no
+# authentication at all, an un-purged delete leaves the file downloadable by
+# anyone who ever had the URL. Without this key set, deletion is only partial
+# and BunnyStorage.delete() says so in the log.
+BUNNY_ACCOUNT_API_KEY = os.getenv("BUNNY_ACCOUNT_API_KEY", "")
+
 _using_bunny_storage = bool(BUNNY_STORAGE_ZONE and BUNNY_STORAGE_API_KEY)
 if not _using_bunny_storage:
     import warnings
