@@ -102,6 +102,7 @@ class Document(models.Model):
         related_name="documents",
     )
     subject = models.CharField(max_length=120, blank=True, default="")
+    topic = models.CharField(max_length=120, blank=True, default="", db_default="")
     level = models.CharField(max_length=60, blank=True, default="")
     language = models.CharField(max_length=40, blank=True, default="English")
     institution = models.CharField(max_length=160, blank=True, default="")

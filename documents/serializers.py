@@ -14,6 +14,7 @@ from .models import (
     SavedDocument, DocumentLike,
 )
 from .utils import contributor_badge
+from .taxonomy import normalise_subject_topic
 
 
 def _date_label(dt):
@@ -71,7 +72,7 @@ class DocumentCardSerializer(serializers.ModelSerializer):
     class Meta:
         model = Document
         fields = (
-            "id", "title", "type", "typeMeta", "author", "subject", "level",
+            "id", "title", "type", "typeMeta", "author", "subject", "topic", "level",
             "language", "institution", "filetype", "date", "dateLabel", "pages",
             "views", "downloads", "rating", "tags", "desc", "file_url",
             "is_saved", "is_liked", "likes_count", "created_at",
@@ -144,6 +145,7 @@ class UploadDocumentSerializer(serializers.Serializer):
     full = serializers.CharField(required=False, allow_blank=True, default="")
     category = serializers.CharField(required=False, allow_blank=True, default="")  # slug
     subject = serializers.CharField(required=False, allow_blank=True, default="", max_length=120)
+    topic = serializers.CharField(required=False, allow_blank=True, default="", max_length=120)
     level = serializers.CharField(required=False, allow_blank=True, default="", max_length=60)
     language = serializers.CharField(required=False, allow_blank=True, default="English", max_length=40)
     institution = serializers.CharField(required=False, allow_blank=True, default="", max_length=160)
@@ -151,6 +153,15 @@ class UploadDocumentSerializer(serializers.Serializer):
     pages = serializers.IntegerField(required=False, default=0, min_value=0)
     tags = serializers.CharField(required=False, allow_blank=True, default="")  # comma-joined
     file = serializers.FileField(required=False)
+
+    def validate(self, attrs):
+        subject, topic = normalise_subject_topic(attrs.get("subject", ""), attrs.get("topic", ""))
+        if subject.casefold() == "all" or topic.casefold() == "all":
+            raise serializers.ValidationError("Use a subject or subcategory name instead of All.")
+        if topic and not subject:
+            raise serializers.ValidationError({"subject": "Choose or enter a main subject before adding a subcategory."})
+        attrs.update(subject=subject, topic=topic)
+        return attrs
 
     def validate_file(self, value):
         from django.core.exceptions import ValidationError as DjangoValidationError

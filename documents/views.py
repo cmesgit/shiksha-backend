@@ -88,13 +88,13 @@ def _base_documents(user, include_removed=False):
 
 def _sort_documents(qs, sort):
     if sort == "Latest":
-        return qs.order_by("-created_at")
+        return qs.order_by("-created_at", "-pk")
     if sort == "Most Viewed":
-        return qs.order_by("-view_count", "-created_at")
+        return qs.order_by("-view_count", "-created_at", "-pk")
     if sort == "Most Downloaded":
-        return qs.order_by("-download_count", "-created_at")
+        return qs.order_by("-download_count", "-created_at", "-pk")
     # Trending (default): featured/trending first, then views.
-    return qs.order_by("-is_trending", "-view_count", "-created_at")
+    return qs.order_by("-is_trending", "-view_count", "-created_at", "-pk")
 
 
 def _within_range_cutoff(range_label):
@@ -140,11 +140,15 @@ class FacetsView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
+        from .taxonomy import subject_groups
         cats = DocumentCategory.objects.filter(is_active=True)
+        pairs = Document.objects.filter(is_removed=False).order_by("subject", "topic").values_list("subject", "topic").distinct()
+        groups = subject_groups(pairs)
         return Response({
             "categories": DocumentCategorySerializer(
                 cats, many=True, context={"request": request}).data,
-            "subjects": constants.SUBJECTS,
+            "subjects": ["All", *(group["subject"] for group in groups)],
+            "subjectGroups": groups,
             "levels": constants.LEVELS,
             "languages": constants.LANGUAGES,
             "filetypes": constants.FILETYPES,
@@ -264,10 +268,10 @@ class DocumentsView(APIView):
         category = p.get("category")
         if category and category != "All":
             qs = qs.filter(category__slug=category)
-        for field in ("subject", "level", "language", "filetype"):
+        for field in ("subject", "topic", "level", "language", "filetype"):
             val = p.get(field)
             if val and val != "All":
-                qs = qs.filter(**{field: val})
+                qs = qs.filter(**{f"{field}__iexact": val.strip()})
         cutoff = _within_range_cutoff(p.get("date"))
         if cutoff is not None:
             qs = qs.filter(created_at__gte=cutoff)
@@ -275,7 +279,7 @@ class DocumentsView(APIView):
         if q:
             qs = qs.filter(
                 Q(title__icontains=q) | Q(description__icontains=q)
-                | Q(subject__icontains=q) | Q(tags__name__icontains=q)
+                | Q(subject__icontains=q) | Q(topic__icontains=q) | Q(tags__name__icontains=q)
                 | Q(owner__username__icontains=q)
             ).distinct()
 
@@ -337,6 +341,7 @@ class DocumentsView(APIView):
             full=data.get("full", ""),
             category=category,
             subject=data.get("subject", ""),
+            topic=data.get("topic", ""),
             level=data.get("level", ""),
             language=data.get("language", "English"),
             institution=data.get("institution", ""),
