@@ -532,3 +532,84 @@ class MyCollectionsTests(TestCase):
         self.other.save(update_fields=["is_staff"])
         rows = auth_client(self.other).get("/api/explore/collections/?mine=1").json()
         self.assertEqual({c["title"] for c in rows}, {"Their public", "Their private"})
+
+
+class SubjectTaxonomyTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create(email="subjects@test.com", username="subjects", is_verified=True)
+
+    def test_facets_offer_broad_subjects_and_dependent_topics(self):
+        data = Client().get("/api/explore/facets/").json()
+        groups = {g["subject"]: g["topics"] for g in data["subjectGroups"]}
+        self.assertGreaterEqual(len(groups), 30)
+        self.assertGreater(sum(map(len, groups.values())), 200)
+        self.assertIn("Machine Learning", groups["Computer Science"])
+        self.assertIn("Genetics", groups["Biology"])
+        self.assertEqual(len(data["subjects"]), len(set(data["subjects"])))
+
+    def test_custom_upload_labels_persist_and_become_browse_filters_immediately(self):
+        response = auth_client(self.owner).post("/api/explore/documents/", data={
+            "title": "Ocean field notes", "subject": "Ocean Studies", "topic": "Coastal Ecology"})
+        self.assertEqual(response.status_code, 201)
+        doc = Document.objects.get(pk=response.json()["id"])
+        self.assertEqual((doc.subject, doc.topic), ("Ocean Studies", "Coastal Ecology"))
+        groups = Client().get("/api/explore/facets/").json()["subjectGroups"]
+        self.assertIn({"subject": "Ocean Studies", "topics": ["Coastal Ecology"]}, groups)
+        result = Client().get("/api/explore/documents/", {"subject": "ocean studies", "topic": "coastal ecology"}).json()
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["results"][0]["topic"], "Coastal Ecology")
+
+    def test_topic_filter_is_scoped_to_selected_subject(self):
+        Document.objects.create(owner=self.owner, title="Math", subject="Mathematics", topic="Probability")
+        Document.objects.create(owner=self.owner, title="Stats", subject="Statistics", topic="Probability")
+        Document.objects.create(owner=self.owner, title="Algebra", subject="Mathematics", topic="Algebra")
+        data = Client().get("/api/explore/documents/", {"subject": "Mathematics", "topic": "Probability"}).json()
+        self.assertEqual([d["title"] for d in data["results"]], ["Math"])
+
+    def test_search_matches_custom_subcategory(self):
+        doc = Document.objects.create(owner=self.owner, title="Field notes", subject="Ocean Studies", topic="Coastal Ecology")
+        result = Client().get("/api/explore/documents/", {"q": "coastal"}).json()
+        self.assertEqual([d["id"] for d in result["results"]], [doc.id])
+
+    def test_known_labels_are_normalised_but_custom_labels_are_allowed(self):
+        response = auth_client(self.owner).post("/api/explore/documents/", data={
+            "title": "Models", "subject": " computer science ", "topic": " machine learning "})
+        self.assertEqual(response.status_code, 201)
+        doc = Document.objects.get(pk=response.json()["id"])
+        self.assertEqual((doc.subject, doc.topic), ("Computer Science", "Machine Learning"))
+
+    def test_subcategory_needs_a_subject_and_labels_have_length_limits(self):
+        c = auth_client(self.owner)
+        for payload in [{"topic": "Custom"}, {"subject": "All"}, {"subject": "Math", "topic": "All"}, {"subject": "x" * 121}, {"subject": "Math", "topic": "x" * 121}]:
+            self.assertEqual(c.post("/api/explore/documents/", data={"title": "Invalid", **payload}).status_code, 400)
+
+    def test_removed_documents_do_not_advertise_their_custom_labels(self):
+        Document.objects.create(owner=self.owner, title="Removed", subject="Hidden Custom Subject", topic="Hidden Topic", is_removed=True)
+        Document.objects.create(owner=self.owner, title="One", subject="Ocean Studies", topic="Coastal Ecology")
+        Document.objects.create(owner=self.owner, title="Two", subject="ocean studies", topic="coastal ecology")
+        groups = Client().get("/api/explore/facets/").json()["subjectGroups"]
+        custom = [g for g in groups if g["subject"].casefold() == "ocean studies"]
+        self.assertEqual(len(custom), 1)
+        self.assertEqual(len(custom[0]["topics"]), 1)
+        self.assertNotIn("Hidden Custom Subject", [g["subject"] for g in groups])
+
+    def test_subject_results_support_next_page_without_duplicates(self):
+        Document.objects.bulk_create([Document(owner=self.owner, title=f"Lesson {i}", subject="Mathematics", topic="Algebra") for i in range(26)])
+        c = Client()
+        first = c.get("/api/explore/documents/", {"subject": "Mathematics", "topic": "Algebra", "sort": "Latest"}).json()
+        second = c.get("/api/explore/documents/", {"subject": "Mathematics", "topic": "Algebra", "sort": "Latest", "page": 2}).json()
+        self.assertEqual((first["count"], len(first["results"]), len(second["results"])), (26, 24, 2))
+        self.assertFalse({d["id"] for d in first["results"]} & {d["id"] for d in second["results"]})
+
+
+class TopicSchemaCompatibilityTests(TestCase):
+    def test_old_upload_writers_can_omit_topic_during_a_rolling_release(self):
+        from django.db import connection
+        owner = User.objects.create(email="old-upload@test.com", username="old-upload", is_verified=True)
+        original = Document.objects.create(owner=owner, title="Old writer", subject="Physics")
+        quote = connection.ops.quote_name
+        table = quote(Document._meta.db_table)
+        columns = ", ".join(quote(f.column) for f in Document._meta.local_concrete_fields if f.name not in ("id", "topic"))
+        with connection.cursor() as cursor:
+            cursor.execute(f"INSERT INTO {table} ({columns}) SELECT {columns} FROM {table} WHERE id = %s", [original.pk])
+        self.assertEqual(Document.objects.exclude(pk=original.pk).get().topic, "")
