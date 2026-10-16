@@ -1263,13 +1263,17 @@ def _checklist_for_block(block, draft_payload):
         return getattr(block, field, "") or ""
 
     checks = []
+    display = {**(block.display_settings or {}), **(value("display_settings") or {})}
     heading = str(value("heading")).strip()
+    using_default_heading = display.get("heading") == "default"
+    if using_default_heading:
+        heading = "Default section heading"
     # The length checks measure what a visitor actually reads, which is both
     # halves. Measuring `heading` alone called the seeded "Explore our" (11
     # chars) "very short" while the rendered line was "Explore our popular
     # courses" (27). Emptiness still keys on `heading` — a section carrying
     # only a second half has no heading to lead with.
-    secondary = str(value("heading_secondary")).strip()
+    secondary = "" if display.get("heading_secondary") == "hidden" else str(value("heading_secondary")).strip()
     rendered = f"{heading} {secondary}".strip() if secondary else heading
     if not heading:
         checks.append({
@@ -1301,6 +1305,8 @@ def _checklist_for_block(block, draft_payload):
         ("main", "cta_primary_label", "cta_primary_href"),
         ("second", "cta_secondary_label", "cta_secondary_href"),
     ):
+        if block.section == "courses_hero" or display.get(label_field.rsplit("_", 1)[0]) in ("default", "hidden"):
+            continue
         text = str(value(label_field)).strip()
         href = str(value(href_field)).strip()
         if text and not href:
@@ -1926,6 +1932,8 @@ class PagePublishView(APIView):
 
             applied = []
             for field, value in payload.items():
+                if field == "display_settings":
+                    value = {**(block.display_settings or {}), **value}
                 setattr(block, field, value)
                 applied.append(field)
 

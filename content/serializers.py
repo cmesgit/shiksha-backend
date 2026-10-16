@@ -199,7 +199,7 @@ class HomeContentBlockSerializer(serializers.ModelSerializer):
         fields = [
             "id", "section", "eyebrow", "heading", "heading_secondary",
             "subhead", "body", "cta_primary_label", "cta_primary_href",
-            "cta_secondary_label", "cta_secondary_href", "img", "extra",
+            "cta_secondary_label", "cta_secondary_href", "img", "extra", "display_settings",
         ]
 
     def get_img(self, obj):
