@@ -1067,6 +1067,8 @@ LIST_CONTENT_ELSEWHERE = {
 }
 
 
+from .presentation import validate_home_display_settings
+
 class HomeContentBlock(StatusedContentModel):
     """One row per homepage section — its heading/copy/CTA/hero image.
     `section` is unique: this is a singleton-per-section table, not a list."""
@@ -1101,6 +1103,11 @@ class HomeContentBlock(StatusedContentModel):
         default=dict, blank=True,
         help_text="Rare escape valve for a section-specific single value that "
                   "doesn't warrant its own column. Should normally be empty.",
+    )
+
+    display_settings = models.JSONField(
+        default=dict, blank=True, validators=[validate_home_display_settings],
+        help_text="Default, custom or hidden for individual content fields and collections.",
     )
 
     class Meta:
