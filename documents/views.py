@@ -573,7 +573,16 @@ class CollectionsView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        cols = Collection.objects.filter(visibility=Collection.VIS_PUBLIC).annotate(
+        # The public catalogue and the owner's library have different scopes.
+        # Never include private collections in the public list, even for staff.
+        if request.query_params.get("mine") == "1":
+            if not request.user.is_authenticated:
+                return Response({"detail": "Authentication required."},
+                                status=status.HTTP_401_UNAUTHORIZED)
+            cols = Collection.objects.filter(curator=request.user)
+        else:
+            cols = Collection.objects.filter(visibility=Collection.VIS_PUBLIC)
+        cols = cols.annotate(
             doc_count_annotated=Count("documents", filter=Q(documents__is_removed=False), distinct=True))
         return Response(
             CollectionSerializer(cols, many=True, context={"request": request}).data)

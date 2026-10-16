@@ -482,3 +482,53 @@ class BunnyDeletePurgeTests(TestCase):
         # this correctly stays True. The flag only goes False for a CDN-backed
         # store with no account key — which is prod's current state.
         self.assertIn("file_purged", r.json())
+
+
+class MyCollectionsTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create(email="collections-owner@test.com", username="collections-owner", is_verified=True)
+        self.other = User.objects.create(email="collections-other@test.com", username="collections-other", is_verified=True)
+        self.public = Collection.objects.create(curator=self.owner, title="My public", visibility="public")
+        self.private = Collection.objects.create(curator=self.owner, title="My private", visibility="private")
+        Collection.objects.create(curator=self.other, title="Their public", visibility="public")
+        Collection.objects.create(curator=self.other, title="Their private", visibility="private")
+
+    def test_owner_list_includes_both_visibilities_and_no_other_owners(self):
+        response = auth_client(self.owner).get("/api/explore/collections/?mine=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({c["title"] for c in response.json()}, {"My public", "My private"})
+
+    def test_mine_requires_authentication(self):
+        self.assertEqual(Client().get("/api/explore/collections/?mine=1").status_code, 401)
+
+    def test_default_and_mine_zero_remain_public_even_for_owner(self):
+        for client in [Client(), auth_client(self.owner), auth_client(self.other)]:
+            for suffix in ["", "?mine=0"]:
+                response = client.get("/api/explore/collections/" + suffix)
+                self.assertEqual({c["title"] for c in response.json()}, {"My public", "Their public"})
+
+    def test_create_private_reload_add_document_and_reopen(self):
+        owner = auth_client(self.owner)
+        response = owner.post("/api/explore/collections/", data=json.dumps({"title": "Private revision", "visibility": "private"}), content_type="application/json")
+        self.assertEqual(response.status_code, 201)
+        slug = response.json()["id"]
+        # A fresh request/session must still find the collection after creation.
+        fresh = auth_client(self.owner)
+        self.assertIn(slug, [c["id"] for c in fresh.get("/api/explore/collections/?mine=1").json()])
+        doc = Document.objects.create(owner=self.other, title="Shared notes")
+        added = fresh.post(f"/api/explore/collections/{slug}/documents/", data={"document_id": doc.id})
+        self.assertEqual(added.status_code, 201)
+        detail = fresh.get(f"/api/explore/collections/{slug}/").json()
+        self.assertEqual([d["id"] for d in detail["docs"]], [doc.id])
+        self.assertEqual(detail["count"], 1)
+        self.assertNotIn(slug, [c["id"] for c in fresh.get("/api/explore/collections/").json()])
+        for visitor in [Client(), auth_client(self.other)]:
+            self.assertEqual(visitor.get(f"/api/explore/collections/{slug}/").status_code, 404)
+        denied = auth_client(self.other).post(f"/api/explore/collections/{slug}/documents/", data={"document_id": doc.id})
+        self.assertEqual(denied.status_code, 403)
+
+    def test_other_user_and_staff_mine_never_return_someone_elses_private(self):
+        self.other.is_staff = True
+        self.other.save(update_fields=["is_staff"])
+        rows = auth_client(self.other).get("/api/explore/collections/?mine=1").json()
+        self.assertEqual({c["title"] for c in rows}, {"Their public", "Their private"})
