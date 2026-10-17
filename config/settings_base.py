@@ -465,3 +465,13 @@ CELERY_BEAT_SCHEDULE["notifications-session-reminders"] = {
 RESEARCH_PRIVATE_ROOT = os.getenv("RESEARCH_PRIVATE_ROOT", str(BASE_DIR / "private_research"))
 RESEARCH_PUBLIC_URL = os.getenv("RESEARCH_PUBLIC_URL", "https://shikshacom.com")
 RESEARCH_ADMIN_URL = os.getenv("RESEARCH_ADMIN_URL", "https://admin.shikshacom.com")
+
+# Research Hub v2; legacy submissions retain their stored v1 requirements.
+RESEARCH_DEFAULT_REVIEWS = 2
+RESEARCH_AUTO_MATCHING = True
+RESEARCH_INVITATION_HOURS = 48
+RESEARCH_REVIEW_DAYS = 7
+RESEARCH_REVIEWER_CAPACITY = 3
+CELERY_BEAT_SCHEDULE["research-review-deadlines"] = {
+    "task": "documents.sweep_research_reviews", "schedule": 300,
+}
