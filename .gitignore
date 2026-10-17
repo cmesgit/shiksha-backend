@@ -46,3 +46,6 @@ credentials.json
 celerybeat-schedule
 celerybeat-schedule.*
 celerybeat.pid
+
+# Unpublished research manuscripts (never public media)
+private_research/

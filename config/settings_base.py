@@ -460,3 +460,8 @@ CELERY_BEAT_SCHEDULE["notifications-session-reminders"] = {
     "task": "notifications.send_session_reminders",
     "schedule": NOTIFY_REMINDER_SWEEP_MINUTES * 60,
 }
+
+# Private unpublished manuscripts: persistent local volume, outside MEDIA_ROOT/CDN.
+RESEARCH_PRIVATE_ROOT = os.getenv("RESEARCH_PRIVATE_ROOT", str(BASE_DIR / "private_research"))
+RESEARCH_PUBLIC_URL = os.getenv("RESEARCH_PUBLIC_URL", "https://shikshacom.com")
+RESEARCH_ADMIN_URL = os.getenv("RESEARCH_ADMIN_URL", "https://admin.shikshacom.com")

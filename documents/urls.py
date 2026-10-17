@@ -21,7 +21,16 @@ from .moderation_views import (
     ModLogView, ModAnalyticsView,
 )
 
+from .research_views import (ResearchListView, ResearchDetailView, ResearchRevisionView,
+    ResearchFileView, ResearchReviewersView, ResearchReviewerAdminView)
+
 urlpatterns = [
+    path("research/", ResearchListView.as_view()),
+    path("research/reviewers/", ResearchReviewersView.as_view()),
+    path("research/reviewers/<int:reviewer_id>/", ResearchReviewerAdminView.as_view()),
+    path("research/<int:paper_id>/", ResearchDetailView.as_view()),
+    path("research/<int:paper_id>/revisions/", ResearchRevisionView.as_view()),
+    path("research/<int:paper_id>/revisions/<int:revision_id>/file/", ResearchFileView.as_view()),
     # Current-user context + taxonomy
     path("me/", DocumentsMeView.as_view(), name="explore-me"),
     path("facets/", FacetsView.as_view(), name="explore-facets"),
