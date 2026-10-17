@@ -72,7 +72,7 @@ def _ban_error(user):
 def _base_documents(user, include_removed=False):
     """The single annotated base queryset for public listing/detail. Hides
     moderator-removed documents unless include_removed=True (moderator views)."""
-    qs = Document.objects.select_related("owner", "owner__document_profile", "category")
+    qs = Document.objects.select_related("owner", "owner__document_profile", "category", "research_submission")
     if not include_removed:
         qs = qs.filter(is_removed=False)
     qs = qs.annotate(likes_count_annotated=Count("likes", distinct=True))
@@ -312,6 +312,10 @@ class DocumentsView(APIView):
         if slug:
             category = DocumentCategory.objects.filter(slug=slug, is_active=True).first()
 
+        if slug == "research-papers":
+            return Response({"detail": "Research papers need review before publication. Submit through Research Hub.",
+                             "submit_path": "/explore/research"}, status=400)
+
         # Refuse a re-upload of the same bytes by the same person. Checked here
         # rather than relying on the DB constraint alone so the uploader gets a
         # readable message naming the document they already have, instead of a
@@ -405,6 +409,10 @@ class DocumentDetailView(APIView):
         if doc.owner_id != request.user.id and not request.user.is_staff:
             return Response({"detail": "You can only delete your own uploads."},
                             status=status.HTTP_403_FORBIDDEN)
+
+        if getattr(doc, "research_submission", None) is not None:
+            return Response({"detail": "Reviewed research papers must be withdrawn through Research Hub. Contact an administrator.",
+                             "research_path": "/explore/research"}, status=403)
 
         file_removed = True
         if doc.file:
@@ -637,7 +645,7 @@ class CollectionDetailView(APIView):
                 raise Http404()
         ctx = {"request": request}
         docs = col.documents.filter(is_removed=False).select_related(
-            "owner", "owner__document_profile", "category")
+            "owner", "owner__document_profile", "category", "research_submission")
         data = CollectionSerializer(col, context=ctx).data
         data["docs"] = DocumentCardSerializer(docs, many=True, context=ctx).data
         return Response(data)

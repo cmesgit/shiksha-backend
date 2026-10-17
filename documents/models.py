@@ -388,3 +388,96 @@ class DuplicateFlag(models.Model):
 
     def __str__(self):
         return f"Duplicate flag for {self.document} ({self.status})"
+
+
+# Research submissions are deliberately separate from public Documents.
+from .research_storage import ResearchPrivateStorage, research_file_path
+
+
+class ResearchReviewer(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                                related_name="research_reviewer")
+    expertise = models.CharField(max_length=1000)
+    subjects = models.JSONField(default=list)
+    topics = models.JSONField(default=list, blank=True)
+    approved = models.BooleanField(default=False)
+    available = models.BooleanField(default=True)
+    approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name="approved_research_reviewers")
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class ResearchSubmission(models.Model):
+    class Status(models.TextChoices):
+        SUBMITTED = "submitted", "Awaiting reviewer assignment"
+        INVITED = "invited", "Waiting for reviewer acceptance"
+        REVIEWING = "reviewing", "Under review"
+        CHANGES = "changes", "Changes requested"
+        APPROVAL = "approval", "Awaiting admin decision"
+        PUBLISHED = "published", "Published"
+        REJECTED = "rejected", "Rejected"
+        WITHDRAWN = "withdrawn", "Withdrawn"
+
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                              related_name="research_submissions")
+    title = models.CharField(max_length=300)
+    abstract = models.TextField()
+    authors = models.CharField(max_length=1500)
+    institution = models.CharField(max_length=160, blank=True)
+    subject = models.CharField(max_length=120)
+    topic = models.CharField(max_length=120, blank=True)
+    original_url = models.URLField(blank=True, max_length=1000)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.SUBMITTED, db_index=True)
+    current_version = models.PositiveIntegerField(default=1)
+    document = models.OneToOneField(Document, on_delete=models.PROTECT, null=True, blank=True,
+                                    related_name="research_submission")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-pk"]
+
+
+class ResearchRevision(models.Model):
+    submission = models.ForeignKey(ResearchSubmission, on_delete=models.CASCADE, related_name="revisions")
+    version = models.PositiveIntegerField()
+    file = models.FileField(storage=ResearchPrivateStorage(), upload_to=research_file_path, max_length=250)
+    file_hash = models.CharField(max_length=64)
+    response = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["version"]
+        constraints = [models.UniqueConstraint(fields=["submission", "version"], name="research_unique_revision")]
+
+
+class ResearchAssignment(models.Model):
+    submission = models.ForeignKey(ResearchSubmission, on_delete=models.CASCADE, related_name="assignments")
+    reviewer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                 related_name="research_assignments")
+    revision = models.ForeignKey(ResearchRevision, on_delete=models.PROTECT)
+    active = models.BooleanField(default=True)
+    status = models.CharField(max_length=16, default="invited")
+    due_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    decision = models.CharField(max_length=16, blank=True)
+    feedback = models.TextField(blank=True)
+    checks = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-pk"]
+        constraints = [models.UniqueConstraint(fields=["submission"], condition=models.Q(active=True),
+                                                name="research_one_active_assignment")]
+
+
+class ResearchEvent(models.Model):
+    submission = models.ForeignKey(ResearchSubmission, on_delete=models.CASCADE, related_name="events")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    action = models.CharField(max_length=40)
+    note = models.TextField(blank=True)
+    version = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "pk"]

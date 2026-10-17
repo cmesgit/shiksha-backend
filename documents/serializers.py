@@ -68,6 +68,7 @@ class DocumentCardSerializer(serializers.ModelSerializer):
     is_saved = serializers.SerializerMethodField()
     is_liked = serializers.SerializerMethodField()
     likes_count = serializers.SerializerMethodField()
+    research = serializers.SerializerMethodField()
 
     class Meta:
         model = Document
@@ -75,8 +76,15 @@ class DocumentCardSerializer(serializers.ModelSerializer):
             "id", "title", "type", "typeMeta", "author", "subject", "topic", "level",
             "language", "institution", "filetype", "date", "dateLabel", "pages",
             "views", "downloads", "rating", "tags", "desc", "file_url",
-            "is_saved", "is_liked", "likes_count", "created_at",
+            "is_saved", "is_liked", "likes_count", "created_at", "research",
         )
+
+    def get_research(self, obj):
+        paper = getattr(obj, "research_submission", None)
+        if paper is None or paper.status != "published":
+            return None
+        return {"version": paper.current_version, "authors": paper.authors,
+                "original_url": paper.original_url, "review_scope": "One subject reviewer and final administrator approval. Findings are not guaranteed."}
 
     def get_type(self, obj):
         return obj.category.slug if obj.category_id else "other"
