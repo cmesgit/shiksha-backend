@@ -7,7 +7,7 @@ from django.test import TestCase, override_settings, Client
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.utils import timezone
-from accounts.models import User
+from accounts.models import User, UserRole, Role
 from .models import ResearchSubmission as Paper, ResearchReviewer as Reviewer, ResearchAssignment as Assignment, ResearchRevision as Revision, Document
 from .tests import auth_client
 
@@ -31,6 +31,7 @@ class ResearchWorkflowTests(TestCase):
         self.teacher = User.objects.create_user(username="reviewer-r", email="reviewer-r@test.example", password="example")
         self.other = User.objects.create_user(username="other-r", email="other-r@test.example", password="example")
         self.admin = User.objects.create_user(username="admin-r", email="admin-r@test.example", password="example", is_staff=True)
+        UserRole.objects.create(user=self.admin, role=Role.objects.get(name="ADMIN"))
         self.a, self.t, self.o, self.m = [auth_client(u) for u in (self.author, self.teacher, self.other, self.admin)]
         self.profile = Reviewer.objects.create(user=self.teacher, subjects=["Mathematics"], expertise="Research methods", approved=True, approved_by=self.admin)
 
@@ -237,3 +238,11 @@ class ResearchWorkflowTests(TestCase):
         doc_id = result.json()["document_id"]
         self.assertEqual(self.a.delete(f"/api/explore/documents/{doc_id}/").status_code, 403)
         self.assertFalse(Document.objects.get(pk=doc_id).is_removed)
+
+    def test_content_staff_without_admin_role_cannot_access_research_admin(self):
+        self.submit()
+        self.other.is_staff = True
+        self.other.save()
+        staff = auth_client(self.other)
+        self.assertEqual(staff.get("/api/explore/research/?scope=admin").status_code, 403)
+        self.assertEqual(staff.get(f"/api/explore/research/{self.paper_id}/").status_code, 404)
