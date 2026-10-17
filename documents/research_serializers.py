@@ -52,8 +52,12 @@ class ReviewerApplicationSerializer(serializers.Serializer):
 
 class ActionSerializer(serializers.Serializer):
     version = serializers.IntegerField(min_value=1)
-    action = serializers.ChoiceField(choices=["assign", "accept", "decline", "review", "changes", "reject", "publish", "withdraw"])
+    action = serializers.ChoiceField(choices=["assign", "accept", "decline", "review", "changes", "reject", "publish", "withdraw", "match", "configure", "appeal", "uphold_appeal", "dismiss_appeal", "cancel_correction"])
     note = serializers.CharField(max_length=15000, required=False, allow_blank=True, default="")
+    assignment_id = serializers.IntegerField(required=False, min_value=1)
+    required_reviews = serializers.IntegerField(required=False, min_value=1, max_value=3)
+    automatic_matching = serializers.BooleanField(required=False)
+    public_note = serializers.CharField(max_length=5000, required=False, allow_blank=True, default="")
     reviewer_id = serializers.UUIDField(required=False)
     days = serializers.IntegerField(required=False, default=7, min_value=1, max_value=30)
     checks = serializers.DictField(child=serializers.ChoiceField(choices=["checked", "issues", "not_applicable"]), required=False)

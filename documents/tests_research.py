@@ -16,7 +16,7 @@ class ResearchWorkflowTests(TestCase):
     @classmethod
     def setUpClass(cls):
         cls.files = tempfile.mkdtemp(prefix="shiksha-research-tests-")
-        cls.settings_override = override_settings(RESEARCH_PRIVATE_ROOT=cls.files+"/private", MEDIA_ROOT=cls.files+"/public")
+        cls.settings_override = override_settings(RESEARCH_PRIVATE_ROOT=cls.files+"/private", MEDIA_ROOT=cls.files+"/public", RESEARCH_DEFAULT_REVIEWS=1, RESEARCH_AUTO_MATCHING=False)
         cls.settings_override.enable()
         super().setUpClass()
 
@@ -202,10 +202,10 @@ class ResearchWorkflowTests(TestCase):
             self.assertEqual(notify.call_count, 2)
             self.assertTrue(all(c.kwargs["verb"] == "research.updated" for c in notify.call_args_list))
 
-    def test_database_prevents_two_active_review_assignments(self):
+    def test_database_prevents_duplicate_active_reviewer_assignment(self):
         self.submit(); self.assign()
         with self.assertRaises(IntegrityError), transaction.atomic():
-            Assignment.objects.create(submission_id=self.paper_id, reviewer=self.other,
+            Assignment.objects.create(submission_id=self.paper_id, reviewer=self.teacher,
                 revision=Revision.objects.get(submission_id=self.paper_id), due_at=timezone.now()+timedelta(days=7))
 
     def test_review_checklist_required_and_unresolved_issues_prevent_approval(self):
