@@ -4,6 +4,35 @@
 because they have a teacher role. Approval permits access to private papers
 after an invitation is accepted.
 
+## IMPORTANT — next-session checklist
+
+Deferred by the owner on2026-10-17. Completed application changes and local
+backup setup are deployed; the tasks below remain open.
+
+- [ ] **Priority 1: private off-server Bunny backups.** Obtain a dedicated
+  `shiksha-private-backups` storage zone with no connected Pull Zone/CDN, or
+  a root-only configuration path containing account-management credentials
+  to create it. Existing storage credentials access public CMS media only;
+  account storage management returned401. Never put database bundles or
+  unpublished papers in the public CMS zone.
+- [ ] Configure automatic copies for dev and production with separate paths,
+  private/encrypted storage, retention and a documented recovery-key location.
+  Download a remote bundle, verify hashes and restore into a disposable
+  directory before marking independent recovery complete.
+- [ ] **Priority 2: choose and approve qualified reviewers.** Owner has not
+  selected the teachers yet. Obtain names and subjects, check qualifications,
+  and approve actual applications in Admin → Research Hub → Reviewer
+  applications. Aim for two independent reviewers per subject plus spares.
+  Do not invent applications or approve solely from a teacher role.
+- [ ] **Optional: human inbox placement.** With an owner-supplied controlled
+  inbox, send one authorized test and check Inbox/Spam. Worker/provider
+  delivery already passed; no need to repeat that test or contact teachers
+  and students as test recipients.
+
+Keep research SMS **OFF**. This checklist is not a scheduled automation.
+Daily local DB/manuscript bundles and extraction/hash checks already passed
+on both environments. Off-server copying is not yet configured.
+
 ## Reviewer approvals
 
 Both environments currently have zero reviewer applications. The owner has
