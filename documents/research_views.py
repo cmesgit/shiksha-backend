@@ -20,7 +20,7 @@ from .research_serializers import SubmissionSerializer, ManuscriptSerializer, Re
 
 
 def is_research_admin(user):
-    return bool(user.is_authenticated and (user.is_staff or user.has_role("ADMIN")))
+    return bool(user.is_authenticated and (user.is_superuser or user.has_role("ADMIN")))
 
 
 def require_admin(user):
@@ -68,7 +68,7 @@ def alert(user, paper, title, note="", *, admin=False):
 def admin_alert(paper, title):
     # Staff queue owners, not every registered teacher or site user.
     for user in get_user_model().objects.filter(
-            Q(is_staff=True) | Q(user_roles__role__name="ADMIN", user_roles__is_active=True),
+            Q(is_superuser=True) | Q(user_roles__role__name="ADMIN", user_roles__is_active=True),
             is_active=True).distinct().iterator():
         if user.pk != paper.owner_id:
             alert(user, paper, title, admin=True)
