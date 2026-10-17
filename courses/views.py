@@ -2202,6 +2202,7 @@ def _serialize_public_course_detail(course, request):
         "is_free": GlobalSettings.load().effective_mode == GlobalSettings.PAYMENT_FREE,
         "is_coming_soon": course.status == Course.STATUS_COMING_SOON,
         "thumbnail": request.build_absolute_uri(course.thumbnail.url) if course.thumbnail else None,
+        "promo_video_url": course.promo_video_url,
         "board": (
             {"id": str(course.board.id), "name": course.board.name, "board_type": course.board.board_type}
             if course.board else None
