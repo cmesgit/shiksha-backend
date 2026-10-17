@@ -65,6 +65,7 @@ _DEFAULT = {"category": "social", "email": OFF, "sms": OFF, "push": OPT_OUT,
             "sms_template": None}
 
 POLICY = {
+    "research.reminder": {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
     "research.updated": {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
     # ── Counseling bookings ────────────────────────────────────────────
     "counseling.booked":       {"category": "bookings", "email": REQUIRED, "sms": REQUIRED, "push": REQUIRED, "sms_template": "booking_confirmed"},

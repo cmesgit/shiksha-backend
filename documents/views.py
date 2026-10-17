@@ -72,7 +72,7 @@ def _ban_error(user):
 def _base_documents(user, include_removed=False):
     """The single annotated base queryset for public listing/detail. Hides
     moderator-removed documents unless include_removed=True (moderator views)."""
-    qs = Document.objects.select_related("owner", "owner__document_profile", "category", "research_submission")
+    qs = Document.objects.select_related("owner", "owner__document_profile", "category", "research_submission").prefetch_related("research_submission__cases")
     if not include_removed:
         qs = qs.filter(is_removed=False)
     qs = qs.annotate(likes_count_annotated=Count("likes", distinct=True))
@@ -645,7 +645,7 @@ class CollectionDetailView(APIView):
                 raise Http404()
         ctx = {"request": request}
         docs = col.documents.filter(is_removed=False).select_related(
-            "owner", "owner__document_profile", "category", "research_submission")
+            "owner", "owner__document_profile", "category", "research_submission").prefetch_related("research_submission__cases")
         data = CollectionSerializer(col, context=ctx).data
         data["docs"] = DocumentCardSerializer(docs, many=True, context=ctx).data
         return Response(data)

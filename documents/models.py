@@ -429,6 +429,11 @@ class ResearchSubmission(models.Model):
     original_url = models.URLField(blank=True, max_length=1000)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.SUBMITTED, db_index=True)
     current_version = models.PositiveIntegerField(default=1)
+    required_reviews = models.PositiveSmallIntegerField(default=1, db_default=1)
+    automatic_matching = models.BooleanField(default=False, db_default=False)
+    matching_notice_sent = models.BooleanField(default=False, db_default=False)
+    published_version = models.PositiveIntegerField(null=True, blank=True)
+    published_review_count = models.PositiveSmallIntegerField(default=1, db_default=1)
     document = models.OneToOneField(Document, on_delete=models.PROTECT, null=True, blank=True,
                                     related_name="research_submission")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -460,6 +465,8 @@ class ResearchAssignment(models.Model):
     status = models.CharField(max_length=16, default="invited")
     due_at = models.DateTimeField()
     accepted_at = models.DateTimeField(null=True, blank=True)
+    review_days = models.PositiveSmallIntegerField(default=7, db_default=7)
+    reminded_at = models.DateTimeField(null=True, blank=True)
     decision = models.CharField(max_length=16, blank=True)
     feedback = models.TextField(blank=True)
     checks = models.JSONField(default=dict, blank=True)
@@ -467,8 +474,8 @@ class ResearchAssignment(models.Model):
 
     class Meta:
         ordering = ["-pk"]
-        constraints = [models.UniqueConstraint(fields=["submission"], condition=models.Q(active=True),
-                                                name="research_one_active_assignment")]
+        constraints = [models.UniqueConstraint(fields=["submission", "reviewer", "revision"], condition=models.Q(active=True),
+                                                name="research_unique_active_reviewer")]
 
 
 class ResearchEvent(models.Model):
@@ -481,3 +488,24 @@ class ResearchEvent(models.Model):
 
     class Meta:
         ordering = ["created_at", "pk"]
+
+
+class ResearchCase(models.Model):
+    """Author appeal or proposed correction; public notices are explicit fields."""
+    submission = models.ForeignKey(ResearchSubmission, on_delete=models.CASCADE, related_name="cases")
+    kind = models.CharField(max_length=12, choices=[("appeal", "Appeal"), ("correction", "Correction")])
+    version = models.PositiveIntegerField()
+    reason = models.TextField()
+    status = models.CharField(max_length=12, default="open")
+    resolution = models.TextField(blank=True)
+    public_note = models.TextField(blank=True)
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    created_at = models.DateTimeField(auto_now_add=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+        constraints = [
+            models.UniqueConstraint(fields=["submission", "kind", "version"], name="research_unique_case_version"),
+            models.UniqueConstraint(fields=["submission", "kind"], condition=models.Q(status="open"), name="research_one_open_case"),
+        ]

@@ -81,10 +81,11 @@ class DocumentCardSerializer(serializers.ModelSerializer):
 
     def get_research(self, obj):
         paper = getattr(obj, "research_submission", None)
-        if paper is None or paper.status != "published":
+        if paper is None or paper.published_version is None or obj.is_removed:
             return None
-        return {"version": paper.current_version, "authors": paper.authors,
-                "original_url": paper.original_url, "review_scope": "One subject reviewer and final administrator approval. Findings are not guaranteed."}
+        return {"version": paper.published_version, "authors": paper.authors,
+                "corrections": [{"version": c.version, "public_note": c.public_note, "decided_at": c.decided_at} for c in paper.cases.all() if c.kind == "correction" and c.status == "published"],
+                "original_url": paper.original_url, "review_scope": f"{paper.published_review_count} independent subject reviewer(s) and final administrator approval. Findings are not guaranteed."}
 
     def get_type(self, obj):
         return obj.category.slug if obj.category_id else "other"

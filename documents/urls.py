@@ -22,13 +22,14 @@ from .moderation_views import (
 )
 
 from .research_views import (ResearchListView, ResearchDetailView, ResearchRevisionView,
-    ResearchFileView, ResearchReviewersView, ResearchReviewerAdminView)
+    ResearchFileView, ResearchReviewersView, ResearchReviewerAdminView, ResearchCorrectionView)
 
 urlpatterns = [
     path("research/", ResearchListView.as_view()),
     path("research/reviewers/", ResearchReviewersView.as_view()),
     path("research/reviewers/<int:reviewer_id>/", ResearchReviewerAdminView.as_view()),
     path("research/<int:paper_id>/", ResearchDetailView.as_view()),
+    path("research/<int:paper_id>/corrections/", ResearchCorrectionView.as_view()),
     path("research/<int:paper_id>/revisions/", ResearchRevisionView.as_view()),
     path("research/<int:paper_id>/revisions/<int:revision_id>/file/", ResearchFileView.as_view()),
     # Current-user context + taxonomy
