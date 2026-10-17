@@ -1,0 +1,6 @@
+# Install as /etc/systemd/system/shiksha-db-backup.service.d/research.conf
+# Replace PRIVATE_ROOT with the value confirmed from Django settings.
+# Retains the existing database timer and runs only after pg_dump succeeds.
+[Service]
+UMask=0077
+ExecStartPost=/usr/bin/python3 /usr/local/bin/shiksha-research-backup.py create --source PRIVATE_ROOT --database-dir /var/backups/shiksha-db --destination /var/backups/shiksha-research --retention-days 14
