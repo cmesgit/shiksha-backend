@@ -23,7 +23,7 @@ Ordinary Explore documents still publish immediately. New uploads in the canonic
 
 ## Access
 
-Research administration requires staff or ADMIN, not a generic moderator permission. Teachers/guest teachers/other specialists apply through the public Research Hub; admin checks credentials and approves. No automatic approval from role, no self-review or self-approval of reviewer credentials, no admin publication of their own submission.
+Research administration requires superuser or the active ADMIN role. Content-editor staff flags and generic moderator permissions do not grant manuscript access. Teachers/guest teachers/other specialists apply through the public Research Hub; admin checks credentials and approves. No automatic approval from role, no self-review or self-approval of reviewer credentials, no admin publication of their own submission.
 
 ## APIs (under /api/explore/)
 
@@ -45,7 +45,7 @@ Research administration requires staff or ADMIN, not a generic moderator permiss
 
 ## Notifications
 
-`research.updated` uses existing policy-based notifications: in-app, email opt-out, push opt-out, SMS off. Dispatch occurs after successful DB commit. Assignments notify only assigned reviewer, not all teachers. Submission/revision/completed-review events notify staff queue owners; decisions notify authors. Provider delivery was mocked during local tests; no real users were notified.
+`research.updated` uses existing policy-based notifications: in-app, email opt-out, push opt-out, SMS off. Dispatch occurs after successful DB commit. Assignments notify only assigned reviewer, not all teachers. Submission/revision/completed-review events notify superuser/ADMIN queue owners; decisions notify authors. Provider delivery was mocked during local tests; no real users were notified.
 
 Set `RESEARCH_PUBLIC_URL` and `RESEARCH_ADMIN_URL` to environment-specific HTTPS origins. Defaults are production public/admin. Use dev URLs on the dev deployment.
 
