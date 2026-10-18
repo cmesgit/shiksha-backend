@@ -1141,10 +1141,10 @@ def join_group_session(request, session_id):
 
     user = request.user
 
-    # Paywall gate — only paid dashboard users may consume LiveKit minutes.
-    # Currently a stub (see _is_paid_user) that defaults to True; wire it
-    # to your subscription model when entitlements land.
-    if not _is_paid_user(user):
+    # Scheduled groups retain their existing eligibility check. Instant
+    # collaboration is open to authenticated accounts until its own billing
+    # policy is introduced.
+    if policy_for(session).requires_paid_account and not _is_paid_user(user):
         return Response(
             {"error": "Your account is not eligible to join meetings."},
             status=http_status.HTTP_403_FORBIDDEN,
@@ -1160,7 +1160,7 @@ def join_group_session(request, session_id):
     #            own invite before they may join. They cannot start the
     #            room; they wait until the host opens it.
     # Instant meetings (session_type='instant') skip the invite gate entirely:
-    # anyone authenticated and paid who has the link can join. The host is
+    # any authenticated account with the link can join. The host is
     # still the only one allowed to /end/ the room.
     policy = policy_for(session)
     is_host = (session.host_id == user.id)
@@ -1282,14 +1282,9 @@ def join_group_session(request, session_id):
             {"error": "Room is not ready yet. Try again in a moment."}, status=400
         )
 
-    # Admin-configurable room cap (GlobalSettings.live_max_participants),
-    # separate from the pre-existing INSTANT_MAX_PARTICIPANTS check above
-    # (which only applies to instant meetings and is hard-coded at 50). Host
-    # is exempt, matching that same existing exemption. NOTE: this admin
-    # default (40) is LOWER than an already-possible scheduled group session
-    # (host + up to 50 invitees = 51). Flagged for a product decision before
-    # this ships — either raise the default, or treat it as informational
-    # only until admins are told to configure it per their real capacity.
+    # The room-type policy supplies the effective cap: instant collaboration
+    # has its own 50-seat limit, while scheduled groups retain the admin cap.
+    # Host re-entry is exempt in both cases.
     live_limits = live_rules.limits(session)
     live_limits["participants_now"] = session.active_connections or 0
     if not is_host and live_limits["participants_now"] >= live_limits["max_participants"]:
@@ -1319,14 +1314,15 @@ def join_group_session(request, session_id):
     )
 
     # Compute remaining ms for client countdown.
-    # Host is always unlimited (no entitlement check, by design). A non-host
-    # who's entitled (enrolled, or platform is in free-launch mode) is also
-    # unlimited. A non-entitled guest is capped at GUEST_TRIAL_MINUTES,
+    # Scheduled-group hosts and entitled participants have no personal cap.
+    # A non-entitled scheduled-group guest is capped at GUEST_TRIAL_MINUTES.
+    # Instant collaboration has only its host-selected room deadline.
+    # A scheduled-group guest's clock is
     # anchored to THEIR OWN first join (not each /join/ call's "now", and not
     # the room's own duration_minutes) so a refresh/reconnect can't reset the
     # clock and a room's own longer duration can't be used to bypass the cap.
     remaining_ms = None
-    if not is_host and not _guest_entitlement(user):
+    if policy.personal_trial and not is_host and not _guest_entitlement(user):
         guest_session, _created = GroupSessionGuestSession.objects.get_or_create(
             session=session, user=user
         )
@@ -1401,7 +1397,8 @@ def group_session_preflight(request, session_id):
         # handoff's doc assumed a boolean ``require_approval`` that doesn't
         # exist on this model.
         "admit_mode": session.admit_mode,
-        "can_host": live_rules.can_host(request.user),
+        "can_host": (True if session.session_type == "instant"
+                     else live_rules.can_host(request.user)),
         "is_enrolled": live_rules.is_enrolled_for(request.user, session),
         "cap_ends_at": cap.isoformat() if cap else None,
     })
@@ -1430,6 +1427,8 @@ def extend_group_session(request, session_id):
 
     if request.user.id != session.host_id:
         return Response({"detail": "Only the host can extend."}, status=403)
+    if not policy_for(session).allows_extension:
+        return Response({"detail": "Instant collaboration has the time selected by its host."}, status=403)
     if session.status != "live" or not session.room_started_at:
         return Response({"detail": "Session is not live."}, status=400)
 
@@ -1722,13 +1721,7 @@ def _broadcast_session_ended(session, reason="ended"):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def instant_create(request):
-    """One-click Instant Meeting; allowed for any authenticated paid user."""
-    if not _is_paid_user(request.user):
-        return Response(
-            {"error": "Your account is not eligible to start meetings."},
-            status=http_status.HTTP_403_FORBIDDEN,
-        )
-
+    """Create a timed collaboration room for any authenticated account."""
     now = timezone.now()
     local_now = timezone.localtime(now)
     duration_minutes = INSTANT_COLLABORATION.duration_for_create(
@@ -1987,16 +1980,10 @@ def join_by_code(request):
     Responses:
       200 { session_id, short_code, status, session_type, host_id }
       400 if code missing / malformed
-      403 if user is not entitled (paywall stub)
+      403 if a scheduled-group user is not entitled
       404 if no session matches OR if it's already terminal (so a stale
           link doesn't drop the joiner into a dead UUID).
     """
-    if not _is_paid_user(request.user):
-        return Response(
-            {"error": "Your account is not eligible to join meetings."},
-            status=http_status.HTTP_403_FORBIDDEN,
-        )
-
     raw = (request.data.get("code") or "").strip()
     if not raw:
         return Response(
@@ -2026,6 +2013,12 @@ def join_by_code(request):
         return Response(
             {"error": "No room found for that code."},
             status=http_status.HTTP_404_NOT_FOUND,
+        )
+
+    if policy_for(session).requires_paid_account and not _is_paid_user(request.user):
+        return Response(
+            {"error": "Your account is not eligible to join meetings."},
+            status=http_status.HTTP_403_FORBIDDEN,
         )
 
     if session.status in ("cancelled", "completed", "expired"):

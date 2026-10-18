@@ -8,9 +8,27 @@ change cannot silently alter scheduled invitation-based sessions.
 from datetime import timedelta
 
 
-class ScheduledGroupPolicy:
+class RoomTiming:
+    """Shared clock arithmetic; each product still owns its access rules."""
+
+    def base_deadline(self, session):
+        if not session.room_started_at:
+            return None
+        return session.room_started_at + timedelta(minutes=session.duration_minutes)
+
+    def deadline(self, session):
+        baseline = self.base_deadline(session)
+        if baseline is None:
+            return None
+        return max(baseline, session.cap_ends_at) if session.cap_ends_at else baseline
+
+
+class ScheduledGroupPolicy(RoomTiming):
     kind = "scheduled"
     instant_capacity = None
+    requires_paid_account = True
+    personal_trial = True
+    allows_extension = True
 
     def can_view(self, session, user):
         if session.host_id == user.id:
@@ -43,21 +61,12 @@ class ScheduledGroupPolicy:
             return "teacher"
         return "student"
 
-    def base_deadline(self, session):
-        if not session.room_started_at:
-            return None
-        return session.room_started_at + timedelta(minutes=session.duration_minutes)
-
-    def deadline(self, session):
-        baseline = self.base_deadline(session)
-        if baseline is None:
-            return None
-        return max(baseline, session.cap_ends_at) if session.cap_ends_at else baseline
-
-
-class InstantCollaborationPolicy(ScheduledGroupPolicy):
+class InstantCollaborationPolicy(RoomTiming):
     kind = "instant"
     instant_capacity = 50
+    requires_paid_account = False
+    personal_trial = False
+    allows_extension = False
     allowed_durations = frozenset({30, 45, 60, 90, 120, 150, 180})
     default_duration = 60
 
@@ -71,6 +80,9 @@ class InstantCollaborationPolicy(ScheduledGroupPolicy):
 
     def start_error(self, session):
         return None
+
+    def role(self, session, user, invite):
+        return "host" if session.host_id == user.id else "student"
 
     def duration_for_create(self, raw):
         try:
