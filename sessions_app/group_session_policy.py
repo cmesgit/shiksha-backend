@@ -29,6 +29,7 @@ class ScheduledGroupPolicy(RoomTiming):
     requires_paid_account = True
     personal_trial = True
     allows_extension = True
+    remote_control_enabled = True
 
     def can_view(self, session, user):
         if session.host_id == user.id:
@@ -67,6 +68,7 @@ class InstantCollaborationPolicy(RoomTiming):
     requires_paid_account = False
     personal_trial = False
     allows_extension = False
+    remote_control_enabled = False
     allowed_durations = frozenset({30, 45, 60, 90, 120, 150, 180})
     default_duration = 60
 

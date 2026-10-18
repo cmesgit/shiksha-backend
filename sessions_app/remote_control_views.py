@@ -34,6 +34,7 @@ from rest_framework.response import Response
 from accounts.permissions import _in_teacher_context
 
 from . import live_rules
+from .group_session_policy import policy_for
 from .models import GroupSession, RemoteControlGrant
 
 
@@ -53,6 +54,8 @@ def _push(session_id, payload):
 @permission_classes([IsAuthenticated])
 def request_remote_control(request, session_id):
     session = get_object_or_404(GroupSession, id=session_id)
+    if not policy_for(session).remote_control_enabled:
+        return Response({"detail": "Remote control is not available in instant collaboration yet."}, status=403)
     if not live_rules.features()["remote_access"]:
         return Response({"detail": "Disabled by the admin."}, status=403)
 

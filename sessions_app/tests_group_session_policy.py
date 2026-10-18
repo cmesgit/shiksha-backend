@@ -127,3 +127,13 @@ class GroupSessionPolicyTests(TestCase):
                    return_value=False):
             response = self.client.post(self.url)
         self.assertEqual(response.status_code, 403)
+
+    def test_instant_remote_control_stays_unavailable(self):
+        self.session.session_type = "instant"
+        self.session.save(update_fields=["session_type"])
+        response = self.client.post(
+            f"/api/sessions/group-sessions/{self.session.id}/remote-control/request/",
+            {"target_user_id": str(self.host.id)},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("not available", response.data["detail"])
