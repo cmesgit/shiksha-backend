@@ -18,7 +18,7 @@ from django.db import transaction
 from django.db.models import Prefetch, Q
 from django.utils import timezone
 from rest_framework import status as http_status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -32,6 +32,7 @@ from enrollments.models import Enrollment
 from global_settings.models import GlobalSettings
 from . import live_rules
 from .group_session_policy import INSTANT_COLLABORATION, policy_for
+from .instant_guest_views import CodeLookupThrottle
 from .permissions import IsStudent
 from .serializers import get_user_name
 from accounts.permissions import IsAdmin
@@ -1177,11 +1178,13 @@ def join_group_session(request, session_id):
     # so a burst of concurrent /join/ calls can't all read the same
     # pre-increment count and all get admitted past the cap.
     if policy.instant_capacity and not is_host:
+        from .instant_guest_views import active_guest_count
         with transaction.atomic():
             locked_session = (
                 GroupSession.objects.select_for_update().get(pk=session.pk)
             )
-            if (locked_session.active_connections or 0) >= policy.instant_capacity:
+            if ((locked_session.active_connections or 0) + active_guest_count(locked_session)
+                    >= policy.instant_capacity):
                 return Response(
                     {"error": f"This instant meeting is full "
                               f"({INSTANT_MAX_PARTICIPANTS} participants max). "
@@ -1287,6 +1290,9 @@ def join_group_session(request, session_id):
     # Host re-entry is exempt in both cases.
     live_limits = live_rules.limits(session)
     live_limits["participants_now"] = session.active_connections or 0
+    if session.session_type == "instant":
+        from .instant_guest_views import active_guest_count
+        live_limits["participants_now"] += active_guest_count(session)
     if not is_host and live_limits["participants_now"] >= live_limits["max_participants"]:
         return Response(
             {"detail": "This room is full.", "code": "room_full"},
@@ -1379,6 +1385,9 @@ def group_session_preflight(request, session_id):
     ent = live_rules.entitlement(request.user, session)
     lim = live_rules.limits(session)
     lim["participants_now"] = session.active_connections or 0
+    if session.session_type == "instant":
+        from .instant_guest_views import active_guest_count
+        lim["participants_now"] += active_guest_count(session)
     cap = live_rules.cap_ends_at(session) if session.room_started_at else None
 
     return Response({
@@ -1748,7 +1757,7 @@ def instant_create(request):
             scheduled_time=local_now.time().replace(microsecond=0),
             duration_minutes=duration_minutes,
             session_type="instant",
-            admit_mode="open",
+            admit_mode="lobby",
             # Instant rooms open immediately — the host is dropped
             # straight into a live room without the "at least 1 invitee
             # must accept" gate that scheduled group sessions enforce.
@@ -1912,11 +1921,17 @@ def list_join_requests(request, session_id):
         )
 
     pending = session.join_requests.filter(status="pending").select_related("user")
-    return Response([
+    rows = [
         {"id": str(r.id), "user_id": str(r.user_id), "name": get_user_name(r.user),
          "requested_at": r.requested_at.isoformat()}
         for r in pending
-    ])
+    ]
+    if session.session_type == "instant":
+        rows.extend({
+            "id": str(g.id), "guest": True, "name": g.name,
+            "requested_at": g.requested_at.isoformat(),
+        } for g in session.instant_guests.filter(status="pending"))
+    return Response(rows)
 
 
 @api_view(["POST"])
@@ -1931,7 +1946,24 @@ def admit_join_request(request, session_id, request_id):
 
     join_req = GroupSessionJoinRequest.objects.filter(session=session, pk=request_id).first()
     if not join_req:
-        return Response({"error": "Join request not found."}, status=404)
+        if session.session_type != "instant":
+            return Response({"error": "Join request not found."}, status=404)
+        from .models import InstantCollaborationGuest
+        from .instant_guest_views import active_guest_count
+        with transaction.atomic():
+            locked_session = GroupSession.objects.select_for_update().get(pk=session.pk)
+            guest = InstantCollaborationGuest.objects.select_for_update().filter(
+                session=locked_session, pk=request_id, status="pending"
+            ).first()
+            if guest is None:
+                return Response({"error": "Join request not found."}, status=404)
+            if (locked_session.active_connections or 0) + active_guest_count(locked_session) >= 50:
+                return Response({"error": "This collaboration is full."}, status=409)
+            guest.status = "admitted"
+            guest.resolved_at = timezone.now()
+            guest.last_seen_at = timezone.now()
+            guest.save(update_fields=["status", "resolved_at", "last_seen_at"])
+        return Response({"status": "admitted"})
 
     join_req.status = "admitted"
     join_req.resolved_at = timezone.now()
@@ -1951,7 +1983,16 @@ def deny_join_request(request, session_id, request_id):
 
     join_req = GroupSessionJoinRequest.objects.filter(session=session, pk=request_id).first()
     if not join_req:
-        return Response({"error": "Join request not found."}, status=404)
+        if session.session_type != "instant":
+            return Response({"error": "Join request not found."}, status=404)
+        from .models import InstantCollaborationGuest
+        guest = InstantCollaborationGuest.objects.filter(session=session, pk=request_id, status="pending").first()
+        if guest is None:
+            return Response({"error": "Join request not found."}, status=404)
+        guest.status = "denied"
+        guest.resolved_at = timezone.now()
+        guest.save(update_fields=["status", "resolved_at"])
+        return Response({"status": "denied"})
 
     join_req.status = "denied"
     join_req.resolved_at = timezone.now()
@@ -1972,6 +2013,7 @@ def deny_join_request(request, session_id, request_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([CodeLookupThrottle])
 def join_by_code(request):
     """Resolve a room code (or UUID) to a GroupSession and return its id.
 

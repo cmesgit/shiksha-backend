@@ -112,6 +112,7 @@ class GroupSessionPolicyTests(TestCase):
         session = GroupSession.objects.get(pk=created.data["id"])
         self.assertEqual(session.duration_minutes, 150)
         self.assertEqual(session.session_type, "instant")
+        self.assertEqual(session.admit_mode, "lobby")
 
         self.client.force_authenticate(user=self.host)
         denied = self.client.post(
