@@ -10,7 +10,6 @@ consumer-side 5-minute timer) is reused via a longer 7-minute grace
 period for group sessions — see cleanup_expired_sessions.
 """
 
-from datetime import timedelta
 import logging
 
 from django.utils import timezone
@@ -49,9 +48,8 @@ def hard_expire_group_session(self, session_id):
         # would still fire at the ORIGINAL unextended eta and force-end the
         # room, because this self-check didn't know about extensions.
         if session.room_started_at:
-            end_at = session.room_started_at + timedelta(minutes=session.duration_minutes)
-            if session.cap_ends_at and session.cap_ends_at > end_at:
-                end_at = session.cap_ends_at
+            from .group_session_policy import policy_for
+            end_at = policy_for(session).deadline(session)
             if timezone.now() < end_at:
                 # Reschedule to the correct moment
                 self.retry(countdown=max(1, int((end_at - timezone.now()).total_seconds())))
