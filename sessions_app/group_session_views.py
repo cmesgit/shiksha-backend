@@ -31,6 +31,7 @@ from courses.board_display import board_name_for
 from enrollments.models import Enrollment
 from global_settings.models import GlobalSettings
 from . import live_rules
+from .group_session_policy import INSTANT_COLLABORATION, policy_for
 from .permissions import IsStudent
 from .serializers import get_user_name
 from accounts.permissions import IsAdmin
@@ -92,21 +93,8 @@ def _gs_qs():
 
 
 def _can_view(session, user):
-    """A session is visible to host, invited teacher, or any invitee.
-
-    Instant meetings (session_type='instant') are visible to any
-    authenticated user — possession of the short_code / share link is
-    the gate, mirroring Google Meet. This lets students, teachers, and
-    admins who paste the URL load the session detail and walk into
-    the live room without being pre-invited.
-    """
-    if session.host_id == user.id:
-        return True
-    if session.invited_teacher_id and session.invited_teacher_id == user.id:
-        return True
-    if getattr(session, "session_type", "") == "instant":
-        return True
-    return session.invites.filter(user=user).exists()
+    """Visibility follows the room kind's access policy."""
+    return policy_for(session).can_view(session, user)
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +105,7 @@ def _can_view(session, user):
 # The host is exempt so the room creator can always rejoin their own room.
 # Scheduled group sessions are capped via ``GroupSession.max_invitees``
 # (also 50 by default) at invite-add time, so no second cap is needed there.
-INSTANT_MAX_PARTICIPANTS = 50
+INSTANT_MAX_PARTICIPANTS = INSTANT_COLLABORATION.instant_capacity
 
 
 def _scheduled_aware_dt(session):
@@ -368,7 +356,7 @@ def _schedule_hard_duration_cutoff(session):
     """Queue a Celery task that force-ends the room at duration expiry."""
     try:
         from .group_session_tasks import hard_expire_group_session
-        eta = session.room_started_at + timedelta(minutes=session.duration_minutes)
+        eta = policy_for(session).base_deadline(session)
         hard_expire_group_session.apply_async(args=[str(session.id)], eta=eta)
     except Exception:
         logger.exception("Failed to schedule hard-duration cutoff for %s", session.id)
@@ -1174,38 +1162,12 @@ def join_group_session(request, session_id):
     # Instant meetings (session_type='instant') skip the invite gate entirely:
     # anyone authenticated and paid who has the link can join. The host is
     # still the only one allowed to /end/ the room.
-    is_instant = (session.session_type == "instant")
+    policy = policy_for(session)
     is_host = (session.host_id == user.id)
     invite = session.invites.filter(user=user).first()
-    is_accepted_invitee = bool(invite and invite.status == "accepted")
-    is_invited_teacher = bool(
-        session.invited_teacher_id and session.invited_teacher_id == user.id
-        and is_accepted_invitee
-    )
-
-    if is_host:
-        # Implicit accept; no further gate.
-        pass
-    elif is_instant:
-        # Open join for instant meetings — auth + paywall above are the only
-        # gates. (admit_mode='lobby' is enforced separately below, after this
-        # branch, for any non-host caller regardless of session type.)
-        pass
-    elif invite is None:
-        return Response(
-            {"error": "You are not a participant in this group session."},
-            status=403,
-        )
-    elif invite.status == "declined":
-        return Response(
-            {"error": "You declined this invite, so you can't join the room."},
-            status=403,
-        )
-    elif invite.status != "accepted":
-        return Response(
-            {"error": "You must accept the invite before you can join the room."},
-            status=403,
-        )
+    join_error = policy.join_error(session, user, invite)
+    if join_error:
+        return Response({"error": join_error}, status=403)
 
     # Capacity cap for instant rooms.
     # ``active_connections`` is incremented in consumers.py on WS connect and
@@ -1214,12 +1176,12 @@ def join_group_session(request, session_id):
     # even if it's "full". Locked (matching the nearby host-flip block below)
     # so a burst of concurrent /join/ calls can't all read the same
     # pre-increment count and all get admitted past the cap.
-    if is_instant and not is_host:
+    if policy.instant_capacity and not is_host:
         with transaction.atomic():
             locked_session = (
                 GroupSession.objects.select_for_update().get(pk=session.pk)
             )
-            if (locked_session.active_connections or 0) >= INSTANT_MAX_PARTICIPANTS:
+            if (locked_session.active_connections or 0) >= policy.instant_capacity:
                 return Response(
                     {"error": f"This instant meeting is full "
                               f"({INSTANT_MAX_PARTICIPANTS} participants max). "
@@ -1271,13 +1233,9 @@ def join_group_session(request, session_id):
         # there are no invitees at create-time. Google-Meet-style: the host
         # creates the room and walks straight in; participants join later
         # via the shareable link.
-        if not is_instant:
-            accepted_count = session.invites.filter(status="accepted").count()
-            if accepted_count < 1:
-                return Response(
-                    {"error": "At least 1 invitee must accept before the room opens."},
-                    status=400,
-                )
+        start_error = policy.start_error(session)
+        if start_error:
+            return Response({"error": start_error}, status=400)
 
         # Lock the row inside the atomic block so concurrent /join/ calls
         # from (somehow) two host clients can't both flip the status.
@@ -1311,9 +1269,7 @@ def join_group_session(request, session_id):
     # never used to shrink it, so a session that never calls /extend/ behaves
     # exactly as before.
     if session.room_started_at:
-        hard_end = session.room_started_at + timedelta(minutes=session.duration_minutes)
-        if session.cap_ends_at and session.cap_ends_at > hard_end:
-            hard_end = session.cap_ends_at
+        hard_end = policy.deadline(session)
         if now >= hard_end:
             _end_group_session_internal(session, reason="duration_hit_on_join")
             _broadcast(session)
@@ -1344,7 +1300,7 @@ def join_group_session(request, session_id):
 
     try:
         display_name = get_user_name(user)
-        role = "host" if is_host else ("teacher" if is_invited_teacher else "student")
+        role = policy.role(session, user, invite)
         token = generate_group_session_token(
             user=user, session=session, display_name=display_name, role=role,
         )
@@ -1375,10 +1331,7 @@ def join_group_session(request, session_id):
             session=session, user=user
         )
         guest_cap_end = guest_session.first_joined_at + timedelta(minutes=GUEST_TRIAL_MINUTES)
-        room_hard_end = (
-            session.room_started_at + timedelta(minutes=session.duration_minutes)
-            if session.room_started_at else guest_cap_end
-        )
+        room_hard_end = policy.base_deadline(session) or guest_cap_end
         cap_end = min(guest_cap_end, room_hard_end)
         remaining_ms = max(0, int((cap_end - timezone.now()).total_seconds() * 1000))
 
@@ -1488,7 +1441,7 @@ def extend_group_session(request, session_id):
         )
 
     session.extensions_used += 1
-    baseline_end = session.room_started_at + timedelta(minutes=session.duration_minutes)
+    baseline_end = policy_for(session).base_deadline(session)
     session.cap_ends_at = max(live_rules.cap_ends_at(session), baseline_end)
     session.save(update_fields=["extensions_used", "cap_ends_at", "updated_at"])
 
@@ -1778,9 +1731,9 @@ def instant_create(request):
 
     now = timezone.now()
     local_now = timezone.localtime(now)
-    duration_minutes = int(request.data.get("duration_minutes") or 60)
-    if duration_minutes not in {30, 45, 60, 90, 120, 150, 180}:
-        duration_minutes = 60
+    duration_minutes = INSTANT_COLLABORATION.duration_for_create(
+        request.data.get("duration_minutes")
+    )
 
     topic = (request.data.get("topic") or "").strip()[:255]
 
