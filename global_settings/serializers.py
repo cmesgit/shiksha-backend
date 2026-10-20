@@ -85,6 +85,7 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
             "google_oauth_enabled",
             "public_quiz_hub_enabled",
             "live_ticker_enabled",
+            "counselling_booking_requires_approval",
             "updated_at",
         ]
         read_only_fields = ["updated_at"]

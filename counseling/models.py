@@ -22,6 +22,7 @@
 from datetime import timedelta
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
@@ -101,8 +102,10 @@ class CounselorProfile(models.Model):
 
     session_duration_minutes = models.PositiveIntegerField(default=45)
 
-    # Rating denormalised for the directory; reviews are a later phase, so
-    # these are admin/seed-set for now and safe to leave at 0.
+    # Rating denormalised for the directory. Written ONLY by
+    # recalc_counselor_rating() at the bottom of this file, which recomputes
+    # from the SessionReview table on every review write/delete. Never
+    # increment these directly — a counter drifts silently on edit/delete.
     avg_rating = models.DecimalField(max_digits=3, decimal_places=2, default=0)
     rating_count = models.PositiveIntegerField(default=0)
 
@@ -215,6 +218,49 @@ class CounselingIntake(models.Model):
     )
     favorite_subjects = models.CharField(max_length=300, blank=True, default="")
 
+    # ── Workflow v3 §6 "Step 0", asked of everyone before the level-specific
+    # steps. All four are nullable/blank so every intake written before this
+    # existed still loads and still matches.
+
+    AUDIENCE_CHOICES = [
+        ("self", "Myself"), ("child", "My child"),
+        ("sibling", "My sibling"), ("other", "Someone else"),
+    ]
+    # Who the assessment is about. Drives second-person vs third-person
+    # wording on the report ("what this means for you" / "for your child").
+    audience = models.CharField(
+        max_length=10, choices=AUDIENCE_CHOICES, blank=True, default=""
+    )
+
+    LEVEL_CHOICES = [
+        ("6-8", "Class 6–8"), ("9-10", "Class 9–10"), ("11-12", "Class 11–12"),
+        ("diploma", "Diploma"), ("ug", "Undergraduate"),
+        ("graduate", "Graduate"), ("working", "Working professional"),
+    ]
+    # Which level-specific step set the wizard ran. Blank means a pre-v3
+    # intake; read `effective_level` instead of this field directly.
+    level = models.CharField(
+        max_length=10, choices=LEVEL_CHOICES, blank=True, default=""
+    )
+
+    # Multi-select, so a list rather than a choice field: "India", "Abroad",
+    # "Unsure" in any combination. Abroad-only short-circuits the wizard —
+    # abroad guidance is not built yet (§6 "Abroad gate").
+    location_preference = models.JSONField(default=list, blank=True)
+
+    # Multi-select from §6's fixed list (choose a career path / switch stream
+    # or course / prepare for entrance exams / shortlist colleges & courses /
+    # general guidance).
+    help_needed = models.JSONField(default=list, blank=True)
+
+    # The seven level step sets ask ~20 different questions between them and
+    # almost all are free text or chip lists that no query ever filters on.
+    # A column each would mean a migration every time the spec reworded a
+    # question, for no gain. Anything matching actually RUNS on —
+    # career_interests, skills, languages, work_environment — stays a real
+    # column above.
+    level_answers = models.JSONField(default=dict, blank=True)
+
     completed_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -224,6 +270,31 @@ class CounselingIntake(models.Model):
     @property
     def is_complete(self):
         return self.completed_at is not None
+
+    @property
+    def effective_level(self):
+        """The wizard level, falling back to one derived from the learner's
+        class. Intakes written before `level` existed have none, and the
+        report would otherwise have no stage to reason about."""
+        if self.level:
+            return self.level
+        cls = str(getattr(self.learner_profile, "current_class", "") or "").strip()
+        if cls in {"6", "7", "8"}:
+            return "6-8"
+        if cls in {"9", "10"}:
+            return "9-10"
+        if cls in {"11", "12"}:
+            return "11-12"
+        return ""
+
+    @property
+    def is_abroad_only(self):
+        """Abroad selected and nothing else. The wizard hides the remaining
+        questions in this case, so there is no India-focused report to
+        generate — callers should offer the counsellor/guides exits rather
+        than an empty path."""
+        prefs = {str(x).lower() for x in (self.location_preference or [])}
+        return prefs == {"abroad"}
 
     def skill_list(self):
         return [x.strip() for x in (self.skills or "").split(",") if x.strip()]
@@ -237,12 +308,20 @@ class CounselingIntake(models.Model):
 # =====================================================
 
 class Appointment(models.Model):
+    # PENDING exists only when GlobalSettings.counselling_booking_requires_approval
+    # is ON. With the flag off — the default — bookings are created CONFIRMED
+    # exactly as before and no row ever reaches this state. Adding the choice
+    # is additive: nothing existing can be pending.
+    STATUS_PENDING = "pending"
+    STATUS_REJECTED = "rejected"
     STATUS_CONFIRMED = "confirmed"
     STATUS_COMPLETED = "completed"
     STATUS_CANCELLED = "cancelled"
     STATUS_NO_SHOW = "no_show"
     STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending approval"),
         (STATUS_CONFIRMED, "Confirmed"),
+        (STATUS_REJECTED, "Declined by counsellor"),
         (STATUS_COMPLETED, "Completed"),
         (STATUS_CANCELLED, "Cancelled"),
         (STATUS_NO_SHOW, "No-show"),
@@ -405,8 +484,75 @@ class SessionReport(models.Model):
         return f"Report for appointment {self.appointment_id}"
 
 
+class SessionReview(models.Model):
+    """A student's rating of a completed session (workflow §8, §11-Reviews).
+
+    This is the table that makes CounselorProfile.avg_rating mean something.
+    Before it existed, avg_rating and rating_count were declared, serialized
+    and sorted on but written by NO code path anywhere in the repo — so
+    PublicStatsView always reported 0.0, the directory's
+    order_by("-avg_rating") was a no-op, and the match ranker's rating
+    tie-break never broke a tie.
+
+    One review per appointment: the appointment already identifies both the
+    student and the counsellor, so a OneToOne is the constraint rather than
+    something to enforce in a view.
+    """
+
+    appointment = models.OneToOneField(
+        Appointment, on_delete=models.CASCADE, related_name="review"
+    )
+    # Denormalised so the counsellor's review list and the rating recompute
+    # are one query each, not a join through appointment on every read.
+    counselor = models.ForeignKey(
+        CounselorProfile, on_delete=models.CASCADE, related_name="reviews"
+    )
+    rating = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(5)]
+    )
+    comment = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.rating}★ for appointment {self.appointment_id}"
+
+    def save(self, *args, **kwargs):
+        # Keep the denormalised counselor honest — it must always be the
+        # appointment's, never whatever a caller passed.
+        self.counselor_id = self.appointment.counselor_id
+        super().save(*args, **kwargs)
+        recalc_counselor_rating(self.counselor_id)
+
+    def delete(self, *args, **kwargs):
+        counselor_id = self.counselor_id
+        super().delete(*args, **kwargs)
+        recalc_counselor_rating(counselor_id)
+
+
+def recalc_counselor_rating(counselor_id):
+    """Recompute a counsellor's aggregate from the reviews table.
+
+    Recomputed, never incremented: an incrementing counter drifts the first
+    time a review is edited or deleted, and there is no way to notice. This
+    is the ONLY place avg_rating / rating_count are written.
+    """
+    from django.db.models import Avg as _Avg, Count as _Count
+
+    agg = SessionReview.objects.filter(counselor_id=counselor_id).aggregate(
+        avg=_Avg("rating"), n=_Count("id"),
+    )
+    CounselorProfile.objects.filter(pk=counselor_id).update(
+        avg_rating=round(agg["avg"] or 0, 2),
+        rating_count=agg["n"] or 0,
+    )
+
+
 # Career-guidance content library — additive module, imported here so
 # `manage.py makemigrations counseling` sees it as part of this app
 # rather than a separate one. See guide_models.py for why it isn't in
 # `content` instead.
-from .guide_models import CareerGuide, GuideChapter, GuideSection  # noqa: E402,F401
+from .guide_models import CareerGuide, GuideChapter, GuideSection, GuideReadingProgress  # noqa: E402,F401

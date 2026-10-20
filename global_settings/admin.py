@@ -33,6 +33,7 @@ class GlobalSettingsAdmin(admin.ModelAdmin):
             "classes": ("collapse",),
         }),
         ("Platform", {"fields": ("platform_email",)}),
+        ("Counselling", {"fields": ("counselling_booking_requires_approval",)}),
     )
     readonly_fields = ()
 

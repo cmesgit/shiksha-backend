@@ -7,7 +7,7 @@ from rest_framework import serializers
 from .models import (
     Appointment, AssessmentResponse, AssessmentTemplate, AvailabilitySlot,
     CounselingIntake, CounselorProfile, SessionNote, SessionReport,
-    Specialization,
+    Specialization, SessionReview,
 )
 
 
@@ -141,6 +141,10 @@ class IntakeSerializer(serializers.ModelSerializer):
         child=serializers.IntegerField(), write_only=True, required=False
     )
     is_complete = serializers.BooleanField(read_only=True)
+    # Derived, read-only: `level` is blank on every intake written before the
+    # v3 wizard existed, so clients must not branch on the raw column.
+    effective_level = serializers.CharField(read_only=True)
+    is_abroad_only = serializers.BooleanField(read_only=True)
     # Read-only context from the LearnerProfile so the frontend can show
     # "we already know your class/stream" without another call.
     learner = serializers.SerializerMethodField()
@@ -151,9 +155,39 @@ class IntakeSerializer(serializers.ModelSerializer):
             "id", "learner", "career_interests", "career_interest_ids",
             "preferred_industry", "work_environment", "long_term_goals",
             "short_term_goals", "skills", "languages", "favorite_subjects",
+            # v3 §6 Step 0 + the level-specific blob
+            "audience", "level", "location_preference", "help_needed",
+            "level_answers", "effective_level", "is_abroad_only",
             "is_complete", "completed_at",
         )
         read_only_fields = ("completed_at",)
+
+    # JSONFields accept literally anything by default, so a client bug would
+    # happily store a string where the report expects a list and break the
+    # read side instead of the write side.
+    LOCATIONS = {"india", "abroad", "unsure"}
+
+    def validate_location_preference(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Expected a list.")
+        cleaned = [str(v).strip().lower() for v in value if str(v).strip()]
+        unknown = sorted(set(cleaned) - self.LOCATIONS)
+        if unknown:
+            raise serializers.ValidationError(
+                f"Unknown location(s): {', '.join(unknown)}. "
+                f"Expected any of: {', '.join(sorted(self.LOCATIONS))}."
+            )
+        return list(dict.fromkeys(cleaned))
+
+    def validate_help_needed(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Expected a list.")
+        return [str(v).strip() for v in value if str(v).strip()][:10]
+
+    def validate_level_answers(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Expected an object.")
+        return value
 
     def get_learner(self, obj):
         lp = obj.learner_profile
@@ -175,6 +209,9 @@ class AppointmentSerializer(serializers.ModelSerializer):
     has_assessment = serializers.SerializerMethodField()
     assessment_submitted = serializers.SerializerMethodField()
     has_report = serializers.SerializerMethodField()
+    # Inlined so a session list can render its existing ratings without one
+    # extra request per card. Null when this session has not been rated.
+    review = serializers.SerializerMethodField()
 
     class Meta:
         model = Appointment
@@ -182,7 +219,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
             "id", "counselor", "learner", "scheduled_at", "end_at",
             "duration_minutes", "status", "meeting_link", "student_note",
             "cancel_reason", "has_assessment", "assessment_submitted",
-            "has_report", "created_at",
+            "has_report", "review", "created_at",
         )
 
     def get_learner(self, obj):
@@ -207,6 +244,13 @@ class AppointmentSerializer(serializers.ModelSerializer):
             return obj.report.is_published
         except SessionReport.DoesNotExist:
             return False
+
+    def get_review(self, obj):
+        review = getattr(obj, "review", None)
+        if review is None:
+            return None
+        return {"id": review.id, "rating": review.rating,
+                "comment": review.comment, "updated_at": review.updated_at}
 
 
 class CreateAppointmentSerializer(serializers.Serializer):
@@ -292,3 +336,37 @@ class AdminAppointmentSerializer(AppointmentSerializer):
 
     class Meta(AppointmentSerializer.Meta):
         fields = AppointmentSerializer.Meta.fields + ("booked_by_email",)
+
+
+# ── Reviews (workflow §8 "Rate & review", §11 "Reviews") ────────────────
+
+class SessionReviewSerializer(serializers.ModelSerializer):
+    student_name = serializers.SerializerMethodField()
+    session_date = serializers.DateTimeField(
+        source="appointment.scheduled_at", read_only=True
+    )
+    topic = serializers.CharField(
+        source="appointment.student_note", read_only=True
+    )
+
+    class Meta:
+        model = SessionReview
+        fields = ("id", "rating", "comment", "created_at", "updated_at",
+                  "student_name", "session_date", "topic")
+        read_only_fields = ("created_at", "updated_at")
+
+    def get_student_name(self, obj):
+        lp = obj.appointment.learner_profile
+        # First name plus an initial — the counsellor's public review list is
+        # readable by anyone browsing the directory, so it must not publish a
+        # student's full name.
+        name = (lp.display_name or "").strip()
+        parts = name.split()
+        if not parts:
+            return "A student"
+        return parts[0] if len(parts) == 1 else f"{parts[0]} {parts[1][0]}."
+
+    def validate_rating(self, value):
+        if not 1 <= int(value) <= 5:
+            raise serializers.ValidationError("Rating must be between 1 and 5.")
+        return value
