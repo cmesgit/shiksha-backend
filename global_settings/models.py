@@ -200,6 +200,24 @@ class GlobalSettings(models.Model):
             "revert them."
         ),
     )
+    # Counselling: does a student's booking need the counsellor to approve it?
+    #
+    # OFF by default, and deliberately so. Today a booking is created
+    # CONFIRMED and the student walks away with a slot; turning this on makes
+    # them wait for a human. That is a product decision, not a bug fix, so the
+    # capability ships inert and someone chooses to flip it.
+    #
+    # The counsellor console's Requests tab reads pending appointments either
+    # way — with this off it simply stays empty, which is honest.
+    counselling_booking_requires_approval = models.BooleanField(
+        default=False,
+        help_text=(
+            "When ON, a student's booking is created as Pending and only "
+            "becomes Confirmed once the counsellor approves it. When OFF "
+            "(default) bookings are confirmed instantly, as today."
+        ),
+    )
+
     ai_question_drafting_enabled = models.BooleanField(
         default=False, help_text="Gate for the 'Generate with AI' question-drafting flow."
     )

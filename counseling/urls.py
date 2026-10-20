@@ -8,6 +8,7 @@ from .guide_views import (
     AdminGuideDetailView, AdminGuideListView, AdminGuidePublishView,
     AdminGuideReorderView, AdminGuideSectionListView, AdminSectionDetailView,
     GuideChapterDetailView, GuideDetailView, GuideListView, GuideViewCountView,
+    GuideProgressListView, GuideProgressDetailView,
 )
 from .views import (
     ListSpecializationsView, CounselorDirectoryView, CounselorDetailView,
@@ -18,8 +19,10 @@ from .views import (
     ApplyCounselorView, CounselorMeView,
     AvailabilityView, AvailabilityDeleteView,
     CounselorAppointmentsView, SetMeetingLinkView, CompleteAppointmentView,
-    CounselorStudentView, SessionNotesView, SessionReportView,
+    CounselorStudentView, SessionNotesView, CounselorNotesIndexView, SessionReportView,
     AdminApplicationsView, AdminApplicationActionView, AdminAppointmentsView,
+    AppointmentReviewView, CounselorReviewsView, RescheduleAppointmentView,
+    CounselorRequestActionView,
 )
 
 urlpatterns = [
@@ -28,6 +31,7 @@ urlpatterns = [
     path("counselors/", CounselorDirectoryView.as_view()),
     path("counselors/<int:counselor_id>/", CounselorDetailView.as_view()),
     path("counselors/<int:counselor_id>/slots/", CounselorSlotsView.as_view()),
+    path("counselors/<int:counselor_id>/reviews/", CounselorReviewsView.as_view()),
     path("stats/", PublicStatsView.as_view()),
 
     # Student
@@ -39,6 +43,8 @@ urlpatterns = [
     path("appointments/<int:appointment_id>/assessment/", AssessmentView.as_view()),
     path("appointments/<int:appointment_id>/assessment/submit/", SubmitAssessmentView.as_view()),
     path("reports/", MyReportsView.as_view()),
+    path("appointments/<int:appointment_id>/reschedule/", RescheduleAppointmentView.as_view()),
+    path("appointments/<int:appointment_id>/review/", AppointmentReviewView.as_view()),
 
     # Counselor
     path("counselor/apply/", ApplyCounselorView.as_view()),
@@ -46,6 +52,9 @@ urlpatterns = [
     path("counselor/availability/", AvailabilityView.as_view()),
     path("counselor/availability/<int:slot_id>/", AvailabilityDeleteView.as_view()),
     path("counselor/appointments/", CounselorAppointmentsView.as_view()),
+    path("counselor/notes/", CounselorNotesIndexView.as_view()),
+    path("counselor/appointments/<int:appointment_id>/<str:action>/request/",
+         CounselorRequestActionView.as_view()),
     path("counselor/appointments/<int:appointment_id>/meeting-link/", SetMeetingLinkView.as_view()),
     path("counselor/appointments/<int:appointment_id>/complete/", CompleteAppointmentView.as_view()),
     path("counselor/appointments/<int:appointment_id>/student/", CounselorStudentView.as_view()),
@@ -59,6 +68,8 @@ urlpatterns = [
 
     # Career guide library — public
     path("guides/", GuideListView.as_view()),
+    path("guide-progress/", GuideProgressListView.as_view()),
+    path("guide-progress/<slug:slug>/", GuideProgressDetailView.as_view()),
     path("guides/<slug:slug>/", GuideDetailView.as_view()),
     path("guides/<slug:slug>/chapters/<slug:chapter_slug>/", GuideChapterDetailView.as_view()),
     path("guides/<slug:slug>/view/", GuideViewCountView.as_view()),

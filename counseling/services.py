@@ -174,8 +174,13 @@ def bookable_slots(counselor, days=14, now=None):
     return slots
 
 
-def booking_conflict(counselor, scheduled_at, duration_minutes):
-    """True if a confirmed appointment overlaps [scheduled_at, +duration)."""
+def booking_conflict(counselor, scheduled_at, duration_minutes, exclude_id=None):
+    """True if a confirmed appointment overlaps [scheduled_at, +duration).
+
+    exclude_id skips one appointment — used when re-checking a PENDING
+    request before approving it, so the request does not collide with
+    itself.
+    """
     end = scheduled_at + timedelta(minutes=duration_minutes)
     window = Appointment.objects.filter(
         counselor=counselor,
@@ -183,6 +188,8 @@ def booking_conflict(counselor, scheduled_at, duration_minutes):
         scheduled_at__lt=end,
         scheduled_at__gt=scheduled_at - timedelta(hours=6),
     )
+    if exclude_id is not None:
+        window = window.exclude(pk=exclude_id)
     for appt in window:
         if scheduled_at < appt.end_at and appt.scheduled_at < end:
             return True
