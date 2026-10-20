@@ -70,6 +70,15 @@ KIND_PATTERNS = (
     ("references", re.compile(r"^references?$", re.I)),
 )
 
+
+def chapter_kind(title):
+    """Classify the heading after its chapter number (for example '11. Activities')."""
+    unnumbered = re.sub(r"^\s*\d+(?:\.\d+)*\s*[.):-]\s*", "", title).strip()
+    for candidate, pattern in KIND_PATTERNS:
+        if pattern.search(unnumbered):
+            return candidate
+    return "content"
+
 URL_RE = re.compile(r"https?://[^\s<>()\[\]]+")
 
 #: Splits "1. Introduction2. Popular Courses3. ..." — some documents
@@ -621,11 +630,7 @@ def parse_docx(fileobj, spec: dict | None = None) -> dict:
                 close_section()
                 display = chapter_specs[idx][1]
                 chapter_index = len(chapters)
-                ch_kind = "content"
-                for candidate, pattern in KIND_PATTERNS:
-                    if pattern.search(display):
-                        ch_kind = candidate
-                        break
+                ch_kind = chapter_kind(display)
                 chapters.append({
                     "number": len(chapters) + 1,
                     "title": display,
