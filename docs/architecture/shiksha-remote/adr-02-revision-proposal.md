@@ -1,6 +1,8 @@
 # ADR-02 revision proposal — how the companion receives input
 
-**Status: proposal. Not decided.** Written 11 November 2026 after [evidence/sdk-capability-findings.md](evidence/sdk-capability-findings.md) established that ADR-02's companion token cannot work. The choice below is a security-posture decision for the architecture owner; this document exists so that choice is between two concrete designs rather than a sentence.
+**Status: DECIDED 11 November 2026 — Option C adopted**, with Option B as the named fallback if RC-003 shows auto-subscribe-off cannot be reliably declined. ADR-02 in [architecture-decisions.md](architecture-decisions.md) is rewritten accordingly, threat T23 is added to the register, and RC-003's kill criteria rows 1–2 are replaced. The rest of this document is kept as the reasoning behind that choice.
+
+**Original status: proposal, not decided.** Written 11 November 2026 after [evidence/sdk-capability-findings.md](evidence/sdk-capability-findings.md) established that ADR-02's companion token cannot work. The choice below is a security-posture decision for the architecture owner; this document exists so that choice is between two concrete designs rather than a sentence.
 
 ## What broke
 

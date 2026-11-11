@@ -19,7 +19,7 @@ Documentation-only stage: no platform is certified and no end-to-end control is 
 
 Existing test modules to retain: `livestream/tests.py`, `tests_lifecycle_hardening.py`, `tests_webhook_races.py`, `tests_attendance_profiles.py`, `tests_moderation_identity.py`, `tests_end_reconciliation.py`, `sessions_app/tests.py`, `tests_group_session_end.py`, `tests_group_session_socket.py`, `config/tests_media_security.py`. Determine current runner/settings via RC-001; do not run production DB migrations to satisfy a local test.
 
-## Mandatory abuse cases (T01–T22)
+## Mandatory abuse cases (T01–T23)
 
 Threat IDs and expected enforcement are in [permission-security-model](permission-security-model.md). Every task touching a boundary adds applicable cases. Include network-level fault injection, not only mocking the frontend:
 
@@ -34,6 +34,7 @@ Threat IDs and expected enforcement are in [permission-security-model](permissio
 - Tamper display geometry/track metadata or replace screen track with equal resolution: refuse mapping, never inject into unseen desktop.
 - Transfer with no offer/acceptance, wrong recipient/SID/topic/hash/size, MIME spoof, path traversal, Unicode direction override, file cancelled at99%: no unauthorized save, no completed status.
 - Scanner timeout, EICAR test fixture, zip bomb budget, expired object signed URL, repeated multipart completion: quarantine and quota correctness.
+- T23, stolen device credential: replay a captured companion credential from a client that is **not** our companion and attempt to subscribe to room media. It will succeed — the revised ADR-02 token grants `can_subscribe: true` and isolation is client-side. Assert instead what the design actually promises: the rogue participant is **visible** in the room under its own identity, revoking the device terminates it, and the 60-second join TTL bounds reuse of a stale token. A test that asserts the subscribe is blocked is testing the superseded design and will fail for the wrong reason.
 - T22, coerced consent: assert the dialog opens with Allow disabled and unfocused, that Enter/Space cannot approve before the dwell timer elapses, that the copy names the real capability rather than a euphemism, and that the audit row identifies requester, approver and duration. This case is only partly automatable — pair it with a scripted peer-pressure walkthrough judged by a safeguarding owner. A green assertion here is evidence about the dialog, never evidence that consent was freely given.
 
 ## Real-device acceptance scenarios
