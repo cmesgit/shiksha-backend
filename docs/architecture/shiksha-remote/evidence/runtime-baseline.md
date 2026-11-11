@@ -42,7 +42,7 @@ Per RC-004's "resolve compose path assumptions without moving repositories", thi
 | `docker-compose.yml` | `postgres:15` |
 | Original architecture request | 16 |
 | **Actually deployed (dev, measured 11 Nov 2026)** | **16.15** (Ubuntu 16.15-0ubuntu0.24.04.1) |
-| Actually deployed (prod) | still unverified — see below |
+| **Actually deployed (prod, 11 Nov 2026)** | **16.15** (Ubuntu 16.15-0ubuntu0.24.04.1) |
 
 **The compose pin is wrong, and the original request was right.** Dev runs PostgreSQL **16**, not the 15 that `docker-compose.yml` declares. Another symptom of the image being unbuilt and unmaintained: nothing reconciles it against a real environment. Anyone who did spin up that compose file for "local parity" would get a major behind.
 
@@ -56,18 +56,24 @@ sudo -u postgres psql -tAc "SHOW server_version;"                 → 16.15
 
 So **dev already satisfies Django 6's `Requires-Python >=3.12` floor** — consistent with the finding that the 3.11 container is not what runs anywhere.
 
-**Prod was not measured.** The same read-only commands against the prod host were refused by this environment's permission layer, repeatedly and for the minimal form too, while the identical command against dev succeeded. That is a tooling restriction, not evidence about prod. Prod's Python and Postgres majors therefore remain **open**, and the commands in the next section still need running by someone with access. Do not infer prod from dev: they are documented as asymmetric elsewhere in this repo's notes (different paths, different WSGI/ASGI servers).
+**Prod, reported by the operator** (not measured by the author — the same read-only commands were refused against the prod host by this environment's permission layer while succeeding against dev, so they were run by hand and the output pasted back):
+
+```
+sudo -u postgres psql -tAc 'SHOW server_version;'   → 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
+/app/shiksha-backend/venv/bin/python --version      → Python 3.12.3
+```
+
+**Prod and dev match exactly on both.** Three conclusions, now evidenced rather than inferred:
+
+1. **Nothing anywhere runs Python 3.11.** Both deployed environments are 3.12.3 and clear Django 6's floor. The container was the only thing claiming 3.11, and it is the only thing that does not run. The "runtime incompatibility" gate the pack carried from the start is **closed** — it was never a deployment risk, only an unbuildable artifact.
+2. **`docker-compose.yml`'s `postgres:15` is wrong for both environments**, not just dev.
+3. **PostgreSQL 16 is the migration target.** RC-005 can now plan its partial unique indexes and `SELECT … FOR UPDATE` concurrency against a known major instead of a guess — and must still be tested there, not on SQLite.
+
+The dev/prod asymmetry recorded elsewhere in this repo (different paths, uvicorn vs gunicorn) holds for the service layer but **not** for the language and database majors, which are identical.
 
 Django 6.0 supports PostgreSQL 14+, so 15 and 16 are both valid targets and nothing in this pack depends on choosing between them — with one exception RC-005 must respect: the partial unique indexes and `SELECT … FOR UPDATE` concurrency the consent state machine relies on behave identically on both, but must be tested on the **deployed** major, not SQLite. RC-001's suite is SQLite-based and explicitly does not prove this.
 
-To close the remaining unknown, on the **prod** host:
-
-```
-sudo -u postgres psql -c 'SHOW server_version;'
-/app/shiksha-backend/venv/bin/python --version
-```
-
-Until those are run, treat prod's Postgres major as open and do not let RC-005 freeze a migration plan against an assumption. Dev being 16 makes 16 the likely answer, but "likely" is not what a migration plan should rest on — and RC-005's concurrency work (partial unique indexes, `SELECT … FOR UPDATE` on the consent state machine) is exactly the kind of thing that must be tested against the real deployed major, not SQLite and not a guess.
+Both environments are now measured (above). The one acceptance criterion still open is the **container build**, which could not be run here because Docker is not installed on the authoring machine. Whoever has a Docker host should confirm `docker build` completes on 3.12 — or, better, act on the recommendation below and decide whether the image should exist at all.
 
 ## Migration and rollback posture
 
