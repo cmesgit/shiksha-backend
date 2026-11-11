@@ -32,6 +32,16 @@ One prerequisite below is now **confirmed rather than suspected**: `Dockerfile:1
 
 Also patched in this pass, in the documents rather than in code: a coerced-consent threat (T22) added to the register, the open product/safeguarding decisions separated out of the ADRs (OD-01 student↔student control, OD-02 audit retention, OD-03 unknown recording status), and explicit kill criteria added to RC-003 so a failed feasibility finding escalates instead of being worked around. No independent architecture/security review has still been performed.
 
+## RC-004 executed — 11 November 2026
+
+Runtime baseline reconciled, and the pack's "Django 6 vs Python 3.11 Docker" gate is **downgraded, not closed**. `scripts/deploy.sh` documents prod running from a venv at `/app/shiksha-backend` under uvicorn and dev under gunicorn; `grep -rn docker scripts/*.sh` returns nothing. **The container is not the deployment path**, so the mismatch was never a live outage.
+
+It was a real defect of a different kind: Django 6.0.9 declares `Requires-Python: >=3.12`, which pip enforces at resolution, so the 3.11 image could not complete `pip install` — it failed to **build**, and nobody noticed because nothing builds it. `Dockerfile:1` is now `python:3.12-slim`, the minimum compatible bump (nothing else pinned needs above 3.10). No dependency upgraded.
+
+**Container build not run** — Docker is not installed on this machine, so that acceptance criterion is open. **Deployed Python and Postgres majors remain unverified**; the evidence file records the two commands that close it, deliberately not run because contacting a server was outside this task. `docker-compose.yml` additionally assumes it sits at the workspace root (`build: ./shiksha-backend`, sibling `dist/` mounts) and is recorded rather than moved. RC-001's suite re-run after the edit: **9 OK**. Detail: [evidence/runtime-baseline.md](evidence/runtime-baseline.md).
+
+Phase 0 now stands at RC-001 and RC-004 done, **RC-003 blocked** on physical Windows hardware, and RC-002 blocked behind RC-003.
+
 ## Known prerequisites carried into tasks
 
 Runtime incompatibility (Django6 pin vs Python3.11 Docker); actual deployed Postgres unknown vs compose15/request16; six shared-copy drifts; legacy UUID routing errors and incomplete consent/presence; Rust SDK screen/data grant feasibility; physical native-consent integrity and abrupt-kill cleanup; exact OS/compositor package certification; deployed recording policy and actual costs. These are explicit gates, not silently assumed fixes.
