@@ -1,4 +1,14 @@
-FROM python:3.11-slim
+# Django 6.0.x declares Requires-Python >=3.12, so this image previously could
+# not even complete `pip install -r requirements.txt` — the build failed, it was
+# not a latent runtime problem. 3.12 is the MINIMUM compatible bump: nothing
+# else pinned here needs above 3.10 (channels/daphne/celery 3.9, uvicorn/psycopg
+# 3.10), so this is not an opportunistic upgrade.
+#
+# Note this image is NOT how Shiksha is deployed — scripts/deploy.sh runs prod
+# from a venv at /app/shiksha-backend under uvicorn and dev under gunicorn. See
+# docs/architecture/shiksha-remote/evidence/runtime-baseline.md before assuming
+# a change here reaches a server.
+FROM python:3.12-slim
 
 WORKDIR /app
 
