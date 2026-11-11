@@ -96,11 +96,13 @@ Close the generation latch before enqueueing cleanup; the single injection execu
 
 | Existing context | Eligible participant policy | Default assistance |
 |---|---|---|
-| Instant/general GroupSession | Authenticated current interactive participants admitted under existing link/lobby/entitlement policy, independent of student/teacher/admin/guest label | Pilot enabled after local host setup |
-| Scheduled GroupSession | Existing host and accepted invitees, currently connected; preserve course-related invite constraints | Pilot enabled after local host setup |
+| Instant/general GroupSession (**instant collaboration**) | **Anyone the host admitted**, independent of student/teacher/admin/guest label — and per OD-01 this **includes un-authenticated `InstantCollaborationGuest` lobby visitors**, whose only identity is a self-chosen display name. Lobby admission is the authorization gate and must disclose that it confers control eligibility | Pilot enabled after local host setup |
+| Scheduled GroupSession | Existing host and accepted invitees, currently connected; preserve course-related invite constraints. **Teacher-initiated only** per OD-01 — a peer cannot request here even though both are accepted invitees | Pilot enabled after local host setup |
 | PrivateSession | Existing teacher/requester/accepted group-type participant policy plus current binding | Disabled until RC-020 |
 | LiveSession classroom | Existing profile/batch/enrollment/removal checks plus explicit interactive-assistance opt-in | Disabled until RC-021 |
 | Public broadcast / spectator | Audience/subscribe-only status confers no request/control rights | Disabled; audience cannot opt itself in |
 | SkillSession | Confirmed booking and correct expert/learner profile plus current binding | Disabled until RC-022 |
 
-An authenticated GUEST admitted interactively can be eligible; an anonymous viewer cannot. A TEACHER or ADMIN still needs the same local device-owner approval. Moderation can stop access for safety but cannot grant it.
+A TEACHER or ADMIN still needs the same local device-owner approval. Moderation can stop access for safety but cannot grant it.
+
+**Superseded by OD-01:** this document previously said "an authenticated GUEST admitted interactively can be eligible; an anonymous viewer cannot." That rule predates `InstantCollaborationGuest` (added by `f572151`), which is neither an authenticated GUEST role nor a passive viewer — it is an admitted interactive participant with no account. The resolved policy is the matrix above: inside an instant collaboration an admitted guest **is** eligible; a public-broadcast spectator still is not, because they were never admitted interactively. Elsewhere, teacher-initiated only.
