@@ -74,6 +74,16 @@ This is the most permissive of the options offered, and two consequences are now
 
 **All three open decisions are now closed.** Nothing in the pack is blocked on a product call.
 
+## RC-005 executed — 11 November 2026
+
+**First production-code change in this pack**, and it is additive and unreachable: no route, view or serializer touches the new tables and `remote_control_views.py` is untouched. `RemoteControlGrant` gains the v1 fields; `PairedDevice`, `FileTransfer` and `CollaborationAuditEvent` are new. Migration `0019` has **zero** removals. **26 new tests green**; `sessions_app` = **167 tests, 4 failures + 1 error**, the unchanged environmental LiveKit set.
+
+**The migration number was nearly wrong.** Generated from the 17-commits-behind working branch it came out `0018` — which already exists upstream as `0018_instantcollaborationguest`. Regenerated on the real base as `0019` depending on it. The same staleness would have had a worse consequence: copying the local `models.py` onto the branch would have **deleted `InstantCollaborationGuest`**. The edits were applied to the branch's own file instead.
+
+**One deliberate divergence, flagged for the contract owner:** the grant's legacy `session` FK stays **CASCADE** rather than the specified PROTECT, because `GroupSession` is admin-registered and PROTECT would make admin deletion raise `ProtectedError` — a product behaviour change arriving as a side effect of an additive migration. The three new session FKs and `device` do use PROTECT.
+
+**The concurrent two-room approval race is NOT tested** — SQLite enforces the constraints but does not reproduce PostgreSQL row locking. The tests prove the constraint refuses the second row, not the `select_for_update` ordering meant to stop two transactions getting there. Open against the now-known deployed Postgres 16. Detail: [evidence/collaboration-schema.md](evidence/collaboration-schema.md).
+
 ## Known prerequisites carried into tasks
 
 Runtime incompatibility (Django6 pin vs Python3.11 Docker); actual deployed Postgres unknown vs compose15/request16; six shared-copy drifts; legacy UUID routing errors and incomplete consent/presence; Rust SDK screen/data grant feasibility; physical native-consent integrity and abrupt-kill cleanup; exact OS/compositor package certification; deployed recording policy and actual costs. These are explicit gates, not silently assumed fixes.

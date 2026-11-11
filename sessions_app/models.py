@@ -1,6 +1,7 @@
 import uuid
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 
 class PrivateSession(models.Model):
@@ -978,8 +979,13 @@ class RemoteControlGrant(models.Model):
         (STATUS_EXPIRED, "Expired"),
     ]
 
+    # Nullable as of RC-005 so a non-group SessionRef can be represented. Every
+    # legacy row has it set, and the exactly-one-session check constraint stops
+    # a row from having none. on_delete stays CASCADE — see the divergence note
+    # in evidence/collaboration-schema.md.
     session = models.ForeignKey(
-        GroupSession, related_name="remote_grants", on_delete=models.CASCADE
+        GroupSession, null=True, blank=True,
+        related_name="remote_grants", on_delete=models.CASCADE,
     )
     controller = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1000,8 +1006,416 @@ class RemoteControlGrant(models.Model):
     # target|controller|system — free-text audit tag, not an FK.
     ended_by = models.CharField(max_length=16, blank=True)
 
+    # ── Shiksha Remote v1 (RC-005) ────────────────────────────────────────
+    # Everything below is ADDITIVE and nullable. Rows written by the legacy
+    # teacher→student path keep schema_version=0 and never gain these fields;
+    # `remote_control_views.py` is untouched by this migration and still
+    # writes legacy rows. See docs/architecture/shiksha-remote/
+    # database-specification.md — "extend existing Grant, do not duplicate".
+    SCHEMA_LEGACY = 0
+    SCHEMA_V1 = 1
+
+    # The protocol's nine states. The legacy five are a subset, so existing
+    # rows stay valid; `paused`, `approved`, `completed` and `failed` are new.
+    STATUS_APPROVED = "approved"
+    STATUS_PAUSED = "paused"
+    STATUS_COMPLETED = "completed"
+    STATUS_FAILED = "failed"
+    V1_STATUS_CHOICES = STATUS_CHOICES + [
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_PAUSED, "Paused"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_FAILED, "Failed"),
+    ]
+    NONTERMINAL_STATUSES = (
+        STATUS_REQUESTED, STATUS_APPROVED, STATUS_ACTIVE, STATUS_PAUSED,
+    )
+    # The states that reserve the one-grant-per-device slot.
+    DEVICE_RESERVING_STATUSES = (STATUS_APPROVED, STATUS_ACTIVE, STATUS_PAUSED)
+
+    schema_version = models.SmallIntegerField(default=SCHEMA_LEGACY)
+    public_id = models.UUIDField(null=True, blank=True, unique=True, editable=False)
+
+    # Exactly one session FK is non-null, enforced by a check constraint.
+    # `session` (GroupSession) keeps CASCADE deliberately — see the divergence
+    # note in evidence/collaboration-schema.md. The three new FKs use PROTECT
+    # as the specification requires, because nothing depends on them yet.
+    private_session = models.ForeignKey(
+        "sessions_app.PrivateSession", null=True, blank=True,
+        related_name="remote_grants", on_delete=models.PROTECT,
+    )
+    live_session = models.ForeignKey(
+        "livestream.LiveSession", null=True, blank=True,
+        related_name="remote_grants", on_delete=models.PROTECT,
+    )
+    skill_session = models.ForeignKey(
+        "skills.SkillSession", null=True, blank=True,
+        related_name="remote_grants", on_delete=models.PROTECT,
+    )
+
+    device = models.ForeignKey(
+        "sessions_app.PairedDevice", null=True, blank=True,
+        related_name="grants", on_delete=models.PROTECT,
+    )
+
+    # Server-derived auth context snapshots. Never read from a request body —
+    # api-contracts.md: "Never infer authority from role sent in body."
+    controller_context = models.JSONField(null=True, blank=True)
+    target_context = models.JSONField(null=True, blank=True)
+
+    controller_binding_id = models.UUIDField(null=True, blank=True)
+    host_binding_id = models.UUIDField(null=True, blank=True)
+
+    room_name = models.CharField(max_length=255, blank=True)
+    controller_identity = models.CharField(max_length=255, blank=True)
+    host_identity = models.CharField(max_length=255, blank=True)
+    companion_identity = models.CharField(max_length=255, blank=True)
+    controller_sid = models.CharField(max_length=128, blank=True)
+    host_sid = models.CharField(max_length=128, blank=True)
+    companion_sid = models.CharField(max_length=128, blank=True)
+    track_sid = models.CharField(max_length=128, blank=True)
+
+    # Sorted, unique, drawn from the five-item allowlist. No default grants
+    # input — an empty list is the safe state.
+    capabilities = models.JSONField(default=list, blank=True)
+    display_descriptor = models.JSONField(null=True, blank=True)
+    capture_generation = models.PositiveIntegerField(null=True, blank=True)
+
+    epoch = models.UUIDField(null=True, blank=True)
+    version = models.BigIntegerField(default=1)
+
+    request_expires_at = models.DateTimeField(null=True, blank=True)
+    approval_expires_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    paused_until = models.DateTimeField(null=True, blank=True)
+    resume_intent_expires_at = models.DateTimeField(null=True, blank=True)
+
+    # One-use activation/resume challenge. The nonce itself is never stored.
+    consent_nonce_hash = models.BinaryField(max_length=32, null=True, blank=True)
+    reason = models.CharField(max_length=64, blank=True)
+
     class Meta:
         ordering = ["-requested_at"]
+        constraints = [
+            # Exactly one session FK, for every row including legacy ones.
+            models.CheckConstraint(
+                name="rc_grant_exactly_one_session",
+                condition=(
+                    models.Q(session__isnull=False, private_session__isnull=True,
+                             live_session__isnull=True, skill_session__isnull=True)
+                    | models.Q(session__isnull=True, private_session__isnull=False,
+                               live_session__isnull=True, skill_session__isnull=True)
+                    | models.Q(session__isnull=True, private_session__isnull=True,
+                               live_session__isnull=False, skill_session__isnull=True)
+                    | models.Q(session__isnull=True, private_session__isnull=True,
+                               live_session__isnull=True, skill_session__isnull=False)
+                ),
+            ),
+            # A v1 row must carry its device and both bindings. Legacy rows are
+            # exempt, which is what lets this ship without a backfill.
+            models.CheckConstraint(
+                name="rc_grant_v1_requires_device_and_bindings",
+                condition=(
+                    models.Q(schema_version=0)
+                    | models.Q(device__isnull=False,
+                               controller_binding_id__isnull=False,
+                               host_binding_id__isnull=False,
+                               public_id__isnull=False)
+                ),
+            ),
+            # Controlling your own account is denied in MVP — same-account
+            # profiles are distinct contexts and the identity is ambiguous.
+            models.CheckConstraint(
+                name="rc_grant_controller_is_not_target",
+                condition=~models.Q(controller=models.F("target")),
+            ),
+            # One live grant per device, across every room. Partial so legacy
+            # rows and terminal rows don't occupy the slot. No NOW() here —
+            # expiry is transitioned under lock before an insert, never
+            # inferred by the index (database-specification.md).
+            models.UniqueConstraint(
+                fields=["device"],
+                condition=models.Q(
+                    schema_version=1,
+                    status__in=["approved", "active", "paused"],
+                ),
+                name="rc_grant_one_live_grant_per_device",
+            ),
+            # Stops a controller flooding one device with pending requests.
+            models.UniqueConstraint(
+                fields=["controller", "device"],
+                condition=models.Q(schema_version=1, status="requested"),
+                name="rc_grant_one_pending_request_per_controller_device",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["device", "status"], name="rc_grant_device_status"),
+            models.Index(fields=["controller", "-requested_at"], name="rc_grant_ctrl_time"),
+            models.Index(fields=["target", "status", "-requested_at"], name="rc_grant_tgt_time"),
+            models.Index(fields=["status", "expires_at"], name="rc_grant_status_expiry"),
+            models.Index(fields=["status", "request_expires_at"], name="rc_grant_status_req_exp"),
+        ]
 
     def __str__(self):
         return f"RC {self.controller_id}->{self.target_id} on {self.session_id} [{self.status}]"
+
+    @property
+    def is_v1(self):
+        return self.schema_version == self.SCHEMA_V1
+
+    def session_ref(self):
+        """The one non-null session FK, as the wire's `SessionRef` shape.
+
+        Returns None for a row that somehow has none — the check constraint
+        makes that unreachable in the database, but this is read on paths
+        where failing closed beats raising.
+        """
+        for kind, value in (
+            ("group", self.session_id), ("private", self.private_session_id),
+            ("live", self.live_session_id), ("skill", self.skill_session_id),
+        ):
+            if value is not None:
+                return {"kind": kind, "id": str(value)}
+        return None
+
+
+class PairedDevice(models.Model):
+    """A desktop the owner has paired, and the credential it authenticates with.
+
+    Not an account and not a login: a paired device is a subordinate credential
+    that can only ever act for `owner`, and only while `status == "paired"`.
+    Revoking it must stop WSS connection, capture publication and lease
+    issuance — holding a valid token is not sufficient.
+
+    `name` is display metadata the user typed. It is escaped on render and is
+    never authority; two devices may share a name.
+    """
+
+    STATUS_PENDING = "pending"
+    STATUS_PAIRED = "paired"
+    STATUS_REVOKED = "revoked"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_PAIRED, "Paired"),
+        (STATUS_REVOKED, "Revoked"),
+    ]
+
+    MAX_PER_ACCOUNT = 5
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="paired_devices",
+        on_delete=models.PROTECT,
+    )
+    paired_context = models.JSONField(null=True, blank=True)
+
+    name = models.CharField(max_length=80)
+    platform = models.CharField(max_length=32)
+    arch = models.CharField(max_length=16)
+    app_version = models.CharField(max_length=32, blank=True)
+    protocol_min = models.SmallIntegerField(default=1)
+    protocol_max = models.SmallIntegerField(default=1)
+
+    public_jwk = models.JSONField()
+    key_thumbprint = models.CharField(max_length=64, unique=True)
+    # Hashes only. The credential itself never lands in a column.
+    credential_hash = models.BinaryField(max_length=32, null=True, blank=True)
+    # Kept solely so a replayed old refresh token is detectable as reuse.
+    previous_credential_hash = models.BinaryField(max_length=32, null=True, blank=True)
+    credential_expires_at = models.DateTimeField(null=True, blank=True)
+    credential_version = models.BigIntegerField(default=1)
+
+    status = models.CharField(
+        max_length=12, choices=STATUS_CHOICES, default=STATUS_PENDING,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    paired_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    # Coarse on purpose — persisted at most every 5 minutes. Real liveness is
+    # a Redis record with a 6-second TTL; this column must never gate a lease.
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["owner", "status"], name="paired_device_owner_status"),
+            models.Index(fields=["credential_expires_at"], name="paired_device_cred_exp"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.platform}/{self.arch}) [{self.status}]"
+
+    @property
+    def is_usable(self):
+        """Paired and not revoked. Deliberately does not consult last_seen_at."""
+        return self.status == self.STATUS_PAIRED
+
+
+class FileTransfer(models.Model):
+    """One file offered to exactly one recipient.
+
+    `recipient` is never null and never means "everyone" — course-wide
+    distribution keeps using the existing course models and their ACLs. The
+    durable-storage columns are deliberately absent until RC-019; this table
+    carries metadata only and no blob.
+    """
+
+    MODE_REALTIME = "realtime"
+    MODE_DURABLE = "durable"
+    MODE_CHOICES = [(MODE_REALTIME, "Realtime"), (MODE_DURABLE, "Durable")]
+
+    STATE_OFFERED = "offered"
+    STATE_ACCEPTED = "accepted"
+    STATE_REJECTED = "rejected"
+    STATE_SENDING = "sending"
+    STATE_RECEIVED = "received"
+    STATE_FAILED = "failed"
+    STATE_CANCELLED = "cancelled"
+    STATE_EXPIRED = "expired"
+    STATE_CHOICES = [
+        (STATE_OFFERED, "Offered"), (STATE_ACCEPTED, "Accepted"),
+        (STATE_REJECTED, "Rejected"), (STATE_SENDING, "Sending"),
+        (STATE_RECEIVED, "Received"), (STATE_FAILED, "Failed"),
+        (STATE_CANCELLED, "Cancelled"), (STATE_EXPIRED, "Expired"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    session = models.ForeignKey(
+        GroupSession, null=True, blank=True,
+        related_name="file_transfers", on_delete=models.PROTECT,
+    )
+    private_session = models.ForeignKey(
+        "sessions_app.PrivateSession", null=True, blank=True,
+        related_name="file_transfers", on_delete=models.PROTECT,
+    )
+    live_session = models.ForeignKey(
+        "livestream.LiveSession", null=True, blank=True,
+        related_name="file_transfers", on_delete=models.PROTECT,
+    )
+    skill_session = models.ForeignKey(
+        "skills.SkillSession", null=True, blank=True,
+        related_name="file_transfers", on_delete=models.PROTECT,
+    )
+
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="file_transfers_sent",
+        on_delete=models.PROTECT,
+    )
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="file_transfers_received",
+        on_delete=models.PROTECT,
+    )
+    sender_context = models.JSONField(null=True, blank=True)
+    recipient_context = models.JSONField(null=True, blank=True)
+    sender_binding_id = models.UUIDField(null=True, blank=True)
+    recipient_binding_id = models.UUIDField(null=True, blank=True)
+    sender_identity = models.CharField(max_length=255, blank=True)
+    recipient_identity = models.CharField(max_length=255, blank=True)
+    sender_sid = models.CharField(max_length=128, blank=True)
+    recipient_sid = models.CharField(max_length=128, blank=True)
+
+    mode = models.CharField(max_length=12, choices=MODE_CHOICES)
+    state = models.CharField(max_length=16, choices=STATE_CHOICES, default=STATE_OFFERED)
+    version = models.BigIntegerField(default=1)
+
+    name = models.CharField(max_length=255)
+    declared_mime = models.CharField(max_length=120, blank=True)
+    size_bytes = models.PositiveBigIntegerField()
+    sha256 = models.CharField(max_length=64)
+    stream_id = models.UUIDField(null=True, blank=True, unique=True)
+    attempt = models.PositiveIntegerField(default=1)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    offer_expires_at = models.DateTimeField()
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    reason = models.CharField(max_length=64, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(
+                name="file_transfer_exactly_one_session",
+                condition=(
+                    models.Q(session__isnull=False, private_session__isnull=True,
+                             live_session__isnull=True, skill_session__isnull=True)
+                    | models.Q(session__isnull=True, private_session__isnull=False,
+                               live_session__isnull=True, skill_session__isnull=True)
+                    | models.Q(session__isnull=True, private_session__isnull=True,
+                               live_session__isnull=False, skill_session__isnull=True)
+                    | models.Q(session__isnull=True, private_session__isnull=True,
+                               live_session__isnull=True, skill_session__isnull=False)
+                ),
+            ),
+            models.CheckConstraint(
+                name="file_transfer_sender_is_not_recipient",
+                condition=~models.Q(sender=models.F("recipient")),
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["sender", "state", "-created_at"], name="transfer_sender_state"),
+            models.Index(fields=["recipient", "state", "-created_at"], name="transfer_recip_state"),
+            models.Index(fields=["state", "expires_at"], name="transfer_state_expiry"),
+        ]
+
+    def __str__(self):
+        return f"Transfer {self.name} {self.sender_id}->{self.recipient_id} [{self.state}]"
+
+
+class CollaborationAuditEvent(models.Model):
+    """Append-only record of consent and device-lifecycle transitions.
+
+    What it must never contain: keystrokes, typed text, pointer payloads,
+    screen frames, file contents, filenames, bearer tokens or DPoP secrets.
+    `metadata` is for allowlisted counts, capability names and app versions.
+
+    This is an audit trail, not a tamper-proof log — a database administrator
+    can still alter it. Do not describe it as immutable to users.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    occurred_at = models.DateTimeField(default=timezone.now)
+
+    # SET_NULL, not CASCADE: deleting an account must not erase the record
+    # that something happened.
+    actor_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        related_name="collaboration_audit_events", on_delete=models.SET_NULL,
+    )
+    actor_device = models.ForeignKey(
+        PairedDevice, null=True, blank=True,
+        related_name="audit_events", on_delete=models.SET_NULL,
+    )
+    actor_context = models.JSONField(null=True, blank=True)
+
+    event_type = models.CharField(max_length=64)
+    resource_type = models.CharField(max_length=24)
+    resource_id = models.CharField(max_length=64)
+    resource_version = models.BigIntegerField()
+    session_kind = models.CharField(max_length=16, blank=True)
+    session_id = models.UUIDField(null=True, blank=True)
+    reason = models.CharField(max_length=64, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-occurred_at"]
+        constraints = [
+            # One row per (resource, version, event) — makes the audit write
+            # idempotent so a retried transaction cannot double-log.
+            models.UniqueConstraint(
+                fields=["resource_type", "resource_id", "resource_version", "event_type"],
+                name="audit_one_row_per_resource_version_event",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["-occurred_at"], name="audit_time"),
+            models.Index(fields=["resource_type", "resource_id", "-occurred_at"],
+                         name="audit_resource_time"),
+            models.Index(fields=["actor_user", "-occurred_at"], name="audit_actor_time"),
+        ]
+
+    def __str__(self):
+        return f"{self.event_type} {self.resource_type}:{self.resource_id} v{self.resource_version}"
+
