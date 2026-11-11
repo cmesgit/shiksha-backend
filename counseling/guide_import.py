@@ -403,6 +403,35 @@ def _checkbox_label(text: str) -> str | None:
     return _CHECKBOX_RE.sub("", text).strip()
 
 
+#: A labelled fill-in line: "My name: ________________".
+#:
+#: Anchored and deliberately narrow. The corpus has 16 blank runs but only
+#: these 9 are form fields; the rest are either mid-sentence ("I want to
+#: build my future by ____.") or bare placeholders inside prose ("₹_____"),
+#: where there is no label to put beside an input and the blank is part of
+#: the sentence the reader is meant to read.
+_FIELD_RE = re.compile(r"^(?P<label>[^_\n]{2,80}?)\s*[:：]\s*_{3,}\s*$")
+
+#: Keys must be stable across re-imports — they address saved localStorage
+#: answers, so a key that changes shape silently orphans what a student wrote.
+_KEY_STRIP = re.compile(r"[^a-z0-9]+")
+
+
+def _field_key(label: str, taken: set) -> str:
+    key = _KEY_STRIP.sub("_", label.casefold()).strip("_")[:40] or "field"
+    candidate, n = key, 2
+    while candidate in taken:
+        candidate, n = f"{key}_{n}", n + 1
+    taken.add(candidate)
+    return candidate
+
+
+def _field_label(text: str) -> str | None:
+    """The label of a labelled fill-in line, or None."""
+    m = _FIELD_RE.match(text or "")
+    return m.group("label").strip() if m else None
+
+
 def _is_box_cell(cell: str) -> bool:
     """A cell holding only an empty checkbox, or nothing at all."""
     return cell.strip() in ("☐", "□", "")
@@ -454,6 +483,8 @@ class _Blocks:
         self._list_key = None          # (numId, ilvl) of the run being built
         self._open_callout = None      # callout awaiting its body text
         self._checklist = None         # checklist block being accumulated
+        self._worksheet = None         # worksheet block being accumulated
+        self._field_keys = set()       # keys used by the open worksheet
 
     # -- checklists -------------------------------------------------
     def add_checklist_item(self, label):
@@ -465,10 +496,27 @@ class _Blocks:
             return
         self._list_key = None
         self._open_callout = None
+        self._worksheet = None
         if self._checklist is None:
             self._checklist = {"t": "checklist", "items": []}
             self.blocks.append(self._checklist)
         self._checklist["items"].append(label)
+
+    # -- worksheets -------------------------------------------------
+    def add_worksheet_field(self, label):
+        """Append a labelled fill-in field, starting a worksheet if needed."""
+        if not label:
+            return
+        self._list_key = None
+        self._open_callout = None
+        self._checklist = None
+        if self._worksheet is None:
+            self._worksheet = {"t": "worksheet", "fields": []}
+            self._field_keys = set()
+            self.blocks.append(self._worksheet)
+        self._worksheet["fields"].append(
+            {"key": _field_key(label, self._field_keys), "label": label}
+        )
 
     # -- lists ------------------------------------------------------
     def add_list_item(self, key, text):
@@ -481,7 +529,15 @@ class _Blocks:
         if label is not None:
             self.add_checklist_item(label)
             return
+        # A fill-in line is also routinely authored as a bulleted item
+        # (5 of the 9 in the corpus are), so it has to be honoured here
+        # too or the same worksheet splits across two block types.
+        field = _field_label(text)
+        if field is not None:
+            self.add_worksheet_field(field)
+            return
         self._checklist = None
+        self._worksheet = None
         self._open_callout = None
         num_id, ilvl = key
         if self._list_key is not None and self._list_key[0] == num_id:
@@ -515,7 +571,14 @@ class _Blocks:
             # body prose of a "📌 Remember" card above it.
             self.add_checklist_item(label)
             return
+        field = _field_label(text)
+        if field is not None:
+            # Same reasoning as a checkbox: a line the reader fills in is
+            # theirs to act on, so it must not be absorbed into a callout.
+            self.add_worksheet_field(field)
+            return
         self._checklist = None
+        self._worksheet = None
         if self._open_callout is not None:
             # The source documents put the callout's prose in the
             # paragraphs AFTER the "📌 Remember" heading. The previous
@@ -540,6 +603,7 @@ class _Blocks:
     def add_callout(self, title):
         self._list_key = None
         self._checklist = None
+        self._worksheet = None
         stripped = title
         for marker in CALLOUT_MARKERS:
             stripped = stripped.replace(marker, "")
@@ -551,6 +615,7 @@ class _Blocks:
         self._list_key = None
         self._open_callout = None
         self._checklist = None
+        self._worksheet = None
         if text:
             self.blocks.append({"t": "h3", "text": text, "level": level})
 
@@ -558,6 +623,7 @@ class _Blocks:
         self._list_key = None
         self._open_callout = None
         self._checklist = None
+        self._worksheet = None
         if not rows:
             return
         items = _checklist_table_items(rows)
