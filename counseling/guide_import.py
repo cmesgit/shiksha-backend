@@ -181,10 +181,43 @@ def match_key(text: str) -> str:
     return t.casefold().strip(" .:-–—")
 
 
+#: Paragraphs that are authoring residue rather than content, and must never
+#: reach a reader.
+#:
+#: Matched against the WHOLE visible paragraph, never a substring — a sentence
+#: that legitimately contains one of these phrases is left alone. That matters:
+#: "Top of Form" is a plausible fragment of real prose, and blanket substring
+#: removal would silently eat text mid-sentence.
+#:
+#: The sources were hand-authored in Word over several years and carry two
+#: kinds of residue, both confirmed present in the current import set:
+#:   * 窗体顶端 / 窗体底端 — Word's form-field boundary markers, emitted when
+#:     the document was edited in a CJK locale. Pure artifacts, no meaning.
+#:     (3 in `admission India.docx`, 3 in `New DOCX Document.docx`.)
+#:   * A writer's note to themselves that was never deleted, sitting in
+#:     reader-facing body text. (1 in `career guidance after class 10.docx`.)
+#:
+#: Keep this list explicit and small. It is NOT a general-purpose cleaner —
+#: anything added here is content a human decided is not content.
+_NOISE_PARAGRAPH_RE = re.compile(
+    r"""^(?:
+          窗体[顶底]端          # 窗体顶端 / 窗体底端
+        | (?:Top|Bottom)\ of\ Form
+        | Since\ this\ is\ educational\ content,\ it's\ good\ to\ use
+          \ trusted\ and\ official\ sources\.?
+    )$""",
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
 def _para_text(p: ET.Element) -> str:
     """Visible text of a <w:p>, honouring tabs and line breaks. Skips text
     inside deleted revisions and field instructions (a TOC field's
-    instrText would otherwise leak the whole table of contents in)."""
+    instrText would otherwise leak the whole table of contents in).
+
+    Authoring residue (see `_NOISE_PARAGRAPH_RE`) returns "" so that it is
+    dropped by every caller — all of them already skip empty paragraphs,
+    including the table-cell path, so the filter applies uniformly."""
     out = []
     for node in p.iter():
         tag = node.tag
@@ -194,7 +227,8 @@ def _para_text(p: ET.Element) -> str:
             out.append("\t")
         elif tag in (W + "br", W + "cr"):
             out.append("\n")
-    return _WS.sub(" ", "".join(out).replace("\xa0", " ")).strip()
+    text = _WS.sub(" ", "".join(out).replace("\xa0", " ")).strip()
+    return "" if _NOISE_PARAGRAPH_RE.match(text) else text
 
 
 def _iter_body(body: ET.Element):
