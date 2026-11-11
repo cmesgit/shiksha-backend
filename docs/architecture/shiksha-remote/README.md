@@ -41,7 +41,7 @@ Deployment and rollback: [deployment-rollout.md](deployment-rollout.md). Primary
 
 ## Engineering governance
 
-Three decisions in this pack are **product/policy/safeguarding calls, not engineering ones**, and are recorded as open with named blocking tasks in [architecture-decisions.md](architecture-decisions.md) — most importantly OD-01, whether a student may request control of another student's desktop. An architecture reviewer is not the right owner for them and an implementation task must not settle one by default.
+Three decisions in this pack are **product/policy/safeguarding calls, not engineering ones**, recorded with named blocking tasks in [architecture-decisions.md](architecture-decisions.md). **OD-01 is resolved** (11 Nov 2026): peer-to-peer control is permitted inside instant collaborations, including un-authenticated lobby guests, and is teacher-initiated only in scheduled and classroom contexts. **OD-02 (audit retention) and OD-03 (unknown recording status) remain open.** An architecture reviewer is not the right owner for these and an implementation task must not settle one by default.
 
 The user's designated architecture owner, Astra, approves critical architecture/security revisions. This document does not claim that an independent Astra review has occurred. Bounded implementers use the approved contracts verbatim; stronger reasoning reviews authorization, concurrency, cryptography, input injection and updates. A reviewer must approve a contract revision before dependent tasks adopt it. No model needs to redesign meeting authentication.
 

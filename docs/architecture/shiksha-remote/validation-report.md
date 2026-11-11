@@ -56,6 +56,14 @@ Three defects were caught by those tests before anything was committed, and all 
 
 **Not done, and not papered over:** `openapi.yaml` is unwritten (a half-populated one is worse than none, since producers treat it as authoritative); `shared/src/collaboration/protocol.js` was deliberately skipped because `shared/` is a separate repo currently on an unrelated branch with uncommitted work, and propagating through `sync.mjs` in that state mixes it into every dashboard; the Rust crate is **blocked** with no toolchain present, and a crate that has never compiled would read as a delivered implementation while being unverified. So "all three validators agree" is **not met** — one of three exists, against a corpus now known to be real and self-consistent. Detail: [evidence/contract-freeze.md](evidence/contract-freeze.md).
 
+## OD-01 resolved — 11 November 2026
+
+**Split by context, by the architecture owner.** Instant collaborations: **anyone the host admitted** may request control, with no role or account test — explicitly including un-authenticated `InstantCollaborationGuest` lobby visitors. Scheduled `GroupSession` and classroom contexts: **teacher-initiated only**, matching what `sessions_app/remote_control_views.py` already enforces. Private and skill sessions unchanged.
+
+This is the most permissive of the options offered, and two consequences are now hard requirements rather than observations. **Lobby admission has become an authorization decision** — admitting a guest confers standing to request the host's desktop, so the admit UI must say so in plain words; that is binding on RC-011. And **a control session in a collab may have no attributable requester**, since a guest's entire identity is a self-chosen display name: nothing to ban, no history to weigh, no post-hoc remedy. New threat **T24** records the controls that replace identity — disclosure at admission, a complete audit row keyed on guest UUID rather than account, termination on removal, and the rule that a returning display name is a **new** principal. Residual risk is accepted and explicitly not reducible by technical means.
+
+**Unblocks RC-011, RC-016 and RC-021.** RC-002's authorization adapter must hold the requester predicate **per-context**, not globally — hardcoding either half breaks the other. Acceptance in `security-test-plan.md` now requires both legs plus a rejection case proving a student cannot initiate in a classroom.
+
 ## Known prerequisites carried into tasks
 
 Runtime incompatibility (Django6 pin vs Python3.11 Docker); actual deployed Postgres unknown vs compose15/request16; six shared-copy drifts; legacy UUID routing errors and incomplete consent/presence; Rust SDK screen/data grant feasibility; physical native-consent integrity and abrupt-kill cleanup; exact OS/compositor package certification; deployed recording policy and actual costs. These are explicit gates, not silently assumed fixes.

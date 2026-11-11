@@ -61,7 +61,28 @@ TLS and WebRTC transport encryption protect links; LiveKit/backend are trusted i
 
 These are **not** decided by this pack. An ADR records an engineering choice; the items below are product, policy or safeguarding choices that an architecture reviewer is not the right person to settle alone. Each names what it blocks. Do not let an implementation task resolve one by default.
 
-### OD-01: Does a student get to request control of another student's desktop?
+### OD-01 — **RESOLVED 11 November 2026.** Split by context.
+
+**Decision:** eligibility depends on the session kind, not on a single platform-wide answer.
+
+| Context | Who may request control |
+|---|---|
+| **Instant collaboration** (general `GroupSession`, `session_type="instant"`) | **Anyone the host admitted**, including an un-authenticated `InstantCollaborationGuest`. No role test, no account test |
+| Scheduled `GroupSession`, `LiveSession` classroom, course contexts | **Teacher-initiated only** — matches what `sessions_app/remote_control_views.py` already enforces |
+| `PrivateSession`, `SkillSession` | Unchanged; still disabled until RC-020 / RC-022 |
+| Public broadcast / spectator | Unchanged; audience confers no rights |
+
+The reasoning is that a collab is a room two or more people *chose* to be in, with symmetric standing, while a classroom carries an authority gradient and an institutional duty of care. Peer help is the point of the former; in the latter it would put a minor under pressure from both a peer and the setting.
+
+**This is the most permissive configuration of the three that were offered, and the consequences are load-bearing rather than theoretical:**
+
+1. **`InstantCollaborationGuest` is identity-free.** Its model docstring says "a temporary, room-scoped visitor; never an account or group invite" — the whole identity is a self-chosen `name` of up to 80 characters. So a control session in a collab may have **no attributable requester**: nobody to ban, nobody to audit beyond a display string somebody typed.
+2. **Lobby admission is now an authorization decision, not a courtesy.** Admitting a guest to a collab makes them eligible to ask for the host's desktop. The admit UI must say so in plain words — a host clicking "Admit" to let someone watch, and thereby granting them standing to request desktop control, is exactly the kind of silent widening this pack exists to prevent. **This is a hard requirement on RC-011, not a nicety.**
+3. **The consent dialog carries everything.** With an unidentified requester there is no account history, no prior relationship and no post-hoc remedy. T22's deny-by-default, dwell timer and plain-language capability copy are the only controls left standing, so they are not negotiable in this context, and T24 covers what remains.
+
+**Unblocks** RC-011, RC-016 and RC-021. RC-002's authorization adapter must keep the requester predicate **per-context** rather than global — the matrix above is the predicate, and hardcoding either answer breaks the other half.
+
+### The original framing, kept for the reasoning
 
 The rest of the pack assumes yes — ADR-01 authorizes through participant membership, "never teacher privilege", and the acceptance scenarios demand a Student A↔Student B demo. That is defensible as architecture: it avoids baking a role hierarchy into a consent system, and teacher-initiated control carries its own coercion problem, arguably a worse one given the authority gradient.
 
