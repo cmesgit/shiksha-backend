@@ -66,6 +66,14 @@ This is the most permissive of the options offered, and two consequences are now
 
 **Unblocks RC-011, RC-016 and RC-021.** RC-002's authorization adapter must hold the requester predicate **per-context**, not globally — hardcoding either half breaks the other. Acceptance in `security-test-plan.md` now requires both legs plus a rejection case proving a student cannot initiate in a classroom.
 
+## OD-02 and OD-03 resolved — 11 November 2026
+
+**OD-02: audit retention is 90 days**, chosen over 30 because safeguarding complaints arrive late and a closed window turns an investigable incident into one person's word against another's, and over indefinite because these are records about minors. **It is a promise that requires building.** `accounts/settings_models.py:169` states that `purge_after` exists but *"Nothing purges automatically yet"*, and no beat entry deletes any audit class — the platform retains everything forever today. **RC-030 gains the deletion job**, with behavioural acceptance: create a record older than the window, run the job, assert the row is gone. Until it ships, no user-facing policy may state a retention period, because the system contradicts it. The wider platform-retention gap (`AccountDeletionRequest`, `AuthEvent`, `UserSession`, `SmsLog`) is **not** fixed by this and remains open elsewhere.
+
+**OD-03: fail closed.** Assistance stays disabled when a room is publicly broadcast or recording status cannot be determined — ADR-03's placeholder is now the decision. If the system cannot tell whether a desktop is being recorded, it must not let that desktop be controlled; the alternative puts more weight on the consent dialog in exactly the case where the consequence outlives the session. Accepted cost: assistance is unavailable where recording state is merely unknown.
+
+**All three open decisions are now closed.** Nothing in the pack is blocked on a product call.
+
 ## Known prerequisites carried into tasks
 
 Runtime incompatibility (Django6 pin vs Python3.11 Docker); actual deployed Postgres unknown vs compose15/request16; six shared-copy drifts; legacy UUID routing errors and incomplete consent/presence; Rust SDK screen/data grant feasibility; physical native-consent integrity and abrupt-kill cleanup; exact OS/compositor package certification; deployed recording policy and actual costs. These are explicit gates, not silently assumed fixes.

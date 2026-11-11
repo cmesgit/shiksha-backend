@@ -92,10 +92,24 @@ Options, honestly stated: (a) peer-to-peer with the hardened consent dialog, (b)
 
 **Blocks:** RC-011 (consent UI), RC-016 (end-to-end acceptance), RC-021 (classroom policy). RC-002 can freeze schemas without it provided the authorization adapter keeps the requester-role predicate pluggable rather than hardcoding either answer.
 
-### OD-02: Audit retention for consent and session records
+### OD-02 — **RESOLVED 11 November 2026.** 90 days, and the deletion job is in scope.
 
-[permission-security-model.md](permission-security-model.md) proposes a 90-day default and says the final policy needs approval before release. Unresolved. **Blocks:** RC-030.
+**Decision:** consent, grant and device-lifecycle audit records are retained **90 days**, then deleted automatically.
 
-### OD-03: Behaviour when recording status is unknown
+Ninety rather than thirty because safeguarding complaints arrive late — a child tells a parent weeks after the fact, and a window that has already closed turns an investigable incident into one person's word against another's. Ninety rather than indefinite because these are records about minors, and every additional month is one more month they can leak or be misused.
 
-ADR-03 disables assistance when a room is publicly broadcast or recording status is unknown. Whether that is the shipped behaviour or a placeholder for a disclosure UX is a product call. **Blocks:** RC-021, RC-029.
+**This is a promise that requires building, and that is the point of recording it here.** `accounts/settings_models.py:169` is explicit that `purge_after` exists but *"Nothing purges automatically yet"*, and no Celery beat entry deletes any audit class. The platform currently retains everything forever. So a documented 90-day policy with no deleter would be a claim the system actively contradicts — worse than silence, because it reads as a guarantee.
+
+**RC-030 therefore gains a deliverable:** a scheduled deletion job for collaboration audit records, plus a test that creates a record older than the window, runs the job, and asserts the row is gone. A retention policy whose enforcement is untested is a retention policy that silently stops working.
+
+Scope note: this covers collaboration audit rows only. The wider platform-retention problem — `AccountDeletionRequest.purge_after` read by nothing, `AuthEvent`, `UserSession`, `SmsLog` retained indefinitely — is **not** fixed by this decision and remains open elsewhere.
+
+### OD-03 — **RESOLVED 11 November 2026.** Fail closed; the current behaviour is the shipped behaviour.
+
+**Decision:** assistance stays **disabled** when a room is publicly broadcast or when recording status cannot be determined. ADR-03's position was a placeholder; it is now the decision.
+
+The reasoning is that if the system cannot tell whether a desktop is being recorded, it must not let that desktop be controlled. The alternative — allow it and disclose in the dialog — pushes yet more weight onto the one control T22 already identifies as carrying too much, and does so in exactly the case where the consequences are most permanent: a recording outlives the session, the grant and any later revocation.
+
+Cost accepted knowingly: assistance is unavailable in rooms whose recording state is merely *unknown* rather than actually on. The three-way refinement (known-off allows, known-on discloses, unknown denies) is a reasonable future change, but it depends on the recording-state signal being trustworthy, and nobody has verified that it is.
+
+**All three open decisions are now resolved.** The section is kept because the shape of the questions — and the fact that they were held open rather than defaulted by an implementation task — is the part worth imitating next time.
