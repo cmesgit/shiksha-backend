@@ -380,6 +380,70 @@ def _looks_like_glance(rows: list) -> bool:
 #  Block builder
 # ─────────────────────────────────────────────────────────────────
 
+#: An EMPTY checkbox opening a line: the author is inviting the reader to
+#: tick it. Both glyphs occur in the sources — ☐ U+2610 (269) and □ U+25A1
+#: (48) — and mean the same thing.
+#:
+#: ✔ (174) and ✓ (26) are deliberately NOT here. They are used as decorative
+#: bullets on advice the reader is simply told ("✔ Read the eligibility
+#: criteria carefully"), not as boxes to fill in. Rendering those as
+#: checkboxes would change their meaning — unticked turns advice into an
+#: unfinished task, and pre-ticked is meaningless. An empty box invites
+#: input; a tick mark is decoration.
+_CHECKBOX_RE = re.compile(r"^[☐□]\s*")
+
+
+def _checkbox_label(text: str) -> str | None:
+    """The label of a checkbox line, or None if this isn't one.
+
+    Returns "" for a bare box with no label — real in the sources, where
+    two-column checklist tables put the box in its own cell."""
+    if not text or not _CHECKBOX_RE.match(text):
+        return None
+    return _CHECKBOX_RE.sub("", text).strip()
+
+
+def _is_box_cell(cell: str) -> bool:
+    """A cell holding only an empty checkbox, or nothing at all."""
+    return cell.strip() in ("☐", "□", "")
+
+
+def _checklist_table_items(rows: list) -> list | None:
+    """Labels of a two-column "statement | ☐" checklist table, else None.
+
+    The sources draw checklists as tables (67 such boxes in
+    `secondary school.docx` alone), which renders the boxes as dead text.
+
+    Deliberately conservative — a false positive destroys a real table by
+    discarding a column, which is far worse than leaving a checklist flat:
+      * exactly two columns, consistently;
+      * at least two item rows;
+      * one column entirely empty-or-box, with at least two real boxes in it
+        (otherwise a table with one blank column would qualify);
+      * the other column non-empty on every row.
+    """
+    if len(rows) < 2 or any(len(r) != 2 for r in rows):
+        return None
+
+    for box_col in (1, 0):
+        lab_col = 1 - box_col
+        # Identify the header by testing the body first: a header's box-column
+        # cell carries a title ("Completed (✓)"), not a box. Assuming row 0 is
+        # always a header would silently drop the first item of a headerless
+        # checklist.
+        body = rows if _is_box_cell(rows[0][box_col]) else rows[1:]
+        if len(body) < 2:
+            continue
+        if not all(_is_box_cell(r[box_col]) for r in body):
+            continue
+        if sum(1 for r in body if r[box_col].strip() in ("☐", "□")) < 2:
+            continue
+        if not all(r[lab_col].strip() for r in body):
+            continue
+        return [r[lab_col].strip() for r in body]
+    return None
+
+
 class _Blocks:
     """Accumulates blocks for one section, merging consecutive list items
     and folding paragraphs that follow a callout heading into its body."""
@@ -389,11 +453,35 @@ class _Blocks:
         self._ordered = ordered_num_ids
         self._list_key = None          # (numId, ilvl) of the run being built
         self._open_callout = None      # callout awaiting its body text
+        self._checklist = None         # checklist block being accumulated
+
+    # -- checklists -------------------------------------------------
+    def add_checklist_item(self, label):
+        """Append to the open checklist, starting one if needed.
+
+        A bare box with no label is dropped: on its own it gives the reader
+        a control with nothing to decide about."""
+        if not label:
+            return
+        self._list_key = None
+        self._open_callout = None
+        if self._checklist is None:
+            self._checklist = {"t": "checklist", "items": []}
+            self.blocks.append(self._checklist)
+        self._checklist["items"].append(label)
 
     # -- lists ------------------------------------------------------
     def add_list_item(self, key, text):
         if not text:
             return
+        # Word sometimes carries a checkbox line as a numbered/bulleted
+        # item, so the marker has to be honoured here too or half a
+        # checklist renders as a list depending on how it was authored.
+        label = _checkbox_label(text)
+        if label is not None:
+            self.add_checklist_item(label)
+            return
+        self._checklist = None
         self._open_callout = None
         num_id, ilvl = key
         if self._list_key is not None and self._list_key[0] == num_id:
@@ -420,6 +508,14 @@ class _Blocks:
         self._list_key = None
         if not text:
             return
+        label = _checkbox_label(text)
+        if label is not None:
+            # Deliberately ahead of the callout branch: a checkbox line is
+            # the reader's to act on, so it must not be swallowed into the
+            # body prose of a "📌 Remember" card above it.
+            self.add_checklist_item(label)
+            return
+        self._checklist = None
         if self._open_callout is not None:
             # The source documents put the callout's prose in the
             # paragraphs AFTER the "📌 Remember" heading. The previous
@@ -443,6 +539,7 @@ class _Blocks:
     # -- headings / callouts / tables --------------------------------
     def add_callout(self, title):
         self._list_key = None
+        self._checklist = None
         stripped = title
         for marker in CALLOUT_MARKERS:
             stripped = stripped.replace(marker, "")
@@ -453,14 +550,24 @@ class _Blocks:
     def add_subheading(self, text, level):
         self._list_key = None
         self._open_callout = None
+        self._checklist = None
         if text:
             self.blocks.append({"t": "h3", "text": text, "level": level})
 
     def add_table(self, rows):
         self._list_key = None
         self._open_callout = None
-        if rows:
-            self.blocks.append({"t": "table", "rows": rows})
+        self._checklist = None
+        if not rows:
+            return
+        items = _checklist_table_items(rows)
+        if items is not None:
+            # A two-column "statement | ☐" table is a checklist drawn with
+            # table borders. Rendered as a table its boxes are dead text,
+            # so emit the real thing.
+            self.blocks.append({"t": "checklist", "items": items})
+            return
+        self.blocks.append({"t": "table", "rows": rows})
 
     def finish(self):
         # A callout that never received body prose was being used as a
