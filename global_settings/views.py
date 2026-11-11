@@ -41,7 +41,14 @@ class PublicConfigView(APIView):
     # is: the ticker's Auth · login and Auth · signup slots render on pre-auth
     # screens, so gating them on the authenticated feature_flags would leave
     # them ungated for every visitor who actually sees them.
-    PUBLIC_FLAGS = ("public_quiz_hub_enabled", "live_ticker_enabled")
+    # admission_abroad_enabled joins them for the third time for the same
+    # reason: /admission/abroad is a logged-out public page, so a flag
+    # delivered on /accounts/me/ would never reach the visitors who see it.
+    PUBLIC_FLAGS = (
+        "public_quiz_hub_enabled",
+        "live_ticker_enabled",
+        "admission_abroad_enabled",
+    )
 
     def get(self, request):
         gs = GlobalSettings.load()

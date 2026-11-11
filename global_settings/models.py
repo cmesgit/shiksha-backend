@@ -312,6 +312,29 @@ class GlobalSettings(models.Model):
         ),
     )
 
+    # ── Admission Abroad (career counselling v3) ────────────────────────
+    # Gates the public study-abroad directory at /admission/abroad.
+    #
+    # PUBLIC rather than on `feature_flags` for the same reason as the two
+    # flags above: the directory is a logged-out marketing surface, so a flag
+    # delivered on /accounts/me/ would be absent for exactly the visitors who
+    # see it. It is read from /api/public-config/.
+    #
+    # Ships OFF. The screen renders real, cited data, but the study-abroad
+    # content around it is not finished — the country guides and the phase
+    # index come from a source document that still needs a human pass, and
+    # it names live immigration instruments with no date stamp. An admin
+    # turns this on when that content is ready, without a deploy.
+    admission_abroad_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Master switch for the public Admission Abroad directory at "
+            "/admission/abroad — 100 QS-ranked institutions across 51 "
+            "countries. While OFF the route is not reachable and the entry "
+            "points to it are hidden. Does not affect Admission in India."
+        ),
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
