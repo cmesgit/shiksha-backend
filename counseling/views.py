@@ -42,10 +42,11 @@
 # (verbs "counseling.*"); bookings and published reports also email.
 
 from django.db import transaction
-from django.db.models import Avg, Count, IntegerField, OuterRef, Q, Subquery
+from django.db.models import Avg, Count, IntegerField, OuterRef, Prefetch, Q, Subquery
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework import status
 from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 from rest_framework.response import Response
@@ -58,7 +59,7 @@ from . import services
 from .models import (
     Appointment, AssessmentResponse, AssessmentTemplate, AvailabilitySlot,
     CounselingIntake, CounselorProfile, SessionNote, SessionReport,
-    Specialization,
+    SessionReview, Specialization,
 )
 from .serializers import (
     AdminAppointmentSerializer, AdminCounselorApplicationSerializer,
@@ -66,7 +67,8 @@ from .serializers import (
     CounselorCardSerializer, CounselorDetailSerializer,
     CounselorSelfSerializer, CreateAppointmentSerializer, IntakeSerializer,
     MatchedCounselorSerializer, SessionNoteSerializer,
-    SessionReportSerializer, SpecializationSerializer,
+    SessionReportSerializer, SessionReviewSerializer,
+    SpecializationSerializer,
 )
 
 
@@ -401,6 +403,10 @@ class CreateAppointmentView(APIView):
                     status=status.HTTP_409_CONFLICT,
                 )
 
+            # Default stays CONFIRMED — instant confirmation, exactly as
+            # before. Only an admin turning on
+            # GlobalSettings.counselling_booking_requires_approval makes a
+            # booking wait for the counsellor (workflow §8 / §11 Requests).
             appt = Appointment.objects.create(
                 learner_profile=lp,
                 booked_by=request.user,
@@ -408,6 +414,9 @@ class CreateAppointmentView(APIView):
                 scheduled_at=when,
                 duration_minutes=duration,
                 student_note=data.get("student_note", ""),
+                status=(Appointment.STATUS_PENDING
+                        if _booking_needs_approval()
+                        else Appointment.STATUS_CONFIRMED),
             )
 
         # Start the assessment right away (draft) so the dashboard can show
@@ -880,6 +889,30 @@ class SessionNotesView(APIView):
                         status=status.HTTP_201_CREATED)
 
 
+class CounselorNotesIndexView(APIView):
+    """Completed sessions with private note status for the acting counselor."""
+
+    permission_classes = [IsApprovedCounselor]
+
+    def get(self, request):
+        profile = request.counselor_profile
+        sessions = Appointment.objects.filter(
+            counselor=profile, status=Appointment.STATUS_COMPLETED,
+        ).select_related("learner_profile").prefetch_related(
+            Prefetch("notes", queryset=SessionNote.objects.filter(
+                counselor=profile).order_by("-created_at"), to_attr="private_notes")
+        )
+        return Response({"results": [{
+            "appointment_id": session.id,
+            "learner_name": session.learner_profile.display_name,
+            "scheduled_at": session.scheduled_at,
+            "student_note": session.student_note,
+            "note_count": len(session.private_notes),
+            "latest_note": (SessionNoteSerializer(session.private_notes[0]).data
+                            if session.private_notes else None),
+        } for session in sessions]})
+
+
 class SessionReportView(APIView):
     """GET/PUT the report for one appointment. PUT with publish=true makes
     it visible to the student and notifies them (bell + email). Published
@@ -1047,3 +1080,221 @@ class AdminAppointmentsView(APIView):
             "count": qs.count(),
             "stats": stats,
         })
+
+
+# =====================================================
+# Reviews + reschedule (workflow §8, §11-Reviews)
+# =====================================================
+
+class AppointmentReviewView(APIView):
+    """Student rates a COMPLETED session. POST/PUT upsert, DELETE removes.
+
+    Writing here is the only thing that moves CounselorProfile.avg_rating —
+    see recalc_counselor_rating() in models.py.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _appointment(self, request, appointment_id):
+        """The appointment, but only if this account owns it. Scoped by
+        booked_by AND by the learner profiles on the account, because a
+        parent books for a child and either may come back to rate it."""
+        return get_object_or_404(
+            Appointment.objects.filter(
+                Q(booked_by=request.user)
+                | Q(learner_profile__account=request.user)
+            ).distinct(),
+            pk=appointment_id,
+        )
+
+    def get(self, request, appointment_id):
+        appt = self._appointment(request, appointment_id)
+        review = getattr(appt, "review", None)
+        if review is None:
+            return Response({"detail": "No review yet."},
+                            status=status.HTTP_404_NOT_FOUND)
+        return Response(SessionReviewSerializer(review).data)
+
+    def post(self, request, appointment_id):
+        appt = self._appointment(request, appointment_id)
+        if appt.status != Appointment.STATUS_COMPLETED:
+            return Response(
+                {"detail": "You can only review a session once it is completed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        review = getattr(appt, "review", None)
+        serializer = SessionReviewSerializer(review, data=request.data, partial=bool(review))
+        serializer.is_valid(raise_exception=True)
+        serializer.save(appointment=appt, counselor=appt.counselor)
+        return Response(serializer.data,
+                        status=status.HTTP_200_OK if review else status.HTTP_201_CREATED)
+
+    put = post
+
+    def delete(self, request, appointment_id):
+        appt = self._appointment(request, appointment_id)
+        review = getattr(appt, "review", None)
+        if review is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        review.delete()   # model.delete() triggers the rating recompute
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CounselorReviewsView(APIView):
+    """Public review list for one counsellor — the directory shows it, so
+    student names are abbreviated by the serializer."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, counselor_id):
+        profile = get_object_or_404(
+            CounselorProfile, pk=counselor_id,
+            status=CounselorProfile.STATUS_APPROVED, is_listed=True,
+        )
+        reviews = profile.reviews.select_related(
+            "appointment", "appointment__learner_profile"
+        )
+        return Response({
+            "avg_rating": float(profile.avg_rating),
+            "rating_count": profile.rating_count,
+            "results": SessionReviewSerializer(reviews, many=True).data,
+        })
+
+
+class RescheduleAppointmentView(APIView):
+    """Move a pending/confirmed appointment to a new slot.
+
+    Re-validates the target the same way booking does — a slot that is no
+    longer open must fail here exactly as it would on a fresh booking, or
+    reschedule becomes a way around the availability rules.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, appointment_id):
+        appt = get_object_or_404(
+            Appointment.objects.filter(
+                Q(booked_by=request.user)
+                | Q(learner_profile__account=request.user)
+            ).distinct(),
+            pk=appointment_id,
+        )
+        if appt.status not in (Appointment.STATUS_CONFIRMED,):
+            return Response(
+                {"detail": "Only an upcoming session can be rescheduled."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        raw = request.data.get("scheduled_at")
+        if not raw:
+            return Response({"detail": "scheduled_at is required."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        new_at = parse_datetime(raw) if isinstance(raw, str) else raw
+        if new_at is None:
+            return Response({"detail": "scheduled_at is not a valid datetime."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if timezone.is_naive(new_at):
+            new_at = timezone.make_aware(new_at)
+        if new_at <= timezone.now():
+            return Response({"detail": "Pick a time in the future."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        clash = Appointment.objects.filter(
+            counselor=appt.counselor, scheduled_at=new_at,
+        ).exclude(pk=appt.pk).exclude(status=Appointment.STATUS_CANCELLED).exists()
+        if clash:
+            return Response(
+                {"detail": "That slot was just taken — pick another time."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        previous = appt.scheduled_at
+        appt.scheduled_at = new_at
+        appt.save(update_fields=["scheduled_at", "updated_at"])
+        data = AppointmentSerializer(appt, context={"request": request}).data
+        # The spec's "context note for rescheduled sessions" needs the old
+        # time; it is not stored, so it is returned with the write.
+        data["previous_scheduled_at"] = previous
+        return Response(data)
+
+
+# =====================================================
+# Counsellor console: booking requests (workflow §11 "Requests")
+# =====================================================
+
+def _booking_needs_approval():
+    """Read the flag defensively.
+
+    GlobalSettings is a singleton that may not exist yet on a fresh install,
+    and a missing row must NOT silently turn approval on — that would leave
+    students waiting on a queue nobody is watching.
+    """
+    try:
+        from global_settings.models import GlobalSettings
+        gs = GlobalSettings.objects.first()
+        return bool(gs and gs.counselling_booking_requires_approval)
+    except Exception:
+        return False
+
+
+class CounselorRequestActionView(APIView):
+    """Counsellor approves or declines a PENDING booking.
+
+    Declining requires a reason: the student is told their session is not
+    happening, and "no reason given" is a worse experience than the three
+    seconds it costs to type one.
+    """
+
+    permission_classes = [IsAuthenticated, IsApprovedCounselor]
+
+    def post(self, request, appointment_id, action):
+        # IsApprovedCounselor attaches this — same idiom as every other
+        # counsellor view in this file.
+        profile = request.counselor_profile
+        appt = get_object_or_404(
+            Appointment, pk=appointment_id, counselor=profile,
+        )
+        if appt.status != Appointment.STATUS_PENDING:
+            return Response(
+                {"detail": "Only a pending request can be approved or declined."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if action == "approve":
+            # Re-check the slot: it has been sitting in a queue, and the
+            # counsellor may have booked over it in the meantime.
+            if services.booking_conflict(profile, appt.scheduled_at,
+                                         appt.duration_minutes,
+                                         exclude_id=appt.pk):
+                return Response(
+                    {"detail": "That slot is no longer free — ask the student "
+                               "to pick another time."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            appt.status = Appointment.STATUS_CONFIRMED
+            appt.save(update_fields=["status", "updated_at"])
+            verb, body = "counseling.booking_approved", "Your session is confirmed."
+        else:
+            reason = (request.data.get("reason") or "").strip()
+            if not reason:
+                return Response(
+                    {"detail": "Tell the student why — a reason is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            appt.status = Appointment.STATUS_REJECTED
+            appt.cancel_reason = reason[:300]
+            appt.save(update_fields=["status", "cancel_reason", "updated_at"])
+            verb, body = "counseling.booking_declined", f"Session declined: {reason}"
+
+        try:
+            notify(
+                user=appt.booked_by, verb=verb,
+                title=_appointment_label(appt), body=body,
+                payload={"appointment_id": appt.id},
+            )
+        except Exception:
+            # A notification failure must not undo an approval the
+            # counsellor already saw succeed.
+            pass
+
+        return Response(AppointmentSerializer(appt, context={"request": request}).data)

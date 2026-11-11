@@ -179,3 +179,30 @@ class GuideSection(models.Model):
         if not self.anchor and self.title:
             self.anchor = slugify(self.title)[:140]
         super().save(*args, **kwargs)
+
+
+class GuideReadingProgress(models.Model):
+    """Per-learner reading state shared by the public reader and dashboard."""
+
+    learner_profile = models.ForeignKey(
+        "accounts.LearnerProfile", on_delete=models.CASCADE,
+        related_name="guide_reading_progress",
+    )
+    guide = models.ForeignKey(
+        CareerGuide, on_delete=models.CASCADE, related_name="reading_progress",
+    )
+    last_chapter = models.ForeignKey(
+        GuideChapter, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="last_read_progress",
+    )
+    read_chapters = models.ManyToManyField(
+        GuideChapter, blank=True, related_name="read_by_progress",
+    )
+    has_read = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["learner_profile", "guide"], name="unique_learner_guide_progress",
+        )]
+        ordering = ["-updated_at"]
