@@ -47,6 +47,7 @@ DIFFERENT hash inputs; do not merge them.
 """
 import hashlib
 import time
+from base64 import b64encode
 
 from django.conf import settings
 
@@ -152,3 +153,93 @@ def bunny_embed_url(video_id, *, expiry_seconds=EMBED_EXPIRY_SECONDS, params=Non
     if query:
         url = f"{url}?{urlencode(query)}"
     return url, expires, signed
+
+
+# ---------------------------------------------------------------------------
+# 3. STORAGE / CDN FILE DELIVERY  (`bunny_storage_url`)
+#
+# A THIRD mechanism with a THIRD key, unrelated to the two above. Bunny Stream
+# (video) and Bunny Edge Storage (files) are separate products with separate
+# pull zones and separate token-authentication keys.
+#
+# Why this exists: `config/bunny_storage.py`'s `url()` returns a bare public
+# CDN URL for EVERY FileField, so `config/media_security.py`'s deny-by-default
+# rules — written for teacher ID scans, learner photos, guardian KYC documents
+# and payment receipts — never run in production. They only guard the local
+# SecureLocalStorage path, which prod does not use.
+#
+# This helper does NOT close that hole on its own. Signing a URL only matters
+# once Bunny is configured to REQUIRE a token, and that is a dashboard change
+# plus a decision recorded in the rollout notes — a pull zone serves its whole
+# storage zone, so token auth cannot be scoped to `teachers/` while leaving
+# `content/` public on the same zone. Until that is resolved, this returns
+# unsigned URLs and says so, exactly like bunny_embed_url does.
+# ---------------------------------------------------------------------------
+
+STORAGE_EXPIRY_SECONDS = 15 * 60
+
+
+def storage_token_configured():
+    """True when this deployment can actually sign storage URLs."""
+    return bool(getattr(settings, "BUNNY_STORAGE_TOKEN_KEY", ""))
+
+
+def is_private_storage_path(name):
+    """True when `name` belongs to a prefix that must never be public.
+
+    Driven by settings so the list is auditable in one place rather than
+    re-derived at each call site. A path not on the list is treated as public,
+    which is the safe default ONLY because the consequence of a wrong answer
+    here is a broken image, not a leak — the leak is prevented by Bunny
+    requiring a token, not by this function.
+    """
+    prefixes = getattr(settings, "BUNNY_PRIVATE_PREFIXES", ())
+    key = str(name).lstrip("/")
+    return any(key.startswith(p) for p in prefixes)
+
+
+def bunny_storage_token(path, expires):
+    """Bunny CDN token-authentication signature for a storage path.
+
+    Bunny's documented scheme is
+    ``Base64(SHA256_RAW(token_key + path + expires))`` with the base64 made
+    URL-safe: ``+`` → ``-``, ``/`` → ``_``, ``=`` stripped.
+
+    `path` must be the absolute path Bunny sees, with a leading slash and no
+    query string, and `expires` a UNIX timestamp in SECONDS.
+
+    NOT verified against a live Bunny zone — no zone has token authentication
+    enabled yet. A wrong byte here fails CLOSED (Bunny rejects the token and
+    returns 403), so the failure mode is a broken download rather than an
+    ungated one, but do not treat this as proven until a staging zone has
+    served a signed request.
+    """
+    key = settings.BUNNY_STORAGE_TOKEN_KEY
+    digest = hashlib.sha256(f"{key}{path}{expires}".encode()).digest()
+    return (
+        b64encode(digest)
+        .decode()
+        .replace("\n", "")
+        .replace("+", "-")
+        .replace("/", "_")
+        .replace("=", "")
+    )
+
+
+def bunny_storage_url(name, *, host, expiry_seconds=STORAGE_EXPIRY_SECONDS):
+    """Return (url, expires_or_None, signed_bool) for a stored file.
+
+    Unsigned — byte-for-byte the previous behaviour — when the path is public,
+    when no token key is configured, or both. The caller is told which, so a
+    serializer can report `token_auth: false` instead of implying a private
+    file is gated when it is not.
+    """
+    path = "/" + str(name).lstrip("/")
+    base = f"https://{host.rstrip('/')}{path}"
+
+    if not is_private_storage_path(name) or not storage_token_configured():
+        return base, None, False
+
+    expires = int(time.time()) + expiry_seconds
+    token = bunny_storage_token(path, expires)
+    return f"{base}?token={token}&expires={expires}", expires, True
