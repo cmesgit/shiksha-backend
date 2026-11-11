@@ -169,6 +169,34 @@ BUNNY_STORAGE_CDN_HOST = os.getenv("BUNNY_STORAGE_CDN_HOST", "")
 # and BunnyStorage.delete() says so in the log.
 BUNNY_ACCOUNT_API_KEY = os.getenv("BUNNY_ACCOUNT_API_KEY", "")
 
+# A FOURTH Bunny credential: the storage pull zone's token-authentication key,
+# distinct from BUNNY_STREAM_TOKEN_KEY (video embeds), BUNNY_STORAGE_API_KEY
+# (the storage zone) and BUNNY_ACCOUNT_API_KEY (purge).
+#
+# Unset everywhere today, which means BunnyStorage.url() still returns the
+# bare public URL it always has. Setting it alone changes nothing a visitor
+# sees — Bunny has to be told to REQUIRE the token, and that cannot be scoped
+# to a prefix on a zone that also serves public content. See
+# docs/security/private-media-exposure.md before setting it.
+BUNNY_STORAGE_TOKEN_KEY = os.getenv("BUNNY_STORAGE_TOKEN_KEY", "")
+
+# Storage prefixes that must never be publicly readable. Derived from the
+# FileField upload_to values that hold government ID scans, children's photos,
+# guardian KYC documents, payment receipts, submitted work and private chat
+# or session files. Public-by-design prefixes (content/, courses/, explore/)
+# are deliberately absent.
+BUNNY_PRIVATE_PREFIXES = (
+    "teachers/",
+    "learners/",
+    "assignments/",
+    "chat_attachments/",
+    "session_files/",
+    "study_materials/",
+    "scholarship/",
+    "enrollment_receipts/",
+    "counseling/",
+)
+
 _using_bunny_storage = bool(BUNNY_STORAGE_ZONE and BUNNY_STORAGE_API_KEY)
 if not _using_bunny_storage:
     import warnings
