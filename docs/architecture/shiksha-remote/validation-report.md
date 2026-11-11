@@ -40,7 +40,13 @@ It was a real defect of a different kind: Django 6.0.9 declares `Requires-Python
 
 **Container build not run** — Docker is not installed on this machine, so that acceptance criterion is open. **Deployed Python and Postgres majors remain unverified**; the evidence file records the two commands that close it, deliberately not run because contacting a server was outside this task. `docker-compose.yml` additionally assumes it sits at the workspace root (`build: ./shiksha-backend`, sibling `dist/` mounts) and is recorded rather than moved. RC-001's suite re-run after the edit: **9 OK**. Detail: [evidence/runtime-baseline.md](evidence/runtime-baseline.md).
 
-Phase 0 now stands at RC-001 and RC-004 done, **RC-003 blocked** on physical Windows hardware, and RC-002 blocked behind RC-003.
+Phase 0 now stands at RC-001 and RC-004 done, RC-003 part-done (see below), and RC-002 blocked behind RC-003.
+
+## RC-003 partially executed — 11 November 2026
+
+Hardware-independent half done from published sources. **One Stop criterion is confirmed hit:** ADR-02's companion token specifies `can_subscribe: false` with `can_publish_data: true`, but `canSubscribe` governs data reception as well as media and LiveKit has no separate receive-data grant — the companion as designed would receive no input. The mitigation ADR-02 names (track-level subscription permissions) is **not confirmed to exist**. Separately, the Rust SDK does not reliably expose a data packet's sender, which the "controller is actual participant" invariant depends on; the upstream fix is an open, unmerged PR.
+
+Consequence: **ADR-02 needs revision and RC-002 must not freeze schemas against it.** The remaining three findings (screen publish, coordinate fidelity, latency) are genuine measurements and still need the Windows spike — but hardware is no longer the first blocker. Detail: [evidence/sdk-capability-findings.md](evidence/sdk-capability-findings.md).
 
 ## Known prerequisites carried into tasks
 
