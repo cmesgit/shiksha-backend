@@ -444,8 +444,16 @@ class PublicConfigViewTest(TestCase):
             platform_email="ops@shikshacom.com",
         )
         body = self._client().get(self.URL).json()
+        # An EXACT set, deliberately: this is the tripwire that makes adding a
+        # public flag a conscious act. Widening it to assertIn/issubset would
+        # let the next field onto the anonymous endpoint silently.
+        # admission_abroad_enabled was added 2026-11-12 (public because
+        # /admission/abroad is a logged-out page — see PublicConfigView).
         self.assertEqual(
-            set(body), {"public_quiz_hub_enabled", "live_ticker_enabled"})
+            set(body),
+            {"public_quiz_hub_enabled", "live_ticker_enabled",
+             "admission_abroad_enabled"},
+        )
         blob = str(body)
         for secret in ("rzp_live", "okaxis", "ShikshaCom", "ops@shikshacom.com"):
             self.assertNotIn(secret, blob)
@@ -455,3 +463,68 @@ class PublicConfigViewTest(TestCase):
         self.assertEqual(
             self._client().patch(self.URL, {"public_quiz_hub_enabled": True},
                                  format="json").status_code, 405)
+
+
+class AdmissionAbroadFlagTest(TestCase):
+    """`admission_abroad_enabled` — the public gate on /admission/abroad.
+
+    Third flag on the anonymous allowlist, and for the same reason as the
+    other two: the directory is a logged-out marketing page, so a flag
+    delivered on /accounts/me/ would be missing for exactly the people who
+    see it. The gate would test green everywhere and fail where it mattered.
+    """
+
+    URL = "/api/public-config/"
+
+    def _client(self):
+        from rest_framework.test import APIClient
+        return APIClient()
+
+    def test_it_ships_off(self):
+        """⚠ Ships OFF deliberately. The screen's data is cited and dated, but
+        the study-abroad content around it is not finished — the country
+        guides still need a human pass and the source names live immigration
+        instruments with no date stamp. Defaulting ON would publish that."""
+        self.assertFalse(GlobalSettings.load().admission_abroad_enabled)
+
+    def test_an_anonymous_visitor_can_read_it(self):
+        body = self._client().get(self.URL).json()
+        self.assertIn("admission_abroad_enabled", body)
+        self.assertFalse(body["admission_abroad_enabled"])
+
+    def test_it_reflects_the_current_value(self):
+        # load() first: the singleton row does not exist until something
+        # creates it, and .filter(pk=1).update() on no rows is a silent no-op
+        # that would make this test pass while asserting nothing.
+        GlobalSettings.load()
+        GlobalSettings.objects.filter(pk=1).update(admission_abroad_enabled=True)
+        self.assertTrue(self._client().get(self.URL).json()["admission_abroad_enabled"])
+        GlobalSettings.objects.filter(pk=1).update(admission_abroad_enabled=False)
+        self.assertFalse(self._client().get(self.URL).json()["admission_abroad_enabled"])
+
+    def test_an_admin_can_flip_it(self):
+        """The whole point of the flag: turned on from the admin, no deploy."""
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+
+        admin = get_user_model().objects.create_user(
+            username="flagadmin", email="flagadmin@example.com",
+            password="pw12345!", is_staff=True,
+        )
+        c = APIClient()
+        c.force_authenticate(admin)
+        res = c.patch("/api/admin/settings/",
+                      {"admission_abroad_enabled": True}, format="json")
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertTrue(GlobalSettings.load().admission_abroad_enabled)
+        # and it must reach the anonymous channel, not just the admin one
+        self.assertTrue(
+            APIClient().get(self.URL).json()["admission_abroad_enabled"])
+
+    def test_the_allowlist_still_withholds_secrets(self):
+        """Adding a third name must not widen the response to the whole
+        settings serializer, which holds payment credentials."""
+        body = self._client().get(self.URL).json()
+        for leaked in ("razorpay_key_id", "razorpay_key_secret",
+                       "razorpay_secret_set"):
+            self.assertNotIn(leaked, body)
