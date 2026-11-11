@@ -1,0 +1,472 @@
+[
+  {
+    "id": "RC-001",
+    "phase": 0,
+    "title": "Lock the existing meeting compatibility baseline",
+    "dependencies": [],
+    "prompt": "tasks/phase-0/RC-001.md",
+    "existing_files": [
+      "shiksha-backend/sessions_app/group_session_views.py",
+      "shiksha-backend/sessions_app/services/group_session_token.py",
+      "shiksha-backend/sessions_app/tests_group_session_socket.py",
+      "shiksha-backend/sessions_app/tests_group_session_end.py",
+      "shiksha-backend/livestream/services/token.py",
+      "shiksha-backend/config/settings_test.py"
+    ]
+  },
+  {
+    "id": "RC-002",
+    "phase": 1,
+    "title": "Freeze schemas and cross-language fixtures",
+    "dependencies": [
+      "RC-001",
+      "RC-003"
+    ],
+    "prompt": "tasks/phase-1/RC-002.md",
+    "existing_files": [
+      "shiksha-backend/docs/architecture/shiksha-remote/api-contracts.md",
+      "shiksha-backend/docs/architecture/shiksha-remote/realtime-event-contracts.md"
+    ]
+  },
+  {
+    "id": "RC-003",
+    "phase": 0,
+    "title": "Prove Windows native RTC capture and input feasibility",
+    "dependencies": [
+      "RC-001"
+    ],
+    "prompt": "tasks/phase-0/RC-003.md",
+    "existing_files": [
+      "shiksha-student-dashboard/node_modules/livekit-client/src/room/data-stream/outgoing/OutgoingDataStreamManager.ts",
+      "shiksha-backend/docs/architecture/shiksha-remote/companion-architecture.md"
+    ]
+  },
+  {
+    "id": "RC-004",
+    "phase": 0,
+    "title": "Reconcile runtime and deployment baseline",
+    "dependencies": [
+      "RC-001"
+    ],
+    "prompt": "tasks/phase-0/RC-004.md",
+    "existing_files": [
+      "shiksha-backend/Dockerfile",
+      "shiksha-backend/docker-compose.yml",
+      "shiksha-backend/requirements.txt",
+      "shiksha-backend/config/asgi.py"
+    ]
+  },
+  {
+    "id": "RC-005",
+    "phase": 1,
+    "title": "Add collaboration schema and migration constraints",
+    "dependencies": [
+      "RC-002",
+      "RC-004"
+    ],
+    "prompt": "tasks/phase-1/RC-005.md",
+    "existing_files": [
+      "shiksha-backend/sessions_app/models.py",
+      "shiksha-backend/sessions_app/migrations/0015_groupsession_cap_ends_at_and_more.py",
+      "shiksha-backend/sessions_app/migrations/0017_privatesessionfile.py"
+    ]
+  },
+  {
+    "id": "RC-006",
+    "phase": 1,
+    "title": "Implement group participant bindings and CSRF boundary",
+    "dependencies": [
+      "RC-002",
+      "RC-005"
+    ],
+    "prompt": "tasks/phase-1/RC-006.md",
+    "existing_files": [
+      "shiksha-backend/accounts/authentication.py",
+      "shiksha-backend/accounts/middleware.py",
+      "shiksha-backend/sessions_app/group_session_views.py",
+      "shiksha-backend/livestream/views.py",
+      "shiksha-backend/config/asgi.py"
+    ]
+  },
+  {
+    "id": "RC-007",
+    "phase": 1,
+    "title": "Implement paired-device credentials and lifecycle",
+    "dependencies": [
+      "RC-002",
+      "RC-005",
+      "RC-006"
+    ],
+    "prompt": "tasks/phase-1/RC-007.md",
+    "existing_files": [
+      "shiksha-backend/accounts/revocation.py",
+      "shiksha-backend/accounts/models.py",
+      "shiksha-backend/sessions_app/models.py"
+    ]
+  },
+  {
+    "id": "RC-008",
+    "phase": 1,
+    "title": "Implement consent state machine and bounded leases",
+    "dependencies": [
+      "RC-002",
+      "RC-005",
+      "RC-006",
+      "RC-007"
+    ],
+    "prompt": "tasks/phase-1/RC-008.md",
+    "existing_files": [
+      "shiksha-backend/sessions_app/remote_control_views.py",
+      "shiksha-backend/sessions_app/models.py",
+      "shiksha-backend/sessions_app/consumers.py"
+    ]
+  },
+  {
+    "id": "RC-009",
+    "phase": 1,
+    "title": "Integrate companion room lifecycle and capture bindings",
+    "dependencies": [
+      "RC-006",
+      "RC-007",
+      "RC-008"
+    ],
+    "prompt": "tasks/phase-1/RC-009.md",
+    "existing_files": [
+      "shiksha-backend/livestream/views.py",
+      "shiksha-backend/livestream/tasks.py",
+      "shiksha-backend/sessions_app/services/group_attendance.py",
+      "shiksha-backend/livestream/services/room_admin.py"
+    ]
+  },
+  {
+    "id": "RC-010",
+    "phase": 2,
+    "title": "Establish shared collaboration source ownership",
+    "dependencies": [
+      "RC-001",
+      "RC-002"
+    ],
+    "prompt": "tasks/phase-2/RC-010.md",
+    "existing_files": [
+      "shared/sync.mjs",
+      "shared/README.md",
+      "shared/src/pages/GroupSessionLive.jsx",
+      "shiksha-frontend/src/pages/GroupSessionLive.jsx"
+    ]
+  },
+  {
+    "id": "RC-011",
+    "phase": 2,
+    "title": "Build assistance setup and consent UI",
+    "dependencies": [
+      "RC-006",
+      "RC-007",
+      "RC-008",
+      "RC-009",
+      "RC-010"
+    ],
+    "prompt": "tasks/phase-2/RC-011.md",
+    "existing_files": [
+      "shared/src/components/live/GroupSessionControlBar.jsx",
+      "shared/src/pages/GroupSessionLive.jsx",
+      "shiksha-student-dashboard/src/components/live/GroupSessionClassroomUI.jsx",
+      "shiksha-teacher-dashboard/src/components/live/GroupSessionClassroomUI.jsx",
+      "shiksha-frontend/src/components/live/GroupSessionClassroomUI.jsx"
+    ]
+  },
+  {
+    "id": "RC-012",
+    "phase": 3,
+    "title": "Implement native authenticated core and transport",
+    "dependencies": [
+      "RC-002",
+      "RC-007",
+      "RC-008"
+    ],
+    "prompt": "tasks/phase-3/RC-012.md",
+    "existing_files": [
+      "shiksha-backend/docs/architecture/shiksha-remote/companion-architecture.md",
+      "shiksha-backend/docs/architecture/shiksha-remote/remote-control-protocol.md"
+    ]
+  },
+  {
+    "id": "RC-013",
+    "phase": 3,
+    "title": "Implement Windows display capture and input adapter",
+    "dependencies": [
+      "RC-002",
+      "RC-003"
+    ],
+    "prompt": "tasks/phase-3/RC-013.md",
+    "existing_files": [
+      "shiksha-backend/docs/architecture/shiksha-remote/realtime-event-contracts.md",
+      "shiksha-backend/docs/architecture/shiksha-remote/feasibility-platform-matrix.md"
+    ]
+  },
+  {
+    "id": "RC-014",
+    "phase": 3,
+    "title": "Implement native consent and emergency cleanup",
+    "dependencies": [
+      "RC-012",
+      "RC-013"
+    ],
+    "prompt": "tasks/phase-3/RC-014.md",
+    "existing_files": [
+      "shiksha-backend/docs/architecture/shiksha-remote/companion-architecture.md",
+      "shiksha-backend/docs/architecture/shiksha-remote/permission-security-model.md"
+    ]
+  },
+  {
+    "id": "RC-015",
+    "phase": 4,
+    "title": "Implement browser remote input engine",
+    "dependencies": [
+      "RC-002",
+      "RC-011"
+    ],
+    "prompt": "tasks/phase-4/RC-015.md",
+    "existing_files": [
+      "shiksha-student-dashboard/src/components/live/GroupSessionClassroomUI.jsx",
+      "shared/src/components/live/GroupSessionControlBar.jsx"
+    ]
+  },
+  {
+    "id": "RC-016",
+    "phase": 4,
+    "title": "Validate end-to-end group assistance",
+    "dependencies": [
+      "RC-009",
+      "RC-014",
+      "RC-015"
+    ],
+    "prompt": "tasks/phase-4/RC-016.md",
+    "existing_files": [
+      "shared/src/pages/GroupSessionLive.jsx",
+      "shiksha-backend/sessions_app/group_session_views.py",
+      "shiksha-backend/livestream/tests_webhook_races.py"
+    ]
+  },
+  {
+    "id": "RC-017",
+    "phase": 5,
+    "title": "Implement private transfer consent service",
+    "dependencies": [
+      "RC-002",
+      "RC-005",
+      "RC-006"
+    ],
+    "prompt": "tasks/phase-5/RC-017.md",
+    "existing_files": [
+      "shiksha-backend/sessions_app/live_files_views.py",
+      "shiksha-backend/sessions_app/models.py",
+      "shiksha-backend/sessions_app/live_rules.py"
+    ]
+  },
+  {
+    "id": "RC-018",
+    "phase": 5,
+    "title": "Implement targeted browser streams and private-file UI",
+    "dependencies": [
+      "RC-010",
+      "RC-017"
+    ],
+    "prompt": "tasks/phase-5/RC-018.md",
+    "existing_files": [
+      "shiksha-student-dashboard/src/components/live/FilesPanel.jsx",
+      "shiksha-teacher-dashboard/src/components/live/FilesPanel.jsx",
+      "shiksha-frontend/src/components/live/FilesPanel.jsx",
+      "shiksha-student-dashboard/node_modules/livekit-client/src/room/data-stream/outgoing/StreamWriter.ts"
+    ]
+  },
+  {
+    "id": "RC-019",
+    "phase": 5,
+    "title": "Add optional durable quarantine transfer",
+    "dependencies": [
+      "RC-017",
+      "RC-031"
+    ],
+    "prompt": "tasks/phase-5/RC-019.md",
+    "existing_files": [
+      "shiksha-backend/config/media_security.py",
+      "shiksha-backend/config/media_views.py",
+      "shiksha-backend/config/settings_base.py",
+      "shiksha-backend/sessions_app/management/commands/purge_expired_session_files.py"
+    ]
+  },
+  {
+    "id": "RC-020",
+    "phase": 6,
+    "title": "Add private-session authorization and UI adapter",
+    "dependencies": [
+      "RC-016"
+    ],
+    "prompt": "tasks/phase-6/RC-020.md",
+    "existing_files": [
+      "shiksha-backend/sessions_app/views.py",
+      "shiksha-backend/sessions_app/services/private_token.py",
+      "shiksha-student-dashboard/src/components/live/PrivateClassroomUI.jsx",
+      "shiksha-teacher-dashboard/src/components/live/TeacherPrivateClassroomUI.jsx"
+    ]
+  },
+  {
+    "id": "RC-021",
+    "phase": 6,
+    "title": "Add opt-in classroom assistance policy",
+    "dependencies": [
+      "RC-020"
+    ],
+    "prompt": "tasks/phase-6/RC-021.md",
+    "existing_files": [
+      "shiksha-backend/livestream/views.py",
+      "shiksha-backend/livestream/services/token.py",
+      "shiksha-backend/livestream/models.py",
+      "shiksha-student-dashboard/src/components/live/ClassroomUI.jsx",
+      "shiksha-teacher-dashboard/src/components/live/ClassroomUI.jsx"
+    ]
+  },
+  {
+    "id": "RC-022",
+    "phase": 6,
+    "title": "Add skill-session adapter without identity changes",
+    "dependencies": [
+      "RC-020"
+    ],
+    "prompt": "tasks/phase-6/RC-022.md",
+    "existing_files": [
+      "shiksha-backend/skills/livekit_views.py",
+      "shiksha-student-dashboard/src/pages/SkillSessionLive.jsx",
+      "shiksha-teacher-dashboard/src/pages/skill/SkillSessionLive.jsx"
+    ]
+  },
+  {
+    "id": "RC-023",
+    "phase": 6,
+    "title": "Implement and certify macOS adapter",
+    "dependencies": [
+      "RC-014",
+      "RC-016"
+    ],
+    "prompt": "tasks/phase-6/RC-023.md",
+    "existing_files": [
+      "shiksha-backend/docs/architecture/shiksha-remote/feasibility-platform-matrix.md"
+    ]
+  },
+  {
+    "id": "RC-024",
+    "phase": 6,
+    "title": "Implement limited Linux X11 adapter",
+    "dependencies": [
+      "RC-014",
+      "RC-016"
+    ],
+    "prompt": "tasks/phase-6/RC-024.md",
+    "existing_files": [
+      "shiksha-backend/docs/architecture/shiksha-remote/feasibility-platform-matrix.md"
+    ]
+  },
+  {
+    "id": "RC-025",
+    "phase": 6,
+    "title": "Implement permissioned Wayland portal adapter",
+    "dependencies": [
+      "RC-014",
+      "RC-016"
+    ],
+    "prompt": "tasks/phase-6/RC-025.md",
+    "existing_files": [
+      "shiksha-backend/docs/architecture/shiksha-remote/feasibility-platform-matrix.md"
+    ]
+  },
+  {
+    "id": "RC-026",
+    "phase": 6,
+    "title": "Certify installed COSMIC portal support",
+    "dependencies": [
+      "RC-025"
+    ],
+    "prompt": "tasks/phase-6/RC-026.md",
+    "existing_files": [
+      "shiksha-backend/docs/architecture/shiksha-remote/feasibility-platform-matrix.md",
+      "shiksha-backend/docs/architecture/shiksha-remote/sources.md"
+    ]
+  },
+  {
+    "id": "RC-027",
+    "phase": 6,
+    "title": "Verify Flutter compatibility and optional receive flow",
+    "dependencies": [
+      "RC-018",
+      "RC-020"
+    ],
+    "prompt": "tasks/phase-6/RC-027.md",
+    "existing_files": [
+      "shikshacom_app/pubspec.yaml",
+      "shikshacom_app/lib/features/live/classroom/classroom_screen.dart",
+      "shikshacom_app/lib/features/live/screen_share_service.dart"
+    ]
+  },
+  {
+    "id": "RC-028",
+    "phase": 7,
+    "title": "Package signed companion and verified updates",
+    "dependencies": [
+      "RC-004",
+      "RC-014",
+      "RC-016"
+    ],
+    "prompt": "tasks/phase-7/RC-028.md",
+    "existing_files": [
+      "shiksha-backend/docs/architecture/shiksha-remote/companion-architecture.md",
+      "shiksha-backend/docs/architecture/shiksha-remote/deployment-rollout.md"
+    ]
+  },
+  {
+    "id": "RC-029",
+    "phase": 7,
+    "title": "Run safety, load and compatibility release review",
+    "dependencies": [
+      "RC-016",
+      "RC-018",
+      "RC-028",
+      "RC-031"
+    ],
+    "prompt": "tasks/phase-7/RC-029.md",
+    "existing_files": [
+      "shiksha-backend/docs/architecture/shiksha-remote/security-test-plan.md",
+      "shiksha-backend/docs/architecture/shiksha-remote/performance-cost-analysis.md"
+    ]
+  },
+  {
+    "id": "RC-030",
+    "phase": 7,
+    "title": "Prepare and exercise staged production rollout",
+    "dependencies": [
+      "RC-004",
+      "RC-029"
+    ],
+    "prompt": "tasks/phase-7/RC-030.md",
+    "existing_files": [
+      "shiksha-backend/scripts/deploy.sh",
+      "shiksha-backend/nginx/default.conf",
+      "shiksha-backend/docs/architecture/shiksha-remote/deployment-rollout.md"
+    ]
+  },
+  {
+    "id": "RC-031",
+    "phase": 5,
+    "title": "Harden existing room-file expiry and download behavior",
+    "dependencies": [
+      "RC-001",
+      "RC-005"
+    ],
+    "prompt": "tasks/phase-5/RC-031.md",
+    "existing_files": [
+      "shiksha-backend/sessions_app/live_files_views.py",
+      "shiksha-backend/config/media_security.py",
+      "shiksha-backend/config/media_views.py",
+      "shiksha-backend/config/tests_media_security.py"
+    ]
+  }
+]
