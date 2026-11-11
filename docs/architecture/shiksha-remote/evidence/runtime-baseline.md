@@ -73,7 +73,11 @@ The dev/prod asymmetry recorded elsewhere in this repo (different paths, uvicorn
 
 Django 6.0 supports PostgreSQL 14+, so 15 and 16 are both valid targets and nothing in this pack depends on choosing between them — with one exception RC-005 must respect: the partial unique indexes and `SELECT … FOR UPDATE` concurrency the consent state machine relies on behave identically on both, but must be tested on the **deployed** major, not SQLite. RC-001's suite is SQLite-based and explicitly does not prove this.
 
-Both environments are now measured (above). The one acceptance criterion still open is the **container build**, which could not be run here because Docker is not installed on the authoring machine. Whoever has a Docker host should confirm `docker build` completes on 3.12 — or, better, act on the recommendation below and decide whether the image should exist at all.
+Both environments are now measured (above). The remaining acceptance criterion — a clean container build — is **waived by the architecture owner (11 Nov 2026): Docker is not part of this deployment and is not to be used.**
+
+That is the right call and it resolves the ambiguity this task opened rather than leaving it. `Dockerfile` and `docker-compose.yml` are **not deployment artifacts**: nothing builds them, `scripts/deploy.sh` never references them, the image could not `pip install`, and the compose file pins a Postgres major that neither environment runs. They are dead configuration that reads as infrastructure.
+
+The 3.12 bump stays — a dead file that is also wrong is worse than a dead file — but **do not treat either as describing how Shiksha runs**, and do not reconcile future runtime changes against them. The standing recommendation is deletion; it is left to the owner because removing deployment-shaped scaffolding deserves an explicit decision rather than a side effect of a runtime task.
 
 ## Migration and rollback posture
 
