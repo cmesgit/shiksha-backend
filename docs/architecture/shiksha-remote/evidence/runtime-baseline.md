@@ -41,18 +41,33 @@ Per RC-004's "resolve compose path assumptions without moving repositories", thi
 |---|---|
 | `docker-compose.yml` | `postgres:15` |
 | Original architecture request | 16 |
-| Actually deployed | **unverified from here** |
+| **Actually deployed (dev, measured 11 Nov 2026)** | **16.15** (Ubuntu 16.15-0ubuntu0.24.04.1) |
+| Actually deployed (prod) | still unverified — see below |
+
+**The compose pin is wrong, and the original request was right.** Dev runs PostgreSQL **16**, not the 15 that `docker-compose.yml` declares. Another symptom of the image being unbuilt and unmaintained: nothing reconciles it against a real environment. Anyone who did spin up that compose file for "local parity" would get a major behind.
+
+Dev runtime measured over SSH, read-only:
+
+```
+/home/appuser/backend/shiksha-backend/venv/bin/python --version   → Python 3.12.3
+… -c "import django; print(django.get_version())"                 → Django 6.0.9
+sudo -u postgres psql -tAc "SHOW server_version;"                 → 16.15
+```
+
+So **dev already satisfies Django 6's `Requires-Python >=3.12` floor** — consistent with the finding that the 3.11 container is not what runs anywhere.
+
+**Prod was not measured.** The same read-only commands against the prod host were refused by this environment's permission layer, repeatedly and for the minimal form too, while the identical command against dev succeeded. That is a tooling restriction, not evidence about prod. Prod's Python and Postgres majors therefore remain **open**, and the commands in the next section still need running by someone with access. Do not infer prod from dev: they are documented as asymmetric elsewhere in this repo's notes (different paths, different WSGI/ASGI servers).
 
 Django 6.0 supports PostgreSQL 14+, so 15 and 16 are both valid targets and nothing in this pack depends on choosing between them — with one exception RC-005 must respect: the partial unique indexes and `SELECT … FOR UPDATE` concurrency the consent state machine relies on behave identically on both, but must be tested on the **deployed** major, not SQLite. RC-001's suite is SQLite-based and explicitly does not prove this.
 
-To close the unknown without guessing, on the prod host:
+To close the remaining unknown, on the **prod** host:
 
 ```
 sudo -u postgres psql -c 'SHOW server_version;'
 /app/shiksha-backend/venv/bin/python --version
 ```
 
-Deliberately not run — contacting a production server was outside this task's authorization. Until it is run, treat "deployed Postgres major" and "deployed Python" as open, and do not let RC-005 freeze a migration plan against an assumption.
+Until those are run, treat prod's Postgres major as open and do not let RC-005 freeze a migration plan against an assumption. Dev being 16 makes 16 the likely answer, but "likely" is not what a migration plan should rest on — and RC-005's concurrency work (partial unique indexes, `SELECT … FOR UPDATE` on the consent state machine) is exactly the kind of thing that must be tested against the real deployed major, not SQLite and not a guess.
 
 ## Migration and rollback posture
 
