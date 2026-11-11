@@ -1,0 +1,843 @@
+{
+  "_about": "Golden cross-language fixtures frozen by RC-002 from realtime-event-contracts.md. Python, JS and Rust validators MUST accept every 'valid' entry and MUST reject every 'invalid' entry with the stated reason. A validator that rejects a valid vector, or accepts an invalid one, is non-conforming — do not 'fix' the fixture to match an implementation.",
+  "_reasons": {
+    "unknown_kind": "kind not in the v1 enum",
+    "unknown_field": "additionalProperties in envelope or body",
+    "missing_field": "a required envelope field is absent",
+    "bad_version": "v is not exactly 1",
+    "bad_uuid": "not a lowercase canonical UUID string",
+    "bad_seq": "not an integer in 1..2^53-1",
+    "out_of_range": "numeric or enum value outside its contract bounds",
+    "unsupported_key": "DOM code outside the frozen 101-entry allowlist",
+    "too_many": "array longer than its contract maximum",
+    "text_too_long": "over 256 Unicode scalars or 1024 UTF-8 bytes",
+    "control_char": "NUL or a control character other than LF/TAB",
+    "bad_challenge": "not 22 unpadded base64url characters",
+    "oversize": "serialised packet exceeds its topic's byte ceiling",
+    "bad_body": "body is not an object",
+    "bad_json": "not decodable JSON, or carries a non-finite literal",
+    "bad_encoding": "raw bytes are not valid UTF-8"
+  },
+  "_topic_byte_ceilings": {
+    "shiksha.rc.motion.v1": 1200,
+    "shiksha.rc.input.v1": 4096,
+    "shiksha.rc.status.v1": 4096
+  },
+  "_fake_clock": {
+    "t0_unix_ms": 1762800000000,
+    "lease_ttl_ms": 3000,
+    "challenge_valid_ms": 1000,
+    "heartbeat_interval_ms": 250,
+    "ack_timeout_ms": 500,
+    "_note": "deterministic vectors; never Date.now() in a conformance test"
+  },
+  "valid": [
+    {
+      "name": "move_minimal",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.25,
+          "v": 0.75
+        }
+      }
+    },
+    {
+      "name": "move_edges",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.0,
+          "v": 1.0
+        }
+      }
+    },
+    {
+      "name": "button_down",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "button",
+        "body": {
+          "button": "left",
+          "down": true,
+          "u": 0.25,
+          "v": 0.75,
+          "motion_seq": 37
+        }
+      }
+    },
+    {
+      "name": "button_middle_up",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "button",
+        "body": {
+          "button": "middle",
+          "down": false,
+          "u": 0.5,
+          "v": 0.5,
+          "motion_seq": 38
+        }
+      }
+    },
+    {
+      "name": "wheel_bounds",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "wheel",
+        "body": {
+          "dx": -10,
+          "dy": 10,
+          "u": 0.1,
+          "v": 0.2,
+          "motion_seq": 39
+        }
+      }
+    },
+    {
+      "name": "key_letter",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "key",
+        "body": {
+          "code": "KeyA",
+          "down": true
+        }
+      }
+    },
+    {
+      "name": "key_modifier",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "key",
+        "body": {
+          "code": "ControlLeft",
+          "down": false
+        }
+      }
+    },
+    {
+      "name": "key_numpad_enter",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "key",
+        "body": {
+          "code": "NumpadEnter",
+          "down": true
+        }
+      }
+    },
+    {
+      "name": "text_simple",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "text",
+        "body": {
+          "text": "hello"
+        }
+      }
+    },
+    {
+      "name": "text_allowed_control",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "text",
+        "body": {
+          "text": "line\nand\ttab"
+        }
+      }
+    },
+    {
+      "name": "reset_blur",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "reset",
+        "body": {
+          "reason": "blur"
+        }
+      }
+    },
+    {
+      "name": "heartbeat_empty",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "heartbeat",
+        "body": {
+          "keys": [],
+          "buttons": [],
+          "last_ack": 0
+        }
+      }
+    },
+    {
+      "name": "heartbeat_full",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "heartbeat",
+        "body": {
+          "keys": [
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA"
+          ],
+          "buttons": [
+            "left",
+            "middle",
+            "right"
+          ],
+          "last_ack": 99
+        }
+      }
+    },
+    {
+      "name": "seq_js_ceiling",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 9007199254740991,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unknown_kind",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "screenshot",
+        "body": {}
+      },
+      "reason": "unknown_kind"
+    },
+    {
+      "name": "extra_envelope_field",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5
+        },
+        "user_id": "u1"
+      },
+      "reason": "unknown_field"
+    },
+    {
+      "name": "extra_body_field",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5,
+          "pressure": 0.9
+        }
+      },
+      "reason": "unknown_field"
+    },
+    {
+      "name": "missing_challenge",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5
+        }
+      },
+      "reason": "missing_field"
+    },
+    {
+      "name": "wrong_version",
+      "message": {
+        "v": 2,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5
+        }
+      },
+      "reason": "bad_version"
+    },
+    {
+      "name": "uppercase_uuid",
+      "message": {
+        "v": 1,
+        "grant_id": "0000000A-0000-4000-8000-00000000000B",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5
+        }
+      },
+      "reason": "bad_uuid",
+      "_note": "the original fixture used an all-digit UUID, so .upper() changed nothing and the case passed vacuously"
+    },
+    {
+      "name": "malformed_uuid",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "not-a-uuid",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5
+        }
+      },
+      "reason": "bad_uuid"
+    },
+    {
+      "name": "seq_zero",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 0,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5
+        }
+      },
+      "reason": "bad_seq"
+    },
+    {
+      "name": "seq_past_js_safe",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 9007199254740992,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5
+        }
+      },
+      "reason": "bad_seq"
+    },
+    {
+      "name": "seq_float",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 1.5,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5
+        }
+      },
+      "reason": "bad_seq"
+    },
+    {
+      "name": "u_above_one",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 1.000001,
+          "v": 0.5
+        }
+      },
+      "reason": "out_of_range"
+    },
+    {
+      "name": "v_negative",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": -0.0001
+        }
+      },
+      "reason": "out_of_range"
+    },
+    {
+      "name": "wheel_delta_high",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "wheel",
+        "body": {
+          "dx": 10.5,
+          "dy": 0,
+          "u": 0.5,
+          "v": 0.5,
+          "motion_seq": 1
+        }
+      },
+      "reason": "out_of_range"
+    },
+    {
+      "name": "negative_capture_gen",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": -1,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5
+        }
+      },
+      "reason": "out_of_range"
+    },
+    {
+      "name": "key_not_allowlisted",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "key",
+        "body": {
+          "code": "PrintScreen",
+          "down": true
+        }
+      },
+      "reason": "unsupported_key"
+    },
+    {
+      "name": "key_f13",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "key",
+        "body": {
+          "code": "F13",
+          "down": true
+        }
+      },
+      "reason": "unsupported_key"
+    },
+    {
+      "name": "key_numeric_scancode",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "key",
+        "body": {
+          "code": "0x2A",
+          "down": true
+        }
+      },
+      "reason": "unsupported_key"
+    },
+    {
+      "name": "heartbeat_17_keys",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "heartbeat",
+        "body": {
+          "keys": [
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA",
+            "KeyA"
+          ],
+          "buttons": [],
+          "last_ack": 1
+        }
+      },
+      "reason": "too_many"
+    },
+    {
+      "name": "heartbeat_4_buttons",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "heartbeat",
+        "body": {
+          "keys": [],
+          "buttons": [
+            "left",
+            "middle",
+            "right",
+            "left"
+          ],
+          "last_ack": 1
+        }
+      },
+      "reason": "too_many"
+    },
+    {
+      "name": "heartbeat_bad_key",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "heartbeat",
+        "body": {
+          "keys": [
+            "PrintScreen"
+          ],
+          "buttons": [],
+          "last_ack": 1
+        }
+      },
+      "reason": "unsupported_key"
+    },
+    {
+      "name": "text_257_scalars",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "text",
+        "body": {
+          "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "reason": "text_too_long"
+    },
+    {
+      "name": "text_1025_utf8_bytes",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "text",
+        "body": {
+          "text": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+        }
+      },
+      "reason": "text_too_long"
+    },
+    {
+      "name": "text_nul",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "text",
+        "body": {
+          "text": "ab\u0000cd"
+        }
+      },
+      "reason": "control_char"
+    },
+    {
+      "name": "text_bell",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "text",
+        "body": {
+          "text": "ab\u0007cd"
+        }
+      },
+      "reason": "control_char"
+    },
+    {
+      "name": "bad_challenge_len",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "short",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5
+        }
+      },
+      "reason": "bad_challenge"
+    },
+    {
+      "name": "bad_challenge_charset",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAA+",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": {
+          "u": 0.5,
+          "v": 0.5
+        }
+      },
+      "reason": "bad_challenge"
+    },
+    {
+      "name": "reset_bad_reason",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "reset",
+        "body": {
+          "reason": "because"
+        }
+      },
+      "reason": "out_of_range"
+    },
+    {
+      "name": "button_bad_name",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "button",
+        "body": {
+          "button": "back",
+          "down": true,
+          "u": 0.5,
+          "v": 0.5,
+          "motion_seq": 1
+        }
+      },
+      "reason": "out_of_range"
+    },
+    {
+      "name": "body_not_object",
+      "message": {
+        "v": 1,
+        "grant_id": "00000000-0000-4000-8000-000000000001",
+        "epoch": "00000000-0000-4000-8000-000000000002",
+        "seq": 12,
+        "challenge": "AAAAAAAAAAAAAAAAAAAAAA",
+        "capture_generation": 3,
+        "kind": "move",
+        "body": "0.5,0.5"
+      },
+      "reason": "bad_body"
+    }
+  ],
+  "_raw_about": "Size and encoding are enforced on RAW BYTES before parsing. Measured against this contract the largest shape-valid packet is 265 bytes on the motion lane and 1253 on the reliable lane, so a post-parse size check tests a condition that cannot occur while leaving the real attack — a huge blob that costs CPU to parse — unaddressed. Order is size, decode, shape.",
+  "invalid_raw": [
+    {
+      "name": "blob_over_motion_ceiling",
+      "topic": "shiksha.rc.motion.v1",
+      "raw": "{\"pad\":\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\"}",
+      "reason": "oversize"
+    },
+    {
+      "name": "blob_over_reliable_ceiling",
+      "topic": "shiksha.rc.input.v1",
+      "raw": "{\"pad\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}",
+      "reason": "oversize"
+    },
+    {
+      "name": "not_json",
+      "topic": "shiksha.rc.input.v1",
+      "raw": "{not json",
+      "reason": "bad_json"
+    },
+    {
+      "name": "nan_literal",
+      "topic": "shiksha.rc.input.v1",
+      "raw": "{\"v\":1,\"grant_id\":\"00000000-0000-4000-8000-000000000001\",\"epoch\":\"00000000-0000-4000-8000-000000000002\",\"seq\":1,\"challenge\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"capture_generation\":0,\"kind\":\"move\",\"body\":{\"u\":NaN,\"v\":0.5}}",
+      "reason": "bad_json"
+    },
+    {
+      "name": "invalid_utf8",
+      "topic": "shiksha.rc.input.v1",
+      "raw_hex": "7b2276223a312c22ff223a317d",
+      "reason": "bad_encoding",
+      "_note": "raw_hex because a JSON fixture file cannot carry invalid UTF-8 bytes literally"
+    }
+  ]
+}
