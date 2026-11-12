@@ -33,7 +33,7 @@ def clear_display_settings(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('content', '0039_ticker_band_section_order'),
+        ('content', '0041_demovideo_bunny_status'),
     ]
 
     operations = [

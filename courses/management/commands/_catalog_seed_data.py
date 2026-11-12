@@ -224,9 +224,16 @@ COMPETITIVE_COURSE_SEED = [
     {"slug": "iit-jee-preparation", "title": "IIT-JEE Preparation", "category": "jee",
      "level": "Engineering", "tutor": "A. Sharma",
      "fact": "Live + Recorded · Launching soon"},
-    {"slug": "government-exams", "title": "Government Exams", "category": "ssc",
-     "level": "SSC · Banking", "tutor": "T. Lalhmingthanga",
-     "fact": "Live + Recorded · Launching soon"},
+    # ⚠ "Government Exams" (slug government-exams) WAS here. RETIRED 2026-09-11
+    # by `retire_government_exams` — it was a catch-all duplicating the
+    # narrower "SSC Exams" / "Banking Exams" / "Railway Exams" rows added to
+    # the same nav column that day, and it carried no subjects, batches,
+    # enrolments or notify-me signups. The row still exists in the DB with
+    # status=DRAFT (nothing was deleted; flip the status back to undo), but it
+    # is deliberately NOT seeded any more so a fresh install never recreates
+    # the duplicate. Its homepage card (ShowcaseCourse order 14) now points at
+    # `ssc-exams` — see FEATURED_CARD_SEED below, which must stay in step or
+    # seed_featured_cards will create a second card for the same slot.
     {"slug": "defence-exams", "title": "Defence Exams", "category": "defence",
      "level": "NDA · CDS", "tutor": "Maj. R. Singh (Retd.)",
      "fact": "Live + Recorded · Launching soon"},
@@ -247,10 +254,15 @@ COMPETITIVE_COURSE_SEED = [
     # these have no mentor assigned yet, and inventing a name would put a
     # fictional person's byline on a public catalog card.
     #
-    # ⚠ "Government Exams" (slug government-exams) OVERLAPS the SSC / Banking /
-    # Railway rows added here. It is kept anyway because it backs homepage
-    # ShowcaseCourse order 14 — retiring it would blank a live homepage card.
-    # Worth a content decision later; not one to make silently here.
+    # ⚠ "Government Exams" OVERLAPPED the SSC / Banking / Railway rows added
+    # here. RESOLVED 2026-09-11: it was retired and its homepage card repointed
+    # at `ssc-exams` (see the note where its seed row used to be, above).
+    # The worry that retiring it would "blank a live homepage card" turned out
+    # to be wrong in a way worth recording: PublicFeaturedView filters on
+    # ShowcaseCourse.status, not Course.status, so a retired course does not
+    # remove its card — it makes the card WORSE, flipping it from an inert
+    # "Coming Soon" tile to one offering Enrol / View syllabus buttons that
+    # both 404. Repointing the card is what makes the retirement safe.
     {"slug": "ssc-exams", "title": "SSC Exams", "category": "ssc",
      "level": "SSC", "tutor": "",
      "fact": "CGL · CHSL · MTS · Launching soon"},
@@ -355,10 +367,17 @@ FEATURED_CARD_SEED = [
      "fact_line": "Live + Recorded · Launching soon", "tutor_name": "A. Sharma",
      "gradient_css": "rgba(124,92,252,0.72),rgba(75,52,199,0.88)", "icon": "calc",
      "categories": ["competitive"], "target": {"competitive": "iit-jee-preparation"}},
-    {"order": 14, "level_label": "SSC · Banking", "ribbon": "", 
+    # Retargeted 2026-09-11 from the retired catch-all `government-exams`.
+    # This MUST match what retire_government_exams wrote, because
+    # seed_featured_cards dedups by TARGET (ShowcaseCourse.objects.filter(
+    # course=course)) rather than by order: left pointing at the retired slug,
+    # a re-run would find no card for it and CREATE a second one at order 14.
+    # `level_label` narrowed from "SSC · Banking" — Banking Exams is its own
+    # course now, so the old chip described a bucket that no longer exists.
+    {"order": 14, "level_label": "SSC", "ribbon": "",
      "fact_line": "Live + Recorded · Launching soon", "tutor_name": "T. Lalhmingthanga",
      "gradient_css": "rgba(20,184,160,0.72),rgba(11,91,62,0.88)", "icon": "book",
-     "categories": ["competitive"], "target": {"competitive": "government-exams"}},
+     "categories": ["competitive"], "target": {"competitive": "ssc-exams"}},
     {"order": 15, "level_label": "NDA · CDS", "ribbon": "", 
      "fact_line": "Live + Recorded · Launching soon", "tutor_name": "Maj. R. Singh (Retd.)",
      "gradient_css": "rgba(59,130,246,0.72),rgba(29,78,216,0.88)", "icon": "book",
