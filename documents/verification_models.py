@@ -3,7 +3,7 @@
     Every upload goes live as Unverified. It becomes Verified when 3 members
     who specialise in one of its tags confirm it is accurate.
 
-Spec: `design_handoff_explore_verification/README.md`. This module holds the
+Spec: `shiksha-backend/docs/EXPLORE_VERIFICATION.md`. This module holds the
 state; `documents/verification.py` holds the rules that move between states.
 
 ⚠ This is NOT the Research Hub. `ResearchReviewer` / `ResearchSubmission` in

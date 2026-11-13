@@ -1,4 +1,4 @@
-"""Phase 1 of design_handoff_explore_verification — sets, files and tags.
+"""Phase 1 of shiksha-backend/docs/EXPLORE_VERIFICATION.md — sets, files and tags.
 
 The redesign's unit is a *set*: several files under one title, carrying several
 `field › subject › branch` tag paths. `Document` became that set rather than

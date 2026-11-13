@@ -26,7 +26,7 @@ def sweep_research_reviews():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Community verification (design_handoff_explore_verification)
+# Community verification (shiksha-backend/docs/EXPLORE_VERIFICATION.md)
 # ─────────────────────────────────────────────────────────────────────────────
 # ⚠ Why these exist: `documents/verification.py` grew a complete invite engine
 # — invite_reviewers, expire_stale_invites, the reminder and inactivity

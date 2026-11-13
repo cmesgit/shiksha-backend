@@ -534,7 +534,7 @@ class AdmissionAbroadFlagTest(TestCase):
 
 
 class ExploreVerificationFeatureFlagTest(TestCase):
-    """design_handoff_explore_verification Phase 0 groundwork — community
+    """shiksha-backend/docs/EXPLORE_VERIFICATION.md Phase 0 groundwork — community
     verification of Explore uploads ships behind one admin-controlled flag,
     OFF, and nothing consumes it yet.
 

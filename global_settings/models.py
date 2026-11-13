@@ -335,7 +335,7 @@ class GlobalSettings(models.Model):
         ),
     )
 
-    # ── Explore community verification (design_handoff_explore_verification) ─
+    # ── Explore community verification (shiksha-backend/docs/EXPLORE_VERIFICATION.md) ─
     # Gates the community verification of Explore uploads: the Verify page,
     # the Verified/Unverified badges on cards and the document page, the
     # status filter row, the specialization requests and the admin settings

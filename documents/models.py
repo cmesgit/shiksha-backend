@@ -193,7 +193,7 @@ class DocumentFile(models.Model):
 
     `Document.file` / `filetype` / `pages` / `file_hash` are still written and
     still hold the set's FIRST file. They are not dropped yet — see the
-    deferred step in design_handoff_explore_verification/BUILD_GUIDE.md.
+    deferred step in shiksha-backend/docs/EXPLORE_VERIFICATION_BUILD.md.
     """
 
     document = models.ForeignKey(

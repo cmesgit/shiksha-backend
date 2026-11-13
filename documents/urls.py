@@ -90,7 +90,7 @@ urlpatterns = [
 
     # =====================================================
     # Community verification
-    # (design_handoff_explore_verification)
+    # (shiksha-backend/docs/EXPLORE_VERIFICATION.md)
     #
     # Every route 404s while GlobalSettings.explore_verification_enabled is
     # off — see verification_views._require_feature. The admin block is

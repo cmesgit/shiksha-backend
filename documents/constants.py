@@ -319,7 +319,7 @@ DEFAULT_CATEGORIES = [
 ]
 
 
-# ── File-type families (design_handoff_explore_verification §9) ──────────────
+# ── File-type families (shiksha-backend/docs/EXPLORE_VERIFICATION.md §9) ──────────────
 # The design's filter row is families, not extensions: "All files · Documents ·
 # Slides · Data · Images · Audio and video · Other". FILETYPES above is the
 # older per-extension list and still drives the sidebar select; these two are

@@ -30,7 +30,7 @@ from django.core.exceptions import ValidationError
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 DOCUMENT_EXTS = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
 
-# ── Explore library sets (design_handoff_explore_verification §7) ───────────
+# ── Explore library sets (shiksha-backend/docs/EXPLORE_VERIFICATION.md §7) ───────────
 # The redesign's upload accepts "documents, slides, spreadsheets and data,
 # images, drawings, code, audio, video and ZIP archives".
 #
