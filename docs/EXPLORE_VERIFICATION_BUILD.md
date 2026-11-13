@@ -596,3 +596,72 @@ it and the public featured endpoint broke.
 - The design's dead affordances: `Download all`, the file `Open` / `Preview`
   buttons, `Courses` and `About` in the header, and `Reset demo data`. Build
   them properly or leave them out — do not ship them inert.
+
+---
+
+## Deployed to DEV — 2026-11-13
+
+**Dev only. Not on prod.** The flag is **ON on dev** so the feature can be
+looked at; it still ships `False` in code, so a prod deploy is inert until
+somebody turns it on there.
+
+| Repo | dev branch | commit |
+| --- | --- | --- |
+| `shiksha-backend` | `dev` | `8106a71` |
+| `shiksha-frontend` | `Dev` (capital D) | `2044a6fe` |
+| `Admin-dashboard` | `dev` | `b6a4282` |
+
+Backend checkout: `/home/appuser/backend/shiksha-backend` (note the nested
+directory — `/home/appuser/backend` itself is not a git repo). Services are
+`uvicorn`, `celery`, `celery-beat`; check `SubState=running`, since
+`is-active` reports "active" during a crash loop.
+
+### What was run
+
+```
+pg_dump django | gzip > /tmp/dev_predeploy_20261113_0420.sql.gz   # 4.5 MB, size asserted
+git merge --ff-only origin/dev
+manage.py migrate      # documents 0010-0013, global_settings 0018
+manage.py collectstatic --noinput
+systemctl restart uvicorn celery celery-beat
+```
+
+Backfill result on dev: 3 documents → 3 `DocumentFile` + 3 `DocumentTopic`,
+with **0** documents left holding a file but no `DocumentFile` and **0**
+holding a subject but no topic.
+
+### Verified live
+
+Flag off: no Verify entry, no badges, no status or file-type rows,
+`verification` null on every card, `/api/explore/verification/` → 404.
+Flag on: Verify entry appears, badges read "0 of 3 confirmations", the
+file-type and status rows render, "Needs my review" correctly hidden from
+guests, and the signed-out Verify page offers Log in. No console errors.
+
+### 🔴 Two things found on the dev box
+
+1. **`Admin-dashboard`'s GitHub Action did not deploy, again.** Its dist was
+   from 2026-10-17 — nearly a month stale — while the push reported success.
+   This is the silent failure its own workflow comment documents (runs #1–#47
+   all failed inside the ssh-action in ~5s on missing per-repo secrets).
+   **Deploying this repo means building on the box by hand.** The old dist was
+   kept as `dist.bak-preverif-20261113_0423`. `shiksha-frontend`'s identical
+   workflow worked fine.
+   Always confirm by grepping the served bundle for a **user-visible literal**
+   ("Settings and reviewers") — identifiers minify away.
+
+2. **`nginx -t` fails on dev, and has nothing to do with this work.**
+   `/etc/nginx/sites-enabled/mpsc-api` is a dangling symlink to a file that
+   does not exist, so the config test errors at `nginx.conf:60`. The running
+   process holds the last valid config in memory and still serves 200, so
+   nothing is broken today — **but nginx cannot be reloaded or restarted, and
+   a reboot would bring it down.** Left alone deliberately: it is unrelated to
+   this deploy and the symlink may be someone's work in progress. No reload
+   was needed here, since static files are read from disk.
+
+### Before prod
+
+Everything in the "Before deploying" section above still applies, plus:
+the 0011 backfill touched 3 rows on dev and will touch every Explore document
+on prod. Take a dump first and **assert its size** — a prod `pg_dump` has
+silently produced a 20-byte gzip with exit 0 in this codebase before.
