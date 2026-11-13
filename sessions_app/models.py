@@ -709,6 +709,28 @@ class GroupSessionJoinRequest(models.Model):
         return f"{self.user} knocking on {self.session.id} [{self.status}]"
 
 
+class InstantCollaborationGuest(models.Model):
+    """A temporary, room-scoped visitor; never an account or group invite."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session = models.ForeignKey(
+        GroupSession, on_delete=models.CASCADE, related_name="instant_guests"
+    )
+    name = models.CharField(max_length=80)
+    status = models.CharField(
+        max_length=10,
+        choices=[("pending", "Pending"), ("admitted", "Admitted"),
+                 ("denied", "Denied"), ("removed", "Removed")],
+        default="pending",
+    )
+    requested_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["session", "status", "last_seen_at"])]
+
+
 class GroupSessionAttendance(models.Model):
     session = models.ForeignKey(
         GroupSession,

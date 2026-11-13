@@ -514,6 +514,10 @@ class GroupSessionChatConsumer(AsyncWebsocketConsumer):
             return False
         if session.active_connections > 0:
             return False
+        if session.session_type == "instant":
+            from .instant_guest_views import active_guest_count
+            if active_guest_count(session):
+                return False
         from .group_session_views import _end_group_session_internal
         return _end_group_session_internal(session, reason="auto_expired_all_left")
 

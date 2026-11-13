@@ -53,7 +53,7 @@ def features(s=None):
 
 def limits(session=None, s=None):
     s = s or rules()
-    return {
+    values = {
         "max_participants": s.live_max_participants,
         "cap_minutes": s.live_max_session_minutes,
         "free_minutes": s.live_free_minutes_per_join,
@@ -66,6 +66,17 @@ def limits(session=None, s=None):
         "launch_free": s.live_launch_free_mode,
         "features": features(s),
     }
+    if session is not None and getattr(session, "session_type", None) == "instant":
+        # Instant collaboration has its own host-selected room clock. The
+        # admin's scheduled-group ceiling, trial and extensions do not apply.
+        from .group_session_policy import INSTANT_COLLABORATION
+        values["max_participants"] = INSTANT_COLLABORATION.instant_capacity
+        values["cap_minutes"] = session.duration_minutes
+        values["free_minutes"] = 0
+        values["daily_minutes"] = 0
+        values["extensions_allowed"] = 0
+        values["features"]["remote_access"] = False
+    return values
 
 
 def minutes_used_today(user):
@@ -141,6 +152,9 @@ def entitlement(user, session):
     unlimited=True  -> no remaining_ms is sent, no countdown, no upsell
     unlimited=False -> free_minutes clock, then the ending-soon modal
     """
+    if getattr(session, "session_type", None) == "instant":
+        return {"unlimited": True, "reason": "collaboration"}
+
     s = rules()
     host_id = getattr(session, "host_id", None)
 
@@ -196,6 +210,10 @@ def cap_ends_at(session):
     Real field names: ``room_started_at`` (not ``actual_started_at``),
     ``created_at``, ``duration_minutes`` (not ``scheduled_duration_minutes``).
     """
+    if getattr(session, "session_type", None) == "instant":
+        from .group_session_policy import INSTANT_COLLABORATION
+        return INSTANT_COLLABORATION.deadline(session)
+
     s = rules()
     started = session.room_started_at or session.created_at
     minutes = min(

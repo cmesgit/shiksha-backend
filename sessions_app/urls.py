@@ -1,6 +1,7 @@
 from django.urls import path
 from . import views
 from . import group_session_views as gs_views
+from . import instant_guest_views as guest_views
 from . import live_files_views as lf_views
 from . import remote_control_views as rc_views
 from .views import subject_teachers, subject_students  # 👈 add this
@@ -84,6 +85,8 @@ urlpatterns = [
          name="group-session-instant-create"),
     path("group-sessions/join-by-code/", gs_views.join_by_code,
          name="group-session-join-by-code"),
+    path("group-sessions/guest/request/", guest_views.request_guest_join,
+         name="instant-guest-request"),
     path("admin/group-sessions/", gs_views.admin_group_session_list,
          name="admin-group-session-list"),
 
@@ -116,6 +119,12 @@ urlpatterns = [
     # --- Knock-to-join (admit_mode="lobby") ---
     path("group-sessions/<uuid:session_id>/my-join-status/", gs_views.my_join_status,
          name="group-session-my-join-status"),
+    path("group-sessions/<uuid:session_id>/guest/status/", guest_views.guest_status,
+         name="instant-guest-status"),
+    path("group-sessions/<uuid:session_id>/guest/join/", guest_views.guest_join,
+         name="instant-guest-join"),
+    path("group-sessions/<uuid:session_id>/guest/<uuid:guest_id>/remove/",
+         guest_views.remove_guest, name="instant-guest-remove"),
     path("group-sessions/<uuid:session_id>/join-requests/", gs_views.list_join_requests,
          name="group-session-join-requests"),
     path("group-sessions/<uuid:session_id>/join-requests/<uuid:request_id>/admit/",

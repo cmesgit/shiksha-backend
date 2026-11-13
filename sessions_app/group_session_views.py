@@ -18,7 +18,7 @@ from django.db import transaction
 from django.db.models import Prefetch, Q
 from django.utils import timezone
 from rest_framework import status as http_status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -31,6 +31,8 @@ from courses.board_display import board_name_for
 from enrollments.models import Enrollment
 from global_settings.models import GlobalSettings
 from . import live_rules
+from .group_session_policy import INSTANT_COLLABORATION, policy_for
+from .instant_guest_views import CodeLookupThrottle
 from .permissions import IsStudent
 from .serializers import get_user_name
 from accounts.permissions import IsAdmin
@@ -92,21 +94,8 @@ def _gs_qs():
 
 
 def _can_view(session, user):
-    """A session is visible to host, invited teacher, or any invitee.
-
-    Instant meetings (session_type='instant') are visible to any
-    authenticated user — possession of the short_code / share link is
-    the gate, mirroring Google Meet. This lets students, teachers, and
-    admins who paste the URL load the session detail and walk into
-    the live room without being pre-invited.
-    """
-    if session.host_id == user.id:
-        return True
-    if session.invited_teacher_id and session.invited_teacher_id == user.id:
-        return True
-    if getattr(session, "session_type", "") == "instant":
-        return True
-    return session.invites.filter(user=user).exists()
+    """Visibility follows the room kind's access policy."""
+    return policy_for(session).can_view(session, user)
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +106,7 @@ def _can_view(session, user):
 # The host is exempt so the room creator can always rejoin their own room.
 # Scheduled group sessions are capped via ``GroupSession.max_invitees``
 # (also 50 by default) at invite-add time, so no second cap is needed there.
-INSTANT_MAX_PARTICIPANTS = 50
+INSTANT_MAX_PARTICIPANTS = INSTANT_COLLABORATION.instant_capacity
 
 
 def _scheduled_aware_dt(session):
@@ -368,7 +357,7 @@ def _schedule_hard_duration_cutoff(session):
     """Queue a Celery task that force-ends the room at duration expiry."""
     try:
         from .group_session_tasks import hard_expire_group_session
-        eta = session.room_started_at + timedelta(minutes=session.duration_minutes)
+        eta = policy_for(session).base_deadline(session)
         hard_expire_group_session.apply_async(args=[str(session.id)], eta=eta)
     except Exception:
         logger.exception("Failed to schedule hard-duration cutoff for %s", session.id)
@@ -1153,10 +1142,10 @@ def join_group_session(request, session_id):
 
     user = request.user
 
-    # Paywall gate — only paid dashboard users may consume LiveKit minutes.
-    # Currently a stub (see _is_paid_user) that defaults to True; wire it
-    # to your subscription model when entitlements land.
-    if not _is_paid_user(user):
+    # Scheduled groups retain their existing eligibility check. Instant
+    # collaboration is open to authenticated accounts until its own billing
+    # policy is introduced.
+    if policy_for(session).requires_paid_account and not _is_paid_user(user):
         return Response(
             {"error": "Your account is not eligible to join meetings."},
             status=http_status.HTTP_403_FORBIDDEN,
@@ -1172,40 +1161,14 @@ def join_group_session(request, session_id):
     #            own invite before they may join. They cannot start the
     #            room; they wait until the host opens it.
     # Instant meetings (session_type='instant') skip the invite gate entirely:
-    # anyone authenticated and paid who has the link can join. The host is
+    # any authenticated account with the link can join. The host is
     # still the only one allowed to /end/ the room.
-    is_instant = (session.session_type == "instant")
+    policy = policy_for(session)
     is_host = (session.host_id == user.id)
     invite = session.invites.filter(user=user).first()
-    is_accepted_invitee = bool(invite and invite.status == "accepted")
-    is_invited_teacher = bool(
-        session.invited_teacher_id and session.invited_teacher_id == user.id
-        and is_accepted_invitee
-    )
-
-    if is_host:
-        # Implicit accept; no further gate.
-        pass
-    elif is_instant:
-        # Open join for instant meetings — auth + paywall above are the only
-        # gates. (admit_mode='lobby' is enforced separately below, after this
-        # branch, for any non-host caller regardless of session type.)
-        pass
-    elif invite is None:
-        return Response(
-            {"error": "You are not a participant in this group session."},
-            status=403,
-        )
-    elif invite.status == "declined":
-        return Response(
-            {"error": "You declined this invite, so you can't join the room."},
-            status=403,
-        )
-    elif invite.status != "accepted":
-        return Response(
-            {"error": "You must accept the invite before you can join the room."},
-            status=403,
-        )
+    join_error = policy.join_error(session, user, invite)
+    if join_error:
+        return Response({"error": join_error}, status=403)
 
     # Capacity cap for instant rooms.
     # ``active_connections`` is incremented in consumers.py on WS connect and
@@ -1214,12 +1177,14 @@ def join_group_session(request, session_id):
     # even if it's "full". Locked (matching the nearby host-flip block below)
     # so a burst of concurrent /join/ calls can't all read the same
     # pre-increment count and all get admitted past the cap.
-    if is_instant and not is_host:
+    if policy.instant_capacity and not is_host:
+        from .instant_guest_views import active_guest_count
         with transaction.atomic():
             locked_session = (
                 GroupSession.objects.select_for_update().get(pk=session.pk)
             )
-            if (locked_session.active_connections or 0) >= INSTANT_MAX_PARTICIPANTS:
+            if ((locked_session.active_connections or 0) + active_guest_count(locked_session)
+                    >= policy.instant_capacity):
                 return Response(
                     {"error": f"This instant meeting is full "
                               f"({INSTANT_MAX_PARTICIPANTS} participants max). "
@@ -1271,13 +1236,9 @@ def join_group_session(request, session_id):
         # there are no invitees at create-time. Google-Meet-style: the host
         # creates the room and walks straight in; participants join later
         # via the shareable link.
-        if not is_instant:
-            accepted_count = session.invites.filter(status="accepted").count()
-            if accepted_count < 1:
-                return Response(
-                    {"error": "At least 1 invitee must accept before the room opens."},
-                    status=400,
-                )
+        start_error = policy.start_error(session)
+        if start_error:
+            return Response({"error": start_error}, status=400)
 
         # Lock the row inside the atomic block so concurrent /join/ calls
         # from (somehow) two host clients can't both flip the status.
@@ -1311,9 +1272,7 @@ def join_group_session(request, session_id):
     # never used to shrink it, so a session that never calls /extend/ behaves
     # exactly as before.
     if session.room_started_at:
-        hard_end = session.room_started_at + timedelta(minutes=session.duration_minutes)
-        if session.cap_ends_at and session.cap_ends_at > hard_end:
-            hard_end = session.cap_ends_at
+        hard_end = policy.deadline(session)
         if now >= hard_end:
             _end_group_session_internal(session, reason="duration_hit_on_join")
             _broadcast(session)
@@ -1326,16 +1285,14 @@ def join_group_session(request, session_id):
             {"error": "Room is not ready yet. Try again in a moment."}, status=400
         )
 
-    # Admin-configurable room cap (GlobalSettings.live_max_participants),
-    # separate from the pre-existing INSTANT_MAX_PARTICIPANTS check above
-    # (which only applies to instant meetings and is hard-coded at 50). Host
-    # is exempt, matching that same existing exemption. NOTE: this admin
-    # default (40) is LOWER than an already-possible scheduled group session
-    # (host + up to 50 invitees = 51). Flagged for a product decision before
-    # this ships — either raise the default, or treat it as informational
-    # only until admins are told to configure it per their real capacity.
+    # The room-type policy supplies the effective cap: instant collaboration
+    # has its own 50-seat limit, while scheduled groups retain the admin cap.
+    # Host re-entry is exempt in both cases.
     live_limits = live_rules.limits(session)
     live_limits["participants_now"] = session.active_connections or 0
+    if session.session_type == "instant":
+        from .instant_guest_views import active_guest_count
+        live_limits["participants_now"] += active_guest_count(session)
     if not is_host and live_limits["participants_now"] >= live_limits["max_participants"]:
         return Response(
             {"detail": "This room is full.", "code": "room_full"},
@@ -1344,7 +1301,7 @@ def join_group_session(request, session_id):
 
     try:
         display_name = get_user_name(user)
-        role = "host" if is_host else ("teacher" if is_invited_teacher else "student")
+        role = policy.role(session, user, invite)
         token = generate_group_session_token(
             user=user, session=session, display_name=display_name, role=role,
         )
@@ -1363,22 +1320,20 @@ def join_group_session(request, session_id):
     )
 
     # Compute remaining ms for client countdown.
-    # Host is always unlimited (no entitlement check, by design). A non-host
-    # who's entitled (enrolled, or platform is in free-launch mode) is also
-    # unlimited. A non-entitled guest is capped at GUEST_TRIAL_MINUTES,
+    # Scheduled-group hosts and entitled participants have no personal cap.
+    # A non-entitled scheduled-group guest is capped at GUEST_TRIAL_MINUTES.
+    # Instant collaboration has only its host-selected room deadline.
+    # A scheduled-group guest's clock is
     # anchored to THEIR OWN first join (not each /join/ call's "now", and not
     # the room's own duration_minutes) so a refresh/reconnect can't reset the
     # clock and a room's own longer duration can't be used to bypass the cap.
     remaining_ms = None
-    if not is_host and not _guest_entitlement(user):
+    if policy.personal_trial and not is_host and not _guest_entitlement(user):
         guest_session, _created = GroupSessionGuestSession.objects.get_or_create(
             session=session, user=user
         )
         guest_cap_end = guest_session.first_joined_at + timedelta(minutes=GUEST_TRIAL_MINUTES)
-        room_hard_end = (
-            session.room_started_at + timedelta(minutes=session.duration_minutes)
-            if session.room_started_at else guest_cap_end
-        )
+        room_hard_end = policy.base_deadline(session) or guest_cap_end
         cap_end = min(guest_cap_end, room_hard_end)
         remaining_ms = max(0, int((cap_end - timezone.now()).total_seconds() * 1000))
 
@@ -1430,6 +1385,9 @@ def group_session_preflight(request, session_id):
     ent = live_rules.entitlement(request.user, session)
     lim = live_rules.limits(session)
     lim["participants_now"] = session.active_connections or 0
+    if session.session_type == "instant":
+        from .instant_guest_views import active_guest_count
+        lim["participants_now"] += active_guest_count(session)
     cap = live_rules.cap_ends_at(session) if session.room_started_at else None
 
     return Response({
@@ -1448,7 +1406,8 @@ def group_session_preflight(request, session_id):
         # handoff's doc assumed a boolean ``require_approval`` that doesn't
         # exist on this model.
         "admit_mode": session.admit_mode,
-        "can_host": live_rules.can_host(request.user),
+        "can_host": (True if session.session_type == "instant"
+                     else live_rules.can_host(request.user)),
         "is_enrolled": live_rules.is_enrolled_for(request.user, session),
         "cap_ends_at": cap.isoformat() if cap else None,
     })
@@ -1477,6 +1436,8 @@ def extend_group_session(request, session_id):
 
     if request.user.id != session.host_id:
         return Response({"detail": "Only the host can extend."}, status=403)
+    if not policy_for(session).allows_extension:
+        return Response({"detail": "Instant collaboration has the time selected by its host."}, status=403)
     if session.status != "live" or not session.room_started_at:
         return Response({"detail": "Session is not live."}, status=400)
 
@@ -1488,7 +1449,7 @@ def extend_group_session(request, session_id):
         )
 
     session.extensions_used += 1
-    baseline_end = session.room_started_at + timedelta(minutes=session.duration_minutes)
+    baseline_end = policy_for(session).base_deadline(session)
     session.cap_ends_at = max(live_rules.cap_ends_at(session), baseline_end)
     session.save(update_fields=["extensions_used", "cap_ends_at", "updated_at"])
 
@@ -1769,18 +1730,12 @@ def _broadcast_session_ended(session, reason="ended"):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def instant_create(request):
-    """One-click Instant Meeting; allowed for any authenticated paid user."""
-    if not _is_paid_user(request.user):
-        return Response(
-            {"error": "Your account is not eligible to start meetings."},
-            status=http_status.HTTP_403_FORBIDDEN,
-        )
-
+    """Create a timed collaboration room for any authenticated account."""
     now = timezone.now()
     local_now = timezone.localtime(now)
-    duration_minutes = int(request.data.get("duration_minutes") or 60)
-    if duration_minutes not in {30, 45, 60, 90, 120, 150, 180}:
-        duration_minutes = 60
+    duration_minutes = INSTANT_COLLABORATION.duration_for_create(
+        request.data.get("duration_minutes")
+    )
 
     topic = (request.data.get("topic") or "").strip()[:255]
 
@@ -1802,7 +1757,7 @@ def instant_create(request):
             scheduled_time=local_now.time().replace(microsecond=0),
             duration_minutes=duration_minutes,
             session_type="instant",
-            admit_mode="open",
+            admit_mode="lobby",
             # Instant rooms open immediately — the host is dropped
             # straight into a live room without the "at least 1 invitee
             # must accept" gate that scheduled group sessions enforce.
@@ -1966,11 +1921,17 @@ def list_join_requests(request, session_id):
         )
 
     pending = session.join_requests.filter(status="pending").select_related("user")
-    return Response([
+    rows = [
         {"id": str(r.id), "user_id": str(r.user_id), "name": get_user_name(r.user),
          "requested_at": r.requested_at.isoformat()}
         for r in pending
-    ])
+    ]
+    if session.session_type == "instant":
+        rows.extend({
+            "id": str(g.id), "guest": True, "name": g.name,
+            "requested_at": g.requested_at.isoformat(),
+        } for g in session.instant_guests.filter(status="pending"))
+    return Response(rows)
 
 
 @api_view(["POST"])
@@ -1985,7 +1946,24 @@ def admit_join_request(request, session_id, request_id):
 
     join_req = GroupSessionJoinRequest.objects.filter(session=session, pk=request_id).first()
     if not join_req:
-        return Response({"error": "Join request not found."}, status=404)
+        if session.session_type != "instant":
+            return Response({"error": "Join request not found."}, status=404)
+        from .models import InstantCollaborationGuest
+        from .instant_guest_views import active_guest_count
+        with transaction.atomic():
+            locked_session = GroupSession.objects.select_for_update().get(pk=session.pk)
+            guest = InstantCollaborationGuest.objects.select_for_update().filter(
+                session=locked_session, pk=request_id, status="pending"
+            ).first()
+            if guest is None:
+                return Response({"error": "Join request not found."}, status=404)
+            if (locked_session.active_connections or 0) + active_guest_count(locked_session) >= 50:
+                return Response({"error": "This collaboration is full."}, status=409)
+            guest.status = "admitted"
+            guest.resolved_at = timezone.now()
+            guest.last_seen_at = timezone.now()
+            guest.save(update_fields=["status", "resolved_at", "last_seen_at"])
+        return Response({"status": "admitted"})
 
     join_req.status = "admitted"
     join_req.resolved_at = timezone.now()
@@ -2005,7 +1983,16 @@ def deny_join_request(request, session_id, request_id):
 
     join_req = GroupSessionJoinRequest.objects.filter(session=session, pk=request_id).first()
     if not join_req:
-        return Response({"error": "Join request not found."}, status=404)
+        if session.session_type != "instant":
+            return Response({"error": "Join request not found."}, status=404)
+        from .models import InstantCollaborationGuest
+        guest = InstantCollaborationGuest.objects.filter(session=session, pk=request_id, status="pending").first()
+        if guest is None:
+            return Response({"error": "Join request not found."}, status=404)
+        guest.status = "denied"
+        guest.resolved_at = timezone.now()
+        guest.save(update_fields=["status", "resolved_at"])
+        return Response({"status": "denied"})
 
     join_req.status = "denied"
     join_req.resolved_at = timezone.now()
@@ -2026,6 +2013,7 @@ def deny_join_request(request, session_id, request_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([CodeLookupThrottle])
 def join_by_code(request):
     """Resolve a room code (or UUID) to a GroupSession and return its id.
 
@@ -2034,16 +2022,10 @@ def join_by_code(request):
     Responses:
       200 { session_id, short_code, status, session_type, host_id }
       400 if code missing / malformed
-      403 if user is not entitled (paywall stub)
+      403 if a scheduled-group user is not entitled
       404 if no session matches OR if it's already terminal (so a stale
           link doesn't drop the joiner into a dead UUID).
     """
-    if not _is_paid_user(request.user):
-        return Response(
-            {"error": "Your account is not eligible to join meetings."},
-            status=http_status.HTTP_403_FORBIDDEN,
-        )
-
     raw = (request.data.get("code") or "").strip()
     if not raw:
         return Response(
@@ -2073,6 +2055,12 @@ def join_by_code(request):
         return Response(
             {"error": "No room found for that code."},
             status=http_status.HTTP_404_NOT_FOUND,
+        )
+
+    if policy_for(session).requires_paid_account and not _is_paid_user(request.user):
+        return Response(
+            {"error": "Your account is not eligible to join meetings."},
+            status=http_status.HTTP_403_FORBIDDEN,
         )
 
     if session.status in ("cancelled", "completed", "expired"):
