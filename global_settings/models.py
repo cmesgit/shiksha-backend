@@ -200,6 +200,24 @@ class GlobalSettings(models.Model):
             "revert them."
         ),
     )
+    # Counselling: does a student's booking need the counsellor to approve it?
+    #
+    # OFF by default, and deliberately so. Today a booking is created
+    # CONFIRMED and the student walks away with a slot; turning this on makes
+    # them wait for a human. That is a product decision, not a bug fix, so the
+    # capability ships inert and someone chooses to flip it.
+    #
+    # The counsellor console's Requests tab reads pending appointments either
+    # way — with this off it simply stays empty, which is honest.
+    counselling_booking_requires_approval = models.BooleanField(
+        default=False,
+        help_text=(
+            "When ON, a student's booking is created as Pending and only "
+            "becomes Confirmed once the counsellor approves it. When OFF "
+            "(default) bookings are confirmed instantly, as today."
+        ),
+    )
+
     ai_question_drafting_enabled = models.BooleanField(
         default=False, help_text="Gate for the 'Generate with AI' question-drafting flow."
     )
@@ -291,6 +309,59 @@ class GlobalSettings(models.Model):
             "student dashboard rail and the login/signup screens. While OFF, "
             "none of them render and the existing announcement strip is "
             "unaffected."
+        ),
+    )
+
+    # ── Admission Abroad (career counselling v3) ────────────────────────
+    # Gates the public study-abroad directory at /admission/abroad.
+    #
+    # PUBLIC rather than on `feature_flags` for the same reason as the two
+    # flags above: the directory is a logged-out marketing surface, so a flag
+    # delivered on /accounts/me/ would be absent for exactly the visitors who
+    # see it. It is read from /api/public-config/.
+    #
+    # Ships OFF. The screen renders real, cited data, but the study-abroad
+    # content around it is not finished — the country guides and the phase
+    # index come from a source document that still needs a human pass, and
+    # it names live immigration instruments with no date stamp. An admin
+    # turns this on when that content is ready, without a deploy.
+    admission_abroad_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Master switch for the public Admission Abroad directory at "
+            "/admission/abroad — 100 QS-ranked institutions across 51 "
+            "countries. While OFF the route is not reachable and the entry "
+            "points to it are hidden. Does not affect Admission in India."
+        ),
+    )
+
+    # ── Explore community verification (shiksha-backend/docs/EXPLORE_VERIFICATION.md) ─
+    # Gates the community verification of Explore uploads: the Verify page,
+    # the Verified/Unverified badges on cards and the document page, the
+    # status filter row, the specialization requests and the admin settings
+    # screen.
+    #
+    # Like content_studio_enabled and unlike quiz_v2_enabled, this is a REAL
+    # gate: every verification surface and endpoint checks it, and the
+    # endpoints 404 rather than 403 while it is off.
+    #
+    # ⚠ PUBLIC as well as on `feature_flags`, for the same reason as
+    # live_ticker_enabled and admission_abroad_enabled above: the Explore
+    # library is browsable by anonymous visitors, who see the badges. A flag
+    # delivered only on the authenticated /accounts/me/ would be absent for
+    # exactly the people the badges are for. Read PublicConfigView's docstring
+    # before adding a fourth.
+    #
+    # Ships OFF. Nothing about Explore changes while it is off — uploads keep
+    # going live immediately with no status of any kind, exactly as before.
+    explore_verification_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Master switch for community verification of Explore uploads — "
+            "the Verify page, the Verified/Unverified badges, specialization "
+            "requests and the verification admin screen. While OFF, uploads "
+            "go live with no status, as before. Does not affect Research Hub, "
+            "which has its own formal review."
         ),
     )
 

@@ -424,9 +424,21 @@ class HomeContentBlockAdminSerializer(
             "id", "section", "eyebrow", "heading", "heading_secondary",
             "subhead", "body", "cta_primary_label", "cta_primary_href",
             "cta_secondary_label", "cta_secondary_href", "image", "image_url",
-            "img", "extra", "status", "created_at", "updated_at",
+            "img", "extra", "display_settings", "status", "created_at", "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]
+
+    def validate_display_settings(self, value):
+        from .presentation import validate_home_display_settings
+        validate_home_display_settings(value)
+        return {**(self.instance.display_settings or {}), **value} if self.instance else value
+
+    def update(self, instance, validated_data):
+        if "display_settings" in validated_data:
+            validated_data["display_settings"] = {
+                **(instance.display_settings or {}), **validated_data["display_settings"],
+            }
+        return super().update(instance, validated_data)
 
 
 class HomeListItemAdminSerializer(

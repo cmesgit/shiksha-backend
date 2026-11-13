@@ -132,6 +132,9 @@ def restore_revision(revision, actor=None):
         # Relations arrive as raw pk values from the serializer.
         setattr(obj, field.attname if field.is_relation else name, value)
 
+    if model._meta.model_name == "homecontentblock" and "display_settings" not in (revision.snapshot or {}):
+        # Old revisions predate explicit choices; restore their legacy rules too.
+        obj.display_settings = {}
     obj.save()
 
     # M2M separately, and after the save: ``concrete_fields`` above excludes

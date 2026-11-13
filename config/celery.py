@@ -53,6 +53,20 @@ app.conf.beat_schedule.update({
         "task": "livestream.tasks.sample_live_viewers",
         "schedule": crontab(minute="*/1"),  # viewer snapshots + attendance reconcile
     },
+    # Explore community verification. All three no-op while the feature flag
+    # is off, so registering them before launch is safe.
+    "expire-verification-invites": {
+        "task": "documents.expire_verification_invites",
+        "schedule": crontab(minute=5),              # hourly
+    },
+    "send-verification-reminders": {
+        "task": "documents.send_verification_reminders",
+        "schedule": crontab(hour=9, minute=30),     # daily, once
+    },
+    "sync-teacher-reviewers": {
+        "task": "documents.sync_teacher_reviewers",
+        "schedule": crontab(hour=3, minute=40),     # daily backstop
+    },
     "expire-subscriptions": {
         "task": "enrollments.tasks.expire_subscriptions",
         "schedule": crontab(hour=2, minute=15),  # daily at 02:15

@@ -153,6 +153,22 @@ BUNNY_STORAGE_HOSTNAME = os.getenv("BUNNY_STORAGE_HOSTNAME", "storage.bunnycdn.c
 # pull zone instead.
 BUNNY_STORAGE_CDN_HOST = os.getenv("BUNNY_STORAGE_CDN_HOST", "")
 
+# Bunny ACCOUNT-level API key, used only to purge a URL from the CDN edge after
+# the object is deleted from Edge Storage.
+#
+# This is a THIRD, separate credential — not BUNNY_STORAGE_API_KEY (the storage
+# zone key) and not BUNNY_API_KEY (a Stream *library* key). Both of those were
+# tested against https://api.bunny.net/purge and answer 401; only the account
+# key from Bunny's dashboard (Account Settings → API) can purge.
+#
+# Why it matters: deleting from Edge Storage makes the ORIGIN 404 but the pull
+# zone keeps serving its cached copy — measured still 200 more than a minute
+# later, with no sign of expiring. Since these files are served with no
+# authentication at all, an un-purged delete leaves the file downloadable by
+# anyone who ever had the URL. Without this key set, deletion is only partial
+# and BunnyStorage.delete() says so in the log.
+BUNNY_ACCOUNT_API_KEY = os.getenv("BUNNY_ACCOUNT_API_KEY", "")
+
 _using_bunny_storage = bool(BUNNY_STORAGE_ZONE and BUNNY_STORAGE_API_KEY)
 if not _using_bunny_storage:
     import warnings
@@ -443,4 +459,19 @@ CELERY_BEAT_SCHEDULE = globals().get("CELERY_BEAT_SCHEDULE", {})
 CELERY_BEAT_SCHEDULE["notifications-session-reminders"] = {
     "task": "notifications.send_session_reminders",
     "schedule": NOTIFY_REMINDER_SWEEP_MINUTES * 60,
+}
+
+# Private unpublished manuscripts: persistent local volume, outside MEDIA_ROOT/CDN.
+RESEARCH_PRIVATE_ROOT = os.getenv("RESEARCH_PRIVATE_ROOT", str(BASE_DIR / "private_research"))
+RESEARCH_PUBLIC_URL = os.getenv("RESEARCH_PUBLIC_URL", "https://shikshacom.com")
+RESEARCH_ADMIN_URL = os.getenv("RESEARCH_ADMIN_URL", "https://admin.shikshacom.com")
+
+# Research Hub v2; legacy submissions retain their stored v1 requirements.
+RESEARCH_DEFAULT_REVIEWS = 2
+RESEARCH_AUTO_MATCHING = True
+RESEARCH_INVITATION_HOURS = 48
+RESEARCH_REVIEW_DAYS = 7
+RESEARCH_REVIEWER_CAPACITY = 3
+CELERY_BEAT_SCHEDULE["research-review-deadlines"] = {
+    "task": "documents.sweep_research_reviews", "schedule": 300,
 }

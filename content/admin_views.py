@@ -325,7 +325,40 @@ class HomeContentBlockAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
         return qs
 
 
-class HomeListItemAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
+
+class ExplicitCollectionDisplay:
+    """An edited collection stays custom even after its final row is removed."""
+    display_collection = None
+
+    def _use_custom_collection(self, section):
+        block, created = HomeContentBlock.objects.select_for_update().get_or_create(
+            section=section, defaults={"status": PublishStatus.PUBLISHED},
+        )
+        if (block.display_settings or {}).get(self.display_collection) == "custom":
+            return
+        block.display_settings = {**(block.display_settings or {}), self.display_collection: "custom"}
+        block.save(update_fields=["display_settings", "updated_at"])
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        self._use_custom_collection(serializer.instance.section)
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        previous = serializer.instance.__class__.objects.get(pk=serializer.instance.pk).section
+        super().perform_update(serializer)
+        self._use_custom_collection(previous)
+        self._use_custom_collection(serializer.instance.section)
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        section = instance.section
+        super().perform_destroy(instance)
+        self._use_custom_collection(section)
+
+class HomeListItemAdminViewSet(ExplicitCollectionDisplay, RecordsRevisions, viewsets.ModelViewSet):
+    display_collection = "items"
     queryset = HomeListItem.objects.all()
     serializer_class = HomeListItemAdminSerializer
     permission_classes = [IsContentEditor]
@@ -342,7 +375,8 @@ class HomeListItemAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
         return qs
 
 
-class HomeFloaterAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
+class HomeFloaterAdminViewSet(ExplicitCollectionDisplay, RecordsRevisions, viewsets.ModelViewSet):
+    display_collection = "floaters"
     queryset = HomeFloater.objects.all()
     serializer_class = HomeFloaterAdminSerializer
     permission_classes = [IsContentEditor]
