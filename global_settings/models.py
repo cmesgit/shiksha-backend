@@ -335,6 +335,36 @@ class GlobalSettings(models.Model):
         ),
     )
 
+    # ── Explore community verification (design_handoff_explore_verification) ─
+    # Gates the community verification of Explore uploads: the Verify page,
+    # the Verified/Unverified badges on cards and the document page, the
+    # status filter row, the specialization requests and the admin settings
+    # screen.
+    #
+    # Like content_studio_enabled and unlike quiz_v2_enabled, this is a REAL
+    # gate: every verification surface and endpoint checks it, and the
+    # endpoints 404 rather than 403 while it is off.
+    #
+    # ⚠ PUBLIC as well as on `feature_flags`, for the same reason as
+    # live_ticker_enabled and admission_abroad_enabled above: the Explore
+    # library is browsable by anonymous visitors, who see the badges. A flag
+    # delivered only on the authenticated /accounts/me/ would be absent for
+    # exactly the people the badges are for. Read PublicConfigView's docstring
+    # before adding a fourth.
+    #
+    # Ships OFF. Nothing about Explore changes while it is off — uploads keep
+    # going live immediately with no status of any kind, exactly as before.
+    explore_verification_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Master switch for community verification of Explore uploads — "
+            "the Verify page, the Verified/Unverified badges, specialization "
+            "requests and the verification admin screen. While OFF, uploads "
+            "go live with no status, as before. Does not affect Research Hub, "
+            "which has its own formal review."
+        ),
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

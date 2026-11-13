@@ -317,3 +317,32 @@ DEFAULT_CATEGORIES = [
     ("assignments", "Assignments", "✍️", "#6b58d3", "Solved & sample submissions"),
     ("question-papers", "Question Papers", "❓", "#c2410c", "Previous years & mock tests"),
 ]
+
+
+# ── File-type families (design_handoff_explore_verification §9) ──────────────
+# The design's filter row is families, not extensions: "All files · Documents ·
+# Slides · Data · Images · Audio and video · Other". FILETYPES above is the
+# older per-extension list and still drives the sidebar select; these two are
+# deliberately different vocabularies and both are live.
+FILE_KINDS = [
+    {"key": "all", "label": "All files"},
+    {"key": "documents", "label": "Documents"},
+    {"key": "slides", "label": "Slides"},
+    {"key": "data", "label": "Data"},
+    {"key": "images", "label": "Images"},
+    {"key": "av", "label": "Audio and video"},
+    {"key": "other", "label": "Other"},
+]
+
+FILE_KIND_EXTS = {
+    "documents": ["pdf", "doc", "docx", "odt", "rtf", "txt", "md"],
+    "slides": ["ppt", "pptx", "odp"],
+    "data": ["xls", "xlsx", "ods", "csv", "tsv", "json", "yml", "yaml"],
+    "images": ["png", "jpg", "jpeg", "gif", "webp", "psd", "ai"],
+    "av": ["mp3", "wav", "m4a", "ogg", "mp4", "mov", "webm", "mkv"],
+    # "Other" is the complement — drawings, code and archives. Expressed as a
+    # list so the key exists, but the view negates the union of the rest
+    # instead, so a type added above never silently falls out of every filter.
+    "other": ["dwg", "dxf", "zip", "7z", "tar", "gz", "py", "c", "cpp", "h",
+              "java", "js", "ts", "sql", "r", "m", "ipynb"],
+}

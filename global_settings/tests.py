@@ -449,10 +449,13 @@ class PublicConfigViewTest(TestCase):
         # let the next field onto the anonymous endpoint silently.
         # admission_abroad_enabled was added 2026-11-12 (public because
         # /admission/abroad is a logged-out page — see PublicConfigView).
+        # explore_verification_enabled was added 2026-11-12 (public because
+        # the Explore library is browsable by guests and the
+        # Verified/Unverified badge is on every card they see).
         self.assertEqual(
             set(body),
             {"public_quiz_hub_enabled", "live_ticker_enabled",
-             "admission_abroad_enabled"},
+             "admission_abroad_enabled", "explore_verification_enabled"},
         )
         blob = str(body)
         for secret in ("rzp_live", "okaxis", "ShikshaCom", "ops@shikshacom.com"):
@@ -527,4 +530,108 @@ class AdmissionAbroadFlagTest(TestCase):
         body = self._client().get(self.URL).json()
         for leaked in ("razorpay_key_id", "razorpay_key_secret",
                        "razorpay_secret_set"):
+            self.assertNotIn(leaked, body)
+
+
+class ExploreVerificationFeatureFlagTest(TestCase):
+    """design_handoff_explore_verification Phase 0 groundwork — community
+    verification of Explore uploads ships behind one admin-controlled flag,
+    OFF, and nothing consumes it yet.
+
+    A REAL gate, like content_studio_enabled and unlike quiz_v2_enabled: every
+    verification surface and endpoint checks it. Pinned here so a later phase
+    cannot quietly ship a half-built review queue on by default.
+
+    ⚠ Published BOTH authenticated (feature_flags on /accounts/me/) and
+    anonymous (/api/public-config/), and both halves are asserted below,
+    because dropping either one fails on exactly one audience and looks fine
+    on the other. The Explore library is browsable by guests, who see the
+    Verified/Unverified badge on every card; the signed-in half — the Verify
+    page, "Needs my review" — reads it from feature_flags.
+    """
+
+    SETTINGS_URL = "/api/admin/settings/"
+    PUBLIC_URL = "/api/public-config/"
+
+    def _client(self, user=None):
+        from rest_framework.test import APIClient
+        c = APIClient()
+        if user is not None:
+            c.force_authenticate(user=user)
+        return c
+
+    def _admin(self, name="evadmin"):
+        from django.contrib.auth import get_user_model
+        return get_user_model().objects.create_user(
+            username=name, email=f"{name}@example.com",
+            password="pw12345!", is_staff=True,
+        )
+
+    def test_ships_off(self):
+        """Nothing about Explore changes until an admin turns this on. An
+        upload keeps going live immediately with no status of any kind."""
+        self.assertFalse(GlobalSettings.load().explore_verification_enabled)
+
+    def test_admin_can_flip_it_via_patch(self):
+        """Without the field in GlobalSettingsSerializer.Meta.fields the PATCH
+        returns 200 and silently discards it — a dead switch in the admin UI,
+        which reads as a broken feature rather than as an error."""
+        res = self._client(self._admin()).patch(
+            self.SETTINGS_URL,
+            {"explore_verification_enabled": True}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertTrue(res.json()["explore_verification_enabled"])
+        self.assertTrue(GlobalSettings.load().explore_verification_enabled)
+
+    def test_non_admin_cannot_turn_it_on(self):
+        from django.contrib.auth import get_user_model
+
+        GlobalSettings.load()
+        student = get_user_model().objects.create_user(
+            username="evstudent", email="evstudent@example.com", password="x",
+        )
+        res = self._client(student).patch(
+            self.SETTINGS_URL,
+            {"explore_verification_enabled": True}, format="json",
+        )
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertFalse(GlobalSettings.load().explore_verification_enabled)
+
+    def test_exposed_read_only_in_feature_flags_on_me(self):
+        """The key must be present whatever its value — an absent key and a
+        False one are different bugs, and each app's AuthContext defaults
+        differently when it is missing."""
+        from django.contrib.auth import get_user_model
+
+        user = get_user_model().objects.create_user(
+            username="evlearner", email="evlearner@example.com", password="x",
+        )
+        res = self._client(user).get("/api/accounts/me/")
+        self.assertEqual(res.status_code, 200, res.content)
+        flags = res.json()["feature_flags"]
+        self.assertIn("explore_verification_enabled", flags)
+        self.assertFalse(flags["explore_verification_enabled"])
+
+    def test_an_anonymous_visitor_can_read_it(self):
+        """⚠ THE POINT OF THIS TEST. feature_flags requires a login, but the
+        Explore library is public and the badge is on every card a guest sees.
+        Authenticated-only delivery would gate the signed-in surfaces, pass
+        every test written against them, and leave the badge ungated for
+        exactly the audience it is mostly shown to."""
+        # load() first — the singleton row does not exist until something
+        # creates it, and .filter(pk=1).update() on no rows is a silent no-op.
+        GlobalSettings.load()
+        GlobalSettings.objects.filter(pk=1).update(
+            explore_verification_enabled=True)
+        body = self._client().get(self.PUBLIC_URL).json()
+        self.assertIn("explore_verification_enabled", body)
+        self.assertTrue(body["explore_verification_enabled"])
+
+    def test_the_allowlist_still_withholds_secrets(self):
+        """Adding a fourth name must not widen the response to the whole
+        settings serializer, which holds payment credentials."""
+        body = self._client().get(self.PUBLIC_URL).json()
+        for leaked in ("razorpay_key_id", "razorpay_key_secret",
+                       "razorpay_secret_set", "upi_id"):
             self.assertNotIn(leaked, body)

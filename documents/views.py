@@ -69,12 +69,50 @@ def _ban_error(user):
     return None
 
 
+def _verification_visible_q(user):
+    """What community verification hides from the public library.
+
+    Two different rules, and conflating them is the trap:
+
+      * HIDDEN — two specialists objected to the same version. Out of Browse
+        for everyone but its owner and an admin, always.
+      * UNVERIFIED / CHANGES_REQUESTED — visible by default, because the
+        design is explicit that a set with changes requested "stays in Browse,
+        marked Unverified". Only the admin's "Show unverified uploads in
+        Browse" switch takes them out, and turning it off converts the whole
+        feature from a badge into a gate.
+
+    In both cases the OWNER still sees their own set. A member whose upload
+    silently vanished from the library with no explanation has no way to find
+    the reviewer's note telling them how to fix it.
+    """
+    from global_settings.models import GlobalSettings
+    from .models import VerificationSettings, VerificationStatus
+
+    if not GlobalSettings.load().explore_verification_enabled:
+        return None
+
+    hidden = Q(verification_status=VerificationStatus.HIDDEN)
+    if not VerificationSettings.load().show_unverified_in_browse:
+        hidden = hidden | Q(verification_status__in=[
+            VerificationStatus.UNVERIFIED, VerificationStatus.CHANGES_REQUESTED,
+        ])
+
+    blocked = Q(**{}) & hidden
+    if user is not None and getattr(user, "is_authenticated", False):
+        blocked = hidden & ~Q(owner=user)
+    return ~blocked
+
+
 def _base_documents(user, include_removed=False):
     """The single annotated base queryset for public listing/detail. Hides
     moderator-removed documents unless include_removed=True (moderator views)."""
-    qs = Document.objects.select_related("owner", "owner__document_profile", "category", "research_submission").prefetch_related("research_submission__cases")
+    qs = Document.objects.select_related("owner", "owner__document_profile", "category", "research_submission").prefetch_related("research_submission__cases", "topics", "files")
     if not include_removed:
         qs = qs.filter(is_removed=False)
+        visible = _verification_visible_q(user)
+        if visible is not None:
+            qs = qs.filter(visible)
     qs = qs.annotate(likes_count_annotated=Count("likes", distinct=True))
     if user and user.is_authenticated:
         qs = qs.annotate(
@@ -83,6 +121,153 @@ def _base_documents(user, include_removed=False):
             is_liked_annotated=Exists(
                 DocumentLike.objects.filter(document=OuterRef("pk"), user=user)),
         )
+    return qs
+
+
+def _field_tree(user):
+    """`field › subject › branch` with a document count on every node.
+
+    ⚠ Counts are of DISTINCT documents, not of tag rows. A set tagged under
+    two branches of the same subject would otherwise be counted twice in that
+    subject — and the design puts these numbers on chips people use to decide
+    whether a branch is worth opening.
+
+    The static tree from `fields.field_groups()` is unioned in, so a subject
+    with nothing in it still renders with a zero rather than vanishing. The
+    design shows counts "for every chip including zero".
+    """
+    from collections import defaultdict
+
+    from .fields import field_groups
+    from .models import DocumentTopic
+
+    visible = _base_documents(user).values("pk")
+    rows = DocumentTopic.objects.filter(
+        document__in=visible,
+    ).values_list("field", "subject", "branch", "document_id")
+
+    triples = []
+    field_docs = defaultdict(set)
+    subject_docs = defaultdict(set)
+    branch_docs = defaultdict(set)
+    for field, subject, branch, doc_id in rows:
+        triples.append((field, subject, branch))
+        field_docs[field].add(doc_id)
+        subject_docs[(field, subject)].add(doc_id)
+        if branch:
+            branch_docs[(field, subject, branch)].add(doc_id)
+
+    tree = field_groups(triples)
+    out = []
+    for group in tree:
+        field = group["field"]
+        subjects = []
+        for entry in group["subjects"]:
+            subject = entry["subject"]
+            subjects.append({
+                "subject": subject,
+                "count": len(subject_docs.get((field, subject), ())),
+                "branches": [
+                    {"branch": b,
+                     "count": len(branch_docs.get((field, subject, b), ()))}
+                    for b in entry["branches"]
+                ],
+            })
+        out.append({
+            "field": field,
+            "count": len(field_docs.get(field, ())),
+            "subjects": subjects,
+        })
+    return out
+
+
+def _attach_set_children(doc, data, first_upload):
+    """Write the extra files and the extra tag paths of a set.
+
+    The FIRST file and the FIRST tag are already on the parent, and
+    `documents/set_signals.py` has turned each into a child row by the time
+    this runs. So this adds only what the parent cannot hold — which is why
+    it skips index 0 of neither list but instead relies on the signal having
+    claimed the parent's copy, and de-duplicates by hash and by path.
+    """
+    from .fields import field_for_subject
+    from .models import DocumentFile, DocumentTopic, compute_file_hash
+
+    extra_files = data.get("files") or []
+    seen_hashes = set(
+        doc.files.exclude(file_hash="").values_list("file_hash", flat=True))
+    order = doc.files.count()
+    for upload in extra_files:
+        digest = compute_file_hash(upload)
+        # The same bytes twice in one set is a slip, not an upload. Skipping
+        # is kinder than a 409 that discards the other nineteen files.
+        if digest and digest in seen_hashes:
+            continue
+        if first_upload is not None and digest and digest == (doc.file_hash or ""):
+            continue
+        DocumentFile.objects.create(
+            document=doc, owner_id=doc.owner_id, file=upload,
+            original_name=getattr(upload, "name", "") or "",
+            filetype=(getattr(upload, "name", "").rsplit(".", 1)[-1] or "").upper()[:10],
+            size=getattr(upload, "size", 0) or 0,
+            file_hash=digest, order=order,
+        )
+        seen_hashes.add(digest)
+        order += 1
+
+    # "Field|Subject|Branch" per entry. Subject is the only required part —
+    # field is derivable and branch is optional, exactly as on the parent.
+    existing = {
+        (t.subject.casefold(), t.branch.casefold())
+        for t in doc.topics.all()
+    }
+    position = doc.topics.count()
+    for raw in (data.get("topics") or []):
+        parts = [p.strip() for p in str(raw).split("|")]
+        field = parts[0] if len(parts) > 2 else ""
+        subject = parts[1] if len(parts) > 2 else (parts[0] if parts else "")
+        branch = parts[-1] if len(parts) > 1 else ""
+        if not subject:
+            continue
+        key = (subject.casefold(), branch.casefold())
+        if key in existing:
+            continue
+        DocumentTopic.objects.create(
+            document=doc, field=field or field_for_subject(subject),
+            subject=subject, branch=branch, order=position,
+        )
+        existing.add(key)
+        position += 1
+
+
+def _filter_by_verification(qs, status_param, user):
+    """`?status=verified|unverified|needs_my_review`."""
+    from global_settings.models import GlobalSettings
+    from .models import VerificationStatus
+    from . import verification as v
+
+    value = (status_param or "").strip().lower()
+    if not value or value in ("all", "any"):
+        return qs
+    if not GlobalSettings.load().explore_verification_enabled:
+        return qs
+
+    if value == "verified":
+        return qs.filter(verification_status=VerificationStatus.VERIFIED)
+    if value == "unverified":
+        # "Unverified" to a reader means "not yet confirmed", which includes a
+        # set whose confirmations are paused — the public badge on both says
+        # Unverified, so the filter has to agree with the badge.
+        return qs.filter(verification_status__in=[
+            VerificationStatus.UNVERIFIED, VerificationStatus.CHANGES_REQUESTED,
+        ])
+    if value == "needs_my_review":
+        if not getattr(user, "is_authenticated", False):
+            return qs.none()
+        # Reuses the reviewer's own queue rather than re-deriving "sets in my
+        # subjects I have not reviewed" — which is the same rule, and two
+        # copies of it would drift the moment a setting changed.
+        return qs.filter(pk__in=v.review_queue(user).values("pk"))
     return qs
 
 
@@ -149,9 +334,15 @@ class FacetsView(APIView):
                 cats, many=True, context={"request": request}).data,
             "subjects": ["All", *(group["subject"] for group in groups)],
             "subjectGroups": groups,
+            # The three-level tree, with a count on every node. Served from
+            # the same endpoint as the two-level one rather than a new route,
+            # because both the browse panel and the upload tag picker need it
+            # and they already fetch this.
+            "fieldGroups": _field_tree(request.user),
             "levels": constants.LEVELS,
             "languages": constants.LANGUAGES,
             "filetypes": constants.FILETYPES,
+            "fileKinds": constants.FILE_KINDS,
             "sorts": constants.SORTS,
             "dateRanges": constants.DATE_RANGES,
             "uploadTypes": constants.UPLOAD_TYPES,
@@ -272,6 +463,39 @@ class DocumentsView(APIView):
             val = p.get(field)
             if val and val != "All":
                 qs = qs.filter(**{f"{field}__iexact": val.strip()})
+
+        # The three-level browse panel. These read DocumentTopic rather than
+        # the flat columns above, because a set carries SEVERAL paths and
+        # matching any one of them should find it.
+        tfield = (p.get("field") or "").strip()
+        if tfield and tfield != "All":
+            qs = qs.filter(topics__field__iexact=tfield).distinct()
+        tsubject = (p.get("tsubject") or "").strip()
+        if tsubject and tsubject != "All":
+            qs = qs.filter(topics__subject__iexact=tsubject).distinct()
+        tbranch = (p.get("branch") or "").strip()
+        if tbranch and tbranch != "All":
+            qs = qs.filter(topics__branch__iexact=tbranch).distinct()
+
+        # The design's file-type row is families (Documents, Slides, Data,
+        # Images, Audio and video, Other), not extensions. It reads the set's
+        # FILES, so a set with a PDF and an XLSX answers to both.
+        kind = (p.get("filekind") or "").strip().lower()
+        if kind and kind not in ("all", "all files"):
+            exts = constants.FILE_KIND_EXTS.get(kind)
+            if exts:
+                if kind == "other":
+                    known = {e for group in constants.FILE_KIND_EXTS.values()
+                             for e in group if group is not exts}
+                    qs = qs.exclude(files__filetype__in=[e.upper() for e in known]).distinct()
+                else:
+                    qs = qs.filter(
+                        files__filetype__in=[e.upper() for e in exts]).distinct()
+        # The design's status filter row: Any status / Verified / Unverified /
+        # Needs my review. Silently ignored while the feature is off, so an
+        # old bookmarked URL does not 400.
+        qs = _filter_by_verification(qs, p.get("status"), request.user)
+
         cutoff = _within_range_cutoff(p.get("date"))
         if cutoff is not None:
             qs = qs.filter(created_at__gte=cutoff)
@@ -357,6 +581,14 @@ class DocumentsView(APIView):
         for name in [t.strip() for t in (data.get("tags") or "").split(",") if t.strip()]:
             tag, _ = DocTag.objects.get_or_create(name=name.lower())
             doc.tags.add(tag)
+
+        _attach_set_children(doc, data, upload)
+
+        # ⚠ Invite AFTER the tag rows exist. Matching reads DocumentTopic, and
+        # a post_save on Document would run before _attach_set_children and
+        # find a set with no subjects — i.e. find nobody, every time.
+        from .verification_signals import invite_for
+        invite_for(doc)
 
         return Response(
             DocumentDetailSerializer(doc, context={"request": request}).data,

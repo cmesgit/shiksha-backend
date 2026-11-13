@@ -44,10 +44,15 @@ class PublicConfigView(APIView):
     # admission_abroad_enabled joins them for the third time for the same
     # reason: /admission/abroad is a logged-out public page, so a flag
     # delivered on /accounts/me/ would never reach the visitors who see it.
+    # explore_verification_enabled is the fourth: the Explore library is
+    # browsable by guests, and the Verified/Unverified badge is on every card
+    # they see. It is ALSO in feature_flags, because the signed-in half of the
+    # feature (the Verify page, "Needs my review") reads it from there.
     PUBLIC_FLAGS = (
         "public_quiz_hub_enabled",
         "live_ticker_enabled",
         "admission_abroad_enabled",
+        "explore_verification_enabled",
     )
 
     def get(self, request):

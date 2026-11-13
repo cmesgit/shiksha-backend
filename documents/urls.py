@@ -24,6 +24,15 @@ from .moderation_views import (
 from .research_views import (ResearchListView, ResearchDetailView, ResearchRevisionView,
     ResearchFileView, ResearchReviewersView, ResearchReviewerAdminView, ResearchCorrectionView)
 
+from .verification_views import (
+    VerificationOverviewView, VerificationQueueView, VerificationTargetView,
+    NewVersionView,
+    VerificationNotificationsView, VerificationNotificationsReadView,
+    SpecializationsView, SpecializationDetailView,
+    AdminSettingsView, AdminReviewersView, AdminReviewerActionView,
+    AdminAttentionView, AdminAttentionActionView, AdminEligibleReviewersView,
+)
+
 urlpatterns = [
     path("research/", ResearchListView.as_view()),
     path("research/reviewers/", ResearchReviewersView.as_view()),
@@ -78,4 +87,31 @@ urlpatterns = [
 
     path("mod/log/", ModLogView.as_view(), name="explore-mod-log"),
     path("mod/analytics/", ModAnalyticsView.as_view(), name="explore-mod-analytics"),
+
+    # =====================================================
+    # Community verification
+    # (design_handoff_explore_verification)
+    #
+    # Every route 404s while GlobalSettings.explore_verification_enabled is
+    # off — see verification_views._require_feature. The admin block is
+    # superuser-or-ADMIN, NOT is_staff: content editors hold is_staff for CMS
+    # work and must not also hold the switch that decides what the library
+    # counts as checked.
+    # =====================================================
+    path("verification/", VerificationOverviewView.as_view(), name="explore-verification"),
+    path("verification/queue/", VerificationQueueView.as_view(), name="explore-verification-queue"),
+    path("verification/notifications/", VerificationNotificationsView.as_view(), name="explore-verification-notifications"),
+    path("verification/notifications/read/", VerificationNotificationsReadView.as_view(), name="explore-verification-notifications-read"),
+    path("verification/specializations/", SpecializationsView.as_view(), name="explore-verification-specializations"),
+    path("verification/specializations/<int:spec_id>/", SpecializationDetailView.as_view(), name="explore-verification-specialization-detail"),
+    path("verification/sets/<int:document_id>/", VerificationTargetView.as_view(), name="explore-verification-set"),
+    path("verification/sets/<int:document_id>/review/", VerificationTargetView.as_view(), name="explore-verification-review"),
+    path("verification/sets/<int:document_id>/version/", NewVersionView.as_view(), name="explore-verification-new-version"),
+
+    path("verification/admin/settings/", AdminSettingsView.as_view(), name="explore-verification-admin-settings"),
+    path("verification/admin/reviewers/", AdminReviewersView.as_view(), name="explore-verification-admin-reviewers"),
+    path("verification/admin/reviewers/<int:spec_id>/<str:action>/", AdminReviewerActionView.as_view(), name="explore-verification-admin-reviewer-action"),
+    path("verification/admin/attention/", AdminAttentionView.as_view(), name="explore-verification-admin-attention"),
+    path("verification/admin/attention/<int:document_id>/<str:action>/", AdminAttentionActionView.as_view(), name="explore-verification-admin-attention-action"),
+    path("verification/admin/sets/<int:document_id>/reviewers/", AdminEligibleReviewersView.as_view(), name="explore-verification-admin-eligible"),
 ]

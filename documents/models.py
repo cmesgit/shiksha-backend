@@ -129,6 +129,27 @@ class Document(models.Model):
     is_removed = models.BooleanField(default=False)
     removed_at = models.DateTimeField(null=True, blank=True)
 
+    # ── Community verification ───────────────────────────────────────────
+    # See documents/verification_models.py for the states and
+    # documents/verification.py for the rules. Choices are referenced by
+    # string here because verification_models imports Document — declaring
+    # them inline would be a circular import.
+    #
+    # ⚠ Moderation (is_removed / is_locked) and verification are separate
+    # axes and must stay that way. Moderation is a negative signal applied by
+    # staff; verification is a positive one applied by peers. A verified set
+    # can still be reported and removed, and a removed set keeps whatever
+    # verification state it had so restoring it does not silently relaunch it
+    # as unchecked.
+    verification_status = models.CharField(
+        max_length=20, default="unverified", db_index=True,
+    )
+    # Bumped whenever the files change. Reviews and invites key on it, which
+    # is what makes "a new version restarts the count" true without deleting
+    # the record of what earlier reviewers actually said.
+    verification_version = models.PositiveIntegerField(default=1)
+    verified_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["-created_at"]
         constraints = [
@@ -149,6 +170,132 @@ class Document(models.Model):
 
     def __str__(self):
         return self.title
+
+
+def _document_set_file_path(instance, filename):
+    return f"explore/documents/{instance.document.owner_id}/{filename}"
+
+
+class DocumentFile(models.Model):
+    """One file inside a set.
+
+    The Explore redesign uploads several files under one title — "Add one or
+    more files as a set, then tag every topic they belong to." `Document` is
+    that set; this is a file in it.
+
+    ⚠ `Document` deliberately did NOT become a child of a new wrapper model.
+    Nine things point at it — DocumentLike, SavedDocument, Collection's M2M,
+    Follow, Report, ModerationAction, DuplicateFlag, the research provenance
+    link and the public /explore/doc/<id> URL. Introducing a set *above*
+    Document would have orphaned every one of them. Instead Document keeps its
+    identity and grew a child, so every existing like, save, report and link
+    still resolves.
+
+    `Document.file` / `filetype` / `pages` / `file_hash` are still written and
+    still hold the set's FIRST file. They are not dropped yet — see the
+    deferred step in design_handoff_explore_verification/BUILD_GUIDE.md.
+    """
+
+    document = models.ForeignKey(
+        Document, on_delete=models.CASCADE, related_name="files",
+    )
+    # Denormalised from document.owner / document.is_removed so the uniqueness
+    # constraint in Meta can be enforced by the database — a UniqueConstraint
+    # cannot reach through the FK. Kept in sync in save().
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="document_files",
+    )
+    is_removed = models.BooleanField(default=False)
+    file = models.FileField(upload_to=_document_set_file_path)
+    # The name the uploader's own filesystem used. `file.name` is the stored
+    # path, which is not what the design shows in the Files list.
+    original_name = models.CharField(max_length=255, blank=True, default="")
+    filetype = models.CharField(max_length=10, blank=True, default="")
+    size = models.PositiveBigIntegerField(default=0)
+    pages = models.PositiveIntegerField(default=0)
+    file_hash = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["order", "id"]
+        constraints = [
+            # The port of Document's `documents_unique_owner_file_hash`. That
+            # constraint is what stops one person uploading the same file
+            # twice; once a set can hold several files, the hash that matters
+            # lives here, so the rule has to live here too.
+            #
+            # `owner` is denormalised onto the row for exactly this reason — a
+            # UniqueConstraint cannot reach through the FK to Document.owner,
+            # and without it the check would have to be a view-level query
+            # that races.
+            #
+            # Same two exclusions as the original: blank hashes must not
+            # collide with each other, and a soft-removed set must not block
+            # its owner from re-uploading.
+            models.UniqueConstraint(
+                fields=["owner", "file_hash"],
+                condition=models.Q(is_removed=False) & ~models.Q(file_hash=""),
+                name="documents_unique_owner_set_file_hash",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        # Never let the denormalised pair drift from the parent: a stale
+        # is_removed would make the duplicate constraint block a re-upload
+        # forever, and a stale owner would block the wrong person.
+        if self.document_id:
+            self.owner_id = self.document.owner_id
+            self.is_removed = self.document.is_removed
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.original_name or self.file.name
+
+
+class DocumentTopic(models.Model):
+    """One `field › subject › branch` path on a set — the design's "tag".
+
+    A set carries several. The design's own sample is tagged both
+    `Engineering › Civil Engineering › Water resources` and
+    `Social Sciences › Sociology › Rural sociology`, and EITHER tag makes a
+    specialist eligible to review it. That is the whole reason this is a table
+    and not two more columns.
+
+    `field` is stored rather than derived on read so that a subject's field can
+    be remapped later without silently rewriting the tags on existing sets.
+    `documents.fields.field_for_subject()` supplies it on write.
+    """
+
+    document = models.ForeignKey(
+        Document, on_delete=models.CASCADE, related_name="topics",
+    )
+    field = models.CharField(max_length=60, blank=True, default="")
+    subject = models.CharField(max_length=120)
+    branch = models.CharField(max_length=120, blank=True, default="")
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["order", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["document", "subject", "branch"],
+                name="documents_unique_document_topic",
+            ),
+        ]
+        indexes = [
+            # The reviewer-matching query is "every unverified set tagged with
+            # a subject this person is confirmed in", so subject is the hot
+            # column, not document.
+            models.Index(fields=["subject"], name="doctopic_subject_idx"),
+            models.Index(fields=["field"], name="doctopic_field_idx"),
+        ]
+
+    def __str__(self):
+        parts = [p for p in (self.field, self.subject, self.branch) if p]
+        return " › ".join(parts)
 
 
 class DocumentLike(models.Model):
@@ -509,3 +656,27 @@ class ResearchCase(models.Model):
             models.UniqueConstraint(fields=["submission", "kind", "version"], name="research_unique_case_version"),
             models.UniqueConstraint(fields=["submission", "kind"], condition=models.Q(status="open"), name="research_one_open_case"),
         ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Community verification
+# ─────────────────────────────────────────────────────────────────────────────
+# Defined in their own module to keep this file readable — it already holds the
+# library, moderation and Research Hub models — but re-exported here so
+# `from documents.models import VerificationReview` works like every other
+# model in this app, and so makemigrations sees them.
+#
+# The import is at the BOTTOM on purpose: verification_models imports Document
+# from this module, so anywhere earlier is a circular import.
+from .verification_models import (  # noqa: E402,F401  (circular-import order)
+    InviteState,
+    ReviewOutcome,
+    ReviewerSelection,
+    SpecializationSource,
+    SpecializationStatus,
+    SubjectSpecialization,
+    VerificationInvite,
+    VerificationReview,
+    VerificationSettings,
+    VerificationStatus,
+)

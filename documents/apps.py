@@ -8,3 +8,5 @@ class DocumentsConfig(AppConfig):
 
     def ready(self):
         from . import checks  # noqa: F401
+        from . import set_signals  # noqa: F401
+        from . import verification_signals  # noqa: F401

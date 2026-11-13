@@ -67,6 +67,13 @@ _DEFAULT = {"category": "social", "email": OFF, "sms": OFF, "push": OPT_OUT,
 POLICY = {
     "research.reminder": {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
     "research.updated": {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
+    # ── Explore community verification ─────────────────────────────────
+    # SMS is OFF for the same reason research.updated has it off: SMS is
+    # policy-OFF across this platform and these are low-urgency, high-volume
+    # events — a specialist can be invited to several sets a day.
+    "explore.review_invited":    {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
+    "explore.verified":          {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
+    "explore.changes_requested": {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
     # ── Counseling bookings ────────────────────────────────────────────
     "counseling.booked":       {"category": "bookings", "email": REQUIRED, "sms": REQUIRED, "push": REQUIRED, "sms_template": "booking_confirmed"},
     "counseling.cancelled":    {"category": "bookings", "email": REQUIRED, "sms": REQUIRED, "push": REQUIRED, "sms_template": "booking_cancelled"},
