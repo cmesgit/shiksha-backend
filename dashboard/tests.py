@@ -26,7 +26,11 @@ from courses.models import Course, Subject, Chapter, Batch, TeachingAssignment
 from enrollments.models import Enrollment, Subscription
 from quizzes.models import Quiz
 from django.core.files.uploadedfile import SimpleUploadedFile
-from dashboard.views import _teacher_grading_queue, _teacher_grading_count
+from dashboard.views import (
+    _teacher_grading_queue, _teacher_grading_count, _teacher_group_sessions,
+)
+from dashboard.serializers import DashboardGroupSessionSerializer
+from sessions_app.models import GroupSession
 
 
 class LearnerDashboardScopingTest(TestCase):
@@ -432,3 +436,85 @@ class GradingQueueBatchScopeTest(TestCase):
         sub.graded_at = timezone.now()
         sub.save(update_fields=["graded_at"])
         self.assertNotIn("10-B work", self._titles())
+
+
+class TeacherDashboardGroupSessionsTest(TestCase):
+    """/dashboard/ returned no `group_sessions` key at all, so the teacher's
+    Today timeline silently omitted them — live sessions and private sessions
+    were both there, group sessions were the only one of the three missing. A
+    teacher hosting a group session at 4pm saw an empty afternoon."""
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        cls.host = User.objects.create_user(
+            username="gs_host", email="gshost@t.com", password="x", is_verified=True)
+        cls.invited = User.objects.create_user(
+            username="gs_inv", email="gsinv@t.com", password="x", is_verified=True)
+        cls.stranger = User.objects.create_user(
+            username="gs_other", email="gsother@t.com", password="x", is_verified=True)
+        for u in (cls.host, cls.invited, cls.stranger):
+            UserRole.objects.create(
+                user=u, role=Role.objects.get(name="TEACHER"),
+                is_active=True, is_primary=True)
+
+        today = timezone.localtime(timezone.now()).date()
+        cls.hosted = GroupSession.objects.create(
+            host=cls.host, topic="Doubt clearing", short_code="GS0001", scheduled_date=today,
+            scheduled_time="16:00", duration_minutes=45, status="scheduled")
+        cls.as_invited = GroupSession.objects.create(
+            host=cls.stranger, invited_teacher=cls.invited, topic="Guest slot", short_code="GS0002",
+            scheduled_date=today, scheduled_time="18:00",
+            duration_minutes=45, status="scheduled")
+        cls.cancelled = GroupSession.objects.create(
+            host=cls.host, topic="Called off", short_code="GS0003", scheduled_date=today,
+            scheduled_time="20:00", duration_minutes=45, status="cancelled")
+        cls.yesterday = GroupSession.objects.create(
+            host=cls.host, topic="Last week", short_code="GS0004", scheduled_date=today - timedelta(days=2),
+            scheduled_time="16:00", duration_minutes=45, status="scheduled")
+
+    def test_host_sees_their_own_session(self):
+        rows = _teacher_group_sessions(self.host, timezone.now())
+        self.assertIn("Doubt clearing", {g.topic for g in rows})
+
+    def test_invited_teacher_sees_it_too(self):
+        """A teacher reaches a group session as host OR as invited teacher."""
+        rows = _teacher_group_sessions(self.invited, timezone.now())
+        self.assertEqual({g.topic for g in rows}, {"Guest slot"})
+
+    def test_an_unrelated_teacher_sees_nothing(self):
+        rows = _teacher_group_sessions(
+            User.objects.create_user(
+                username="nobody", email="nb@t.com", password="x"),
+            timezone.now())
+        self.assertEqual(rows, [])
+
+    def test_cancelled_and_past_are_excluded(self):
+        topics = {g.topic for g in _teacher_group_sessions(self.host, timezone.now())}
+        self.assertNotIn("Called off", topics)
+        self.assertNotIn("Last week", topics)
+
+    def test_host_and_invited_on_the_same_row_is_not_duplicated(self):
+        """Both Q branches can match one row. Without .distinct() the OR
+        returns it twice and the timeline shows the class twice."""
+        self.hosted.invited_teacher = self.host
+        self.hosted.save(update_fields=["invited_teacher"])
+        rows = _teacher_group_sessions(self.host, timezone.now())
+        self.assertEqual(len([g for g in rows if g.topic == "Doubt clearing"]), 1)
+
+    def test_serializer_reports_the_role(self):
+        data = DashboardGroupSessionSerializer(
+            [self.hosted], many=True, context={"user": self.host}).data
+        self.assertEqual(data[0]["role"], "host")
+        data2 = DashboardGroupSessionSerializer(
+            [self.as_invited], many=True, context={"user": self.invited}).data
+        self.assertEqual(data2[0]["role"], "invited_teacher")
+
+    def test_serializer_shape_matches_the_private_session_one(self):
+        """The timeline merges three session kinds; date/time must not be
+        scheduled_date/scheduled_time on one of them."""
+        data = DashboardGroupSessionSerializer(
+            [self.hosted], many=True, context={"user": self.host}).data[0]
+        self.assertIn("date", data)
+        self.assertIn("time", data)
+        self.assertNotIn("scheduled_date", data)
