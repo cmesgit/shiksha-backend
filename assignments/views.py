@@ -1267,3 +1267,62 @@ class TeacherAssignmentRemindView(APIView):
             sent += 1
 
         return Response({"detail": f"Reminder sent to {sent} student(s).", "count": sent})
+
+
+class TeacherRecentSubmissionsView(APIView):
+    """
+    GET /assignments/teacher/recent-submissions/?limit=5
+
+    The most recent UNGRADED submissions across every assignment this teacher
+    may act on — the "Latest submissions" rail card on the Assignments screen.
+
+    Nothing answered this before. The per-assignment roster
+    (TeacherAssignmentSubmissionsView) would have meant one request per row
+    just to fill a side card, and the dashboard's grading queue is the same
+    data behind a much heavier endpoint.
+
+    Scope comes from teacher_scope_filter, the queryset twin of
+    _assert_teacher_owns_assignment, so this list and the Grade button it
+    links to cannot disagree. `assignment__in=<subquery>` rather than a join:
+    IN de-duplicates, so a submission cannot appear twice via the course-wide
+    + batch-scoped staffing pair that 171 of 172 prod subjects carry.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def get(self, request):
+        require_teacher_context(request)
+
+        try:
+            limit = min(max(int(request.query_params.get("limit", 5)), 1), 25)
+        except (TypeError, ValueError):
+            raise ValidationError({"limit": "Must be a whole number."})
+
+        rows = (
+            AssignmentSubmission.objects
+            .filter(
+                assignment__in=teacher_scope_filter(Assignment.objects.all(), request.user),
+                graded_at__isnull=True,
+            )
+            .select_related("assignment", "assignment__batch", "student", "learner_profile")
+            .order_by("-submitted_at")[:limit]
+        )
+
+        def who(s):
+            # learner_profile is the identity that submitted; the account is
+            # the fallback for legacy rows written before the profile split.
+            if s.learner_profile_id and s.learner_profile.display_name:
+                return s.learner_profile.display_name
+            return getattr(s.student, "email", "") or "Unknown"
+
+        return Response([
+            {
+                "id": str(s.id),
+                "assignment_id": str(s.assignment_id),
+                "assignment_title": s.assignment.title,
+                "student_name": who(s),
+                "batch_name": s.assignment.batch.name if s.assignment.batch_id else None,
+                "submitted_at": s.submitted_at,
+                "subject_id": str(s.assignment.subject_id),
+            }
+            for s in rows
+        ])

@@ -448,48 +448,33 @@ def _ungraded_submissions_q(user):
     anything and got ignored, which is the failure mode a work queue can least
     afford.
 
-    ── Why this is batch-aware, and why it uses Exists ──────────────────
+    ── Why this delegates ───────────────────────────────────────────────
     This filter used to be SUBJECT-level: any active TeachingAssignment on the
     assignment's subject qualified, whatever batch either was in. But the
-    per-object gate (_assert_teacher_owns_assignment, assignments/views.py:51)
-    is batch-aware, so the queue listed work the teacher could not act on — a
-    teacher staffed only on Maths/10-B saw 10-A's submissions, the "N pending"
-    badge counted them, and every Grade button on those rows 403'd.
+    per-object gate is batch-aware, so the queue listed work the teacher could
+    not act on — a teacher staffed only on Maths/10-B saw 10-A's submissions,
+    the "N pending" badge counted them, and every Grade button on those rows
+    403'd.
 
-    The gate has TWO branches and this mirrors both, because they are not the
-    same rule:
+    It now delegates to assignments.views.teacher_scope_filter, which is the
+    queryset-shaped twin of _assert_teacher_owns_assignment and already
+    encodes both of the gate's branches (they are NOT the same rule: a
+    course-wide assignment gates on any active staffing row, a batch-scoped
+    one on that batch or a course-wide row — so a 10-B-only teacher may grade
+    a course-wide assignment but not a 10-A one).
 
-      • assignment.batch IS NULL -> teaches_subject(): ANY active row on the
-        subject qualifies, including a batch-scoped one.
-      • assignment.batch = B     -> is_teacher_of(): a row for THAT batch, or
-        a course-wide (batch IS NULL) row.
+    Delegating rather than re-deriving is the whole point. Two independent
+    implementations of "assignments this teacher may act on" is exactly how
+    the queue and the gate drifted apart in the first place; there is now one.
 
-    Note the asymmetry — a 10-B-only teacher MAY act on a course-wide
-    assignment but NOT on a 10-A one. Collapsing the two into one clause gets
-    one of those wrong in either direction.
-
-    Exists(), not a join: two chained filters on `teaching_assignments__…` are
-    two separate joins (CLAUDE.md rule 3), and a single join multiplies rows
-    because 171 of 172 staffed subjects on prod carry BOTH a course-wide and a
-    batch-scoped assignment. A subquery cannot multiply, so the counts are
-    right without leaning on .distinct() to paper over it.
+    `assignment__in=<subquery>` rather than a join on this queryset: IN
+    de-duplicates, so submissions cannot multiply across the course-wide +
+    batch-scoped staffing pair that 171 of 172 prod subjects carry.
     """
-    staffed = TeachingAssignment.objects.filter(
-        teacher=user,
-        is_active=True,
-        subject_id=OuterRef("assignment__subject_id"),
-    )
+    from assignments.views import teacher_scope_filter
+
     return AssignmentSubmission.objects.filter(
-        # Course-wide assignment: subject-level staffing is enough.
-        (Q(assignment__batch__isnull=True) & Exists(staffed))
-        # Batch-scoped: that exact batch, or a course-wide staffing row.
-        | (
-            Q(assignment__batch__isnull=False)
-            & Exists(staffed.filter(
-                Q(batch_id=OuterRef("assignment__batch_id"))
-                | Q(batch__isnull=True)
-            ))
-        ),
+        assignment__in=teacher_scope_filter(Assignment.objects.all(), user),
         graded_at__isnull=True,
     )
 

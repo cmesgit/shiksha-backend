@@ -1588,3 +1588,72 @@ class TeacherAssignmentRemindTest(AssignmentScopeFixtureMixin, TestCase):
                 n.audience_identity.startswith("L:"),
                 f"reminder not scoped to a profile: {n.audience_identity!r}",
             )
+
+
+class TeacherRecentSubmissionsTest(AssignmentScopeFixtureMixin, TestCase):
+    """GET /assignments/teacher/recent-submissions/ — the Assignments rail's
+    "Latest submissions" card. Scope must match the Grade button it links to."""
+
+    URL = "/api/assignments/teacher/recent-submissions/"
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.build_world()
+        TeachingAssignment.objects.create(
+            batch=None, subject=cls.subject, teacher=cls.teacher_b, is_active=True)
+        cls.sub_b = AssignmentSubmission.objects.create(
+            assignment=cls.assignment_b, student=cls.learner_account,
+            learner_profile=cls.learner_profile,
+            submitted_file=SimpleUploadedFile("b.pdf", b"%PDF"))
+        cls.sub_a = AssignmentSubmission.objects.create(
+            assignment=cls.assignment_a, student=cls.other_account,
+            learner_profile=cls.other_profile,
+            submitted_file=SimpleUploadedFile("a.pdf", b"%PDF"))
+
+    def _get(self, user=None, qs=""):
+        return _teacher_client(user or self.teacher_b).get(self.URL + qs)
+
+    def test_lists_ungraded_submissions(self):
+        r = self._get()
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(
+            {row["assignment_title"] for row in r.data},
+            {"10-A worksheet", "10-B worksheet"},
+        )
+
+    def test_graded_work_is_excluded(self):
+        self.sub_b.graded_at = timezone.now()
+        self.sub_b.save(update_fields=["graded_at"])
+        titles = {row["assignment_title"] for row in self._get().data}
+        self.assertNotIn("10-B worksheet", titles)
+
+    def test_scope_matches_the_grade_gate(self):
+        """A teacher staffed only on 10-B must not see 10-A's submissions.
+
+        Drops the course-wide row setUpTestData added rather than staffing a
+        second teacher: TeachingAssignment is unique on (batch, subject)
+        regardless of teacher, so two teachers cannot share batch_b."""
+        TeachingAssignment.objects.filter(
+            subject=self.subject, teacher=self.teacher_b, batch__isnull=True,
+        ).delete()
+        titles = {row["assignment_title"] for row in self._get().data}
+        self.assertIn("10-B worksheet", titles)
+        self.assertNotIn("10-A worksheet", titles)
+
+    def test_double_staffing_does_not_duplicate_a_submission(self):
+        """IN de-duplicates; a join would return the row twice."""
+        rows = self._get().data
+        ids = [row["id"] for row in rows]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_limit_is_honoured_and_capped(self):
+        self.assertEqual(len(self._get(qs="?limit=1").data), 1)
+        self.assertLessEqual(len(self._get(qs="?limit=999").data), 25)
+
+    def test_garbage_limit_is_a_400(self):
+        self.assertEqual(self._get(qs="?limit=abc").status_code, 400)
+
+    def test_newest_first(self):
+        rows = self._get().data
+        stamps = [row["submitted_at"] for row in rows]
+        self.assertEqual(stamps, sorted(stamps, reverse=True))
