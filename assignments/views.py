@@ -1,7 +1,11 @@
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from django.db.models import Prefetch, Count, Case, When, Value, CharField, Q, F
+from django.db.models import (
+    Prefetch, Count, Case, When, Value, CharField, Q, F,
+    OuterRef, Subquery, IntegerField,
+)
+from django.db.models.functions import Coalesce
 from django.db import IntegrityError
 from django.http import HttpResponse
 
@@ -672,13 +676,77 @@ class TeacherAllAssignmentsView(generics.ListAPIView):
     permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def get_queryset(self):
+        # ── cohort_size ────────────────────────────────────────────────────
+        # "19 of 28 submitted" needs a denominator. Before this it existed
+        # ONLY on TeacherAssignmentSubmissionsView, which is per-assignment and
+        # un-paginated — so rendering the ratio on a list of N rows meant N
+        # extra round-trips, each loading a full class roster.
+        #
+        # The scope mirrors that view exactly (see its docstring): a
+        # batch-scoped assignment counts only its own batch; batch IS NULL
+        # means course-wide, which is the whole course. Getting this wrong in
+        # the generous direction invents missing submissions for students the
+        # work was never set for.
+        #
+        # Students are deduped on learner_profile, falling back to the account
+        # — the same key the roster builds. unique_together is
+        # (learner_profile, course), but NULL does not participate in a unique
+        # constraint, so one account CAN hold several profile-less enrollments
+        # on a course and would otherwise be counted as several students.
+        def _cohort(batch_scoped):
+            qs = Enrollment.objects.filter(
+                course_id=OuterRef("subject__course_id"),
+                status=Enrollment.STATUS_ACTIVE,
+            )
+            if batch_scoped:
+                qs = qs.filter(batch_id=OuterRef("batch_id"))
+            # Coalesce to 0: with no matching enrollments the subquery yields
+            # no row at all, so cohort_size came back NULL and a client
+            # rendering "N of —" could not tell an empty class from a missing
+            # annotation. On THIS endpoint it is always computed, so 0 is the
+            # honest answer. (The serializer still defaults to None for the
+            # per-subject endpoint, which does not annotate it.)
+            return Coalesce(
+                Subquery(
+                    qs.annotate(roster_key=Coalesce("learner_profile_id", "user_id"))
+                      # group by a value constant across the subquery, so the
+                      # aggregate collapses to the single row .values("c") wants
+                      .values("course_id")
+                      .annotate(c=Count("roster_key", distinct=True))
+                      .values("c")[:1],
+                    output_field=IntegerField(),
+                ),
+                Value(0),
+                output_field=IntegerField(),
+            )
+
         return (
             teacher_scope_filter(Assignment.objects.all(), self.request.user)
             # subject + batch: the serializer reports subject_id/
             # subject_name and batch_id/batch_name off these.
             .select_related("subject__course__board", "chapter", "batch")
             .prefetch_related("files")
-            .annotate(total_submissions=Count("submissions", distinct=True))
+            .annotate(
+                total_submissions=Count("submissions", distinct=True),
+                # distinct=True on BOTH, and never a joined subquery beside
+                # them: a teacher holding course-wide AND batch rows on one
+                # subject (171 of 172 staffed subjects on prod do) multiplies
+                # the join and doubles every count.
+                ungraded_count=Count(
+                    "submissions",
+                    filter=Q(submissions__graded_at__isnull=True),
+                    distinct=True,
+                ),
+                _cohort_course=_cohort(batch_scoped=False),
+                _cohort_batch=_cohort(batch_scoped=True),
+            )
+            .annotate(
+                cohort_size=Case(
+                    When(batch_id__isnull=True, then=F("_cohort_course")),
+                    default=F("_cohort_batch"),
+                    output_field=IntegerField(),
+                )
+            )
             # distinct(): a teacher listed twice on one subject would otherwise
             # duplicate every assignment on it.
             .distinct()

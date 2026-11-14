@@ -634,6 +634,11 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
     chapter_id = serializers.UUIDField(
         source="chapter.id", read_only=True, allow_null=True)
     total_submissions = serializers.IntegerField(read_only=True)
+    # Annotated by TeacherAllAssignmentsView only. The per-subject view
+    # does not annotate them, so default rather than 500 there — and so a
+    # client can tell "no cohort data" (null) from "nobody enrolled" (0).
+    ungraded_count = serializers.IntegerField(read_only=True, default=None)
+    cohort_size = serializers.IntegerField(read_only=True, default=None)
     files = AssignmentFileSerializer(many=True, read_only=True)
     # The teacher's Assignments screen is one flat list across every subject
     # they teach, so a row has to name its subject — for the pill filter and to
@@ -681,6 +686,8 @@ class TeacherAssignmentListSerializer(serializers.ModelSerializer):
             "batch_name",
             "due_date",
             "total_submissions",
+            "ungraded_count",
+            "cohort_size",
             "attachment",   # legacy
             "files",        # new multi-file
             "max_marks",
