@@ -24,7 +24,9 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from enrollments.models import Enrollment
 
 from courses.models import Chapter
-from accounts.permissions import require_teacher_context, IsTeacherContext, _in_teacher_context
+from accounts.permissions import (
+    require_teacher_context, IsTeacherContext, _in_teacher_context, IsEmailVerified,
+)
 from accounts.auth_flow import get_active_profile
 
 from .models import Assignment, AssignmentFile, AssignmentSubmission
@@ -1136,3 +1138,132 @@ class DownloadAllSubmissionsView(APIView):
             f'attachment; filename="{assignment.title}_submissions.zip"'
         )
         return response
+
+
+def _submitted_profile_ids(submissions):
+    """Learner-profile ids behind a list of submissions, falling back to the
+    student's default profile for legacy rows written before
+    AssignmentSubmission.learner_profile existed (it is NULL there).
+
+    Mirrors quizzes/views.py's `_attempted_profile_ids`. Without the fallback
+    an old submission is invisible to submitted/not-submitted counting, and
+    the student gets nagged about work they have already handed in.
+    """
+    ids = set()
+    for s in submissions:
+        if s.learner_profile_id:
+            ids.add(s.learner_profile_id)
+        else:
+            lp = s.student.default_learner_profile()
+            if lp:
+                ids.add(lp.id)
+    return ids
+
+
+class TeacherAssignmentRemindView(APIView):
+    """
+    POST /assignments/teacher/:pk/remind/
+
+    Nudges every learner who can see this assignment and has not submitted it
+    yet, via the standard notification pipeline (notifications/policy.py's
+    "assignment.reminder" entry).
+
+    ── Who gets reminded, and why it is not just "the course" ────────────
+    quizzes/views.py's TeacherQuizRemindView reminds EVERY active enrollee in
+    the course. For a batch-scoped assignment that is wrong twice over: it
+    messages students the assignment was never set for, about a due date that
+    is not theirs — and because due dates are cohort-relative, the nag is
+    actively misleading.
+
+    So the audience here is the exact mirror of the rule the student list
+    endpoint applies (`CourseAssignmentsView`, and
+    `_assert_learner_may_see_assignment` for the single-object case):
+
+      • a course-wide assignment (batch IS NULL) → every active enrollee
+      • a batch-scoped assignment → enrollees in THAT batch, plus enrollees
+        with NO batch at all
+
+    That last clause is easy to miss and is not a rounding error. An unplaced
+    learner — self-enrolled, not yet assigned a batch by an admin — is shown
+    EVERY assignment in the course, deliberately (see CourseAssignmentsView:
+    filtering them to course-wide rows only would hide most of the work from
+    most students). They can see this assignment and are expected to do it, so
+    omitting them from the reminder would nag exactly the wrong half of the
+    class.
+
+    Drafts are refused outright: reminding someone about an unpublished
+    assignment both leaks its existence and asks for work that cannot be
+    submitted.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def post(self, request, assignment_id):
+        require_teacher_context(request)
+
+        assignment = get_object_or_404(
+            Assignment.objects.select_related("subject", "subject__course", "batch"),
+            pk=assignment_id,
+        )
+
+        # Batch-aware, and the same gate every other teacher action on an
+        # assignment uses — a Maths/10-B teacher must not be able to nag
+        # Maths/10-A.
+        _assert_teacher_owns_assignment(request.user, assignment)
+
+        if not assignment.is_published:
+            raise ValidationError(
+                {"detail": "This assignment is still a draft. Publish it before reminding anyone."}
+            )
+
+        enrollments = Enrollment.objects.filter(
+            course=assignment.subject.course,
+            status=Enrollment.STATUS_ACTIVE,
+        ).exclude(learner_profile__isnull=True)
+
+        if assignment.batch_id is not None:
+            enrollments = enrollments.filter(
+                Q(batch_id=assignment.batch_id) | Q(batch__isnull=True)
+            )
+
+        audience_ids = set(enrollments.values_list("learner_profile_id", flat=True))
+
+        submitted_ids = _submitted_profile_ids(
+            list(
+                AssignmentSubmission.objects
+                .filter(assignment=assignment)
+                .select_related("student")
+            )
+        )
+        pending_ids = audience_ids - submitted_ids
+        if not pending_ids:
+            return Response(
+                {"detail": "Everyone has already submitted this assignment.", "count": 0}
+            )
+
+        from accounts.models import LearnerProfile
+        from notifications.services import notify
+
+        profiles = list(
+            LearnerProfile.objects.filter(id__in=pending_ids).select_related("account")
+        )
+        sent = 0
+        for lp in profiles:
+            if not lp.account:
+                continue
+            notify(
+                recipient=lp.account,
+                verb="assignment.reminder",
+                title=f'Reminder: "{assignment.title}" is still pending',
+                body="Your teacher sent a reminder to submit this assignment.",
+                actor=request.user,
+                link_url=f"/assignments/{assignment.id}",
+                learner_profile=lp,
+                # Without this, a multi-child account's reminder about one
+                # sibling's pending assignment lands on every other sibling's
+                # dashboard too — the same profile-isolation gap the quiz
+                # reminder had to close.
+                audience_identity=f"L:{lp.id}",
+            )
+            sent += 1
+
+        return Response({"detail": f"Reminder sent to {sent} student(s).", "count": sent})

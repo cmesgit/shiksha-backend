@@ -1448,3 +1448,143 @@ class TeacherListCohortAnnotationTest(AssignmentScopeFixtureMixin, TestCase):
             learner_profile=self.learner_profile).update(status="CANCELLED")
         rows = self._rows()
         self.assertEqual(rows["10-B worksheet"]["cohort_size"], 0)
+
+
+class TeacherAssignmentRemindTest(AssignmentScopeFixtureMixin, TestCase):
+    """Phase A5 — POST /assignments/teacher/:id/remind/.
+
+    The audience is the point of these tests. quizzes/views.py's reminder
+    nudges every active enrollee in the COURSE, which for a batch-scoped
+    assignment messages students it was never set for about a due date that
+    is not theirs. This endpoint mirrors the student list rule instead, and
+    that rule has a clause that is easy to drop.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.build_world()
+        cls.assignment_b.is_published = True
+        cls.assignment_b.save(update_fields=["is_published"])
+
+        # Staff the teacher course-wide too, so they may act on 10-A and the
+        # course-wide assignment as well — otherwise the gate, not the
+        # audience rule, is what these tests would be measuring.
+        TeachingAssignment.objects.create(
+            batch=None, subject=cls.subject, teacher=cls.teacher_b,
+            is_active=True)
+
+        cls.assignment_all = Assignment.objects.create(
+            chapter=cls.chapter, batch=None, title="course-wide worksheet",
+            due_date=timezone.now() + timedelta(days=7), is_published=True)
+
+        # An UNPLACED learner: enrolled, active, no batch. CourseAssignmentsView
+        # deliberately shows this learner EVERY assignment in the course, so
+        # they can see the 10-B one and are expected to do it.
+        cls.unplaced_account, cls.unplaced_profile = cls._make_learner(
+            "kid_none", None)
+
+    def _remind(self, assignment, user=None):
+        c = _teacher_client(user or self.teacher_b)
+        return c.post(f"/api/assignments/teacher/{assignment.id}/remind/")
+
+    def _notified_profiles(self):
+        """Notification has NO learner_profile column — it carries the profile
+        in `audience_identity` ("L:<uuid>"), which is exactly the field that
+        keeps one sibling's reminder off another sibling's dashboard."""
+        from notifications.models import Notification
+        return {
+            ident.split(":", 1)[1]
+            for ident in Notification.objects.filter(verb="assignment.reminder")
+            .values_list("audience_identity", flat=True)
+            if ident.startswith("L:")
+        }
+
+    def test_batch_scoped_assignment_does_not_nag_another_batch(self):
+        """The whole reason this is not a copy of the quiz endpoint."""
+        r = self._remind(self.assignment_b)
+        self.assertEqual(r.status_code, 200, r.content)
+        notified = self._notified_profiles()
+        self.assertIn(str(self.learner_profile.id), notified)   # in 10-B
+        self.assertNotIn(str(self.other_profile.id), notified)  # in 10-A
+
+    def test_batch_scoped_assignment_still_reaches_unplaced_learners(self):
+        """The clause that is easy to drop. An unplaced learner SEES every
+        assignment in the course, so omitting them nags the wrong half."""
+        self._remind(self.assignment_b)
+        self.assertIn(str(self.unplaced_profile.id), self._notified_profiles())
+
+    def test_course_wide_assignment_reaches_every_batch(self):
+        r = self._remind(self.assignment_all)
+        self.assertEqual(r.status_code, 200, r.content)
+        notified = self._notified_profiles()
+        for p in (self.learner_profile, self.other_profile, self.unplaced_profile):
+            self.assertIn(str(p.id), notified)
+
+    def test_students_who_submitted_are_not_reminded(self):
+        AssignmentSubmission.objects.create(
+            assignment=self.assignment_b, student=self.learner_account,
+            learner_profile=self.learner_profile,
+            submitted_file=SimpleUploadedFile("s.pdf", b"%PDF"))
+        r = self._remind(self.assignment_b)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertNotIn(str(self.learner_profile.id), self._notified_profiles())
+
+    def test_legacy_submission_without_a_profile_still_counts_as_submitted(self):
+        """learner_profile is nullable for pre-backfill rows. Without the
+        default-profile fallback the student is nagged for work already in."""
+        AssignmentSubmission.objects.create(
+            assignment=self.assignment_b, student=self.learner_account,
+            learner_profile=None,
+            submitted_file=SimpleUploadedFile("s.pdf", b"%PDF"))
+        self._remind(self.assignment_b)
+        self.assertNotIn(str(self.learner_profile.id), self._notified_profiles())
+
+    def test_everyone_submitted_sends_nothing(self):
+        for acct, prof in ((self.learner_account, self.learner_profile),
+                           (self.unplaced_account, self.unplaced_profile)):
+            AssignmentSubmission.objects.create(
+                assignment=self.assignment_b, student=acct, learner_profile=prof,
+                submitted_file=SimpleUploadedFile("s.pdf", b"%PDF"))
+        r = self._remind(self.assignment_b)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["count"], 0)
+        self.assertEqual(self._notified_profiles(), set())
+
+    def test_draft_assignment_is_refused(self):
+        """Reminding about an unpublished assignment leaks it and asks for
+        work that cannot be submitted."""
+        draft = Assignment.objects.create(
+            chapter=self.chapter, batch=self.batch_b, title="draft",
+            due_date=timezone.now() + timedelta(days=7), is_published=False)
+        r = self._remind(draft)
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertEqual(self._notified_profiles(), set())
+
+    def test_teacher_of_another_batch_is_refused(self):
+        """A 10-B-only teacher must not be able to nag 10-A."""
+        other = User.objects.create_user(
+            username="teacher_a", email="ta@test.com", password="x",
+            is_verified=True)
+        UserRole.objects.create(
+            user=other, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+        TeachingAssignment.objects.create(
+            batch=self.batch_a, subject=self.subject, teacher=other,
+            is_active=True)
+        self.assignment_b.refresh_from_db()
+        r = self._remind(self.assignment_b, user=other)
+        self.assertEqual(r.status_code, 403, r.content)
+        self.assertEqual(self._notified_profiles(), set())
+
+    def test_reminder_is_scoped_to_one_learner_profile(self):
+        """audience_identity — without it a multi-child account's reminder
+        about one sibling lands on every sibling's dashboard."""
+        from notifications.models import Notification
+        self._remind(self.assignment_b)
+        rows = Notification.objects.filter(verb="assignment.reminder")
+        self.assertTrue(rows.exists())
+        for n in rows:
+            self.assertTrue(
+                n.audience_identity.startswith("L:"),
+                f"reminder not scoped to a profile: {n.audience_identity!r}",
+            )
