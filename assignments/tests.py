@@ -1343,3 +1343,108 @@ class AssignmentAuthorshipTest(AssignmentScopeFixtureMixin, TestCase):
         self.assertEqual(r2.status_code, 200, r2.content)
         self.assertEqual(
             Assignment.objects.get(id=assignment_id).title, "Covered")
+
+
+class TeacherListCohortAnnotationTest(AssignmentScopeFixtureMixin, TestCase):
+    """Phase A3a — `cohort_size` / `ungraded_count` on /assignments/teacher/all/.
+
+    The list row carried `total_submissions` and no denominator, so the
+    "19 of 28 submitted" ratio needed one extra per-assignment roster call per
+    row (TeacherAssignmentSubmissionsView). These annotations put the
+    denominator on the row; the tests below exercise the ENDPOINT, not the
+    queryset, because an annotation that never reaches the serializer is the
+    failure mode that matters.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.build_world()
+
+        # Staff the teacher course-wide as well as on 10-B. This is the prod
+        # shape — 171 of 172 staffed subjects carry BOTH rows — and it is what
+        # makes the counts double if a join loses its distinct=True.
+        TeachingAssignment.objects.create(
+            batch=None, subject=cls.subject, teacher=cls.teacher_b,
+            is_active=True)
+
+        # A course-wide assignment (batch IS NULL) alongside the batch ones.
+        cls.assignment_all = Assignment.objects.create(
+            chapter=cls.chapter, batch=None, title="course-wide worksheet",
+            due_date=timezone.now() + timedelta(days=7))
+
+        # 10-B's learner submits; one graded, one not, on different rows.
+        cls.sub_graded = AssignmentSubmission.objects.create(
+            assignment=cls.assignment_b, student=cls.learner_account,
+            learner_profile=cls.learner_profile,
+            submitted_file=SimpleUploadedFile("g.pdf", b"%PDF"),
+            graded_at=timezone.now())
+        cls.sub_ungraded = AssignmentSubmission.objects.create(
+            assignment=cls.assignment_all, student=cls.learner_account,
+            learner_profile=cls.learner_profile,
+            submitted_file=SimpleUploadedFile("u.pdf", b"%PDF"))
+
+    def _rows(self):
+        c = _teacher_client(self.teacher_b)
+        r = c.get("/api/assignments/teacher/all/")
+        self.assertEqual(r.status_code, 200, r.content)
+        return {row["title"]: row for row in r.data}
+
+    def test_batch_scoped_assignment_counts_only_its_own_batch(self):
+        """10-B has one learner. The course has two — counting the course here
+        would invent a missing submission for a student it was never set for."""
+        rows = self._rows()
+        self.assertEqual(rows["10-B worksheet"]["cohort_size"], 1)
+
+    def test_course_wide_assignment_counts_the_whole_course(self):
+        rows = self._rows()
+        self.assertEqual(rows["course-wide worksheet"]["cohort_size"], 2)
+
+    def test_cohort_matches_the_roster_endpoint(self):
+        """The denominator must agree with the screen it replaces a call to."""
+        rows = self._rows()
+        c = _teacher_client(self.teacher_b)
+        r = c.get(f"/api/assignments/teacher/{self.assignment_b.id}/submissions/")
+        self.assertEqual(r.status_code, 200, r.content)
+        roster = r.data["submissions"] if isinstance(r.data, dict) else r.data
+        self.assertEqual(rows["10-B worksheet"]["cohort_size"], len(roster))
+
+    def test_ungraded_count_excludes_graded_submissions(self):
+        rows = self._rows()
+        self.assertEqual(rows["10-B worksheet"]["total_submissions"], 1)
+        self.assertEqual(rows["10-B worksheet"]["ungraded_count"], 0)
+        self.assertEqual(rows["course-wide worksheet"]["total_submissions"], 1)
+        self.assertEqual(rows["course-wide worksheet"]["ungraded_count"], 1)
+
+    def test_double_staffing_does_not_double_any_count(self):
+        """The teacher holds a course-wide AND a 10-B TeachingAssignment. Both
+        join, so without distinct=True every count doubles and each assignment
+        appears twice."""
+        c = _teacher_client(self.teacher_b)
+        r = c.get("/api/assignments/teacher/all/")
+        titles = [row["title"] for row in r.data]
+        self.assertEqual(len(titles), len(set(titles)), f"duplicate rows: {titles}")
+        rows = {row["title"]: row for row in r.data}
+        self.assertEqual(rows["course-wide worksheet"]["total_submissions"], 1)
+        self.assertEqual(rows["course-wide worksheet"]["cohort_size"], 2)
+
+    def test_profileless_duplicate_enrollments_count_as_one_student(self):
+        """unique_together is (learner_profile, course) and NULL does not
+        participate in a unique constraint, so one account can hold several
+        profile-less enrollments on a course. They are one student."""
+        account = User.objects.create_user(
+            username="noprof", email="noprof@test.com", password="x",
+            is_verified=True)
+        for _ in range(2):
+            Enrollment.objects.create(
+                user=account, learner_profile=None, course=self.course,
+                batch=self.batch_b, status=Enrollment.STATUS_ACTIVE)
+
+        rows = self._rows()
+        # 10-B had one learner; this account adds exactly one more, not two.
+        self.assertEqual(rows["10-B worksheet"]["cohort_size"], 2)
+
+    def test_inactive_enrollment_is_not_in_the_cohort(self):
+        Enrollment.objects.filter(
+            learner_profile=self.learner_profile).update(status="CANCELLED")
+        rows = self._rows()
+        self.assertEqual(rows["10-B worksheet"]["cohort_size"], 0)
