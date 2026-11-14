@@ -38,7 +38,7 @@ Per-slice _guard() hardening from the previous version is preserved.
 import logging
 from datetime import timedelta
 
-from django.db.models import Q, Prefetch, Count
+from django.db.models import Q, Prefetch, Count, Exists, OuterRef
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -419,10 +419,49 @@ def _ungraded_submissions_q(user):
     unreachable for the life of the account — so the card stopped meaning
     anything and got ignored, which is the failure mode a work queue can least
     afford.
+
+    ── Why this is batch-aware, and why it uses Exists ──────────────────
+    This filter used to be SUBJECT-level: any active TeachingAssignment on the
+    assignment's subject qualified, whatever batch either was in. But the
+    per-object gate (_assert_teacher_owns_assignment, assignments/views.py:51)
+    is batch-aware, so the queue listed work the teacher could not act on — a
+    teacher staffed only on Maths/10-B saw 10-A's submissions, the "N pending"
+    badge counted them, and every Grade button on those rows 403'd.
+
+    The gate has TWO branches and this mirrors both, because they are not the
+    same rule:
+
+      • assignment.batch IS NULL -> teaches_subject(): ANY active row on the
+        subject qualifies, including a batch-scoped one.
+      • assignment.batch = B     -> is_teacher_of(): a row for THAT batch, or
+        a course-wide (batch IS NULL) row.
+
+    Note the asymmetry — a 10-B-only teacher MAY act on a course-wide
+    assignment but NOT on a 10-A one. Collapsing the two into one clause gets
+    one of those wrong in either direction.
+
+    Exists(), not a join: two chained filters on `teaching_assignments__…` are
+    two separate joins (CLAUDE.md rule 3), and a single join multiplies rows
+    because 171 of 172 staffed subjects on prod carry BOTH a course-wide and a
+    batch-scoped assignment. A subquery cannot multiply, so the counts are
+    right without leaning on .distinct() to paper over it.
     """
+    staffed = TeachingAssignment.objects.filter(
+        teacher=user,
+        is_active=True,
+        subject_id=OuterRef("assignment__subject_id"),
+    )
     return AssignmentSubmission.objects.filter(
-        assignment__subject__teaching_assignments__teacher=user,
-        assignment__subject__teaching_assignments__is_active=True,
+        # Course-wide assignment: subject-level staffing is enough.
+        (Q(assignment__batch__isnull=True) & Exists(staffed))
+        # Batch-scoped: that exact batch, or a course-wide staffing row.
+        | (
+            Q(assignment__batch__isnull=False)
+            & Exists(staffed.filter(
+                Q(batch_id=OuterRef("assignment__batch_id"))
+                | Q(batch__isnull=True)
+            ))
+        ),
         graded_at__isnull=True,
     )
 
