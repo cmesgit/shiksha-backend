@@ -60,7 +60,7 @@ from enrollments.services import legacy_profile_q
 from config.timezone_utils import local_day_start
 from livestream.models import LiveSession
 from quizzes.models import Quiz, QuizAttempt
-from sessions_app.models import PrivateSession
+from sessions_app.models import PrivateSession, GroupSession
 
 from .serializers import (
     DashboardSessionSerializer,
@@ -68,6 +68,7 @@ from .serializers import (
     DashboardQuizSerializer,
     DashboardActivitySerializer,
     DashboardPrivateSessionSerializer,
+    DashboardGroupSessionSerializer,
     DashboardGradingItemSerializer,
 )
 
@@ -390,6 +391,33 @@ def _teacher_quizzes(user):
     )
 
 
+def _teacher_group_sessions(user, now):
+    """Group sessions this teacher is part of today or later.
+
+    /dashboard/ returned no group_sessions key at all, so the Today timeline
+    silently omitted them — a teacher hosting a group session at 4pm saw an
+    empty afternoon. Live sessions and private sessions were both there; this
+    was the only one of the three missing.
+
+    A teacher reaches a group session EITHER as its host or as the invited
+    teacher, so both are matched. One Q, not two chained .filter()s: chaining
+    across a multi-valued relation would be two joins (CLAUDE.md rule 3) —
+    these are both plain FKs so it would not multiply here, but the single-Q
+    habit is what keeps that true when someone adds a third clause.
+    """
+    # localtime: see _learner_private_sessions above.
+    return list(
+        GroupSession.objects.filter(
+            Q(host=user) | Q(invited_teacher=user),
+            scheduled_date__gte=timezone.localtime(now).date(),
+            status__in=["scheduled", "live"],
+        )
+        .select_related("host", "invited_teacher")
+        .order_by("scheduled_date", "scheduled_time")
+        .distinct()
+    )
+
+
 def _teacher_private_sessions(user, now):
     # localtime: see _learner_private_sessions above.
     return list(
@@ -609,6 +637,9 @@ class DashboardView(APIView):
             private_sessions = _guard(
                 "teacher.private_sessions",
                 lambda: _teacher_private_sessions(user, now), [])
+            group_sessions = _guard(
+                "teacher.group_sessions",
+                lambda: _teacher_group_sessions(user, now), [])
             grading_queue = _guard(
                 "teacher.grading_queue",
                 lambda: _teacher_grading_queue(user), [])
@@ -695,6 +726,9 @@ class DashboardView(APIView):
             private_sessions = _guard(
                 "learner.private_sessions",
                 lambda: _learner_private_sessions(user, now), [])
+            # Learner dashboards have their own group-session surface;
+            # this key exists so the payload shape is stable either way.
+            group_sessions = []
             grading_queue = []  # learner dashboards have no grading queue
             grading_count = 0   # ditto
             notifications = _guard(
@@ -744,6 +778,10 @@ class DashboardView(APIView):
                                        lambda: DashboardQuizSerializer(quizzes, many=True).data, []),
             "private_sessions": _guard("ser.private_sessions",
                                        lambda: DashboardPrivateSessionSerializer(private_sessions, many=True).data, []),
+            "group_sessions":   _guard("ser.group_sessions",
+                                       lambda: DashboardGroupSessionSerializer(
+                                           group_sessions, many=True,
+                                           context={"user": user}).data, []),
             "grading_queue":    _guard("ser.grading_queue",
                                        lambda: DashboardGradingItemSerializer(grading_queue, many=True).data, []),
             "grading_count":    grading_count,
