@@ -955,6 +955,11 @@ class MeView(APIView):
                 # Verified/Unverified badges. Signed-in surfaces (the Verify
                 # page, "Needs my review") read it from here.
                 "explore_verification_enabled": gs.explore_verification_enabled,
+                # Gates the redesigned dashboard homes in BOTH dashboard apps.
+                # Unlike admin_v2_enabled this adds routes rather than
+                # regrouping them, so OFF means /v2 and /teacher/v2 are simply
+                # not reachable.
+                "dashboards_v2_enabled": gs.dashboards_v2_enabled,
             },
         })
 

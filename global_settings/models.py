@@ -365,6 +365,30 @@ class GlobalSettings(models.Model):
         ),
     )
 
+    # ── Dashboards v2 (design_handoff_dashboards_v2) ────────────────────
+    # Gates the redesigned student and teacher dashboard homes while they are
+    # built out. Like content_studio_enabled and admin_v2_enabled, and unlike
+    # quiz_v2_enabled, this is a REAL gate: with it OFF the v2 routes are not
+    # reachable at all and the existing dashboards render unchanged.
+    #
+    # ⚠ Unlike admin_v2_enabled this does NOT gate navigation only — the v2
+    # screens live at their own routes (/v2 and /teacher/v2) ALONGSIDE the
+    # originals rather than replacing them. So with the flag OFF those two
+    # paths 404 into the dashboard redirect, and with it ON they render. No
+    # existing path changes meaning either way.
+    #
+    # ⚠ Both dashboard apps refetch /accounts/me/ on mount, so unlike the
+    # Admin console (CLAUDE.md rule 8) flipping this does NOT require a
+    # re-login — but it does require a reload of an already-open tab.
+    dashboards_v2_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Master switch for the redesigned student and teacher dashboard "
+            "homes. While OFF the v2 routes are unreachable and the existing "
+            "dashboards render unchanged. Adds routes; changes none."
+        ),
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

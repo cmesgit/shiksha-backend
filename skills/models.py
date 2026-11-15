@@ -147,6 +147,20 @@ class ExpertProfile(models.Model):
     rating = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
     sessions_count = models.PositiveIntegerField(default=0)
 
+    # Whether this expert is currently taking NEW booking requests.
+    #
+    # The dashboard has always shown a hardcoded "Accepting bookings" badge —
+    # a static <span>, identical for every expert, true or not. This is the
+    # field behind it, and it is enforced (SessionRequestView refuses when it
+    # is False) rather than being a label that does nothing, which is the bug
+    # it replaces.
+    #
+    # Distinct from `is_listed` and `is_suspended`: a paused expert stays
+    # discoverable and keeps their existing confirmed sessions — they are
+    # simply not taking anything NEW. Defaults True so every existing row
+    # keeps today's behaviour.
+    accepting_bookings = models.BooleanField(default=True)
+
     is_listed = models.BooleanField(
         default=False,
         help_text="Approved expert appears in the directory. FREE — never gated "

@@ -126,6 +126,10 @@ class ExpertCardSerializer(serializers.ModelSerializer):
         model = ExpertProfile
         fields = [
             "id", "name", "title", "skills", "cat",
+            # Whether this expert is taking NEW requests. Public, because the
+            # profile page has to be able to say so BEFORE someone fills in a
+            # booking form the server will refuse.
+            "accepting_bookings",
             "rating", "sessions", "rate", "img", "bio",
             "badges", "availability", "mastery_target",
             "teacher_profile_id",

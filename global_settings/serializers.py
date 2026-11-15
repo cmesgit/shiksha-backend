@@ -88,6 +88,7 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
             "counselling_booking_requires_approval",
             "admission_abroad_enabled",
             "explore_verification_enabled",
+            "dashboards_v2_enabled",
             "updated_at",
         ]
         read_only_fields = ["updated_at"]

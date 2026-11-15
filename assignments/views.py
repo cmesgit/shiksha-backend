@@ -1,7 +1,11 @@
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from django.db.models import Prefetch, Count, Case, When, Value, CharField, Q, F
+from django.db.models import (
+    Prefetch, Count, Case, When, Value, CharField, Q, F,
+    OuterRef, Subquery, IntegerField,
+)
+from django.db.models.functions import Coalesce
 from django.db import IntegrityError
 from django.http import HttpResponse
 
@@ -20,7 +24,9 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from enrollments.models import Enrollment
 
 from courses.models import Chapter
-from accounts.permissions import require_teacher_context, IsTeacherContext, _in_teacher_context
+from accounts.permissions import (
+    require_teacher_context, IsTeacherContext, _in_teacher_context, IsEmailVerified,
+)
 from accounts.auth_flow import get_active_profile
 
 from .models import Assignment, AssignmentFile, AssignmentSubmission
@@ -672,13 +678,77 @@ class TeacherAllAssignmentsView(generics.ListAPIView):
     permission_classes = [IsAuthenticated, IsTeacherContext]
 
     def get_queryset(self):
+        # ── cohort_size ────────────────────────────────────────────────────
+        # "19 of 28 submitted" needs a denominator. Before this it existed
+        # ONLY on TeacherAssignmentSubmissionsView, which is per-assignment and
+        # un-paginated — so rendering the ratio on a list of N rows meant N
+        # extra round-trips, each loading a full class roster.
+        #
+        # The scope mirrors that view exactly (see its docstring): a
+        # batch-scoped assignment counts only its own batch; batch IS NULL
+        # means course-wide, which is the whole course. Getting this wrong in
+        # the generous direction invents missing submissions for students the
+        # work was never set for.
+        #
+        # Students are deduped on learner_profile, falling back to the account
+        # — the same key the roster builds. unique_together is
+        # (learner_profile, course), but NULL does not participate in a unique
+        # constraint, so one account CAN hold several profile-less enrollments
+        # on a course and would otherwise be counted as several students.
+        def _cohort(batch_scoped):
+            qs = Enrollment.objects.filter(
+                course_id=OuterRef("subject__course_id"),
+                status=Enrollment.STATUS_ACTIVE,
+            )
+            if batch_scoped:
+                qs = qs.filter(batch_id=OuterRef("batch_id"))
+            # Coalesce to 0: with no matching enrollments the subquery yields
+            # no row at all, so cohort_size came back NULL and a client
+            # rendering "N of —" could not tell an empty class from a missing
+            # annotation. On THIS endpoint it is always computed, so 0 is the
+            # honest answer. (The serializer still defaults to None for the
+            # per-subject endpoint, which does not annotate it.)
+            return Coalesce(
+                Subquery(
+                    qs.annotate(roster_key=Coalesce("learner_profile_id", "user_id"))
+                      # group by a value constant across the subquery, so the
+                      # aggregate collapses to the single row .values("c") wants
+                      .values("course_id")
+                      .annotate(c=Count("roster_key", distinct=True))
+                      .values("c")[:1],
+                    output_field=IntegerField(),
+                ),
+                Value(0),
+                output_field=IntegerField(),
+            )
+
         return (
             teacher_scope_filter(Assignment.objects.all(), self.request.user)
             # subject + batch: the serializer reports subject_id/
             # subject_name and batch_id/batch_name off these.
             .select_related("subject__course__board", "chapter", "batch")
             .prefetch_related("files")
-            .annotate(total_submissions=Count("submissions", distinct=True))
+            .annotate(
+                total_submissions=Count("submissions", distinct=True),
+                # distinct=True on BOTH, and never a joined subquery beside
+                # them: a teacher holding course-wide AND batch rows on one
+                # subject (171 of 172 staffed subjects on prod do) multiplies
+                # the join and doubles every count.
+                ungraded_count=Count(
+                    "submissions",
+                    filter=Q(submissions__graded_at__isnull=True),
+                    distinct=True,
+                ),
+                _cohort_course=_cohort(batch_scoped=False),
+                _cohort_batch=_cohort(batch_scoped=True),
+            )
+            .annotate(
+                cohort_size=Case(
+                    When(batch_id__isnull=True, then=F("_cohort_course")),
+                    default=F("_cohort_batch"),
+                    output_field=IntegerField(),
+                )
+            )
             # distinct(): a teacher listed twice on one subject would otherwise
             # duplicate every assignment on it.
             .distinct()
@@ -1068,3 +1138,191 @@ class DownloadAllSubmissionsView(APIView):
             f'attachment; filename="{assignment.title}_submissions.zip"'
         )
         return response
+
+
+def _submitted_profile_ids(submissions):
+    """Learner-profile ids behind a list of submissions, falling back to the
+    student's default profile for legacy rows written before
+    AssignmentSubmission.learner_profile existed (it is NULL there).
+
+    Mirrors quizzes/views.py's `_attempted_profile_ids`. Without the fallback
+    an old submission is invisible to submitted/not-submitted counting, and
+    the student gets nagged about work they have already handed in.
+    """
+    ids = set()
+    for s in submissions:
+        if s.learner_profile_id:
+            ids.add(s.learner_profile_id)
+        else:
+            lp = s.student.default_learner_profile()
+            if lp:
+                ids.add(lp.id)
+    return ids
+
+
+class TeacherAssignmentRemindView(APIView):
+    """
+    POST /assignments/teacher/:pk/remind/
+
+    Nudges every learner who can see this assignment and has not submitted it
+    yet, via the standard notification pipeline (notifications/policy.py's
+    "assignment.reminder" entry).
+
+    ── Who gets reminded, and why it is not just "the course" ────────────
+    quizzes/views.py's TeacherQuizRemindView reminds EVERY active enrollee in
+    the course. For a batch-scoped assignment that is wrong twice over: it
+    messages students the assignment was never set for, about a due date that
+    is not theirs — and because due dates are cohort-relative, the nag is
+    actively misleading.
+
+    So the audience here is the exact mirror of the rule the student list
+    endpoint applies (`CourseAssignmentsView`, and
+    `_assert_learner_may_see_assignment` for the single-object case):
+
+      • a course-wide assignment (batch IS NULL) → every active enrollee
+      • a batch-scoped assignment → enrollees in THAT batch, plus enrollees
+        with NO batch at all
+
+    That last clause is easy to miss and is not a rounding error. An unplaced
+    learner — self-enrolled, not yet assigned a batch by an admin — is shown
+    EVERY assignment in the course, deliberately (see CourseAssignmentsView:
+    filtering them to course-wide rows only would hide most of the work from
+    most students). They can see this assignment and are expected to do it, so
+    omitting them from the reminder would nag exactly the wrong half of the
+    class.
+
+    Drafts are refused outright: reminding someone about an unpublished
+    assignment both leaks its existence and asks for work that cannot be
+    submitted.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def post(self, request, assignment_id):
+        require_teacher_context(request)
+
+        assignment = get_object_or_404(
+            Assignment.objects.select_related("subject", "subject__course", "batch"),
+            pk=assignment_id,
+        )
+
+        # Batch-aware, and the same gate every other teacher action on an
+        # assignment uses — a Maths/10-B teacher must not be able to nag
+        # Maths/10-A.
+        _assert_teacher_owns_assignment(request.user, assignment)
+
+        if not assignment.is_published:
+            raise ValidationError(
+                {"detail": "This assignment is still a draft. Publish it before reminding anyone."}
+            )
+
+        enrollments = Enrollment.objects.filter(
+            course=assignment.subject.course,
+            status=Enrollment.STATUS_ACTIVE,
+        ).exclude(learner_profile__isnull=True)
+
+        if assignment.batch_id is not None:
+            enrollments = enrollments.filter(
+                Q(batch_id=assignment.batch_id) | Q(batch__isnull=True)
+            )
+
+        audience_ids = set(enrollments.values_list("learner_profile_id", flat=True))
+
+        submitted_ids = _submitted_profile_ids(
+            list(
+                AssignmentSubmission.objects
+                .filter(assignment=assignment)
+                .select_related("student")
+            )
+        )
+        pending_ids = audience_ids - submitted_ids
+        if not pending_ids:
+            return Response(
+                {"detail": "Everyone has already submitted this assignment.", "count": 0}
+            )
+
+        from accounts.models import LearnerProfile
+        from notifications.services import notify
+
+        profiles = list(
+            LearnerProfile.objects.filter(id__in=pending_ids).select_related("account")
+        )
+        sent = 0
+        for lp in profiles:
+            if not lp.account:
+                continue
+            notify(
+                recipient=lp.account,
+                verb="assignment.reminder",
+                title=f'Reminder: "{assignment.title}" is still pending',
+                body="Your teacher sent a reminder to submit this assignment.",
+                actor=request.user,
+                link_url=f"/assignments/{assignment.id}",
+                learner_profile=lp,
+                # Without this, a multi-child account's reminder about one
+                # sibling's pending assignment lands on every other sibling's
+                # dashboard too — the same profile-isolation gap the quiz
+                # reminder had to close.
+                audience_identity=f"L:{lp.id}",
+            )
+            sent += 1
+
+        return Response({"detail": f"Reminder sent to {sent} student(s).", "count": sent})
+
+
+class TeacherRecentSubmissionsView(APIView):
+    """
+    GET /assignments/teacher/recent-submissions/?limit=5
+
+    The most recent UNGRADED submissions across every assignment this teacher
+    may act on — the "Latest submissions" rail card on the Assignments screen.
+
+    Nothing answered this before. The per-assignment roster
+    (TeacherAssignmentSubmissionsView) would have meant one request per row
+    just to fill a side card, and the dashboard's grading queue is the same
+    data behind a much heavier endpoint.
+
+    Scope comes from teacher_scope_filter, the queryset twin of
+    _assert_teacher_owns_assignment, so this list and the Grade button it
+    links to cannot disagree. `assignment__in=<subquery>` rather than a join:
+    IN de-duplicates, so a submission cannot appear twice via the course-wide
+    + batch-scoped staffing pair that 171 of 172 prod subjects carry.
+    """
+    permission_classes = [IsAuthenticated, IsEmailVerified]
+
+    def get(self, request):
+        require_teacher_context(request)
+
+        try:
+            limit = min(max(int(request.query_params.get("limit", 5)), 1), 25)
+        except (TypeError, ValueError):
+            raise ValidationError({"limit": "Must be a whole number."})
+
+        rows = (
+            AssignmentSubmission.objects
+            .filter(
+                assignment__in=teacher_scope_filter(Assignment.objects.all(), request.user),
+                graded_at__isnull=True,
+            )
+            .select_related("assignment", "assignment__batch", "student", "learner_profile")
+            .order_by("-submitted_at")[:limit]
+        )
+
+        def who(s):
+            # learner_profile is the identity that submitted; the account is
+            # the fallback for legacy rows written before the profile split.
+            if s.learner_profile_id and s.learner_profile.display_name:
+                return s.learner_profile.display_name
+            return getattr(s.student, "email", "") or "Unknown"
+
+        return Response([
+            {
+                "id": str(s.id),
+                "assignment_id": str(s.assignment_id),
+                "assignment_title": s.assignment.title,
+                "student_name": who(s),
+                "batch_name": s.assignment.batch.name if s.assignment.batch_id else None,
+                "submitted_at": s.submitted_at,
+                "subject_id": str(s.assignment.subject_id),
+            }
+            for s in rows
+        ])

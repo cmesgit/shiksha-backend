@@ -857,3 +857,77 @@ class RecordingNotesView(APIView):
             defaults=serializer.validated_data,
         )
         return Response(RecordingNoteSerializer(note).data)
+
+
+class StudentAllRecordingsView(APIView):
+    """Every recording the ACTIVE PROFILE may watch, newest first.
+
+    The learner twin of TeacherAllRecordingsView. Before this existed the only
+    student-facing list was SubjectRecordingsView, so any screen wanting "my
+    recent recordings" had to fan out one request per subject and flatten
+    client-side — which SubjectsRecordings.jsx still does for its own grid.
+
+    ── The rules are COPIED from SubjectRecordingsView, not re-derived ──────
+    They must not drift, because a list that shows a row the per-id detail
+    endpoint then 403s is exactly the bug _authorize_subject_recordings exists
+    to prevent:
+
+      • `is_published=True` — unpublished rows are the teacher's alone.
+        Note SessionRecording.is_published defaults to TRUE, so this filter is
+        the only thing standing between a half-finished upload and a student.
+      • course-wide (batch IS NULL) rows PLUS the learner's own batch.
+      • entitlement is ACTIVE ENROLLMENT on the ACTIVE PROFILE — not the
+        account, and not a subscription.
+
+    The batch is resolved per COURSE, because one profile can sit in different
+    batches in different courses. Doing it once globally would leak another
+    course's batch-scoped recordings.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.db.models import Q
+        from accounts.auth_flow import get_active_profile
+        from enrollments.models import Enrollment
+        from enrollments.services import active_batch_id
+
+        learner = get_active_profile(request)
+        if learner is None:
+            return Response([])
+
+        enrollments = Enrollment.objects.filter(
+            learner_profile=learner, status=Enrollment.STATUS_ACTIVE,
+        ).values_list("course_id", flat=True)
+        course_ids = list(enrollments)
+        if not course_ids:
+            return Response([])
+
+        # One OR-group per course: (this course) AND (course-wide OR my batch
+        # in THIS course). Collapsing these into a single batch filter across
+        # every course would admit another course's batch rows.
+        scope = Q()
+        for course_id in course_ids:
+            batch_id = active_batch_id(
+                learner_profile=learner, course_id=course_id,
+            )
+            scope |= (
+                Q(subject__course_id=course_id)
+                & (Q(batch__isnull=True) | Q(batch_id=batch_id))
+            )
+
+        recordings = (
+            SessionRecording.objects
+            .filter(scope, is_published=True)
+            .select_related("subject", "subject__course", "subject__course__board")
+            .order_by("-session_date", "-created_at")
+        )
+
+        limit = request.query_params.get("limit")
+        if limit:
+            try:
+                recordings = recordings[: max(0, min(int(limit), 50))]
+            except (TypeError, ValueError):
+                raise DRFValidationError({"limit": "Must be a whole number."})
+
+        return Response(SessionRecordingSerializer(recordings, many=True).data)

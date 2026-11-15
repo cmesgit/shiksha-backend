@@ -14,7 +14,7 @@ from assignments.models import Assignment
 from rest_framework import serializers
 from courses.board_display import board_name_for, board_name_via
 from livestream.models import LiveSession
-from sessions_app.models import PrivateSession
+from sessions_app.models import PrivateSession, GroupSession
 from django.utils import timezone
 
 
@@ -482,3 +482,38 @@ class DashboardGradingItemSerializer(serializers.Serializer):
             return str(obj.assignment_id)
         except Exception:
             return None
+
+
+class DashboardGroupSessionSerializer(serializers.ModelSerializer):
+    """Group sessions for the teacher dashboard's Today timeline.
+
+    Deliberately the same field SHAPE as DashboardPrivateSessionSerializer —
+    `date`/`time` rather than the model's scheduled_* names — so the timeline
+    can merge the three session kinds without special-casing one of them.
+
+    `role` is the one extra: a teacher can reach a group session as its HOST
+    or as an invited teacher, and those are different jobs on the day.
+    """
+    host  = serializers.SerializerMethodField()
+    role  = serializers.SerializerMethodField()
+    date  = serializers.DateField(source="scheduled_date")
+    time  = serializers.TimeField(source="scheduled_time")
+
+    class Meta:
+        model  = GroupSession
+        fields = [
+            "id", "topic", "subject_name", "course_title", "host", "role",
+            "date", "time", "duration_minutes", "status", "session_type",
+        ]
+
+    def get_host(self, obj):
+        try:
+            return obj.host.email if obj.host_id else ""
+        except Exception:
+            return ""
+
+    def get_role(self, obj):
+        user = self.context.get("user")
+        if user is not None and obj.host_id == getattr(user, "id", None):
+            return "host"
+        return "invited_teacher"

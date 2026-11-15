@@ -45,6 +45,13 @@ class MeViewFeatureFlagsTest(TestCase):
         self.assertIn("content_studio_enabled", flags)
         self.assertTrue(flags["content_studio_enabled"])
 
+        # dashboards_v2_enabled is a REAL gate and ships OFF: with it false
+        # the v2 routes must not be reachable at all. Asserting the DEFAULT
+        # here (rather than only the flipped case below) is the point — a
+        # gate that silently defaults open protects nothing.
+        self.assertIn("dashboards_v2_enabled", flags)
+        self.assertFalse(flags["dashboards_v2_enabled"])
+
     def test_feature_flags_reflect_globalsettings_when_flipped(self):
         from global_settings.models import GlobalSettings
 
@@ -52,9 +59,10 @@ class MeViewFeatureFlagsTest(TestCase):
         gs.quiz_v2_enabled = True
         gs.ai_question_drafting_enabled = True
         gs.content_studio_enabled = True
+        gs.dashboards_v2_enabled = True
         gs.save(update_fields=[
             "quiz_v2_enabled", "ai_question_drafting_enabled",
-            "content_studio_enabled",
+            "content_studio_enabled", "dashboards_v2_enabled",
         ])
 
         res = self.client_.get(self.URL)
@@ -62,3 +70,4 @@ class MeViewFeatureFlagsTest(TestCase):
         self.assertTrue(flags["quiz_v2_enabled"])
         self.assertTrue(flags["ai_question_drafting_enabled"])
         self.assertTrue(flags["content_studio_enabled"])
+        self.assertTrue(flags["dashboards_v2_enabled"])

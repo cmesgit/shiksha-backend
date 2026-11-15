@@ -22,9 +22,15 @@ from rest_framework.test import APIClient
 
 from accounts.models import User, Role, UserRole, LearnerProfile
 from assignments.models import Assignment, AssignmentSubmission
-from courses.models import Course, Subject, Chapter, Batch
+from courses.models import Course, Subject, Chapter, Batch, TeachingAssignment
 from enrollments.models import Enrollment, Subscription
 from quizzes.models import Quiz
+from django.core.files.uploadedfile import SimpleUploadedFile
+from dashboard.views import (
+    _teacher_grading_queue, _teacher_grading_count, _teacher_group_sessions,
+)
+from dashboard.serializers import DashboardGroupSessionSerializer
+from sessions_app.models import GroupSession
 
 
 class LearnerDashboardScopingTest(TestCase):
@@ -322,3 +328,193 @@ class SubmissionNotifiesTheRightTeachersTest(TestCase):
         self.assertTrue(
             rows.first().link_url.endswith(f"/assignments/{self.assignment.id}/submissions")
         )
+
+
+class GradingQueueBatchScopeTest(TestCase):
+    """The grading queue must list only work the teacher can actually grade.
+
+    _ungraded_submissions_q was SUBJECT-level while the per-object gate
+    (_assert_teacher_owns_assignment) is batch-aware, so a teacher staffed on
+    one batch saw another batch's submissions, the "N pending" badge counted
+    them, and every Grade button on those rows 403'd.
+
+    These tests assert the queue agrees with the GATE, not with some number —
+    a queue that disagrees with the thing it links to is the actual defect.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        Role.objects.get_or_create(name="STUDENT")
+
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Maths")
+        cls.chapter = Chapter.objects.create(
+            subject=cls.subject, title="Algebra", order=0)
+        cls.batch_a = Batch.objects.create(course=cls.course, name="10-A", code="A")
+        cls.batch_b = Batch.objects.create(course=cls.course, name="10-B", code="B")
+
+        # Staffed on 10-B ONLY.
+        cls.teacher_b = User.objects.create_user(
+            username="tb", email="tb@t.com", password="x", is_verified=True)
+        UserRole.objects.create(
+            user=cls.teacher_b, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+        TeachingAssignment.objects.create(
+            batch=cls.batch_b, subject=cls.subject, teacher=cls.teacher_b,
+            is_active=True)
+
+        due = timezone.now() + timedelta(days=3)
+        cls.a_10a = Assignment.objects.create(
+            chapter=cls.chapter, batch=cls.batch_a, title="10-A work",
+            due_date=due, is_published=True)
+        cls.a_10b = Assignment.objects.create(
+            chapter=cls.chapter, batch=cls.batch_b, title="10-B work",
+            due_date=due, is_published=True)
+        cls.a_wide = Assignment.objects.create(
+            chapter=cls.chapter, batch=None, title="course-wide work",
+            due_date=due, is_published=True)
+
+        for a in (cls.a_10a, cls.a_10b, cls.a_wide):
+            acct = User.objects.create_user(
+                username=f"kid-{a.title}", email=f"{a.id}@t.com",
+                password="x", is_verified=True)
+            prof = LearnerProfile.objects.create(
+                account=acct, display_name="kid", is_default=True)
+            AssignmentSubmission.objects.create(
+                assignment=a, student=acct, learner_profile=prof,
+                submitted_file=SimpleUploadedFile("s.pdf", b"%PDF"))
+
+    def _titles(self):
+        return {s.assignment.title for s in _teacher_grading_queue(self.teacher_b)}
+
+    def test_another_batchs_submission_is_not_queued(self):
+        """The bug: a 10-B teacher saw 10-A's work and got a 403 on Grade."""
+        self.assertNotIn("10-A work", self._titles())
+
+    def test_own_batch_is_queued(self):
+        self.assertIn("10-B work", self._titles())
+
+    def test_course_wide_assignment_is_queued_for_a_batch_only_teacher(self):
+        """The asymmetry. A course-wide assignment gates on teaches_subject(),
+        which ANY active row satisfies — so a 10-B-only teacher MAY grade it.
+        Collapsing the two gate branches into one would wrongly drop this."""
+        self.assertIn("course-wide work", self._titles())
+
+    def test_count_matches_the_queue(self):
+        self.assertEqual(_teacher_grading_count(self.teacher_b), len(self._titles()))
+
+    def test_count_is_not_inflated_by_double_staffing(self):
+        """171 of 172 staffed subjects on prod carry BOTH a course-wide and a
+        batch-scoped row. A join would multiply; Exists cannot."""
+        TeachingAssignment.objects.create(
+            batch=None, subject=self.subject, teacher=self.teacher_b,
+            is_active=True)
+        self.assertEqual(_teacher_grading_count(self.teacher_b), 3)
+        self.assertEqual(len(_teacher_grading_queue(self.teacher_b)), 3)
+
+    def test_queue_agrees_with_the_per_object_gate(self):
+        """The property that actually matters: everything listed must pass the
+        gate the Grade button hits, and nothing excluded may pass it."""
+        from rest_framework.exceptions import PermissionDenied
+        from assignments.views import _assert_teacher_owns_assignment
+
+        queued = {s.assignment_id for s in _teacher_grading_queue(self.teacher_b)}
+        for a in (self.a_10a, self.a_10b, self.a_wide):
+            try:
+                _assert_teacher_owns_assignment(self.teacher_b, a)
+                allowed = True
+            except PermissionDenied:
+                allowed = False
+            self.assertEqual(
+                a.id in queued, allowed,
+                f"{a.title}: queued={a.id in queued} but gate allows={allowed}",
+            )
+
+    def test_graded_work_leaves_the_queue(self):
+        sub = AssignmentSubmission.objects.get(assignment=self.a_10b)
+        sub.graded_at = timezone.now()
+        sub.save(update_fields=["graded_at"])
+        self.assertNotIn("10-B work", self._titles())
+
+
+class TeacherDashboardGroupSessionsTest(TestCase):
+    """/dashboard/ returned no `group_sessions` key at all, so the teacher's
+    Today timeline silently omitted them — live sessions and private sessions
+    were both there, group sessions were the only one of the three missing. A
+    teacher hosting a group session at 4pm saw an empty afternoon."""
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        cls.host = User.objects.create_user(
+            username="gs_host", email="gshost@t.com", password="x", is_verified=True)
+        cls.invited = User.objects.create_user(
+            username="gs_inv", email="gsinv@t.com", password="x", is_verified=True)
+        cls.stranger = User.objects.create_user(
+            username="gs_other", email="gsother@t.com", password="x", is_verified=True)
+        for u in (cls.host, cls.invited, cls.stranger):
+            UserRole.objects.create(
+                user=u, role=Role.objects.get(name="TEACHER"),
+                is_active=True, is_primary=True)
+
+        today = timezone.localtime(timezone.now()).date()
+        cls.hosted = GroupSession.objects.create(
+            host=cls.host, topic="Doubt clearing", short_code="GS0001", scheduled_date=today,
+            scheduled_time="16:00", duration_minutes=45, status="scheduled")
+        cls.as_invited = GroupSession.objects.create(
+            host=cls.stranger, invited_teacher=cls.invited, topic="Guest slot", short_code="GS0002",
+            scheduled_date=today, scheduled_time="18:00",
+            duration_minutes=45, status="scheduled")
+        cls.cancelled = GroupSession.objects.create(
+            host=cls.host, topic="Called off", short_code="GS0003", scheduled_date=today,
+            scheduled_time="20:00", duration_minutes=45, status="cancelled")
+        cls.yesterday = GroupSession.objects.create(
+            host=cls.host, topic="Last week", short_code="GS0004", scheduled_date=today - timedelta(days=2),
+            scheduled_time="16:00", duration_minutes=45, status="scheduled")
+
+    def test_host_sees_their_own_session(self):
+        rows = _teacher_group_sessions(self.host, timezone.now())
+        self.assertIn("Doubt clearing", {g.topic for g in rows})
+
+    def test_invited_teacher_sees_it_too(self):
+        """A teacher reaches a group session as host OR as invited teacher."""
+        rows = _teacher_group_sessions(self.invited, timezone.now())
+        self.assertEqual({g.topic for g in rows}, {"Guest slot"})
+
+    def test_an_unrelated_teacher_sees_nothing(self):
+        rows = _teacher_group_sessions(
+            User.objects.create_user(
+                username="nobody", email="nb@t.com", password="x"),
+            timezone.now())
+        self.assertEqual(rows, [])
+
+    def test_cancelled_and_past_are_excluded(self):
+        topics = {g.topic for g in _teacher_group_sessions(self.host, timezone.now())}
+        self.assertNotIn("Called off", topics)
+        self.assertNotIn("Last week", topics)
+
+    def test_host_and_invited_on_the_same_row_is_not_duplicated(self):
+        """Both Q branches can match one row. Without .distinct() the OR
+        returns it twice and the timeline shows the class twice."""
+        self.hosted.invited_teacher = self.host
+        self.hosted.save(update_fields=["invited_teacher"])
+        rows = _teacher_group_sessions(self.host, timezone.now())
+        self.assertEqual(len([g for g in rows if g.topic == "Doubt clearing"]), 1)
+
+    def test_serializer_reports_the_role(self):
+        data = DashboardGroupSessionSerializer(
+            [self.hosted], many=True, context={"user": self.host}).data
+        self.assertEqual(data[0]["role"], "host")
+        data2 = DashboardGroupSessionSerializer(
+            [self.as_invited], many=True, context={"user": self.invited}).data
+        self.assertEqual(data2[0]["role"], "invited_teacher")
+
+    def test_serializer_shape_matches_the_private_session_one(self):
+        """The timeline merges three session kinds; date/time must not be
+        scheduled_date/scheduled_time on one of them."""
+        data = DashboardGroupSessionSerializer(
+            [self.hosted], many=True, context={"user": self.host}).data[0]
+        self.assertIn("date", data)
+        self.assertIn("time", data)
+        self.assertNotIn("scheduled_date", data)
