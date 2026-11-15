@@ -179,6 +179,11 @@ class TeacherDashboardView(APIView):
                 "duration_mins": s.duration_mins,
                 "live":          is_live,
                 "status":        s.status,
+                # What this session is worth. The expert's own schedule
+                # showed the time and the learner but not the fee, so the
+                # one number that decides whether a day is worth it was the
+                # one thing missing.
+                "amount_rupees": (s.amount or 0) // 100,
             })
 
         # Activity feed (last 8 state-changed sessions)
