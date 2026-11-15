@@ -635,3 +635,81 @@ class ExploreVerificationFeatureFlagTest(TestCase):
         for leaked in ("razorpay_key_id", "razorpay_key_secret",
                        "razorpay_secret_set", "upi_id"):
             self.assertNotIn(leaked, body)
+
+
+class AdminV2FeatureFlagTest(TestCase):
+    """design_handoff_admin_counsellor Phase 0 groundwork — the restructured
+    Admin console IA ships behind one admin-controlled flag, OFF, and nothing
+    consumes it yet.
+
+    Like content_studio_enabled and unlike quiz_v2_enabled this is a REAL
+    gate. Two properties are pinned here deliberately:
+
+    * It ships OFF, so a half-migrated ten-area nav never reaches an admin
+      mid-rebuild.
+    * It is AUTHENTICATED-only. Unlike live_ticker_enabled and
+      admission_abroad_enabled it must NOT appear in /api/public-config/ —
+      every reader is a logged-in admin, and publishing the shape of the
+      admin console to logged-out visitors buys nothing.
+    """
+
+    URL = "/api/admin/settings/"
+
+    def _client(self, user=None):
+        from rest_framework.test import APIClient
+        c = APIClient()
+        if user is not None:
+            c.force_authenticate(user=user)
+        return c
+
+    def test_ships_off(self):
+        self.assertFalse(GlobalSettings.load().admin_v2_enabled)
+
+    def test_admin_can_flip_it_via_patch(self):
+        from accounts.models import User
+
+        admin = User.objects.create_user(
+            username="adminv2", email="adminv2@example.com", password="x",
+            is_staff=True,
+        )
+        res = self._client(admin).patch(
+            self.URL, {"admin_v2_enabled": True}, format="json",
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertTrue(res.json()["admin_v2_enabled"])
+        self.assertTrue(GlobalSettings.objects.get(pk=1).admin_v2_enabled)
+
+    def test_non_admin_cannot_turn_it_on(self):
+        from accounts.models import User
+
+        GlobalSettings.load()
+        student = User.objects.create_user(
+            username="studentv2", email="studentv2@example.com", password="x",
+        )
+        res = self._client(student).patch(
+            self.URL, {"admin_v2_enabled": True}, format="json",
+        )
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertFalse(GlobalSettings.objects.get(pk=1).admin_v2_enabled)
+
+    def test_exposed_read_only_in_feature_flags_on_me(self):
+        """Admin-dashboard reads this off /accounts/me/. The key must be
+        present even while False — an absent key and a False one are different
+        bugs to debug, and AuthContext defaults differently when it is
+        missing."""
+        from accounts.models import User
+
+        user = User.objects.create_user(
+            username="learnerv2", email="learnerv2@example.com", password="x",
+        )
+        res = self._client(user).get("/api/accounts/me/")
+        self.assertEqual(res.status_code, 200, res.content)
+        flags = res.json()["feature_flags"]
+        self.assertIn("admin_v2_enabled", flags)
+        self.assertFalse(flags["admin_v2_enabled"])
+
+    def test_not_published_in_public_config(self):
+        """It gates a logged-in-admin surface, so it has no business on the
+        unauthenticated config endpoint."""
+        body = self._client().get("/api/public-config/").json()
+        self.assertNotIn("admin_v2_enabled", body)

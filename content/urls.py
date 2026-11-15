@@ -9,7 +9,8 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from . import admin_views, ai_views, contact_views, studio_views, views
+from . import (admin_views, ai_views, contact_views, forms_views,
+               redirect_views, studio_views, views)
 
 app_name = "content"
 
@@ -111,6 +112,24 @@ urlpatterns += [
     path("admin/inbox/", studio_views.InboxView.as_view(), name="studio-inbox"),
     path("admin/calendar/", studio_views.CalendarView.as_view(), name="studio-calendar"),
     path("admin/search/", studio_views.StudioSearchView.as_view(), name="studio-search"),
+    # Redirects (Admin v2 Phase 5). The resolver is PUBLIC and unauthenticated
+    # by necessity — the SPA's catch-all calls it for anonymous visitors
+    # before rendering a 404. It exposes a destination and nothing else.
+    path("redirects/resolve/", redirect_views.RedirectResolveView.as_view(),
+         name="redirect-resolve"),
+    # Forms — a DIRECTORY of the site's real forms, not a builder. Contact
+    # enquiries are worked here because nothing else surfaces them.
+    path("admin/forms/", forms_views.AdminFormDirectoryView.as_view(),
+         name="admin-forms"),
+    path("admin/forms/contact/", forms_views.AdminContactSubmissionsView.as_view(),
+         name="admin-form-contact"),
+    path("admin/forms/contact/<int:pk>/",
+         forms_views.AdminContactSubmissionDetailView.as_view(),
+         name="admin-form-contact-detail"),
+    path("admin/redirects/", redirect_views.AdminRedirectListView.as_view(),
+         name="admin-redirects"),
+    path("admin/redirects/<int:pk>/", redirect_views.AdminRedirectDetailView.as_view(),
+         name="admin-redirect-detail"),
     path("admin/activity/", studio_views.ActivityFeedView.as_view(), name="studio-activity"),
     path(
         "admin/revisions/<int:pk>/restore/",
