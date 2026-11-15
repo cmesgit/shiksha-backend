@@ -134,6 +134,15 @@ class StudentSkillDashboardView(APIView):
                 # see whether the expert has confirmed receiving payment.
                 "payment_status":     s.payment_status,
                 "amount_rupees":      (s.amount or 0) // 100,
+                # WHERE the session happens. The row carried the time, the
+                # price and the expert's face but not this, so a learner
+                # could not tell from their own dashboard whether a session
+                # meant opening a browser or crossing town. class_location
+                # is only meaningful for the two offline modes.
+                "class_mode":         s.expert.class_mode,
+                "class_location":     (s.expert.class_location
+                                       if s.expert.class_mode != ExpertProfile.MODE_ONLINE
+                                       else ""),
             }
 
         upcoming_data = [fmt_session(s) for s in upcoming]

@@ -6,6 +6,7 @@ Covers:
   - the pre-booking feed (StudentSkillExpertsView) and post-booking feed
     (SkillSessionDetailView) both surface intro_video_embed_url once ready
 """
+import datetime
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -1691,3 +1692,74 @@ class AcceptingBookingsTests(TestCase):
         r = APIClient().get(f"/api/skill/teachers/{self.expert.id}/")
         self.assertEqual(r.status_code, 200, r.content)
         self.assertIs(r.data["accepting_bookings"], False)
+
+
+class SessionPayloadCompletenessTests(TestCase):
+    """S1 — two fields whose ABSENCE was the bug.
+
+    Both rows already carried plenty; each was missing the one thing its
+    reader actually needed to make a decision.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.teacher_role = Role.objects.create(name="TEACHER")
+        cls.student_role = Role.objects.create(name="STUDENT")
+
+        cls.teacher_user = User.objects.create_user(
+            username="sp_expert", email="sp_expert@test.com", password="pw")
+        UserRole.objects.create(user=cls.teacher_user, role=cls.teacher_role,
+                                is_active=True, is_primary=True)
+        cls.tp = TeacherProfile.objects.create(
+            user=cls.teacher_user, teacher_type=TeacherProfile.TYPE_GUEST)
+        cls.expert = ExpertProfile.objects.create(
+            teacher_profile=cls.tp, headline="Tabla", is_listed=True,
+            hourly_rate=60000, class_mode=ExpertProfile.MODE_TRAVEL,
+            class_location="Koregaon Park, Pune")
+
+        cls.learner_user = User.objects.create_user(
+            username="sp_learner", email="sp_learner@test.com", password="pw")
+        UserRole.objects.create(user=cls.learner_user, role=cls.student_role,
+                                is_active=True, is_primary=True)
+        cls.learner_profile = LearnerProfile.objects.create(
+            account=cls.learner_user, display_name="Sam", is_default=True)
+
+        cls.session = SkillSession.objects.create(
+            expert=cls.expert, learner_profile=cls.learner_profile,
+            status=SkillSession.STATUS_CONFIRMED, duration_mins=60,
+            scheduled_for=timezone.now() + datetime.timedelta(hours=3),
+            amount=60000, note="Tabla basics")
+
+    def _learner_client(self):
+        c = APIClient()
+        c.force_authenticate(user=self.learner_user,
+                             token={"active_profile": str(self.learner_profile.id)})
+        return c
+
+    def test_learner_session_row_says_where_it_happens(self):
+        """Time, price and the expert's face were all there; WHERE was not,
+        so a learner could not tell a browser session from a cross-town one."""
+        r = self._learner_client().get("/api/skill/student/dashboard/")
+        self.assertEqual(r.status_code, 200, r.content)
+        row = r.data["upcoming_sessions"][0]
+        self.assertEqual(row["class_mode"], ExpertProfile.MODE_TRAVEL)
+        self.assertEqual(row["class_location"], "Koregaon Park, Pune")
+
+    def test_online_session_reports_no_location(self):
+        """class_location is set on the expert but meaningless online —
+        echoing it would send someone to an address for a video call."""
+        self.expert.class_mode = ExpertProfile.MODE_ONLINE
+        self.expert.save(update_fields=["class_mode"])
+        r = self._learner_client().get("/api/skill/student/dashboard/")
+        row = r.data["upcoming_sessions"][0]
+        self.assertEqual(row["class_mode"], ExpertProfile.MODE_ONLINE)
+        self.assertEqual(row["class_location"], "")
+
+    def test_expert_schedule_row_carries_the_fee(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher_user)
+        r = c.get("/api/skill/teacher/dashboard/")
+        self.assertEqual(r.status_code, 200, r.content)
+        rows = r.data["next_up"]
+        self.assertTrue(rows, "expected the confirmed session on next_up")
+        self.assertEqual(rows[0]["amount_rupees"], 600)
