@@ -137,9 +137,28 @@ class TeacherDashboardView(APIView):
 
         # Upcoming bookings — everything from now onward (not just today),
         # soonest first. Unscheduled requests sort last.
+        # NEEDS_RECONFIRMATION and PENDING_PAYMENT belong here too. Both are
+        # live, upcoming commitments the expert still has to think about:
+        #
+        #   needs_reconfirmation — the EXPERT proposed a new time and is
+        #     waiting on the learner. Excluding it meant that the moment an
+        #     expert rescheduled, the session vanished from their own
+        #     schedule — the one view that should still show it, because they
+        #     are the party waiting.
+        #   pending_payment — confirmed in every sense except the money, and
+        #     it is already cancellable by the learner (cancel_views.py's
+        #     CANCELLABLE), so it is not a settled booking either.
+        #
+        # Everything else is terminal (completed/cancelled/declined/
+        # auto_declined/lapsed) and has no place on an UPCOMING list.
         upcoming_qs = (
             sessions
-            .filter(status__in=[SkillSession.STATUS_CONFIRMED, SkillSession.STATUS_REQUESTED])
+            .filter(status__in=[
+                SkillSession.STATUS_CONFIRMED,
+                SkillSession.STATUS_REQUESTED,
+                SkillSession.STATUS_NEEDS_RECONFIRMATION,
+                SkillSession.STATUS_PENDING_PAYMENT,
+            ])
             .exclude(scheduled_for__lt=now)
             .order_by("scheduled_for")
         )
