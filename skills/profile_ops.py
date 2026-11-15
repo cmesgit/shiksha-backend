@@ -183,6 +183,15 @@ def apply_expert_fields(ep, data, *, files=None):
     files = files or {}
     fields = []
 
+    if "accepting_bookings" in data:
+        # Checkbox-ish input: accept real booleans and the string forms a
+        # form post sends.
+        raw = data.get("accepting_bookings")
+        if isinstance(raw, str):
+            raw = raw.strip().lower() not in ("", "false", "0", "no", "off")
+        ep.accepting_bookings = bool(raw)
+        fields.append("accepting_bookings")
+
     if "category" in data:
         cat, found = _resolve_category(data.get("category"))
         if data.get("category") and not found:
@@ -362,6 +371,7 @@ def serialize_expert(ep):
         "category":            ep.category.slug if ep.category_id else "",
         "categories":          _all_category_slugs(ep),
         "subjects":            _all_category_labels(ep),
+        "accepting_bookings":  ep.accepting_bookings,
         "headline":            ep.headline,
         "skill_tags":          ep.skill_tags or [],
         "subject_description": ep.subject_description,

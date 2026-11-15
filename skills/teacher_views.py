@@ -287,6 +287,7 @@ class TeacherDashboardView(APIView):
             "today_schedule":  today_schedule,
             "next_up":         next_up,
             "recent_reviews":  recent_reviews,
+            "accepting_bookings": ep.accepting_bookings,
             "advertising":  advertising,
             "profile_todo": profile_todo,
             "activity":     activity,

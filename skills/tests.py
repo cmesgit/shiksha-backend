@@ -1570,3 +1570,124 @@ class DirectoryStatsCategoryCountTests(TestCase):
         cache.clear()
         res = APIClient().get("/api/skill/directory-stats/")
         self.assertEqual(res.data["categories"], 2)
+
+
+class AcceptingBookingsTests(TestCase):
+    """S4 — `accepting_bookings` replaces a hardcoded "Accepting bookings"
+    badge that every expert showed, always, whether or not it was true.
+
+    The point of these tests is that the flag is ENFORCED. A toggle that only
+    changes a label is the same bug in a new shape.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.teacher_role = Role.objects.create(name="TEACHER")
+        cls.student_role = Role.objects.create(name="STUDENT")
+
+        cls.teacher_user = User.objects.create_user(
+            username="ab_expert", email="ab_expert@test.com", password="pw")
+        UserRole.objects.create(user=cls.teacher_user, role=cls.teacher_role,
+                                is_active=True, is_primary=True)
+        cls.teacher_profile = TeacherProfile.objects.create(
+            user=cls.teacher_user, teacher_type=TeacherProfile.TYPE_GUEST)
+        cls.expert = ExpertProfile.objects.create(
+            teacher_profile=cls.teacher_profile, headline="Flute",
+            is_listed=True, hourly_rate=50000)
+
+        cls.learner_user = User.objects.create_user(
+            username="ab_learner", email="ab_learner@test.com", password="pw")
+        UserRole.objects.create(user=cls.learner_user, role=cls.student_role,
+                                is_active=True, is_primary=True)
+        cls.learner_profile = LearnerProfile.objects.create(
+            account=cls.learner_user, display_name="Lee", is_default=True)
+
+    def _learner_client(self):
+        # Same shape the other suites in this file use: force_authenticate
+        # takes a plain dict as the token, and get_active_profile reads
+        # "active_profile" off it.
+        c = APIClient()
+        c.force_authenticate(
+            user=self.learner_user,
+            token={"active_profile": str(self.learner_profile.id)},
+        )
+        return c
+
+    def _expert_client(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher_user)
+        return c
+
+    def test_defaults_true_so_existing_experts_are_unchanged(self):
+        """A new column must not silently pause everyone already listed."""
+        self.assertTrue(self.expert.accepting_bookings)
+
+    def test_expert_can_pause_and_resume(self):
+        c = self._expert_client()
+        r = c.patch("/api/skill/teacher/profile/",
+                    {"accepting_bookings": False}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.expert.refresh_from_db()
+        self.assertFalse(self.expert.accepting_bookings)
+
+        r = c.patch("/api/skill/teacher/profile/",
+                    {"accepting_bookings": True}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.expert.refresh_from_db()
+        self.assertTrue(self.expert.accepting_bookings)
+
+    def test_string_false_from_a_form_post_is_not_truthy(self):
+        """A multipart form sends "false", and bool("false") is True — which
+        would turn a pause into a resume."""
+        self.expert.accepting_bookings = True
+        self.expert.save(update_fields=["accepting_bookings"])
+        r = self._expert_client().patch("/api/skill/teacher/profile/",
+                                        {"accepting_bookings": "false"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.expert.refresh_from_db()
+        self.assertFalse(self.expert.accepting_bookings)
+
+    def test_paused_expert_refuses_a_new_request(self):
+        """The whole point: the flag holds at the booking endpoint."""
+        self.expert.accepting_bookings = False
+        self.expert.save(update_fields=["accepting_bookings"])
+        r = self._learner_client().post("/api/skill/sessions/", {
+            "expert": str(self.expert.id), "duration_mins": 60, "note": "hello",
+        }, format="json")
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertEqual(SkillSession.objects.filter(expert=self.expert).count(), 0)
+
+    def test_accepting_expert_still_takes_requests(self):
+        self.expert.accepting_bookings = True
+        self.expert.save(update_fields=["accepting_bookings"])
+        r = self._learner_client().post("/api/skill/sessions/", {
+            "expert": str(self.expert.id), "duration_mins": 60, "note": "hello",
+        }, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(SkillSession.objects.filter(expert=self.expert).count(), 1)
+
+    def test_pausing_does_not_hide_the_expert_or_touch_existing_sessions(self):
+        """Pausing is not unlisting. A paused expert stays discoverable and
+        keeps the sessions they already agreed to."""
+        SkillSession.objects.create(
+            expert=self.expert, learner_profile=self.learner_profile,
+            status=SkillSession.STATUS_CONFIRMED, duration_mins=60)
+        self.expert.accepting_bookings = False
+        self.expert.save(update_fields=["accepting_bookings"])
+
+        r = APIClient().get("/api/skill/teachers/")
+        self.assertEqual(r.status_code, 200, r.content)
+        ids = {row["id"] for row in (r.data.get("results") or r.data)}
+        self.assertIn(str(self.expert.id), ids)
+        self.assertEqual(
+            SkillSession.objects.filter(
+                expert=self.expert, status=SkillSession.STATUS_CONFIRMED).count(), 1)
+
+    def test_public_profile_reports_the_flag(self):
+        """The profile page has to be able to say so BEFORE someone fills in
+        a form the server will refuse."""
+        self.expert.accepting_bookings = False
+        self.expert.save(update_fields=["accepting_bookings"])
+        r = APIClient().get(f"/api/skill/teachers/{self.expert.id}/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIs(r.data["accepting_bookings"], False)
