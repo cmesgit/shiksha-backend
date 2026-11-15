@@ -293,6 +293,11 @@ class TeacherDashboardView(APIView):
             "next_up":         next_up,
             "recent_reviews":  recent_reviews,
             "accepting_bookings": ep.accepting_bookings,
+            # S3 — the REAL completeness, not an invented "profile strength"
+            # percentage. completeness() returns {is_complete, missing[]};
+            # `missing` is a list of stable field keys the frontend maps to
+            # labels, and it is the only honest basis for this panel.
+            "completeness": ep.completeness(),
             "advertising":  advertising,
             "profile_todo": profile_todo,
             "activity":     activity,
