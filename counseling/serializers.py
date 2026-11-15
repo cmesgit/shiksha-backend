@@ -223,8 +223,35 @@ class AppointmentSerializer(serializers.ModelSerializer):
         )
 
     def get_learner(self, obj):
+        """Who the session is for, plus the bare context a counsellor needs
+        to walk into it prepared.
+
+        `current_class` / `stream` / `board` are what the console's request
+        and student cards render as "Class 12 · Science (PCB)". They were not
+        exposed before, which is why that line could not be built.
+
+        `booked_by_other` answers "did a parent book this for a child" —
+        Appointment.booked_by is the account holder while learner_profile is
+        who the session is for, and the model comment says exactly that. A
+        counsellor meeting a Class 10 student whose parent made the booking
+        should know before the call, not during it.
+
+        Scope: this serializer only ever serves the two parties to the
+        appointment — the counsellor it belongs to, and the learner's own
+        account. It is not a public or directory shape.
+        """
         lp = obj.learner_profile
-        return {"id": str(lp.id), "display_name": lp.display_name}
+        return {
+            "id": str(lp.id),
+            "display_name": lp.display_name,
+            "current_class": lp.current_class or "",
+            "stream": lp.stream or "",
+            "board": lp.board or "",
+            # True when the booker is not the learner's own account.
+            "booked_by_other": bool(
+                obj.booked_by_id and obj.booked_by_id != lp.account_id
+            ),
+        }
 
     def _assessment(self, obj):
         try:
