@@ -87,6 +87,7 @@ class GlobalSettingsSerializer(serializers.ModelSerializer):
             "live_ticker_enabled",
             "counselling_booking_requires_approval",
             "admission_abroad_enabled",
+            "admin_v2_enabled",
             "dashboards_v2_enabled",
             "updated_at",
         ]
