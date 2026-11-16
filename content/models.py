@@ -22,6 +22,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
 
+from .upload_paths import cms_upload_to
 from .validators import validate_cms_image
 from django.db.models import Q
 from django.db.models.functions import Cast
@@ -233,7 +234,7 @@ class BlogPost(PublishableModel):
         help_text="Short summary shown on listing cards (≈1–2 sentences).",
     )
     cover = models.ImageField(
-        upload_to="content/blog/%Y/%m/", blank=True, null=True,
+        upload_to=cms_upload_to("content/blog", dated=True), blank=True, null=True,
         validators=[validate_cms_image],
         help_text="Card thumbnail. ~800×450 recommended.",
     )
@@ -606,7 +607,7 @@ class Announcement(StatusedContentModel):
     # serializer. Registered in content/media.py so the Pictures screen counts
     # it and the 409 delete guard protects it.
     image = models.ImageField(
-        upload_to="content/ticker/", blank=True, null=True,
+        upload_to=cms_upload_to("content/ticker"), blank=True, null=True,
         validators=[validate_cms_image],
     )
     image_url = models.URLField(
@@ -853,7 +854,7 @@ class ShowcaseCourse(StatusedContentModel):
         help_text="Two rgba() stops for the thumbnail overlay.",
     )
     image = models.ImageField(
-        upload_to="content/showcase/", blank=True, null=True,
+        upload_to=cms_upload_to("content/showcase"), blank=True, null=True,
         validators=[validate_cms_image],
     )
     image_url = models.URLField(
@@ -1093,7 +1094,7 @@ class HomeContentBlock(StatusedContentModel):
     cta_secondary_label = models.CharField(max_length=60, blank=True, default="")
     cta_secondary_href = models.CharField(max_length=200, blank=True, default="")
     image = models.ImageField(
-        upload_to="content/home/", blank=True, null=True,
+        upload_to=cms_upload_to("content/home"), blank=True, null=True,
         validators=[validate_cms_image],
     )
     image_url = models.URLField(
@@ -1196,7 +1197,7 @@ class HomeListItem(StatusedContentModel):
     # before this, those images were hardcoded frontend imports and could only
     # be changed with a deploy.
     image = models.ImageField(
-        upload_to="content/home/", blank=True, null=True,
+        upload_to=cms_upload_to("content/home"), blank=True, null=True,
         validators=[validate_cms_image],
     )
     image_url = models.URLField(
@@ -1310,7 +1311,7 @@ class ContentImage(TimeStampedModel):
     several, and deleting the post shouldn't cascade-delete an image that
     might still be referenced elsewhere in its body_html_source history."""
     file = models.ImageField(
-        upload_to="content/editor/%Y/%m/",
+        upload_to=cms_upload_to("content/editor", dated=True),
         validators=[validate_cms_image],
     )
     uploaded_by = models.ForeignKey(

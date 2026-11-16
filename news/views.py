@@ -1,5 +1,6 @@
 import requests
 from django.http import JsonResponse
+from django.utils import timezone
 from django.views.decorators.http import require_GET
 from django.views.decorators.cache import cache_page
 from django.conf import settings
@@ -48,7 +49,18 @@ def top_headlines(request):
         for a in data.get("articles", [])
     ]
 
-    return JsonResponse({"articles": articles, "totalArticles": data.get("totalArticles", 0)})
+    # `fetchedAt` is stamped INSIDE the cached response, so it is the moment
+    # GNews was actually called — not the moment this request was served. The
+    # page tells readers headlines are "updated through the day" and had no
+    # way to say when; with a 30-minute cache that claim could be half an
+    # hour stale and unverifiable. A timestamp taken per-request would have
+    # been worse than none: it would read as fresh while serving cached data.
+    return JsonResponse({
+        "articles": articles,
+        "totalArticles": data.get("totalArticles", 0),
+        "fetchedAt": timezone.now().isoformat(),
+        "stale": bool(data.get("error")),
+    })
 
 
 @require_GET

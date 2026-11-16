@@ -99,7 +99,25 @@ class BlogPostListView(CachedListAPIView):
                 | Q(excerpt__icontains=q)
                 | Q(slug__icontains=q)
             )
-        return qs.distinct()
+        return qs.distinct().order_by(*self._ordering(p.get("sort")))
+
+    # Whitelisted, because an open `?ordering=` on a public endpoint lets a
+    # caller sort by any column including ones the serializer never exposes.
+    SORTS = {
+        "newest":   ("-publish_at",),
+        "oldest":   ("publish_at",),
+        "popular":  ("-view_count", "-publish_at"),
+        "title":    ("title", "-publish_at"),
+    }
+
+    def _ordering(self, sort):
+        """Default stays `-publish_at`, which is what Meta.ordering gave and
+        what every existing caller already relies on. An unknown value falls
+        back to it rather than 400ing — a stale bookmark should not break the
+        listing. The secondary key makes the order total: `popular` ties at
+        view_count=0 for most rows, and an unstable sort reshuffles the page
+        on every request, which paginates badly."""
+        return self.SORTS.get((sort or "").strip().lower(), self.SORTS["newest"])
 
 
 class BlogPostDetailView(generics.RetrieveAPIView):
@@ -137,6 +155,78 @@ class BlogPostDetailView(generics.RetrieveAPIView):
             view_count=F("view_count") + 1
         )
         return Response(self.get_serializer(instance).data)
+
+
+class BlogPostRelatedView(generics.GenericAPIView):
+    """GET /api/content/blogs/<path:slug>/related/?locale=
+
+    An article page had no way out but the Back button: no related posts, no
+    next/previous chapter. The data model already supported both cheaply —
+    `chapter_number` plus the `(class_level, subject)` index — and nothing
+    used it.
+
+    Returns three things, because they answer different questions:
+
+        prev / next — the chapters either side of this one in the SAME
+                      class_level + subject. This is the spine of a textbook
+                      series and is what a reader working through Class 9
+                      Science actually wants.
+        related     — up to four more posts from the same class_level +
+                      subject, nearest chapter first, excluding prev/next and
+                      the post itself.
+
+    `prev`/`next` are null for a post with no `chapter_number` (most
+    non-series posts), and `related` degrades to same-subject-any-class
+    rather than returning nothing, so the foot of the page is never empty
+    for a post that has siblings.
+    """
+
+    permission_classes = [AllowAny]
+
+    RELATED_LIMIT = 4
+
+    def get(self, request, slug):
+        locale = request.query_params.get("locale", Locale.EN)
+        base = BlogPost.objects.published().filter(locale=locale)
+        post = get_object_or_404(base, slug=slug)
+
+        siblings = base.filter(
+            class_level=post.class_level, subject=post.subject,
+        ).exclude(pk=post.pk)
+
+        prev_post = next_post = None
+        if post.chapter_number is not None:
+            numbered = siblings.filter(chapter_number__isnull=False)
+            prev_post = (numbered
+                         .filter(chapter_number__lt=post.chapter_number)
+                         .order_by("-chapter_number").first())
+            next_post = (numbered
+                         .filter(chapter_number__gt=post.chapter_number)
+                         .order_by("chapter_number").first())
+
+        used = {p.pk for p in (prev_post, next_post) if p}
+        related = list(siblings.exclude(pk__in=used)
+                       .order_by("chapter_number", "-publish_at")
+                       [: self.RELATED_LIMIT])
+
+        # A post that is the only one in its class+subject still deserves a
+        # footer. Widen to the same subject across class levels before
+        # giving up — a Class 9 chemistry reader is plausibly served by a
+        # Class 10 chemistry post, and an empty row is served by nothing.
+        if not related:
+            related = list(
+                base.filter(subject=post.subject)
+                .exclude(pk=post.pk).exclude(pk__in=used)
+                .order_by("-publish_at")[: self.RELATED_LIMIT]
+            )
+
+        ser = BlogPostListSerializer
+        ctx = self.get_serializer_context()
+        return Response({
+            "prev": ser(prev_post, context=ctx).data if prev_post else None,
+            "next": ser(next_post, context=ctx).data if next_post else None,
+            "related": ser(related, many=True, context=ctx).data,
+        })
 
 
 # ── Current affairs ───────────────────────────────────────────────
