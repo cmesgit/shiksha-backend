@@ -238,6 +238,19 @@ class DirectoryLocationsView(APIView):
     CACHE_KEY = "skill:directory-locations:v1"
     CACHE_SECONDS = 3600
 
+    @classmethod
+    def invalidate(cls):
+        """Drop the cached options.
+
+        Nothing called this for an hour after an expert first filled in a
+        district, so the filter stayed empty well after there was something
+        to put in it — indistinguishable from the "no districts exist at all"
+        state the audit found. Called from the profile write path
+        (skills/profile_ops.py) now.
+        """
+        from django.core.cache import cache
+        cache.delete(cls.CACHE_KEY)
+
     def get(self, request):
         from django.core.cache import cache
 

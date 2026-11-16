@@ -269,10 +269,19 @@ def apply_expert_fields(ep, data, *, files=None):
         ep.class_location = str(data["class_location"])[:255]
         fields.append("class_location")
 
+    location_touched = False
     for f in ("pincode", "state", "district", "city"):
         if f in data:
             setattr(ep, f, str(data[f])[:150])
             fields.append(f)
+            if f in ("state", "district"):
+                location_touched = True
+    if location_touched:
+        # The public district filter caches its options for an hour with no
+        # invalidation anywhere, so the first expert to fill in a district
+        # did not appear as an option until the TTL happened to lapse.
+        from .directory_views import DirectoryLocationsView
+        DirectoryLocationsView.invalidate()
 
     for f in ("latitude", "longitude"):
         if f in data and data[f] not in (None, ""):

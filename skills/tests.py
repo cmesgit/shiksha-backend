@@ -1763,3 +1763,224 @@ class SessionPayloadCompletenessTests(TestCase):
         rows = r.data["next_up"]
         self.assertTrue(rows, "expected the confirmed session on next_up")
         self.assertEqual(rows[0]["amount_rupees"], 600)
+
+
+class AdminExpertUnsuspendTests(TestCase):
+    """POST /skill/admin/experts/<id>/suspend/ {"action": "unsuspend"}
+
+    This path called `ep.sync_listing(save=True)`, a method that has never
+    existed on ExpertProfile — the real one is `refresh_listing`. The
+    AttributeError fired AFTER `is_suspended = False` had been committed, so
+    the expert came back unsuspended and still delisted, and retrying hit the
+    same line again. Suspension was effectively one-way through the admin UI.
+
+    These pin the round trip, not just the absence of a 500: suspending has
+    to delist, and unsuspending has to put a complete profile back on the
+    marketplace.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_user(
+            username="sus_adm", email="sus_adm@test.com", password="x",
+            is_staff=True, is_superuser=True,
+        )
+        cls.teacher_user = User.objects.create_user(
+            username="sus_t", email="sus_t@test.com", password="x")
+        cls.tp = TeacherProfile.objects.create(
+            user=cls.teacher_user, teacher_type=TeacherProfile.TYPE_GUEST)
+        # `refresh_listing` only re-lists a COMPLETE profile, and completeness
+        # reads the personal fields off the account's SELF learner profile
+        # (ExpertProfile.completeness -> profile_ops.personal_missing). A
+        # thinner fixture makes the re-listing assertion pass for the wrong
+        # reason — it stays delisted because it was never listable.
+        cls.lp = LearnerProfile.objects.create(
+            account=cls.teacher_user, display_name="Sus", relationship="SELF",
+            is_default=True, is_active=True,
+            full_name="Sus Pended", phone="9000000000",
+            date_of_birth=datetime.date(1990, 1, 1),
+            profile_photo="profile_photos/x.jpg",
+        )
+
+    def setUp(self):
+        self.expert = ExpertProfile.objects.create(
+            teacher_profile=self.tp, headline="Tabla",
+            is_listed=True, hourly_rate=50000,
+            subject_description="Tabla and Indian percussion",
+            languages=["en"], bio="Twelve years of teaching tabla.",
+            class_mode=ExpertProfile.MODE_ONLINE,
+        )
+        self.assertTrue(
+            self.expert.is_complete,
+            "fixture is not a complete profile — the re-listing assertions "
+            "below would pass vacuously",
+        )
+        self.url = f"/api/skill/admin/experts/{self.expert.id}/suspend/"
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def _post(self, action):
+        return self.client.post(self.url, {"action": action}, format="json")
+
+    def test_unsuspend_does_not_500(self):
+        self.assertEqual(self._post("suspend").status_code, 200)
+        res = self._post("unsuspend")
+        self.assertEqual(
+            res.status_code, 200,
+            "unsuspend raised instead of responding — the AttributeError is back",
+        )
+
+    def test_suspend_then_unsuspend_restores_the_listing(self):
+        self._post("suspend")
+        self.expert.refresh_from_db()
+        self.assertTrue(self.expert.is_suspended)
+        self.assertFalse(self.expert.is_listed, "suspending must delist")
+
+        self._post("unsuspend")
+        self.expert.refresh_from_db()
+        self.assertFalse(self.expert.is_suspended)
+        # The real regression: the old code left is_suspended=False with
+        # is_listed=False, so the expert was invisible with no way back.
+        self.assertTrue(
+            self.expert.is_listed,
+            "a complete profile must be re-listed when the suspension lifts",
+        )
+
+    def test_unsuspend_is_idempotent(self):
+        """The bug made a retry hit the same broken line, so retrying was the
+        natural reaction and it never worked. Twice must be safe."""
+        self._post("suspend")
+        self.assertEqual(self._post("unsuspend").status_code, 200)
+        self.assertEqual(self._post("unsuspend").status_code, 200)
+        self.expert.refresh_from_db()
+        self.assertTrue(self.expert.is_listed)
+
+    def test_unsuspend_does_not_list_an_incomplete_profile(self):
+        """refresh_listing() only lists a complete profile. Lifting a
+        suspension must not promote someone who was never listable."""
+        self.expert.is_listed = False
+        self.expert.save(update_fields=["is_listed"])
+        with patch.object(
+            type(self.expert), "is_complete", property(lambda self: False)
+        ):
+            self._post("suspend")
+            res = self._post("unsuspend")
+        self.assertEqual(res.status_code, 200)
+        self.expert.refresh_from_db()
+        self.assertFalse(self.expert.is_suspended)
+        self.assertFalse(self.expert.is_listed)
+
+    def test_a_bad_action_is_rejected(self):
+        self.assertEqual(self._post("delist").status_code, 400)
+
+
+class ExpertPriceAgreementTests(TestCase):
+    """The directory card, the profile page and the order the server actually
+    creates all have to quote the same money.
+
+    Before this they did not. The card showed `from_rate` = min(listings)
+    captioned "per 60-min session" with no "from"; the profile hero and the
+    booking form used `listings[0]`; and CreateOrderView picked with
+    `order_by("order")` alone, whose tie-break is undefined when two listings
+    share an order. A two-listing expert could therefore advertise one price,
+    display a second and charge a third.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from .models import SkillCategory
+        cls.user = User.objects.create_user(
+            username="px_t", email="px_t@test.com", password="x")
+        cls.tp = TeacherProfile.objects.create(
+            user=cls.user, teacher_type=TeacherProfile.TYPE_GUEST)
+        cls.cat = SkillCategory.objects.create(slug="music", label="Music")
+
+    def _expert(self, **kw):
+        return ExpertProfile.objects.create(
+            teacher_profile=self.tp, headline="Guitar",
+            is_listed=True, **kw)
+
+    def _listing(self, expert, *, paise, order, title="Skill"):
+        from .listing_models import SkillListing
+        return SkillListing.objects.create(
+            expert=expert, category=self.cat, title=title,
+            price_paise=paise, order=order,
+            is_active=True, is_suspended=False)
+
+    def _card(self, expert):
+        from .serializers import ExpertCardSerializer
+        expert.refresh_from_db()
+        return ExpertCardSerializer(expert).data
+
+    def test_default_listing_follows_the_models_own_ordering(self):
+        e = self._expert(hourly_rate=0)
+        cheap = self._listing(e, paise=50000, order=1, title="Cheap")
+        first = self._listing(e, paise=90000, order=0, title="First")
+        self.assertEqual(e.default_listing().id, first.id)
+        # The cheapest is NOT the default — that was the whole disagreement.
+        self.assertNotEqual(e.default_listing().id, cheap.id)
+
+    def test_card_marks_a_multi_price_expert_as_from(self):
+        e = self._expert(hourly_rate=0)
+        self._listing(e, paise=90000, order=0)
+        self._listing(e, paise=50000, order=1)
+        card = self._card(e)
+        self.assertEqual(card["from_rate"], 500)
+        self.assertTrue(card["price_is_from"],
+                        "two different prices must render as 'from ₹500'")
+
+    def test_a_single_listing_is_not_a_from_price(self):
+        e = self._expert(hourly_rate=0)
+        self._listing(e, paise=90000, order=0)
+        card = self._card(e)
+        self.assertEqual(card["from_rate"], 900)
+        self.assertFalse(card["price_is_from"])
+
+    def test_identical_prices_are_not_a_from_price(self):
+        """Two listings at the same price is one price, not a range."""
+        e = self._expert(hourly_rate=0)
+        self._listing(e, paise=90000, order=0)
+        self._listing(e, paise=90000, order=1)
+        self.assertFalse(self._card(e)["price_is_from"])
+
+    def test_sub_rupee_is_not_free(self):
+        """`price_paise // 100` floors ₹0.50 to 0, and the card branched on
+        that integer — so a sub-rupee listing advertised itself as Free."""
+        e = self._expert(hourly_rate=0)
+        self._listing(e, paise=50, order=0)
+        card = self._card(e)
+        self.assertEqual(card["from_rate"], 0)
+        self.assertFalse(card["is_free"], "₹0.50 is not free")
+
+    def test_zero_really_is_free(self):
+        e = self._expert(hourly_rate=0)
+        self._listing(e, paise=0, order=0)
+        self.assertTrue(self._card(e)["is_free"])
+
+    def test_card_points_at_the_listing_the_server_would_charge(self):
+        e = self._expert(hourly_rate=0)
+        self._listing(e, paise=90000, order=0, title="First")
+        self._listing(e, paise=50000, order=1, title="Cheap")
+        card = self._card(e)
+        self.assertEqual(card["default_listing_id"], str(e.default_listing().id))
+
+    def test_suspended_and_paused_listings_are_not_the_default(self):
+        from .listing_models import SkillListing
+        e = self._expert(hourly_rate=0)
+        SkillListing.objects.create(expert=e, category=self.cat, title="Suspended",
+                                    price_paise=10000, order=0,
+                                    is_active=True, is_suspended=True)
+        SkillListing.objects.create(expert=e, category=self.cat, title="Paused",
+                                    price_paise=20000, order=1,
+                                    is_active=False, is_suspended=False)
+        live = self._listing(e, paise=90000, order=2, title="Live")
+        self.assertEqual(e.default_listing().id, live.id)
+        self.assertEqual(self._card(e)["from_rate"], 900)
+
+    def test_no_listings_falls_back_to_hourly_rate(self):
+        e = self._expert(hourly_rate=70000)
+        self.assertIsNone(e.default_listing())
+        card = self._card(e)
+        self.assertEqual(card["from_rate"], 700)
+        self.assertFalse(card["price_is_from"])
+        self.assertFalse(card["is_free"])

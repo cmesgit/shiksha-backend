@@ -23,6 +23,10 @@ urlpatterns = [
     path("newsletter/", contact_views.NewsletterSubscribeView.as_view(), name="newsletter-subscribe"),
 
     path("blogs/", views.BlogPostListView.as_view(), name="blog-list"),
+    # BEFORE the detail route, not after. `<path:slug>` matches slashes, so
+    # `blogs/<path:slug>/` would otherwise swallow this as a post whose slug
+    # ends in "/related" — a 404 that looks like missing content.
+    path("blogs/<path:slug>/related/", views.BlogPostRelatedView.as_view(), name="blog-related"),
     path("blogs/<path:slug>/", views.BlogPostDetailView.as_view(), name="blog-detail"),
 
     path("current-affairs/", views.CurrentAffairListView.as_view(), name="ca-list"),
