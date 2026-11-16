@@ -950,6 +950,14 @@ class MeView(APIView):
                 # two of the ticker's eight slots are the pre-auth login and
                 # signup screens, which never call this endpoint.
                 "live_ticker_enabled": gs.live_ticker_enabled,
+                # Also published unauthenticated via /api/public-config/ —
+                # the Explore library is browsable by guests, who see the
+                # Verified/Unverified badges. Signed-in surfaces (the Verify
+                # page, "Needs my review") read it from here.
+                "explore_verification_enabled": gs.explore_verification_enabled,
+                # Navigation-only gate for the Admin console rebuild. Safe on
+                # /accounts/me/ because every reader is a logged-in admin.
+                "admin_v2_enabled": gs.admin_v2_enabled,
                 # Gates the redesigned dashboard homes in BOTH dashboard apps.
                 # Unlike admin_v2_enabled this adds routes rather than
                 # regrouping them, so OFF means /v2 and /teacher/v2 are simply

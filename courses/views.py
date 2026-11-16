@@ -1743,6 +1743,39 @@ class AdminChapterDetailView(APIView):
 # COURSE CATALOG (student-facing "Browse Courses" shop)
 # =========================
 
+def course_search_q(q):
+    """The fields a course search matches, in one place.
+
+    Title + description alone could not answer the three commonest searches
+    on this site, and each returned the generic "No batches match these
+    filters" as though a filter had excluded something:
+
+      * "mathematics", "physics" — SUBJECT names. Subjects are a related
+        model whose names never entered the corpus, so a course carrying a
+        Mathematics subject was unfindable by that word.
+      * "MBSE", "Mizoram Board" — BOARD names. The catalog's search box
+        reads "Search boards or classes…", and board names were matched
+        only by a separate state variable bound to a different input inside
+        the filter drawer.
+      * "NEET" — a CATEGORY (and a COACHING course).
+
+    Returned as ONE Q rather than chained `.filter()` calls: across a
+    multi-valued relation each `.filter()` is its own join, so chaining
+    would demand that a single related row satisfy every term. Callers must
+    already apply `.distinct()` — both catalog querysets do — or the
+    subject/category joins multiply rows.
+    """
+    return (
+        Q(title__icontains=q)
+        | Q(description__icontains=q)
+        | Q(subjects__name__icontains=q)
+        | Q(board__name__icontains=q)
+        | Q(board__slug__icontains=q)
+        | Q(categories__name__icontains=q)
+        | Q(categories__slug__icontains=q)
+    )
+
+
 class CourseCatalogView(APIView):
     """Browsable catalog of every course, for the in-dashboard "Browse Courses"
     shop. Any authenticated learner can read it — enrollment gates a course's
@@ -1811,7 +1844,7 @@ class CourseCatalogView(APIView):
 
         q = (request.query_params.get("q") or "").strip()
         if q:
-            qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q))
+            qs = qs.filter(course_search_q(q))
 
         board_id = request.query_params.get("board")
         if board_id:
@@ -2078,7 +2111,7 @@ class PublicCourseCatalogView(APIView):
 
         q = (request.query_params.get("q") or "").strip()
         if q:
-            qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q))
+            qs = qs.filter(course_search_q(q))
 
         board_id = request.query_params.get("board")
         if board_id:

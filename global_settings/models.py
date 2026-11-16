@@ -335,6 +335,62 @@ class GlobalSettings(models.Model):
         ),
     )
 
+    # ── Explore community verification (shiksha-backend/docs/EXPLORE_VERIFICATION.md) ─
+    # Gates the community verification of Explore uploads: the Verify page,
+    # the Verified/Unverified badges on cards and the document page, the
+    # status filter row, the specialization requests and the admin settings
+    # screen.
+    #
+    # Like content_studio_enabled and unlike quiz_v2_enabled, this is a REAL
+    # gate: every verification surface and endpoint checks it, and the
+    # endpoints 404 rather than 403 while it is off.
+    #
+    # ⚠ PUBLIC as well as on `feature_flags`, for the same reason as
+    # live_ticker_enabled and admission_abroad_enabled above: the Explore
+    # library is browsable by anonymous visitors, who see the badges. A flag
+    # delivered only on the authenticated /accounts/me/ would be absent for
+    # exactly the people the badges are for. Read PublicConfigView's docstring
+    # before adding a fourth.
+    #
+    # Ships OFF. Nothing about Explore changes while it is off — uploads keep
+    # going live immediately with no status of any kind, exactly as before.
+    explore_verification_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Master switch for community verification of Explore uploads — "
+            "the Verify page, the Verified/Unverified badges, specialization "
+            "requests and the verification admin screen. While OFF, uploads "
+            "go live with no status, as before. Does not affect Research Hub, "
+            "which has its own formal review."
+        ),
+    )
+
+    # ── Admin v2 (design_handoff_admin_counsellor) ──────────────────────
+    # Gates the restructured Admin console IA — the ten-area top nav that
+    # replaces today's nine-group sidebar — while it is built out phase by
+    # phase. Like content_studio_enabled and unlike quiz_v2_enabled, this is
+    # a REAL gate: with it OFF, AdminLayout renders the existing sidebar
+    # byte-for-byte, so a half-migrated nav never reaches an admin mid-rebuild.
+    #
+    # ⚠ It gates NAVIGATION ONLY. Every underlying route keeps working at its
+    # current path whichever way this is set — the redesign regroups existing
+    # screens rather than replacing them, so a bookmark, a deep link or a
+    # notification URL must never depend on this flag.
+    #
+    # ⚠ Flipping this needs a RE-LOGIN to take effect in Admin-dashboard:
+    # its AuthContext.bootstrap() restores `user` from localStorage and never
+    # refetches /accounts/me/, so feature_flags is frozen at login. See
+    # CLAUDE.md rule 8 — pre-existing, but it makes a flag flip look broken.
+    admin_v2_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Master switch for the restructured Admin console navigation — "
+            "ten top-level areas in place of the current sidebar. While OFF "
+            "the existing sidebar renders unchanged. Affects navigation only; "
+            "every admin route stays reachable at its current path either way."
+        ),
+    )
+
     # ── Dashboards v2 (design_handoff_dashboards_v2) ────────────────────
     # Gates the redesigned student and teacher dashboard homes while they are
     # built out. Like content_studio_enabled and admin_v2_enabled, and unlike
