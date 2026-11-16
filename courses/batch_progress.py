@@ -26,6 +26,7 @@ from django.db import models
 from .admin_academy_views import _teacher_name
 from .models import TeachingAssignment
 from .models_batch_progress import BatchChapterProgress
+from .term_plan import current_chapter, pacing
 from .services import is_teacher_of
 
 
@@ -139,10 +140,23 @@ def build_batch_progress(batch):
                 "is_covered": covered,
                 "covered_at": bp.covered_at.isoformat() if (bp and bp.covered_at) else None,
                 "note": (bp.note if bp else ""),
+                # The term plan. Null means this chapter is unplanned, which
+                # is not the same as "due today" — see courses/term_plan.py.
+                "planned_date": ch.planned_date.isoformat() if ch.planned_date else None,
             })
 
         total += s_total
         done += s_done
+
+        # 🔴 Both are None when the subject has no usable term plan. The
+        # client MUST hide the status pill and the bar tick in that case
+        # rather than substituting 0 — an undated syllabus is not a syllabus
+        # that is 0% due.
+        status, expected = pacing(
+            s_done, s_total, [c.planned_date for c in chapters]
+        )
+        now_ch = current_chapter(chapters_payload)
+
         subjects_payload.append({
             "id": str(subject.id),
             "name": subject.name,
@@ -151,6 +165,14 @@ def build_batch_progress(batch):
             "chapters_total": s_total,
             "chapters_done": s_done,
             "percent": round(s_done / s_total * 100) if s_total else 0,
+            # ahead | on_track | behind | null
+            "pace_status": status,
+            # 0..1, where the tick goes on the bar. Null = no tick.
+            "expected_fraction": expected,
+            "current_chapter": (
+                {"title": now_ch["title"], "order": now_ch["order"]}
+                if now_ch else None
+            ),
             "chapters": chapters_payload,
         })
 

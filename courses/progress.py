@@ -6,6 +6,7 @@ including students who join later. Course % is chapter-weighted:
 across every chapter in every subject of the course.
 """
 
+from .term_plan import current_chapter, pacing
 from .admin_academy_views import _teacher_name
 from .models import TeachingAssignment
 
@@ -47,10 +48,20 @@ def build_course_progress(course):
                 "order": ch.order,
                 "is_covered": ch.is_covered,
                 "covered_at": ch.covered_at.isoformat() if ch.covered_at else None,
+                "planned_date": ch.planned_date.isoformat() if ch.planned_date else None,
             })
 
         total += s_total
         done += s_done
+
+        # Same pacing contract as the per-batch builder — the two payloads are
+        # deliberately interchangeable, so a client cannot get a pill from one
+        # and nothing from the other.
+        status, expected = pacing(
+            s_done, s_total, [c.planned_date for c in chapters]
+        )
+        now_ch = current_chapter(chapters_payload)
+
         subjects_payload.append({
             "id": str(subject.id),
             "name": subject.name,
@@ -59,6 +70,12 @@ def build_course_progress(course):
             "chapters_total": s_total,
             "chapters_done": s_done,
             "percent": round(s_done / s_total * 100) if s_total else 0,
+            "pace_status": status,
+            "expected_fraction": expected,
+            "current_chapter": (
+                {"title": now_ch["title"], "order": now_ch["order"]}
+                if now_ch else None
+            ),
             "chapters": chapters_payload,
         })
 
