@@ -259,6 +259,27 @@ class Chapter(models.Model):
     # NOTE ON THE BACKFILL: rows that predate this field are indistinguishable
     # — the shipped resolve_or_create_chapter() path left no trace — so they
     # all default to is_custom=False. See migration 0036's docstring.
+    # ── Term plan ────────────────────────────────────────────────────────
+    # When this chapter is MEANT to be covered. Null = not planned, which is
+    # the default and must stay meaningful: a subject with no planned dates
+    # has no term plan, and the student UI then shows progress WITHOUT an
+    # on-track judgement rather than inventing one.
+    #
+    # 🔴 Deliberately a date per CHAPTER rather than a start/end per subject
+    # with chapters spread evenly. Syllabuses are not uniformly paced — a
+    # 40-page chapter and a 6-page one do not take the same fortnight — and an
+    # evenly-spread estimate would produce confident "BEHIND" labels that are
+    # an artefact of the arithmetic, not of the class.
+    planned_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When this chapter should be covered, per the term plan. "
+            "Leave blank if the subject has no plan — progress is then shown "
+            "without an on-track/behind judgement."
+        ),
+    )
+
     is_custom = models.BooleanField(
         default=False,
         db_index=True,
