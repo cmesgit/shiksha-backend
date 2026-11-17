@@ -6,6 +6,7 @@ Covers:
   - the pre-booking feed (StudentSkillExpertsView) and post-booking feed
     (SkillSessionDetailView) both surface intro_video_embed_url once ready
 """
+import datetime
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -1570,3 +1571,416 @@ class DirectoryStatsCategoryCountTests(TestCase):
         cache.clear()
         res = APIClient().get("/api/skill/directory-stats/")
         self.assertEqual(res.data["categories"], 2)
+
+
+class AcceptingBookingsTests(TestCase):
+    """S4 — `accepting_bookings` replaces a hardcoded "Accepting bookings"
+    badge that every expert showed, always, whether or not it was true.
+
+    The point of these tests is that the flag is ENFORCED. A toggle that only
+    changes a label is the same bug in a new shape.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.teacher_role = Role.objects.create(name="TEACHER")
+        cls.student_role = Role.objects.create(name="STUDENT")
+
+        cls.teacher_user = User.objects.create_user(
+            username="ab_expert", email="ab_expert@test.com", password="pw")
+        UserRole.objects.create(user=cls.teacher_user, role=cls.teacher_role,
+                                is_active=True, is_primary=True)
+        cls.teacher_profile = TeacherProfile.objects.create(
+            user=cls.teacher_user, teacher_type=TeacherProfile.TYPE_GUEST)
+        cls.expert = ExpertProfile.objects.create(
+            teacher_profile=cls.teacher_profile, headline="Flute",
+            is_listed=True, hourly_rate=50000)
+
+        cls.learner_user = User.objects.create_user(
+            username="ab_learner", email="ab_learner@test.com", password="pw")
+        UserRole.objects.create(user=cls.learner_user, role=cls.student_role,
+                                is_active=True, is_primary=True)
+        cls.learner_profile = LearnerProfile.objects.create(
+            account=cls.learner_user, display_name="Lee", is_default=True)
+
+    def _learner_client(self):
+        # Same shape the other suites in this file use: force_authenticate
+        # takes a plain dict as the token, and get_active_profile reads
+        # "active_profile" off it.
+        c = APIClient()
+        c.force_authenticate(
+            user=self.learner_user,
+            token={"active_profile": str(self.learner_profile.id)},
+        )
+        return c
+
+    def _expert_client(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher_user)
+        return c
+
+    def test_defaults_true_so_existing_experts_are_unchanged(self):
+        """A new column must not silently pause everyone already listed."""
+        self.assertTrue(self.expert.accepting_bookings)
+
+    def test_expert_can_pause_and_resume(self):
+        c = self._expert_client()
+        r = c.patch("/api/skill/teacher/profile/",
+                    {"accepting_bookings": False}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.expert.refresh_from_db()
+        self.assertFalse(self.expert.accepting_bookings)
+
+        r = c.patch("/api/skill/teacher/profile/",
+                    {"accepting_bookings": True}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.expert.refresh_from_db()
+        self.assertTrue(self.expert.accepting_bookings)
+
+    def test_string_false_from_a_form_post_is_not_truthy(self):
+        """A multipart form sends "false", and bool("false") is True — which
+        would turn a pause into a resume."""
+        self.expert.accepting_bookings = True
+        self.expert.save(update_fields=["accepting_bookings"])
+        r = self._expert_client().patch("/api/skill/teacher/profile/",
+                                        {"accepting_bookings": "false"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.expert.refresh_from_db()
+        self.assertFalse(self.expert.accepting_bookings)
+
+    def test_paused_expert_refuses_a_new_request(self):
+        """The whole point: the flag holds at the booking endpoint."""
+        self.expert.accepting_bookings = False
+        self.expert.save(update_fields=["accepting_bookings"])
+        r = self._learner_client().post("/api/skill/sessions/", {
+            "expert": str(self.expert.id), "duration_mins": 60, "note": "hello",
+        }, format="json")
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertEqual(SkillSession.objects.filter(expert=self.expert).count(), 0)
+
+    def test_accepting_expert_still_takes_requests(self):
+        self.expert.accepting_bookings = True
+        self.expert.save(update_fields=["accepting_bookings"])
+        r = self._learner_client().post("/api/skill/sessions/", {
+            "expert": str(self.expert.id), "duration_mins": 60, "note": "hello",
+        }, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(SkillSession.objects.filter(expert=self.expert).count(), 1)
+
+    def test_pausing_does_not_hide_the_expert_or_touch_existing_sessions(self):
+        """Pausing is not unlisting. A paused expert stays discoverable and
+        keeps the sessions they already agreed to."""
+        SkillSession.objects.create(
+            expert=self.expert, learner_profile=self.learner_profile,
+            status=SkillSession.STATUS_CONFIRMED, duration_mins=60)
+        self.expert.accepting_bookings = False
+        self.expert.save(update_fields=["accepting_bookings"])
+
+        r = APIClient().get("/api/skill/teachers/")
+        self.assertEqual(r.status_code, 200, r.content)
+        ids = {row["id"] for row in (r.data.get("results") or r.data)}
+        self.assertIn(str(self.expert.id), ids)
+        self.assertEqual(
+            SkillSession.objects.filter(
+                expert=self.expert, status=SkillSession.STATUS_CONFIRMED).count(), 1)
+
+    def test_public_profile_reports_the_flag(self):
+        """The profile page has to be able to say so BEFORE someone fills in
+        a form the server will refuse."""
+        self.expert.accepting_bookings = False
+        self.expert.save(update_fields=["accepting_bookings"])
+        r = APIClient().get(f"/api/skill/teachers/{self.expert.id}/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIs(r.data["accepting_bookings"], False)
+
+
+class SessionPayloadCompletenessTests(TestCase):
+    """S1 — two fields whose ABSENCE was the bug.
+
+    Both rows already carried plenty; each was missing the one thing its
+    reader actually needed to make a decision.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.teacher_role = Role.objects.create(name="TEACHER")
+        cls.student_role = Role.objects.create(name="STUDENT")
+
+        cls.teacher_user = User.objects.create_user(
+            username="sp_expert", email="sp_expert@test.com", password="pw")
+        UserRole.objects.create(user=cls.teacher_user, role=cls.teacher_role,
+                                is_active=True, is_primary=True)
+        cls.tp = TeacherProfile.objects.create(
+            user=cls.teacher_user, teacher_type=TeacherProfile.TYPE_GUEST)
+        cls.expert = ExpertProfile.objects.create(
+            teacher_profile=cls.tp, headline="Tabla", is_listed=True,
+            hourly_rate=60000, class_mode=ExpertProfile.MODE_TRAVEL,
+            class_location="Koregaon Park, Pune")
+
+        cls.learner_user = User.objects.create_user(
+            username="sp_learner", email="sp_learner@test.com", password="pw")
+        UserRole.objects.create(user=cls.learner_user, role=cls.student_role,
+                                is_active=True, is_primary=True)
+        cls.learner_profile = LearnerProfile.objects.create(
+            account=cls.learner_user, display_name="Sam", is_default=True)
+
+        cls.session = SkillSession.objects.create(
+            expert=cls.expert, learner_profile=cls.learner_profile,
+            status=SkillSession.STATUS_CONFIRMED, duration_mins=60,
+            scheduled_for=timezone.now() + datetime.timedelta(hours=3),
+            amount=60000, note="Tabla basics")
+
+    def _learner_client(self):
+        c = APIClient()
+        c.force_authenticate(user=self.learner_user,
+                             token={"active_profile": str(self.learner_profile.id)})
+        return c
+
+    def test_learner_session_row_says_where_it_happens(self):
+        """Time, price and the expert's face were all there; WHERE was not,
+        so a learner could not tell a browser session from a cross-town one."""
+        r = self._learner_client().get("/api/skill/student/dashboard/")
+        self.assertEqual(r.status_code, 200, r.content)
+        row = r.data["upcoming_sessions"][0]
+        self.assertEqual(row["class_mode"], ExpertProfile.MODE_TRAVEL)
+        self.assertEqual(row["class_location"], "Koregaon Park, Pune")
+
+    def test_online_session_reports_no_location(self):
+        """class_location is set on the expert but meaningless online —
+        echoing it would send someone to an address for a video call."""
+        self.expert.class_mode = ExpertProfile.MODE_ONLINE
+        self.expert.save(update_fields=["class_mode"])
+        r = self._learner_client().get("/api/skill/student/dashboard/")
+        row = r.data["upcoming_sessions"][0]
+        self.assertEqual(row["class_mode"], ExpertProfile.MODE_ONLINE)
+        self.assertEqual(row["class_location"], "")
+
+    def test_expert_schedule_row_carries_the_fee(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher_user)
+        r = c.get("/api/skill/teacher/dashboard/")
+        self.assertEqual(r.status_code, 200, r.content)
+        rows = r.data["next_up"]
+        self.assertTrue(rows, "expected the confirmed session on next_up")
+        self.assertEqual(rows[0]["amount_rupees"], 600)
+
+
+class AdminExpertUnsuspendTests(TestCase):
+    """POST /skill/admin/experts/<id>/suspend/ {"action": "unsuspend"}
+
+    This path called `ep.sync_listing(save=True)`, a method that has never
+    existed on ExpertProfile — the real one is `refresh_listing`. The
+    AttributeError fired AFTER `is_suspended = False` had been committed, so
+    the expert came back unsuspended and still delisted, and retrying hit the
+    same line again. Suspension was effectively one-way through the admin UI.
+
+    These pin the round trip, not just the absence of a 500: suspending has
+    to delist, and unsuspending has to put a complete profile back on the
+    marketplace.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_user(
+            username="sus_adm", email="sus_adm@test.com", password="x",
+            is_staff=True, is_superuser=True,
+        )
+        cls.teacher_user = User.objects.create_user(
+            username="sus_t", email="sus_t@test.com", password="x")
+        cls.tp = TeacherProfile.objects.create(
+            user=cls.teacher_user, teacher_type=TeacherProfile.TYPE_GUEST)
+        # `refresh_listing` only re-lists a COMPLETE profile, and completeness
+        # reads the personal fields off the account's SELF learner profile
+        # (ExpertProfile.completeness -> profile_ops.personal_missing). A
+        # thinner fixture makes the re-listing assertion pass for the wrong
+        # reason — it stays delisted because it was never listable.
+        cls.lp = LearnerProfile.objects.create(
+            account=cls.teacher_user, display_name="Sus", relationship="SELF",
+            is_default=True, is_active=True,
+            full_name="Sus Pended", phone="9000000000",
+            date_of_birth=datetime.date(1990, 1, 1),
+            profile_photo="profile_photos/x.jpg",
+        )
+
+    def setUp(self):
+        self.expert = ExpertProfile.objects.create(
+            teacher_profile=self.tp, headline="Tabla",
+            is_listed=True, hourly_rate=50000,
+            subject_description="Tabla and Indian percussion",
+            languages=["en"], bio="Twelve years of teaching tabla.",
+            class_mode=ExpertProfile.MODE_ONLINE,
+        )
+        self.assertTrue(
+            self.expert.is_complete,
+            "fixture is not a complete profile — the re-listing assertions "
+            "below would pass vacuously",
+        )
+        self.url = f"/api/skill/admin/experts/{self.expert.id}/suspend/"
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.admin)
+
+    def _post(self, action):
+        return self.client.post(self.url, {"action": action}, format="json")
+
+    def test_unsuspend_does_not_500(self):
+        self.assertEqual(self._post("suspend").status_code, 200)
+        res = self._post("unsuspend")
+        self.assertEqual(
+            res.status_code, 200,
+            "unsuspend raised instead of responding — the AttributeError is back",
+        )
+
+    def test_suspend_then_unsuspend_restores_the_listing(self):
+        self._post("suspend")
+        self.expert.refresh_from_db()
+        self.assertTrue(self.expert.is_suspended)
+        self.assertFalse(self.expert.is_listed, "suspending must delist")
+
+        self._post("unsuspend")
+        self.expert.refresh_from_db()
+        self.assertFalse(self.expert.is_suspended)
+        # The real regression: the old code left is_suspended=False with
+        # is_listed=False, so the expert was invisible with no way back.
+        self.assertTrue(
+            self.expert.is_listed,
+            "a complete profile must be re-listed when the suspension lifts",
+        )
+
+    def test_unsuspend_is_idempotent(self):
+        """The bug made a retry hit the same broken line, so retrying was the
+        natural reaction and it never worked. Twice must be safe."""
+        self._post("suspend")
+        self.assertEqual(self._post("unsuspend").status_code, 200)
+        self.assertEqual(self._post("unsuspend").status_code, 200)
+        self.expert.refresh_from_db()
+        self.assertTrue(self.expert.is_listed)
+
+    def test_unsuspend_does_not_list_an_incomplete_profile(self):
+        """refresh_listing() only lists a complete profile. Lifting a
+        suspension must not promote someone who was never listable."""
+        self.expert.is_listed = False
+        self.expert.save(update_fields=["is_listed"])
+        with patch.object(
+            type(self.expert), "is_complete", property(lambda self: False)
+        ):
+            self._post("suspend")
+            res = self._post("unsuspend")
+        self.assertEqual(res.status_code, 200)
+        self.expert.refresh_from_db()
+        self.assertFalse(self.expert.is_suspended)
+        self.assertFalse(self.expert.is_listed)
+
+    def test_a_bad_action_is_rejected(self):
+        self.assertEqual(self._post("delist").status_code, 400)
+
+
+class ExpertPriceAgreementTests(TestCase):
+    """The directory card, the profile page and the order the server actually
+    creates all have to quote the same money.
+
+    Before this they did not. The card showed `from_rate` = min(listings)
+    captioned "per 60-min session" with no "from"; the profile hero and the
+    booking form used `listings[0]`; and CreateOrderView picked with
+    `order_by("order")` alone, whose tie-break is undefined when two listings
+    share an order. A two-listing expert could therefore advertise one price,
+    display a second and charge a third.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from .models import SkillCategory
+        cls.user = User.objects.create_user(
+            username="px_t", email="px_t@test.com", password="x")
+        cls.tp = TeacherProfile.objects.create(
+            user=cls.user, teacher_type=TeacherProfile.TYPE_GUEST)
+        cls.cat = SkillCategory.objects.create(slug="music", label="Music")
+
+    def _expert(self, **kw):
+        return ExpertProfile.objects.create(
+            teacher_profile=self.tp, headline="Guitar",
+            is_listed=True, **kw)
+
+    def _listing(self, expert, *, paise, order, title="Skill"):
+        from .listing_models import SkillListing
+        return SkillListing.objects.create(
+            expert=expert, category=self.cat, title=title,
+            price_paise=paise, order=order,
+            is_active=True, is_suspended=False)
+
+    def _card(self, expert):
+        from .serializers import ExpertCardSerializer
+        expert.refresh_from_db()
+        return ExpertCardSerializer(expert).data
+
+    def test_default_listing_follows_the_models_own_ordering(self):
+        e = self._expert(hourly_rate=0)
+        cheap = self._listing(e, paise=50000, order=1, title="Cheap")
+        first = self._listing(e, paise=90000, order=0, title="First")
+        self.assertEqual(e.default_listing().id, first.id)
+        # The cheapest is NOT the default — that was the whole disagreement.
+        self.assertNotEqual(e.default_listing().id, cheap.id)
+
+    def test_card_marks_a_multi_price_expert_as_from(self):
+        e = self._expert(hourly_rate=0)
+        self._listing(e, paise=90000, order=0)
+        self._listing(e, paise=50000, order=1)
+        card = self._card(e)
+        self.assertEqual(card["from_rate"], 500)
+        self.assertTrue(card["price_is_from"],
+                        "two different prices must render as 'from ₹500'")
+
+    def test_a_single_listing_is_not_a_from_price(self):
+        e = self._expert(hourly_rate=0)
+        self._listing(e, paise=90000, order=0)
+        card = self._card(e)
+        self.assertEqual(card["from_rate"], 900)
+        self.assertFalse(card["price_is_from"])
+
+    def test_identical_prices_are_not_a_from_price(self):
+        """Two listings at the same price is one price, not a range."""
+        e = self._expert(hourly_rate=0)
+        self._listing(e, paise=90000, order=0)
+        self._listing(e, paise=90000, order=1)
+        self.assertFalse(self._card(e)["price_is_from"])
+
+    def test_sub_rupee_is_not_free(self):
+        """`price_paise // 100` floors ₹0.50 to 0, and the card branched on
+        that integer — so a sub-rupee listing advertised itself as Free."""
+        e = self._expert(hourly_rate=0)
+        self._listing(e, paise=50, order=0)
+        card = self._card(e)
+        self.assertEqual(card["from_rate"], 0)
+        self.assertFalse(card["is_free"], "₹0.50 is not free")
+
+    def test_zero_really_is_free(self):
+        e = self._expert(hourly_rate=0)
+        self._listing(e, paise=0, order=0)
+        self.assertTrue(self._card(e)["is_free"])
+
+    def test_card_points_at_the_listing_the_server_would_charge(self):
+        e = self._expert(hourly_rate=0)
+        self._listing(e, paise=90000, order=0, title="First")
+        self._listing(e, paise=50000, order=1, title="Cheap")
+        card = self._card(e)
+        self.assertEqual(card["default_listing_id"], str(e.default_listing().id))
+
+    def test_suspended_and_paused_listings_are_not_the_default(self):
+        from .listing_models import SkillListing
+        e = self._expert(hourly_rate=0)
+        SkillListing.objects.create(expert=e, category=self.cat, title="Suspended",
+                                    price_paise=10000, order=0,
+                                    is_active=True, is_suspended=True)
+        SkillListing.objects.create(expert=e, category=self.cat, title="Paused",
+                                    price_paise=20000, order=1,
+                                    is_active=False, is_suspended=False)
+        live = self._listing(e, paise=90000, order=2, title="Live")
+        self.assertEqual(e.default_listing().id, live.id)
+        self.assertEqual(self._card(e)["from_rate"], 900)
+
+    def test_no_listings_falls_back_to_hourly_rate(self):
+        e = self._expert(hourly_rate=70000)
+        self.assertIsNone(e.default_listing())
+        card = self._card(e)
+        self.assertEqual(card["from_rate"], 700)
+        self.assertFalse(card["price_is_from"])
+        self.assertFalse(card["is_free"])

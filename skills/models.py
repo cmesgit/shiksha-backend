@@ -70,7 +70,14 @@ class PendingIntroVideoUpload(models.Model):
 # =====================================================
 #
 # Wraps accounts.TeacherProfile with the marketplace-facing card data.
-# Only listed (is_listed=True) after the screening panel approves.
+#
+# `is_listed` is SELF-GRANTED, not approved. refresh_listing() flips it the
+# moment `is_complete` is true, and it is called from self-service signup
+# (accounts/signup_serializer.py) and from every dashboard profile PATCH
+# (skills/teacher_views.py). There is no screening panel — admin tooling here
+# is for MODERATION after the fact (see AdminExpertSuspendView), which is
+# also why test profiles reach the public directory. The previous comment
+# claimed an approval step that has never existed.
 
 class ExpertProfile(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -147,6 +154,20 @@ class ExpertProfile(models.Model):
     rating = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
     sessions_count = models.PositiveIntegerField(default=0)
 
+    # Whether this expert is currently taking NEW booking requests.
+    #
+    # The dashboard has always shown a hardcoded "Accepting bookings" badge —
+    # a static <span>, identical for every expert, true or not. This is the
+    # field behind it, and it is enforced (SessionRequestView refuses when it
+    # is False) rather than being a label that does nothing, which is the bug
+    # it replaces.
+    #
+    # Distinct from `is_listed` and `is_suspended`: a paused expert stays
+    # discoverable and keeps their existing confirmed sessions — they are
+    # simply not taking anything NEW. Defaults True so every existing row
+    # keeps today's behaviour.
+    accepting_bookings = models.BooleanField(default=True)
+
     is_listed = models.BooleanField(
         default=False,
         help_text="Approved expert appears in the directory. FREE — never gated "
@@ -166,8 +187,8 @@ class ExpertProfile(models.Model):
     # decayed when an ad-subscription is cancelled or lapses.
     reach_count = models.PositiveIntegerField(default=0)
     # Admin suspension: hard-off switch. When True the expert is delisted, can't
-    # take new bookings, isn't advertised, and sync_listing() will NOT re-list
-    # them until an admin lifts the suspension.
+    # take new bookings, isn't advertised, and refresh_listing() will NOT
+    # re-list them until an admin lifts the suspension.
     is_suspended = models.BooleanField(default=False)
 
     # ── Offline-class location (for "find a tutor near me") ───────────────
@@ -344,6 +365,35 @@ class ExpertProfile(models.Model):
             if save:
                 self.save(update_fields=["is_listed", "updated_at"])
         return self.is_listed
+
+    def bookable_listings(self):
+        """Active, unsuspended listings in the model's own display order.
+
+        Sorted in Python rather than with `.order_by()` so a caller that has
+        already prefetched `listings` does not pay a second query — the
+        directory serialises 20+ experts per page.
+        """
+        rows = [
+            l for l in self.listings.all()
+            if l.is_active and not l.is_suspended
+        ]
+        # Mirrors SkillListing.Meta.ordering = ["order", "-created_at"].
+        rows.sort(key=lambda l: (l.order, l.created_at and -l.created_at.timestamp()))
+        return rows
+
+    def default_listing(self):
+        """The listing a learner books when they haven't chosen one.
+
+        ONE definition, because there used to be three and they disagreed:
+        the directory card priced an expert at min(listings) via `from_rate`,
+        the profile hero and booking form used `listings[0]`, and
+        CreateOrderView picked with `order_by("order")` alone — whose
+        tie-break is undefined when two listings share an `order`, so the
+        amount written to SkillSession.amount could differ from the figure
+        the learner was just shown. Everything now resolves through here.
+        """
+        rows = self.bookable_listings()
+        return rows[0] if rows else None
 
     def has_offline_class(self):
         return self.class_mode in (self.MODE_HOME, self.MODE_TRAVEL)

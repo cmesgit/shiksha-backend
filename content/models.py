@@ -22,6 +22,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
 
+from .upload_paths import cms_upload_to
 from .validators import validate_cms_image
 from django.db.models import Q
 from django.db.models.functions import Cast
@@ -233,7 +234,7 @@ class BlogPost(PublishableModel):
         help_text="Short summary shown on listing cards (≈1–2 sentences).",
     )
     cover = models.ImageField(
-        upload_to="content/blog/%Y/%m/", blank=True, null=True,
+        upload_to=cms_upload_to("content/blog", dated=True), blank=True, null=True,
         validators=[validate_cms_image],
         help_text="Card thumbnail. ~800×450 recommended.",
     )
@@ -606,7 +607,7 @@ class Announcement(StatusedContentModel):
     # serializer. Registered in content/media.py so the Pictures screen counts
     # it and the 409 delete guard protects it.
     image = models.ImageField(
-        upload_to="content/ticker/", blank=True, null=True,
+        upload_to=cms_upload_to("content/ticker"), blank=True, null=True,
         validators=[validate_cms_image],
     )
     image_url = models.URLField(
@@ -853,7 +854,7 @@ class ShowcaseCourse(StatusedContentModel):
         help_text="Two rgba() stops for the thumbnail overlay.",
     )
     image = models.ImageField(
-        upload_to="content/showcase/", blank=True, null=True,
+        upload_to=cms_upload_to("content/showcase"), blank=True, null=True,
         validators=[validate_cms_image],
     )
     image_url = models.URLField(
@@ -1093,7 +1094,7 @@ class HomeContentBlock(StatusedContentModel):
     cta_secondary_label = models.CharField(max_length=60, blank=True, default="")
     cta_secondary_href = models.CharField(max_length=200, blank=True, default="")
     image = models.ImageField(
-        upload_to="content/home/", blank=True, null=True,
+        upload_to=cms_upload_to("content/home"), blank=True, null=True,
         validators=[validate_cms_image],
     )
     image_url = models.URLField(
@@ -1196,7 +1197,7 @@ class HomeListItem(StatusedContentModel):
     # before this, those images were hardcoded frontend imports and could only
     # be changed with a deploy.
     image = models.ImageField(
-        upload_to="content/home/", blank=True, null=True,
+        upload_to=cms_upload_to("content/home"), blank=True, null=True,
         validators=[validate_cms_image],
     )
     image_url = models.URLField(
@@ -1310,7 +1311,7 @@ class ContentImage(TimeStampedModel):
     several, and deleting the post shouldn't cascade-delete an image that
     might still be referenced elsewhere in its body_html_source history."""
     file = models.ImageField(
-        upload_to="content/editor/%Y/%m/",
+        upload_to=cms_upload_to("content/editor", dated=True),
         validators=[validate_cms_image],
     )
     uploaded_by = models.ForeignKey(
@@ -1613,3 +1614,201 @@ class NewsletterSubscriber(models.Model):
     def __str__(self):
         state = "unsubscribed" if self.unsubscribed_at else "subscribed"
         return f"{self.email} ({state})"
+
+
+# ── Landing-page demo videos ──────────────────────────────────────
+
+class DemoVideo(StatusedContentModel):
+    """A short product walkthrough offered from the public landing page.
+
+    Two rows today — "create your account" and "get back in" — surfaced by
+    shiksha-frontend's floating demo button. Deliberately its own small model
+    rather than the usual HomeContentBlock/HomeListItem reuse, because every
+    field here is video-specific and neither of those has anywhere to put a
+    Bunny guid. Squeezing one into ``HomeListItem.cta_href`` (the only spare
+    string) would have made a link field secretly mean "video id", which is
+    the sort of overload nobody finds again.
+
+    ``bunny_video_id`` is pasted in by an admin after uploading through the
+    Bunny dashboard. There is no upload endpoint here on purpose: the two
+    existing upload flows (``skills/views_intro_video.py``,
+    ``courses/views_recordings.py``) exist because *users* upload on those
+    paths. Two marketing clips replaced once a year do not justify a third
+    copy of that three-step TUS handshake.
+
+    ``duration_seconds``, ``thumbnail_url`` and ``bunny_status`` are NOT typed
+    in by hand — they are synced from Bunny by ``manage.py sync_demo_videos``.
+    The design mockup for this feature hardcoded "0:40" and "0:28" for clips
+    that were really 0:54 and 0:18, which is exactly what hand-entered
+    durations drift into. Null duration means "not known yet", never zero:
+    Bunny reports ``length: 0`` until it has finished processing, and the sync
+    coerces that to None rather than publishing a "0:00" label.
+
+    ``bunny_status`` is what makes a row publishable. Having a guid only means
+    *a slot exists*, not that anything plays: a Bunny video can sit at status 2
+    ("Processing") with ``storageSize: 0`` forever if the upload silently
+    stored nothing. That happened on 2026-09-11 and put two menu entries on the
+    public homepage that opened an empty player — precisely the failure this
+    model's "withhold rows with no guid" rule was written to prevent, reached
+    by the other route. Playability is now asserted, not assumed.
+    """
+
+    key = models.SlugField(
+        max_length=40, unique=True,
+        help_text="Stable identifier used by the frontend, e.g. signup / login. "
+                  "Changing it re-points whichever card refers to it.",
+    )
+    title = models.CharField(max_length=80)
+    blurb = models.CharField(
+        max_length=120, blank=True, default="",
+        help_text="One line under the title, e.g. “Create your account”.",
+    )
+    bunny_video_id = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Bunny Stream guid. Until this is set the video is hidden "
+                  "from the site even when published.",
+    )
+    duration_seconds = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Synced from Bunny by `manage.py sync_demo_videos`. "
+                  "Leave blank — anything typed here is overwritten.",
+    )
+    thumbnail_url = models.URLField(
+        blank=True, default="",
+        help_text="Synced from Bunny by `manage.py sync_demo_videos`.",
+    )
+    bunny_status = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Bunny's encoding status, synced by "
+                  "`manage.py sync_demo_videos`. The site only shows a clip "
+                  "once this reads 4 (Finished) — a guid alone does not mean "
+                  "anything plays. Run the sync after uploading.",
+    )
+    order = models.PositiveSmallIntegerField(default=0)
+
+    # Bunny's encoding states: 0 Created, 1 Uploaded, 2 Processing,
+    # 3 Transcoding, 4 Finished, 5 Error, 6 UploadFailed.
+    BUNNY_FINISHED = 4
+
+    class Meta:
+        ordering = ["order", "id"]
+        verbose_name = "Landing demo video"
+
+    @property
+    def is_playable(self):
+        """True when this row would actually play for a visitor.
+
+        Needs all three: a guid, a configured library, and Bunny confirming the
+        encode finished. Read by the admin so an editor can see *why* a
+        published row is not on the site.
+        """
+        return bool(self.embed_url()) and self.bunny_status == self.BUNNY_FINISHED
+
+    def embed_url(self):
+        """Playable Bunny embed URL, or None if this row has no video yet.
+
+        A method, not a property, to match ``skills`` — four of that app's five
+        call sites are hand-rolled dicts where a property silently serialises
+        as a bound-method repr.
+
+        Unsigned, like ``skills/models.py:intro_video_embed_url``. These clips
+        are public marketing on an anonymous, cached endpoint, so a signed URL
+        with a 4-hour expiry (``config.bunny_signing.bunny_embed_url``) would
+        be cached past its own expiry and start 403ing. Guards
+        ``BUNNY_LIBRARY_ID`` explicitly — it has no default and is ``None``
+        when unset, which would otherwise render a working iframe pointed at
+        ``.../None/<guid>``.
+        """
+        if not (self.bunny_video_id and settings.BUNNY_LIBRARY_ID):
+            return None
+        return f"{settings.BUNNY_EMBED}/{settings.BUNNY_LIBRARY_ID}/{self.bunny_video_id}"
+
+    def __str__(self):
+        return f"{self.title} ({self.key})"
+
+
+# ── Redirects (design_handoff_admin_counsellor, Admin v2 Phase 5) ─────────
+
+class Redirect(models.Model):
+    """One old path → one new path, for links that have already escaped.
+
+    WHY THIS IS A MODEL AND NOT nginx CONFIG, AND NOT DJANGO MIDDLEWARE
+    ──────────────────────────────────────────────────────────────────
+    The public site is a React SPA. nginx serves `index.html` for every
+    unmatched path, so a Django middleware — including
+    `django.contrib.redirects` — **never sees** `/old-course-slug`: the
+    request is answered by the static server before Django is consulted.
+    The only place that knows the URL failed is the SPA's own catch-all
+    route, so the SPA asks `GET /api/content/redirects/resolve/` before it
+    renders a 404.
+
+    That also means these are **client-side** redirects. They fix the visitor
+    experience and internal links; they do NOT pass PageRank the way a 301
+    from the origin would. Said plainly here so nobody reports it as a bug:
+    `permanent` controls the wording the SPA uses and is the flag to honour
+    if these are ever promoted into nginx or an edge worker.
+
+    The problem this exists for is real and documented: `Course.slug` is
+    derived from the title on first save and **never re-derived on rename**
+    (see the workspace CLAUDE.md). Renaming a course leaves every shared link
+    to its old slug dead, with nothing an admin can do about it until now.
+    """
+
+    from_path = models.CharField(
+        max_length=300,
+        unique=True,
+        db_index=True,
+        help_text="The dead path, including the leading slash — e.g. /courses/old-name",
+    )
+    to_path = models.CharField(
+        max_length=300,
+        help_text="Where it should go instead. A site path, or a full URL for off-site.",
+    )
+    # 301 vs 302. Default permanent: the overwhelming case is a rename, and a
+    # temporary redirect for a permanent move is the one that ages badly.
+    permanent = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=True)
+
+    # Evidence that a redirect is earning its place. A rule with zero hits a
+    # year after a rename is a rule you can retire; one with thousands says
+    # the old link is still in circulation.
+    hits = models.PositiveIntegerField(default=0, editable=False)
+    last_hit_at = models.DateTimeField(null=True, blank=True, editable=False)
+
+    note = models.CharField(max_length=200, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="content_redirects",
+    )
+
+    class Meta:
+        ordering = ["from_path"]
+        verbose_name = "Redirect"
+
+    def __str__(self):
+        return f"{self.from_path} → {self.to_path}"
+
+    @staticmethod
+    def normalise(path):
+        """One spelling per path, so a lookup cannot miss on punctuation.
+
+        `/A/B/`, `/a/b` and `a/b?x=1` are the same destination as far as a
+        redirect rule is concerned. Lower-cased, query and fragment dropped,
+        trailing slash removed (except for the root), leading slash forced.
+        """
+        if not path:
+            return ""
+        p = str(path).strip().split("#")[0].split("?")[0]
+        if not p.startswith("/"):
+            p = "/" + p
+        p = p.rstrip("/") or "/"
+        return p.lower()
+
+    def save(self, *args, **kwargs):
+        self.from_path = self.normalise(self.from_path)
+        # `to_path` is only normalised when it is a site path; an off-site URL
+        # must keep its scheme, case and query string intact.
+        if not self.to_path.lower().startswith(("http://", "https://")):
+            self.to_path = self.normalise(self.to_path)
+        return super().save(*args, **kwargs)

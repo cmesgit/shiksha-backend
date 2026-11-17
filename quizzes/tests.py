@@ -23,7 +23,7 @@ from rest_framework.test import APIClient
 
 from accounts.models import User, Role, UserRole, LearnerProfile
 from courses.chapter_tags import set_tags
-from courses.models import Course, Subject, TeachingAssignment
+from courses.models import Course, Subject, TeachingAssignment, Batch
 from enrollments.models import Subscription
 from quizzes.models import (
     Quiz, QuizSection, Question, Choice, QuizAttempt, StudentAnswer,
@@ -5692,3 +5692,81 @@ class AdminBankSummaryTest(QuizHubAdminAPITestBase):
         switched off, which is not the same answer as "you may not"."""
         self._disable_hub()
         self.assertEqual(self._admin().get(self.URL).status_code, 503)
+
+
+class TeacherSubjectQuizRowAnnotationTest(TestCase):
+    """Phase A3a — the per-subject quiz list must annotate `batch_count`.
+
+    Only TeacherAllQuizListView called _t1_row_annotations(), and the
+    serializer defaults `batch_count` to 0. The Quizzes screen treats 0 as
+    "no batches scoped" and renders **"Live for all batches"** — so on the
+    per-subject endpoint (the screen's 404 fallback path) every batch-scoped
+    quiz claimed course-wide visibility. A quiz scoped to one batch being
+    advertised as visible to everyone is a wrong answer, not a missing one.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        cls.teacher = User.objects.create_user(
+            username="bc_t", email="bc_t@test.com", password="x", is_verified=True)
+        UserRole.objects.create(
+            user=cls.teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True)
+
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Physics")
+        TeachingAssignment.objects.create(
+            batch=None, subject=cls.subject, teacher=cls.teacher, is_active=True)
+
+        cls.batch_a = Batch.objects.create(course=cls.course, name="10-A", code="10A")
+        cls.batch_b = Batch.objects.create(course=cls.course, name="10-B", code="10B")
+
+        # Empty batches M2M == course-wide, per quizzes/visibility.py.
+        cls.quiz_everyone = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="course-wide quiz",
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
+            review_status=Quiz.REVIEW_APPROVED)
+
+        cls.quiz_scoped = Quiz.objects.create(
+            subject=cls.subject, created_by=cls.teacher, title="two-batch quiz",
+            quiz_type=Quiz.TYPE_MOCK, is_assigned=True,
+            review_status=Quiz.REVIEW_APPROVED)
+        cls.quiz_scoped.batches.set([cls.batch_a, cls.batch_b])
+
+    def _rows(self):
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = c.get(f"/api/teacher/subjects/{self.subject.id}/quizzes/")
+        self.assertEqual(r.status_code, 200, r.content)
+        return {row["title"]: row for row in r.data}
+
+    def test_batch_scoped_quiz_reports_its_batch_count(self):
+        self.assertEqual(self._rows()["two-batch quiz"]["batch_count"], 2)
+
+    def test_course_wide_quiz_reports_zero(self):
+        """0 is the real encoding of course-wide — empty batches M2M."""
+        self.assertEqual(self._rows()["course-wide quiz"]["batch_count"], 0)
+
+    def test_agrees_with_the_flat_endpoint(self):
+        """Both endpoints feed the same card, so they must not disagree —
+        which is exactly what the missing annotation caused."""
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        flat = {row["title"]: row for row in c.get("/api/teacher/quizzes/all/").data}
+        per_subject = self._rows()
+        for title in ("course-wide quiz", "two-batch quiz"):
+            self.assertEqual(
+                per_subject[title]["batch_count"], flat[title]["batch_count"],
+                f"{title}: per-subject and flat endpoints disagree")
+
+    def test_bank_chips_do_not_multiply_across_batches(self):
+        """_t1_row_annotations joins questions AND batches; without
+        distinct=True the two-batch quiz would report each question twice."""
+        q = Question.objects.create(
+            quiz=self.quiz_scoped, text="q?", marks=1,
+            bank_state=Question.BANK_STATE_SUGGESTED)
+        Choice.objects.create(question=q, text="a", is_correct=True)
+        row = self._rows()["two-batch quiz"]
+        self.assertEqual(row["bank_suggested"], 1)
+        self.assertEqual(row["questions_count"], 1)

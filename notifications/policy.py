@@ -67,6 +67,13 @@ _DEFAULT = {"category": "social", "email": OFF, "sms": OFF, "push": OPT_OUT,
 POLICY = {
     "research.reminder": {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
     "research.updated": {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
+    # ── Explore community verification ─────────────────────────────────
+    # SMS is OFF for the same reason research.updated has it off: SMS is
+    # policy-OFF across this platform and these are low-urgency, high-volume
+    # events — a specialist can be invited to several sets a day.
+    "explore.review_invited":    {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
+    "explore.verified":          {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
+    "explore.changes_requested": {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": OPT_OUT},
     # ── Counseling bookings ────────────────────────────────────────────
     "counseling.booked":       {"category": "bookings", "email": REQUIRED, "sms": REQUIRED, "push": REQUIRED, "sms_template": "booking_confirmed"},
     "counseling.cancelled":    {"category": "bookings", "email": REQUIRED, "sms": REQUIRED, "push": REQUIRED, "sms_template": "booking_cancelled"},
@@ -136,6 +143,12 @@ POLICY = {
     # Teacher-triggered nudge for students who haven't attempted a
     # published quiz yet (Quiz Analytics "Send reminder" action).
     "quiz.reminder":       {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": REQUIRED},
+    # Teacher-triggered nudge for students who haven't submitted a published
+    # assignment yet (the Assignments rail's "Remind students" action).
+    # Same shape as quiz.reminder: both are a person deliberately prodding a
+    # named student about one overdue thing, which is worth an email, is never
+    # worth an SMS, and should not be silently droppable.
+    "assignment.reminder": {"category": "learning", "email": OPT_OUT, "sms": OFF, "push": REQUIRED},
     "materials.uploaded":  {"category": "learning", "email": OFF,     "sms": OFF, "push": OPT_OUT},
     # A class recording going up. Same shape as materials.uploaded: useful,
     # frequent enough that email/SMS would be noise, worth a push a student

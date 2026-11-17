@@ -3,7 +3,7 @@
 from rest_framework import serializers
 
 from .models import (
-    Announcement, BlogPost, CurrentAffair, FAQItem, HomeContentBlock,
+    Announcement, BlogPost, CurrentAffair, DemoVideo, FAQItem, HomeContentBlock,
     HomeFloater, HomeListItem, HomeSectionOrder, ShowcaseCourse,
 )
 
@@ -235,3 +235,25 @@ class HomeSectionOrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = HomeSectionOrder
         fields = ["section", "order", "is_visible"]
+
+
+class DemoVideoSerializer(serializers.ModelSerializer):
+    """Public shape for a landing-page walkthrough.
+
+    `embed_url` is a SerializerMethodField over the model METHOD — declaring it
+    in `fields` alone would serialise the bound method, not the URL.
+
+    `bunny_video_id` is deliberately NOT exposed. The embed URL already
+    contains the guid, so this is not secrecy; it is having one representation
+    of "where the video is" rather than two that can disagree.
+    """
+
+    embed_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DemoVideo
+        fields = ["key", "title", "blurb", "embed_url", "duration_seconds",
+                  "thumbnail_url"]
+
+    def get_embed_url(self, obj):
+        return obj.embed_url()

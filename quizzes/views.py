@@ -959,6 +959,14 @@ class TeacherSubjectQuizListView(generics.ListAPIView):
                     filter=_SUBMITTED_ATTEMPTS,
                     distinct=True,
                 ) * 100.0 / (enrolled_count_subquery or 1),
+                # batch_count and the bank chips were annotated ONLY on
+                # TeacherAllQuizListView. The serializer defaults batch_count
+                # to 0, and the frontend reads 0 as "no batches scoped" =
+                # "Live for all batches" — so every batch-scoped quiz claimed
+                # course-wide visibility on this endpoint, which the list
+                # screen falls back to when /teacher/quizzes/all/ 404s.
+                # A wrong visibility claim is worse than a missing one.
+                **_t1_row_annotations(),
             )
             .order_by("-created_at")
         )

@@ -1,0 +1,79 @@
+/* content/static/content/demo_video_upload.css
+ *
+ * The upload panel on the Landing demo video change form.
+ *
+ * Colours come from Django admin's own CSS variables (--button-bg, --border-color,
+ * …) so this follows the admin's light/dark theme instead of pinning two hexes
+ * that look wrong in one of them. This is the Django admin's design system, not
+ * the Admin-dashboard's --admin-* tokens — different app, different vocabulary.
+ */
+
+.dv-upload {
+  max-width: 44em;
+}
+
+.dv-hint {
+  margin: 0 0 8px;
+  color: var(--body-quiet-color);
+}
+
+.dv-button {
+  background: var(--button-bg);
+  color: var(--button-fg);
+  border: none;
+  border-radius: 4px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.dv-button:hover:not(:disabled) {
+  background: var(--button-hover-bg);
+}
+
+.dv-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* The real input is driven by the button above it — a bare file input cannot
+ * be styled to match the admin, and its "No file chosen" label goes stale the
+ * moment the upload finishes. */
+.dv-file {
+  display: none;
+}
+
+.dv-progress {
+  display: none;
+  height: 6px;
+  margin: 10px 0 0;
+  border-radius: 3px;
+  background: var(--darkened-bg);
+  overflow: hidden;
+}
+
+.dv-progress-bar {
+  width: 0;
+  height: 100%;
+  background: var(--primary);
+  transition: width 0.2s ease;
+}
+
+.dv-message {
+  margin: 8px 0 0;
+}
+
+.dv-message.dv-ok {
+  color: var(--object-tools-bg, #417690);
+  font-weight: 600;
+}
+
+.dv-message.dv-error {
+  color: var(--error-fg);
+}
+
+.dv-summary {
+  margin: 6px 0 0;
+  color: var(--body-quiet-color);
+  font-size: 0.9em;
+}

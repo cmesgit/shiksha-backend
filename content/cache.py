@@ -41,7 +41,7 @@ def _register():
     # Imported lazily so this module can load before the app registry is
     # fully ready (apps.py imports us inside ready()).
     from .models import (
-        Announcement, BlogPost, ContentTag, CurrentAffair, FAQItem,
+        Announcement, BlogPost, ContentTag, CurrentAffair, DemoVideo, FAQItem,
         HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
         ShowcaseCourse,
     )
@@ -49,7 +49,7 @@ def _register():
     tracked = (
         BlogPost, CurrentAffair, FAQItem, Announcement, ShowcaseCourse,
         ContentTag, HomeContentBlock, HomeListItem, HomeFloater,
-        HomeSectionOrder,
+        HomeSectionOrder, DemoVideo,
     )
 
     def _bump(*args, **kwargs):
