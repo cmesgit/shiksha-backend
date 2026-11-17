@@ -289,6 +289,22 @@ SESSION_COOKIE_SAMESITE = "None"
 CSRF_COOKIE_SAMESITE = "None"
 COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN", ".shikshacom.com")
 
+# ── Shiksha Remote: device credential trust (RC-007) ──────────────────────
+# deployment-rollout.md requires a "separate signing key for control/device
+# tokens", distinct from SimpleJWT's and LiveKit's. Unset falls back to a
+# value DERIVED from SECRET_KEY rather than SECRET_KEY itself, so a
+# deployment that forgets it still does not reuse the session-signing secret
+# verbatim — but production must set it.
+COLLABORATION_DEVICE_KEY = os.getenv("COLLABORATION_DEVICE_KEY", "")
+
+# 🔴 The canonical origin DPoP proofs are validated against (RFC 9449 `htu`).
+# Deliberately configured, never derived from Host/X-Forwarded-* — those are
+# attacker-influenced, and `htu` is the field that stops a proof captured for
+# one endpoint being replayed against another.
+COLLABORATION_CANONICAL_URL = os.getenv(
+    "COLLABORATION_CANONICAL_URL", "https://api.shikshacom.com"
+)
+
 # ── Google sign-in ───────────────────────────────────────────────────────
 # The OAuth 2.0 Web-application client id from Google Cloud. Empty by default:
 # with no value the verifier REFUSES rather than falling back to an unchecked

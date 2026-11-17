@@ -4,6 +4,7 @@ from . import group_session_views as gs_views
 from . import instant_guest_views as guest_views
 from . import live_files_views as lf_views
 from . import remote_control_views as rc_views
+from .collaboration import device_views
 from .collaboration import views as collab_views
 from .views import subject_teachers, subject_students  # 👈 add this
 
@@ -220,4 +221,22 @@ urlpatterns = [
     path("collaboration/v1/ws-ticket/",
          collab_views.ws_ticket,
          name="collaboration-ws-ticket"),
+
+    # Pairing (RC-007a). Two authentication planes:
+    #   pairings/ and pairings/<id>/{poll,finalize}/ are DEVICE routes —
+    #   DPoP / pairing-secret only, never a user cookie (api-contracts.md).
+    #   pairings/confirm/ is the one browser route, and it deliberately
+    #   cannot complete a pairing on its own (threat T02).
+    path("collaboration/v1/pairings/",
+         device_views.create_pairing,
+         name="collaboration-pairing-create"),
+    path("collaboration/v1/pairings/confirm/",
+         device_views.confirm_pairing,
+         name="collaboration-pairing-confirm"),
+    path("collaboration/v1/pairings/<str:pairing_id>/poll/",
+         device_views.poll_pairing,
+         name="collaboration-pairing-poll"),
+    path("collaboration/v1/pairings/<str:pairing_id>/finalize/",
+         device_views.finalize_pairing,
+         name="collaboration-pairing-finalize"),
 ]

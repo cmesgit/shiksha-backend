@@ -1251,6 +1251,116 @@ class PairedDevice(models.Model):
         return self.status == self.STATUS_PAIRED
 
 
+class DevicePairing(models.Model):
+    """One in-flight attempt to pair a desktop with an account (RC-007).
+
+    A pairing is a short-lived, three-party handshake and every party has to
+    act before it completes:
+
+    1. the **companion** proves a fresh P-256 key and receives a secret plus
+       a 10-character human code;
+    2. the **browser**, signed in and recently authenticated, types that code
+       — which is the only step that names an account; and
+    3. the **companion again**, after a *local* confirmation on the desktop,
+       redeems the secret for credentials.
+
+    🔴 **Two confirmations, on two devices, are the point.** Step 2 alone is
+    a stolen browser session; step 3 alone is a stolen code. Requiring both
+    is what makes T02 ("stolen browser session cannot pair silently") hold —
+    so no code path may ever collapse them into one.
+
+    🔴 **No credential is stored.** The device secret and the user code are
+    kept only as keyed hashes. `user_code_hash` is a *deterministic* HMAC
+    precisely so `pairings/confirm/` can look a pairing up by code without
+    the plaintext ever existing in a column or an index.
+
+    🔴 **`account` stays NULL until the browser confirms**, and the poll
+    route reveals it only to a caller holding the matching secret — so a
+    guessed pairing id discloses nothing about who is pairing.
+    """
+
+    STATE_PENDING = "pending"
+    STATE_BROWSER_CONFIRMED = "browser_confirmed"
+    STATE_FINALIZED = "finalized"
+    STATE_EXPIRED = "expired"
+    STATE_CHOICES = [
+        (STATE_PENDING, "Pending"),
+        (STATE_BROWSER_CONFIRMED, "Browser confirmed"),
+        (STATE_FINALIZED, "Finalized"),
+        (STATE_EXPIRED, "Expired"),
+    ]
+
+    # companion-architecture.md: "a 5-minute pairing challenge".
+    LIFETIME_SECONDS = 300
+    # "5 wrong attempts/challenge then invalidate".
+    MAX_CONFIRM_ATTEMPTS = 5
+    POLL_INTERVAL_SECONDS = 5
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    # Hashes only — never the secret, never the code.
+    device_secret_hash = models.BinaryField(max_length=32)
+    user_code_hash = models.CharField(max_length=64, unique=True, db_index=True)
+
+    public_jwk = models.JSONField()
+    key_thumbprint = models.CharField(max_length=64, db_index=True)
+
+    name = models.CharField(max_length=80)
+    platform = models.CharField(max_length=32)
+    arch = models.CharField(max_length=16)
+    app_version = models.CharField(max_length=32, blank=True)
+
+    state = models.CharField(
+        max_length=20, choices=STATE_CHOICES, default=STATE_PENDING,
+    )
+    # Shown on BOTH screens so the person can see they are confirming the
+    # desktop in front of them and not someone else's pairing.
+    verification_phrase = models.CharField(max_length=64)
+
+    account = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="device_pairings",
+        null=True, blank=True, on_delete=models.CASCADE,
+    )
+    confirmed_context = models.JSONField(null=True, blank=True)
+    confirm_attempts = models.PositiveSmallIntegerField(default=0)
+
+    device = models.OneToOneField(
+        "PairedDevice", related_name="pairing", null=True, blank=True,
+        on_delete=models.SET_NULL,
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    finalized_at = models.DateTimeField(null=True, blank=True)
+    last_polled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["state", "expires_at"],
+                         name="device_pairing_state_exp"),
+            models.Index(fields=["account", "state"],
+                         name="device_pairing_acct_state"),
+        ]
+
+    def __str__(self):
+        return f"pairing {self.id} ({self.state})"
+
+    @property
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+    @property
+    def is_live(self):
+        """Usable for another step. Expiry is enforced on READ, never left to
+        a sweeper — the same lesson RC-031 learned about room files."""
+        return (
+            self.state in (self.STATE_PENDING, self.STATE_BROWSER_CONFIRMED)
+            and not self.is_expired
+        )
+
+
 class FileTransfer(models.Model):
     """One file offered to exactly one recipient.
 

@@ -68,6 +68,14 @@ Display ID is not a device fingerprint exposed to room strangers; only authorize
 
 New WSS `/ws/collaboration/v1/` after single-use ticket authentication receives `{v:1,event_id:uuid,type,resource_id:string,version:int}`. `type` is `grant.changed`, `device.changed`, `host_binding.changed`, `transfer.changed`, `session.ended`. No input, tokens, filenames or grants in broad room groups. Address per binding/account+context/device with server checks. Client refetches authorized resource on event; on gaps/reconnect fetch snapshot. Events may duplicate or arrive out of order; accept only increasing version. No write to frontend state can open native gate.
 
+### Client→server frames, and the two server acks (ratified 17 Nov 2026)
+
+The inbound vocabulary is exactly two frames and nothing else: `{v:1,type:'authenticate',ticket:opaque}` once, then `{v:1,type:'ping'}`. Any other frame — including anything resembling input, consent or a subscription request — closes the connection. There is no inbound verb for control; input rides the LiveKit data channel and consent is REST. Adding one is a new authorization surface and needs a contract decision, not an implementation change.
+
+Two server→client **acks** are part of this contract, distinct from the notification envelope above because they are handshake replies rather than events: `{v:1,type:'authenticated',binding_id:uuid,expires_in:int}` is sent once on successful authentication, and `{v:1,type:'pong',server_time:iso8601}` answers each ping. They carry no authority and no resource state — `binding_id` merely echoes what the client already presented, and `expires_in` restates the binding TTL. Without an ack a client cannot distinguish "authenticated" from "silently ignored", which is why they exist. A client must ignore unknown frame types rather than erroring, so later additions stay backward compatible.
+
+Application close codes are the private range and mirror the REST statuses: 4400 protocol error, 4401 unauthenticated (unknown/spent/expired ticket, or a lapsed binding), 4403 forbidden (disallowed or missing Origin on a browser ticket, account mismatch), 4404 feature disabled, 4408 authenticate deadline missed, 4413 frame over the byte ceiling, 4429 frame rate exceeded, 4503 binding store unavailable.
+
 Ticket is passed in the first WS frame `{v:1,type:'authenticate',ticket:opaque}` within 5s, consumed once, bound to browser binding or device key and expires in 30s. Never put it in URL/subprotocol logs. Browser connection requires exact allowlisted Origin; native route is identified by device ticket and may omit Origin. Do not allow missing Origin to bypass browser authentication. Apply max frame 8KiB/rate 20 per second; new WS cannot send arbitrary input or consent actions. Pings/invalidation only; REST remains authoritative.
 
 ## Exact v1 keyboard code allowlist and capability mapping
