@@ -12,13 +12,14 @@ Routes here (the HTTP half of RC-006):
     POST   bindings/<id>/heartbeat/   renew, every 2s
     DELETE bindings/<id>/             release
     GET    snapshot/?binding_id=      what this binding may see
+    POST   ws-ticket/                 one-use credential for the event socket
 
-``POST ws-ticket/`` and the ``/ws/collaboration/v1/`` consumer are RC-006b.
-``mint_ticket``/``consume_ticket`` already exist in ``bindings`` so that half
-has nothing left to invent.
+The socket those tickets open is ``collaboration/consumers.py``; the events
+it carries are ``collaboration/events.py``.
 """
 import uuid
 
+from django.conf import settings
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -271,6 +272,101 @@ def _terminate_grants_for_binding(record):
     having to remember that release must cascade.
     """
     return None
+
+
+# ── POST ws-ticket/ ───────────────────────────────────────────────────────
+
+
+def _ws_url(request):
+    """Where to open the event socket.
+
+    Derived from the request rather than hardcoded to the production host in
+    the contract's example, so dev, staging and prod each describe
+    themselves. ``get_host()`` is already constrained by ``ALLOWED_HOSTS``,
+    and ``COLLABORATION_WS_URL`` overrides it outright for a deployment that
+    terminates websockets somewhere else.
+
+    🔴 Dev cannot serve this URL at all: it runs gunicorn, which has no
+    websocket support. The value is still correct to return — the socket half
+    of this feature is simply unexercisable there, which is why RC-006 was
+    split in the first place.
+    """
+    explicit = getattr(settings, "COLLABORATION_WS_URL", None)
+    if explicit:
+        return explicit
+    scheme = "wss" if request.is_secure() else "ws"
+    return f"{scheme}://{request.get_host()}/ws/collaboration/v1/"
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@collaboration_endpoint()
+def ws_ticket(request):
+    """Mint a single-use, 30-second ticket for ``/ws/collaboration/v1/``.
+
+    The contract is "B with binding_id or D with host_binding_id; **not
+    both**". Both and neither are each a 400 — an ambiguous request must not
+    be resolved by picking one, because the two carry different authority.
+
+    ``host_binding_id`` parses and is then refused with 422: host bindings
+    are RC-007/RC-009 and no device can hold one yet. That is deliberately
+    distinguishable from "unknown field" so a client built against the full
+    contract gets *not yet*, not *you made that up*.
+
+    ⚠️ The frozen contract requires an ``Idempotency-Key`` here (checked by
+    `contracts/test_openapi.py`), and that has a consequence worth stating:
+    replaying the same key returns the **same** ticket, which — being
+    single-use with a 30s life — may already be spent. That is correct
+    idempotency (the mint happened once), not a bug. A client that needs a
+    fresh ticket must send a fresh key.
+    """
+    principal = policy.principal_from_request(request)
+    body = parse_body(request, optional=("binding_id", "host_binding_id"))
+
+    binding_id = body.get("binding_id")
+    host_binding_id = body.get("host_binding_id")
+
+    if binding_id and host_binding_id:
+        raise PolicyError(
+            "invalid_body",
+            "Send exactly one of binding_id or host_binding_id.",
+            status=400,
+        )
+    if not binding_id and not host_binding_id:
+        raise PolicyError(
+            "missing_fields",
+            "One of binding_id or host_binding_id is required.",
+            status=400,
+        )
+    if host_binding_id:
+        raise PolicyError(
+            "unsupported_capability",
+            "Device sockets are not available yet.",
+            status=422,
+        )
+
+    record = _require_binding(binding_id, principal)
+
+    replay, commit = idempotency_guard(request, "ws-ticket:create", principal)
+    if replay is not None:
+        return replay
+
+    try:
+        ticket = binding_store.mint_ticket(binding_id, record)
+    except binding_store.StoreUnavailable:
+        return error(
+            "dependency_unavailable",
+            "Collaboration is temporarily unavailable.",
+            status=503,
+        )
+
+    # 🔴 The ticket is returned and never logged — not here, not in the
+    # consumer that spends it, not in a rejection reason.
+    return commit(ok({
+        "ticket": ticket,
+        "expires_in": binding_store.TICKET_TTL_SECONDS,
+        "ws_url": _ws_url(request),
+    }))
 
 
 # ── GET snapshot/ ─────────────────────────────────────────────────────────
