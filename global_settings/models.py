@@ -142,7 +142,28 @@ class GlobalSettings(models.Model):
         default=False, help_text="Master switch for session recording."
     )
     live_remote_access_enabled = models.BooleanField(
-        default=True, help_text="Master switch for teacher screen-control of a student."
+        default=True,
+        help_text=(
+            "LEGACY path only: the dormant teacher→student screen-control in "
+            "sessions_app/remote_control_views.py. This defaults ON but grants "
+            "nothing — nothing in the codebase ever sets "
+            "GroupSessionParticipant.is_sharing_screen, so every request 409s. "
+            "This is NOT the switch for Shiksha Remote (the paired-companion "
+            "feature) — that is collaboration_bindings_enabled below, which "
+            "defaults OFF. Turning this one off is a kill switch for the "
+            "legacy path; turning it on does not enable the new feature."
+        ),
+    )
+    collaboration_bindings_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Shiksha Remote: master switch for the collaboration control plane "
+            "(participant bindings, the WS notification channel and everything "
+            "built on them). Ships OFF and must stay off until the release "
+            "gates in docs/architecture/shiksha-remote/ are met. While off, "
+            "every collaboration route answers 404 — the feature is not "
+            "merely forbidden, it is absent."
+        ),
     )
     live_chat_enabled = models.BooleanField(
         default=True, help_text="Master switch for in-room chat."

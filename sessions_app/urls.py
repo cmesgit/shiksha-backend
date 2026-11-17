@@ -4,6 +4,7 @@ from . import group_session_views as gs_views
 from . import instant_guest_views as guest_views
 from . import live_files_views as lf_views
 from . import remote_control_views as rc_views
+from .collaboration import views as collab_views
 from .views import subject_teachers, subject_students  # 👈 add this
 
 urlpatterns = [
@@ -184,4 +185,35 @@ urlpatterns = [
     path("group-sessions/<uuid:session_id>/review/",
          gs_views.submit_group_session_review,
          name="group-session-review"),
+
+    # =========================================================
+    # Shiksha Remote — collaboration control plane (RC-006).
+    #
+    # Prefix fixed by docs/architecture/shiksha-remote/api-contracts.md:
+    # "/api/sessions/collaboration/v1/". Purely additive — no existing route,
+    # join URL or model changes, and a binding is registration AFTER the
+    # existing join, never a second login.
+    #
+    # 🔴 Every route below answers 404 while
+    # GlobalSettings.collaboration_bindings_enabled is False, which is its
+    # default. That is NOT live_remote_access_enabled, which defaults True
+    # and gates the dormant legacy path in remote_control_views.py.
+    #
+    # ws-ticket/ and the /ws/collaboration/v1/ consumer are RC-006b.
+    # =========================================================
+    path("collaboration/v1/csrf/",
+         collab_views.csrf_bootstrap,
+         name="collaboration-csrf"),
+    path("collaboration/v1/bindings/",
+         collab_views.create_binding,
+         name="collaboration-binding-create"),
+    path("collaboration/v1/bindings/<str:binding_id>/heartbeat/",
+         collab_views.heartbeat_binding,
+         name="collaboration-binding-heartbeat"),
+    path("collaboration/v1/bindings/<str:binding_id>/",
+         collab_views.delete_binding,
+         name="collaboration-binding-delete"),
+    path("collaboration/v1/snapshot/",
+         collab_views.snapshot,
+         name="collaboration-snapshot"),
 ]
