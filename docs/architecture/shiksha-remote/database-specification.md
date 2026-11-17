@@ -9,7 +9,7 @@ Preserve integer primary key and old `session` GroupSession FK/API lookup. Add U
 | Field | Type / rules |
 |---|---|
 | schema_version | smallint default 0 for migrated rows; new writes explicitly 1 |
-| session | existing GroupSession FK, nullable for non-group kinds; PROTECT for v1 lifecycle policy |
+| session | existing GroupSession FK, nullable for non-group kinds; **CASCADE** — amended 17 Nov 2026, see note below |
 | private_session / live_session / skill_session | nullable FK to existing PrivateSession / livestream.LiveSession / skills.SkillSession; PROTECT |
 | device | nullable PairedDevice FK for legacy; required v1; PROTECT |
 | controller_context / target_context | JSON `{context,profile_id,auth_session_id}` derived from verified auth; IDs represented as strings; never body-authoritative |
@@ -30,6 +30,8 @@ Preserve integer primary key and old `session` GroupSession FK/API lookup. Add U
 Constraints: for all rows exactly one of the four session FKs is nonnull; legacy rows keep group session. For schema_version=1 require device/bindings/context fields, controller≠target account, allowed capabilities and valid status/times. PostgreSQL partial unique **device WHERE schema_version=1 AND status IN ('approved','active','paused')**. Partial unique (controller,device) WHERE status='requested' AND schema_version=1 prevents pending-request floods; expired rows transitioned under lock before inserting. Lock device first, grant second consistently. No dependence on nondeterministic NOW() in a partial index.
 
 Indexes: public_id unique, (device,status), (controller,requested_at DESC), (target,status,requested_at DESC), each session FK/status, (status,expires_at), (status,request_expires_at). Audit transitions in same transaction. End/revoke mutates DB even if event push fails; lease reads source of truth. Cleanup every minute is housekeeping, never the authorization clock.
+
+> **Amendment, 17 November 2026 — the legacy `session` FK is CASCADE, not PROTECT.** This spec originally asked for PROTECT on all four session FKs. `GroupSession` is registered in the Django admin, so PROTECT turns every admin deletion of a session that ever carried a grant into a `ProtectedError` — an existing-product behaviour change arriving as a side effect of an additive migration. RC-005 shipped CASCADE and flagged it; the contract owner accepted it on 17 Nov 2026. The three **new** session FKs (`private_session`, `live_session`, `skill_session`) and `device` remain PROTECT as specified. What makes CASCADE acceptable is that the audit trail does not ride on the grant row. `CollaborationAuditEvent` has **no FK to any session** — verified in `sessions_app/models.py:1367`, its only session link is `session_kind` (CharField) plus a plain `session_id` **UUIDField**, and its subject is `resource_type`/`resource_id`. So deleting a `GroupSession` destroys its grants but not the record that control happened, and `actor_user` is `SET_NULL` so account deletion cannot erase it either. **Do not add a session FK to `CollaborationAuditEvent`** — that one "tidy-up" would silently convert this accepted trade into audit loss. (The same no-cascade-on-audit shape as `activity.Activity`'s `object_id`, which this codebase already relies on.) Evidence: `evidence/collaboration-schema.md`.
 
 ## New PairedDevice
 
