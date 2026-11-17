@@ -502,6 +502,59 @@ class SocketVocabularyTest(CollaborationSocketTestBase):
         await comm.receive_from(timeout=2)  # ack
         return comm
 
+    def test_the_ack_frames_match_the_ratified_contract(self):
+        """`realtime-event-contracts.md` §Client→server frames (ratified
+        17 Nov 2026) fixes both acks exactly. Pinned here because they were
+        an *addition* to the pack — if the doc and the wire ever disagree,
+        this is the test that says which one moved.
+
+        They must carry no authority: `binding_id` only echoes what the
+        client already presented, and `expires_in` only restates the TTL.
+        """
+        async def run():
+            ticket = await sync_to_async(binding_store.mint_ticket)(
+                self.binding_id, self.record)
+            comm = self.communicator()
+            await comm.connect()
+            await self.authenticate(comm, ticket)
+            ack = json.loads(await comm.receive_from(timeout=2))
+            await comm.send_to(text_data=json.dumps({"v": 1, "type": "ping"}))
+            pong = json.loads(await comm.receive_from(timeout=2))
+            await self.cleanup(comm)
+            return ack, pong
+
+        ack, pong = async_to_sync(run)()
+        self.assertEqual(sorted(ack), ["binding_id", "expires_in", "type", "v"])
+        self.assertEqual(ack["v"], 1)
+        self.assertEqual(ack["type"], "authenticated")
+        self.assertEqual(ack["binding_id"], self.binding_id)
+        self.assertEqual(ack["expires_in"], binding_store.BINDING_TTL_SECONDS)
+
+        self.assertEqual(sorted(pong), ["server_time", "type", "v"])
+        self.assertEqual(pong["type"], "pong")
+
+        # No authority leaks into either ack.
+        blob = (json.dumps(ack) + json.dumps(pong)).lower()
+        for forbidden in ("ticket", "token", "jwt", "capab", "secret", "auth_sid"):
+            self.assertNotIn(forbidden, blob)
+
+    def test_the_close_codes_match_the_ratified_contract(self):
+        """The doc lists these by number; a renumbering would silently break
+        every client's error handling."""
+        self.assertEqual(
+            {
+                collab_consumers.CLOSE_PROTOCOL_ERROR,
+                collab_consumers.CLOSE_UNAUTHENTICATED,
+                collab_consumers.CLOSE_FORBIDDEN,
+                collab_consumers.CLOSE_FEATURE_OFF,
+                collab_consumers.CLOSE_AUTH_TIMEOUT,
+                collab_consumers.CLOSE_FRAME_TOO_LARGE,
+                collab_consumers.CLOSE_RATE_LIMITED,
+                collab_consumers.CLOSE_DEPENDENCY_UNAVAILABLE,
+            },
+            {4400, 4401, 4403, 4404, 4408, 4413, 4429, 4503},
+        )
+
     def test_a_ping_is_answered(self):
         async def run():
             comm = await self._authenticated()
