@@ -780,3 +780,371 @@ class PairingFeatureFlagTest(PairingTestBase):
             self.device_post(f"/pairings/{pid}/poll/", {},
                              secret=started["device_secret"]).status_code, 404)
         self.assertEqual(self.finalize(started).status_code, 404)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# RC-007b — credential life: rotation, liveness, revocation
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class PairedDeviceTestBase(PairingTestBase):
+    """A device that has completed the handshake and holds real credentials."""
+
+    def setUp(self):
+        super().setUp()
+        self.started, res = self.full_handshake()
+        self.tokens = res.json()
+        self.device = PairedDevice.objects.get(id=self.tokens["device_id"])
+
+    def refresh(self, token=None, key=None, device_id=None):
+        return self.device_post(
+            "/device-token/",
+            {"refresh_token": token or self.tokens["refresh_token"],
+             "device_id": device_id or str(self.device.id)},
+            key=key or self.key, proof_path="device-token/")
+
+    def heartbeat(self, access_token=None, key=None, status="idle", **over):
+        token = access_token or self.tokens["access_token"]
+        body = {"app_version": "0.1.0", "protocol_min": 1, "protocol_max": 1,
+                "status": status}
+        body.update(over)
+        proof = make_proof(key or self.key, method="POST",
+                           path="device-heartbeat/", access_token=token)
+        client = APIClient()
+        return client.post(
+            f"{BASE}/device-heartbeat/", body, format="json",
+            HTTP_AUTHORIZATION=f"DPoP {token}", HTTP_DPOP=proof)
+
+
+class CredentialRotationTest(PairedDeviceTestBase):
+    def test_a_refresh_rotates_both_credentials(self):
+        res = self.refresh()
+        self.assertEqual(res.status_code, 200, res.content)
+        data = res.json()
+        self.assertEqual(sorted(data),
+                         ["access_token", "expires_in", "refresh_token"])
+        self.assertNotEqual(data["refresh_token"], self.tokens["refresh_token"])
+        self.assertNotEqual(data["access_token"], self.tokens["access_token"])
+
+    def test_the_new_refresh_token_works_and_the_old_one_does_not(self):
+        rotated = self.refresh().json()["refresh_token"]
+        self.assertEqual(self.refresh(token=rotated).status_code, 200)
+
+    def test_reusing_a_spent_refresh_token_REVOKES_the_device(self):
+        """🔴 The headline property. A replay and a theft are
+        indistinguishable from the server, so the hostile reading wins."""
+        self.refresh()                      # spends the original
+        res = self.refresh()                # presents it again
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(res.json()["code"], "credential_reuse_detected")
+
+        self.device.refresh_from_db()
+        self.assertEqual(self.device.status, PairedDevice.STATUS_REVOKED)
+        self.assertIsNotNone(self.device.revoked_at)
+
+    def test_reuse_detection_also_kills_the_thief_s_newer_token(self):
+        """The victim replays the old token; the attacker holds the new one.
+        Revoking the device must stop BOTH, or detection accomplishes
+        nothing."""
+        stolen_new = self.refresh().json()["refresh_token"]
+        self.refresh()                      # the victim's replay → revoke
+        res = self.refresh(token=stolen_new)
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(res.json()["code"], "device_revoked")
+
+    def test_rotation_invalidates_outstanding_access_tokens(self):
+        """`cred_ver` moves, so a token minted before the rotation dies
+        inside its own five-minute window."""
+        old_access = self.tokens["access_token"]
+        self.refresh()
+        self.assertEqual(self.heartbeat(access_token=old_access).status_code, 401)
+
+    def test_a_refresh_without_a_device_proof_is_refused(self):
+        client = APIClient()
+        res = client.post(
+            f"{BASE}/device-token/",
+            {"refresh_token": self.tokens["refresh_token"],
+             "device_id": str(self.device.id)}, format="json")
+        self.assertEqual(res.status_code, 401)
+
+    def test_another_key_cannot_refresh(self):
+        """The refresh token alone is not enough — this is what makes an
+        exfiltrated refresh token useless by itself."""
+        res = self.refresh(key=new_key())
+        self.assertEqual(res.status_code, 401)
+        self.device.refresh_from_db()
+        # A wrong key is not evidence of reuse, so it must NOT revoke.
+        self.assertEqual(self.device.status, PairedDevice.STATUS_PAIRED)
+
+    def test_a_wrong_refresh_token_does_not_revoke(self):
+        res = self.refresh(token="not-a-real-token")
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(res.json()["code"], "credential_invalid")
+        self.device.refresh_from_db()
+        self.assertEqual(self.device.status, PairedDevice.STATUS_PAIRED)
+
+    def test_an_expired_credential_is_refused(self):
+        PairedDevice.objects.filter(pk=self.device.pk).update(
+            credential_expires_at=timezone.now() - timedelta(seconds=1))
+        res = self.refresh()
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(res.json()["code"], "credential_expired")
+
+    def test_a_device_cannot_refresh_another_devices_credential(self):
+        other_key = new_key()
+        started = self.start_pairing(key=other_key).json()
+        self.browser_post(self.browser(), "/pairings/confirm/",
+                          {"user_code": started["user_code"]})
+        other = self.finalize(started, key=other_key).json()
+
+        res = self.refresh(token=other["refresh_token"])
+        self.assertEqual(res.status_code, 401)
+
+
+class DeviceHeartbeatTest(PairedDeviceTestBase):
+    def test_a_heartbeat_reports_server_time_and_version_floor(self):
+        res = self.heartbeat()
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(sorted(res.json()),
+                         ["disabled", "minimum_version", "server_time"])
+        self.assertFalse(res.json()["disabled"])
+
+    def test_a_heartbeat_marks_the_device_online(self):
+        self.assertFalse(device_svc.is_online(self.device.id))
+        self.heartbeat()
+        self.assertTrue(device_svc.is_online(self.device.id))
+
+    def test_a_heartbeat_never_renews_a_control_grant(self):
+        """🔴 "must never renew a control grant implicitly". A heartbeat is
+        sent unconditionally by a background loop; if it extended authority,
+        authority would never lapse while the process ran."""
+        from sessions_app.models import RemoteControlGrant
+
+        expires = timezone.now() + timedelta(seconds=30)
+        grant = RemoteControlGrant.objects.create(
+            session=self.session_for_grant(), controller=self.user,
+            target=self.other, device=self.device,
+            status=RemoteControlGrant.STATUS_ACTIVE,
+            schema_version=1, public_id=uuid.uuid4(), expires_at=expires,
+            controller_binding_id=uuid.uuid4(), host_binding_id=uuid.uuid4())
+
+        self.heartbeat()
+
+        grant.refresh_from_db()
+        self.assertEqual(grant.expires_at, expires)
+        self.assertEqual(grant.status, RemoteControlGrant.STATUS_ACTIVE)
+
+    def session_for_grant(self):
+        from sessions_app.models import GroupSession
+        return GroupSession.objects.create(
+            host=self.user, subject_name="P", course_title="C", topic="T",
+            scheduled_date=timezone.now().date(),
+            scheduled_time=timezone.now().time(), duration_minutes=45,
+            status="live", session_type="instant", short_code="RC7BG",
+            room_name="rc7b-room")
+
+    def test_a_heartbeat_without_a_proof_is_refused(self):
+        client = APIClient()
+        res = client.post(
+            f"{BASE}/device-heartbeat/",
+            {"app_version": "0.1.0", "protocol_min": 1, "protocol_max": 1,
+             "status": "idle"}, format="json",
+            HTTP_AUTHORIZATION=f"DPoP {self.tokens['access_token']}")
+        self.assertEqual(res.status_code, 401)
+
+    def test_a_heartbeat_proof_for_another_endpoint_is_refused(self):
+        token = self.tokens["access_token"]
+        proof = make_proof(self.key, method="POST", path="device-token/",
+                           access_token=token)
+        client = APIClient()
+        res = client.post(
+            f"{BASE}/device-heartbeat/",
+            {"app_version": "0.1.0", "protocol_min": 1, "protocol_max": 1,
+             "status": "idle"}, format="json",
+            HTTP_AUTHORIZATION=f"DPoP {token}", HTTP_DPOP=proof)
+        self.assertEqual(res.status_code, 401)
+
+    def test_an_unknown_status_is_refused(self):
+        self.assertEqual(self.heartbeat(status="controlling").status_code, 400)
+
+    def test_an_incompatible_protocol_range_disables_the_device(self):
+        res = self.heartbeat(protocol_min=7, protocol_max=9)
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()["disabled"])
+
+    def test_a_revoked_device_cannot_heartbeat(self):
+        device_svc.revoke_device(self.device)
+        self.assertEqual(self.heartbeat().status_code, 401)
+
+    def test_last_seen_is_not_written_on_every_heartbeat(self):
+        """The column is throttled to one write per 5 minutes — a 10-second
+        heartbeat that wrote a row each time would load the one box whose
+        max_connections is the capacity wall."""
+        self.heartbeat()
+        self.device.refresh_from_db()
+        first = self.device.last_seen_at
+        self.assertIsNotNone(first)
+        self.heartbeat()
+        self.device.refresh_from_db()
+        self.assertEqual(self.device.last_seen_at, first)
+
+
+class DeviceListTest(PairedDeviceTestBase):
+    def test_the_owner_sees_their_device(self):
+        client = self.browser()
+        res = client.get(f"{BASE}/devices/", HTTP_ORIGIN=ORIGIN)
+        self.assertEqual(res.status_code, 200, res.content)
+        rows = res.json()["devices"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], str(self.device.id))
+        self.assertEqual(
+            sorted(rows[0]),
+            ["app_version", "compatible", "id", "last_seen_at", "name",
+             "online", "platform"])
+
+    def test_the_list_carries_no_credential_material(self):
+        client = self.browser()
+        blob = json.dumps(client.get(
+            f"{BASE}/devices/", HTTP_ORIGIN=ORIGIN).json()).lower()
+        for forbidden in ("token", "secret", "jwk", "thumbprint", "hash", "cnf"):
+            self.assertNotIn(forbidden, blob)
+
+    def test_another_account_sees_nothing(self):
+        """"no global device discovery"."""
+        client = self.browser(self.other)
+        res = client.get(f"{BASE}/devices/", HTTP_ORIGIN=ORIGIN)
+        self.assertEqual(res.json()["devices"], [])
+
+    def test_online_reflects_the_liveness_record_not_the_column(self):
+        """🔴 This test was VACUOUS and the sweep caught it.
+
+        It only checked False-before-heartbeat and True-after, which the
+        column satisfies too: `last_seen_at` is None initially and set by the
+        first heartbeat, so `online = last_seen_at is not None` passed.
+
+        The case that actually separates them is a device going AWAY. The
+        Redis record expires after 6 seconds; the column keeps its value for
+        up to 5 minutes. So a device that stopped heartbeating must read
+        offline — and only the liveness record can say so.
+        """
+        client = self.browser()
+
+        def online():
+            return client.get(
+                f"{BASE}/devices/", HTTP_ORIGIN=ORIGIN).json()["devices"][0]["online"]
+
+        self.assertFalse(online())
+        self.heartbeat()
+        self.assertTrue(online())
+
+        # The companion goes away: its liveness record lapses, the column
+        # does not. Expiring the key is what a 6s TTL does on its own.
+        cache.delete(f"{device_svc._ONLINE_PREFIX}{self.device.id}")
+
+        self.device.refresh_from_db()
+        self.assertIsNotNone(
+            self.device.last_seen_at,
+            "the column must still be set, or this proves nothing")
+        self.assertFalse(online())
+
+    def test_an_unlinked_device_disappears(self):
+        device_svc.revoke_device(self.device)
+        client = self.browser()
+        self.assertEqual(
+            client.get(f"{BASE}/devices/", HTTP_ORIGIN=ORIGIN).json()["devices"], [])
+
+
+class DeviceUnlinkTest(PairedDeviceTestBase):
+    def delete(self, client, device_id=None, **extra):
+        headers = {"HTTP_ORIGIN": ORIGIN,
+                   "HTTP_X_CSRFTOKEN": self.csrf(client),
+                   "HTTP_IDEMPOTENCY_KEY": str(uuid.uuid4())}
+        headers.update(extra)
+        return client.delete(
+            f"{BASE}/devices/{device_id or self.device.id}/", **headers)
+
+    def test_unlinking_revokes_the_device(self):
+        res = self.delete(self.browser())
+        self.assertEqual(res.status_code, 204, res.content)
+        self.device.refresh_from_db()
+        self.assertEqual(self.device.status, PairedDevice.STATUS_REVOKED)
+
+    def test_unlinking_terminates_live_grants_before_responding(self):
+        """🔴 "revoke bindings/grants first" — returning success while a
+        grant is still live tells the owner they stopped something they
+        did not."""
+        from sessions_app.models import GroupSession, RemoteControlGrant
+
+        session = GroupSession.objects.create(
+            host=self.user, subject_name="P", course_title="C", topic="T",
+            scheduled_date=timezone.now().date(),
+            scheduled_time=timezone.now().time(), duration_minutes=45,
+            status="live", session_type="instant", short_code="RC7BU",
+            room_name="rc7b-unlink")
+        grant = RemoteControlGrant.objects.create(
+            session=session, controller=self.other, target=self.user,
+            device=self.device, status=RemoteControlGrant.STATUS_ACTIVE,
+            schema_version=1, public_id=uuid.uuid4(),
+            controller_binding_id=uuid.uuid4(), host_binding_id=uuid.uuid4())
+
+        self.assertEqual(self.delete(self.browser()).status_code, 204)
+
+        grant.refresh_from_db()
+        self.assertEqual(grant.status, RemoteControlGrant.STATUS_REVOKED)
+        self.assertIsNotNone(grant.ended_at)
+
+    def test_unlinking_invalidates_the_access_token_immediately(self):
+        self.delete(self.browser())
+        self.assertEqual(self.heartbeat().status_code, 401)
+
+    def test_unlinking_invalidates_the_refresh_token(self):
+        self.delete(self.browser())
+        res = self.refresh()
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(res.json()["code"], "device_revoked")
+
+    def test_unlinking_is_idempotent(self):
+        client = self.browser()
+        self.assertEqual(self.delete(client).status_code, 204)
+        self.assertEqual(self.delete(client).status_code, 204)
+
+    def test_another_account_cannot_unlink(self):
+        res = self.delete(self.browser(self.other))
+        self.assertEqual(res.status_code, 404)
+        self.device.refresh_from_db()
+        self.assertEqual(self.device.status, PairedDevice.STATUS_PAIRED)
+
+    def test_a_stale_session_cannot_unlink(self):
+        res = self.delete(self.browser(signed_in_ago=timedelta(hours=3)))
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.json()["code"], "recent_auth_required")
+        self.device.refresh_from_db()
+        self.assertEqual(self.device.status, PairedDevice.STATUS_PAIRED)
+
+    def test_unlink_requires_csrf(self):
+        client = self.browser()
+        res = client.delete(f"{BASE}/devices/{self.device.id}/",
+                            HTTP_ORIGIN=ORIGIN)
+        self.assertEqual(res.status_code, 403)
+
+    def test_unlinking_a_nonexistent_device_is_404(self):
+        self.assertEqual(
+            self.delete(self.browser(), device_id=uuid.uuid4()).status_code, 404)
+
+
+class DeviceRouteFlagTest(PairedDeviceTestBase):
+    def test_the_rc007b_routes_are_404_while_the_flag_is_off(self):
+        client = self.browser()
+        token = self.csrf(client)
+        s = GlobalSettings.load()
+        s.collaboration_bindings_enabled = False
+        s.save()
+
+        self.assertEqual(self.refresh().status_code, 404)
+        self.assertEqual(self.heartbeat().status_code, 404)
+        self.assertEqual(
+            client.get(f"{BASE}/devices/", HTTP_ORIGIN=ORIGIN).status_code, 404)
+        self.assertEqual(
+            client.delete(f"{BASE}/devices/{self.device.id}/",
+                          HTTP_ORIGIN=ORIGIN, HTTP_X_CSRFTOKEN=token).status_code,
+            404)

@@ -27,6 +27,7 @@ The device management routes (`devices/`, `device-token/`,
 import functools
 import uuid
 
+from django.conf import settings
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -297,4 +298,178 @@ def finalize_pairing(request, pairing_id):
         "access_token": access_token,
         "refresh_token": refresh_token,
         "expires_in": device_svc.ACCESS_TOKEN_TTL_SECONDS,
+    })
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# RC-007b — credential life
+#
+#   POST   device-token/       refresh credential + key DPoP  (rotation)
+#   GET    devices/            B owner/context
+#   DELETE devices/<id>/       B owner, recent auth
+#   POST   device-heartbeat/   D paired, not revoked
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@device_endpoint
+def device_token(request):
+    """Rotate a device's credentials. The device key must prove possession.
+
+    🔴 No access token here, so the proof carries **no `ath`** — there is no
+    token to bind it to. The refresh token in the body is the credential;
+    the DPoP proof is what stops a stolen refresh token being usable on its
+    own, which is the entire point of pairing them.
+
+    🔴 Presenting a **spent** refresh token revokes the device. See
+    `devices.rotate_credentials` — reuse is read as theft, because a replay
+    and a theft are indistinguishable from here and only one of them is
+    safe to assume.
+    """
+    body = parse_body(request, required=("refresh_token", "device_id"))
+
+    refresh = body.get("refresh_token")
+    if not isinstance(refresh, str) or not refresh:
+        raise PairingError("credential_invalid", "Sign this device in again.",
+                           status=401)
+
+    try:
+        thumbprint, _ = dpop.verify_proof(
+            request.headers.get("DPoP"), method="POST", path="device-token/")
+    except dpop.DPoPError as exc:
+        raise PairingError("device_proof_invalid", exc.detail, status=401)
+
+    device, access_token, rotated = device_svc.rotate_credentials(
+        body.get("device_id"), refresh, thumbprint)
+
+    return ok({
+        "access_token": access_token,
+        "refresh_token": rotated,
+        "expires_in": device_svc.ACCESS_TOKEN_TTL_SECONDS,
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@collaboration_endpoint(unsafe=False)
+def list_devices(request):
+    """The owner's paired devices. "no global device discovery".
+
+    Scoped to the calling account — never to a room, a course or a staff
+    role. A device list is a map of someone's computers; there is no
+    legitimate reason for another user, or an admin screen, to read it
+    through this route.
+    """
+    principal = policy.principal_from_request(request)
+    from sessions_app.models import PairedDevice
+
+    rows = PairedDevice.objects.filter(
+        owner=principal.user, status=PairedDevice.STATUS_PAIRED)
+
+    return ok({"devices": [
+        {
+            "id": str(d.id),
+            "name": d.name,
+            "platform": d.platform,
+            "app_version": d.app_version,
+            # 🔴 Liveness is the Redis record, never `last_seen_at` — the
+            # column is throttled to one write per 5 minutes and would
+            # report a live device as offline for most of that window.
+            "online": device_svc.is_online(d.id),
+            "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
+            "compatible": device_svc.protocol_compatible(d),
+        }
+        for d in rows
+    ]})
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+@collaboration_endpoint()
+def unlink_device(request, device_id):
+    """Unlink a device, terminating its grants **before** responding.
+
+    🔴 The contract says "204; revoke bindings/grants first", and the order
+    is the point: returning success while a grant is still live would tell
+    the owner they had stopped something they had not.
+
+    Idempotent — unlinking an already-unlinked device is a 204, because a
+    user clicking twice on a slow connection must not see an error for an
+    outcome that is already true.
+    """
+    principal = policy.principal_from_request(request)
+    _require_recent_auth(request, principal)
+
+    from sessions_app.models import PairedDevice
+
+    try:
+        uuid.UUID(str(device_id))
+    except (TypeError, ValueError):
+        raise PairingError("not_found", "No such device.", status=404)
+
+    device = PairedDevice.objects.filter(
+        id=device_id, owner=principal.user).first()
+    if device is None:
+        # Someone else's device and a nonexistent one are the same answer.
+        raise PairingError("not_found", "No such device.", status=404)
+
+    if device.status != PairedDevice.STATUS_REVOKED:
+        device_svc.revoke_device(device, reason="unlinked")
+
+    return ok(None, status=204)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@device_endpoint
+def device_heartbeat(request):
+    """Liveness and version negotiation. The first consumer of a device credential.
+
+    🔴 "must never renew a control grant implicitly". This touches liveness
+    and version metadata only — it does not read, extend or refresh any
+    grant or lease, and a test asserts a live grant's `expires_at` is
+    untouched across a heartbeat. Lease renewal is RC-008's explicit route
+    and must stay that way: a heartbeat is sent unconditionally by a
+    background loop, so letting it extend authority would mean authority
+    that never lapses while the process runs.
+    """
+    body = parse_body(
+        request,
+        required=("app_version", "protocol_min", "protocol_max", "status"),
+    )
+
+    device = device_svc.authenticate_device(request, path="device-heartbeat/")
+
+    if body.get("status") not in ("idle", "sharing"):
+        raise PairingError("invalid_status", "Unknown device status.",
+                           status=400)
+
+    from sessions_app.models import PairedDevice
+
+    updates = {}
+    for field in ("app_version", "protocol_min", "protocol_max"):
+        value = body.get(field)
+        if field == "app_version":
+            value = str(value or "")[:32]
+        else:
+            if not isinstance(value, int):
+                raise PairingError(f"invalid_{field}", f"{field} must be an int.",
+                                   status=400)
+        if getattr(device, field) != value:
+            updates[field] = value
+    if updates:
+        PairedDevice.objects.filter(pk=device.pk).update(**updates)
+        for k, v in updates.items():
+            setattr(device, k, v)
+
+    device_svc.mark_online(device)
+
+    minimum = getattr(settings, "COLLABORATION_MINIMUM_COMPANION_VERSION", "") or ""
+    return ok({
+        "server_time": timezone.now().isoformat(),
+        "minimum_version": minimum,
+        # The server-side kill switch. A companion that sees `disabled` must
+        # stop sharing and stop asking; it is not a suggestion.
+        "disabled": not device_svc.protocol_compatible(device),
     })

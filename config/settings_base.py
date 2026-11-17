@@ -305,6 +305,14 @@ COLLABORATION_CANONICAL_URL = os.getenv(
     "COLLABORATION_CANONICAL_URL", "https://api.shikshacom.com"
 )
 
+# The oldest companion build allowed to connect. Empty means "no floor".
+# deployment-rollout.md makes this the server-side kill switch for a
+# vulnerable client — it can refuse a build, but it can never force an
+# unattended install.
+COLLABORATION_MINIMUM_COMPANION_VERSION = os.getenv(
+    "COLLABORATION_MINIMUM_COMPANION_VERSION", ""
+)
+
 # ── Google sign-in ───────────────────────────────────────────────────────
 # The OAuth 2.0 Web-application client id from Google Cloud. Empty by default:
 # with no value the verifier REFUSES rather than falling back to an unchecked

@@ -239,4 +239,20 @@ urlpatterns = [
     path("collaboration/v1/pairings/<str:pairing_id>/finalize/",
          device_views.finalize_pairing,
          name="collaboration-pairing-finalize"),
+
+    # Credential life (RC-007b). device-token/ and device-heartbeat/ are
+    # DEVICE routes; devices/ and devices/<id>/ are browser routes scoped to
+    # the owning account — there is no global device discovery.
+    path("collaboration/v1/device-token/",
+         device_views.device_token,
+         name="collaboration-device-token"),
+    path("collaboration/v1/devices/",
+         device_views.list_devices,
+         name="collaboration-device-list"),
+    path("collaboration/v1/devices/<str:device_id>/",
+         device_views.unlink_device,
+         name="collaboration-device-unlink"),
+    path("collaboration/v1/device-heartbeat/",
+         device_views.device_heartbeat,
+         name="collaboration-device-heartbeat"),
 ]
