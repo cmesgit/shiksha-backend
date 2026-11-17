@@ -199,7 +199,8 @@ urlpatterns = [
     # default. That is NOT live_remote_access_enabled, which defaults True
     # and gates the dormant legacy path in remote_control_views.py.
     #
-    # ws-ticket/ and the /ws/collaboration/v1/ consumer are RC-006b.
+    # The socket itself is wired in sessions_app/routing.py, which
+    # config/asgi.py already includes — so RC-006b needed no asgi change.
     # =========================================================
     path("collaboration/v1/csrf/",
          collab_views.csrf_bootstrap,
@@ -216,4 +217,7 @@ urlpatterns = [
     path("collaboration/v1/snapshot/",
          collab_views.snapshot,
          name="collaboration-snapshot"),
+    path("collaboration/v1/ws-ticket/",
+         collab_views.ws_ticket,
+         name="collaboration-ws-ticket"),
 ]
