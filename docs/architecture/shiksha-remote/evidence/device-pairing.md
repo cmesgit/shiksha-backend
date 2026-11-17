@@ -1,15 +1,19 @@
-# RC-007a evidence — DPoP proofs and the device pairing handshake
+# RC-007 evidence — DPoP, the pairing handshake, and credential life
 
 Date: 17 November 2026. Branch: `docs/shiksha-remote-plan-on-dev`,
 cherry-picked to `-on-main`.
 
-**RC-007 is split.** 7a is the cryptographic core and the pairing handshake
-— everything needed for a desktop to become a paired device holding its
-first credentials. **7b is credential *life*:** refresh rotation with reuse
-detection, `devices/` list, `devices/{id}/` unlink, `device-heartbeat/`, and
-the device branch of the WS ticket. The split is at ~1,100 lines, past the
-workspace's ~800 rule, and it falls on a clean seam: 7a mints a credential,
+**RC-007 was split and both halves are now done.** 7a is the cryptographic
+core and the pairing handshake — everything needed for a desktop to become a
+paired device holding its first credentials. **7b is credential *life*:**
+refresh rotation with reuse detection, `devices/` list, `devices/{id}/`
+unlink, and `device-heartbeat/`. The seam is clean: 7a mints a credential,
 7b governs what happens to it afterwards.
+
+⚠️ **The device branch of `ws-ticket/` is NOT in 7b.** A device ticket needs
+a `host_binding_id`, and host bindings are RC-009 — so the route still
+answers 422 `unsupported_capability` for that field, which is the honest
+answer rather than a stub. RC-009 flips it.
 
 ## Delivered
 
@@ -21,7 +25,18 @@ workspace's ~800 rule, and it falls on a clean seam: 7a mints a credential,
 | `sessions_app/models.py` + migration `0020` | `DevicePairing` |
 | `config/settings_base.py` | `COLLABORATION_DEVICE_KEY`, `COLLABORATION_CANONICAL_URL` |
 | `sessions_app/urls.py` | mounts the four routes |
-| `sessions_app/tests_collaboration_pairing.py` | **49 tests** (**new**) |
+| `sessions_app/tests_collaboration_pairing.py` | **83 tests** (49 from 7a + 34 from 7b) |
+
+RC-007b additionally lands in `devices.py` (`rotate_credentials`,
+`revoke_device`, `mark_online`, `is_online`, `protocol_compatible`) and
+`device_views.py` (four routes), plus
+`COLLABORATION_MINIMUM_COMPANION_VERSION`. **No migration** — `PairedDevice`
+already carried every field 7b needed, which is RC-005's schema paying off.
+
+    POST   device-token/       rotate; reuse revokes the device
+    GET    devices/            B owner only — no global device discovery
+    DELETE devices/<id>/       B owner + recent auth; revokes grants FIRST
+    POST   device-heartbeat/   D; the first consumer of a device credential
 
     POST pairings/                anonymous + DPoP proof of a new key   201
     POST pairings/confirm/        B, recent auth ≤10min                 200
@@ -43,11 +58,11 @@ rule.
 
 ## Results
 
-    sessions_app.tests_collaboration_pairing               49 OK
+    sessions_app.tests_collaboration_pairing               83 OK
     sessions_app.tests_collaboration_ws      (RC-006b)     61 OK
     sessions_app.tests_collaboration_policy  (RC-006a)     52 OK
     sessions_app.tests_room_file_hardening   (RC-031)      29 OK
-    sessions_app livestream global_settings               498 tests, 4 failures + 1 error
+    sessions_app livestream global_settings               532 tests, 4 failures + 1 error
     contracts/test_contracts.py + test_openapi.py         13 + 14 OK
     makemigrations --check --dry-run                      No changes detected
 
@@ -55,7 +70,7 @@ rule.
 credentials locally), by name: `test_request_creates_participant`,
 `test_request_with_group_students`, `test_student_can_request_session`
 (`RequestSessionTest`), `test_participant_can_view` (`SessionDetailTest`),
-`test_start_session` (`SessionLifecycleTest`). The total went **447 → 498**
+`test_start_session` (`SessionLifecycleTest`). The total went **447 → 498 → 532**
 and the failure count did not move, which is the actual assertion.
 
 ## The security core
@@ -182,3 +197,114 @@ docstring instead of a test that would have to lie about what it exercises.
 responding, `device-heartbeat/`, and the device branch of `ws-ticket/`. The
 consumer from RC-006b already refuses a ticket with no `binding_id` at
 exactly the point where that branch lands.
+
+---
+
+# RC-007b — credential life
+
+## 🔴 A real bug the tests caught, not a style note
+
+The first version of `rotate_credentials` was wrapped in
+`@transaction.atomic` and, on detecting refresh reuse, called
+`revoke_device(...)` and then raised. **The raise rolled back the very
+revocation it was reporting.** The caller got
+`credential_reuse_detected` — "this device was unlinked for security" — and
+the device was still paired, still holding valid credentials.
+
+It was caught by `test_reusing_a_spent_refresh_token_REVOKES_the_device`,
+which asserts the **row** afterwards rather than trusting the status code.
+A test that had only checked for a 401 would have passed against a system
+that did nothing.
+
+This is the same family as the `transaction.savepoint()` no-op this project
+hit during the academy seeding work. The general rule, now recorded in
+REMOTE.md: **a mutation that must survive an error cannot live inside the
+transaction that the error unwinds.** The fix flags reuse inside the atomic
+block and revokes after it closes.
+
+The mutation sweep includes an entry that re-introduces exactly this bug
+(wrapping the revoke-and-raise back in `transaction.atomic`), and it is
+caught — so the fix is protected against a future "tidy-up".
+
+## Security properties
+
+🔴 **Refresh reuse is read as theft.** Rotation is atomic under
+`select_for_update` and the previous hash is kept for exactly one
+generation. Presenting a spent token means two parties hold a single-use
+credential; a replay and a theft are indistinguishable from the server, so
+the hostile reading wins and the device is revoked. Both the victim's replay
+and the thief's newer token stop working — tested as a pair, because
+revoking only one of them accomplishes nothing.
+
+🔴 **Rotation is also revocation.** `credential_version` is bumped on every
+rotation and on unlink, and `authenticate_device` compares it — so an access
+token minted before either event dies inside its own five-minute window.
+
+🔴 **A wrong key, or a wrong token, does NOT revoke.** Only *reuse* does.
+Otherwise anyone who learned a device id could unlink someone's computer by
+submitting garbage, which turns a theft detector into a denial-of-service
+primitive. Both negative cases assert the device is still paired afterwards.
+
+🔴 **Unlink terminates grants before responding**, in that order, because
+returning success while a grant is live tells the owner they stopped
+something they did not. It is idempotent, requires recent auth and CSRF, and
+another account gets a 404 indistinguishable from a nonexistent device.
+
+🔴 **A heartbeat never renews a control grant.** It touches liveness and
+version metadata only. `test_a_heartbeat_never_renews_a_control_grant`
+creates a live grant, heartbeats, and asserts `expires_at` and `status` are
+untouched — a heartbeat is sent unconditionally by a background loop, so
+letting it extend authority would mean authority that never lapses while the
+process runs.
+
+🔴 **Liveness is Redis, never the column.** `last_seen_at` is throttled to
+one write per 5 minutes (a 10-second heartbeat writing a row every time
+would load the one box whose `max_connections` is the capacity wall), so it
+cannot answer "is this device online". `is_online` reads a 6-second record,
+and it must never be consulted for authorization.
+
+🔴 **No global device discovery.** `devices/` is scoped to the calling
+account — not to a room, a course or a staff role — and carries no key,
+thumbprint, hash or token material.
+
+## Mutation sweep
+
+17 mutations. **16 caught, 1 equivalent mutant (confirmed), 1 vacuous test
+found and fixed.** All files verified byte-identical afterwards.
+
+🔴 **The vacuous test — the sixth this project has caught.**
+`test_online_reflects_the_liveness_record_not_the_column` only asserted
+False-before-heartbeat and True-after, which the *column* satisfies too:
+`last_seen_at` is None initially and set by the first heartbeat. The case
+that actually separates them is a device **going away** — the Redis record
+lapses after 6 seconds while the column keeps its value for up to 5 minutes.
+The test now expires the liveness key, asserts the column is still set (or
+it would prove nothing), and requires `online: false`. Re-run under the
+mutation and confirmed red.
+
+**The equivalent mutant, proven:** removing the `credential_version` bump
+from unlink leaves `authenticate_device`'s `is_usable` status gate refusing
+the token anyway. Removing **both** was run explicitly and the test went
+red. Keep both — the version bump is what protects any future path that
+checks a token without re-reading status.
+
+## Open items
+
+1. 🔴 **Rate limits: still unimplemented, now across four tasks.** 7b adds
+   `6/min/device` on `device-token/`, `30/min/account` on `devices/`,
+   `10/hour/account` on unlink and `1/10s idle` on heartbeat. **Make it one
+   task covering every collaboration route.** The heartbeat one has teeth:
+   without it a paired device can heartbeat as fast as it likes, and each
+   call is a DB read plus a Redis write.
+2. ⚠️ **`device-token/` takes `device_id` in the body.** The contract's row
+   lists only `{refresh_token}`, but a refresh token is opaque and the row
+   has to be found somehow; hashing is keyed and deterministic, so an
+   indexed lookup by hash is possible and would remove the field. Left as
+   is for now and flagged — **a contract-owner call**, because it is a
+   visible request-shape difference.
+3. 🔴 **The two-device concurrency race is untested on the real engine.**
+   `select_for_update` is a silent no-op on SQLite, so nothing here proves
+   two simultaneous refreshes cannot both succeed. **Add it to the PG-16
+   harness RC-008 must build anyway**, alongside RC-005's two-room approval
+   race and RC-031's atomic quota.
+4. 🔴 **RC-007 still has not had its mandatory human crypto/auth review.**

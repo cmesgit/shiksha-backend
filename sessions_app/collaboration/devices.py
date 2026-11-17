@@ -26,11 +26,19 @@ token lacking any of those, so a device credential can never be presented to
 an ordinary user API — and an ordinary user token can never be presented
 here.
 
-Token minting lives here; **rotation with reuse detection, the device
-management routes and the device WS ticket are RC-007b.**
+RC-007b adds the other half: what happens to a credential *after* it is
+issued — rotation with reuse detection, liveness, and revocation.
+
+🔴 **Refresh reuse is treated as theft, not as a retry.** Rotation is
+atomic and the previous hash is kept for exactly one generation, so
+presenting a spent refresh token means two parties hold the credential:
+either the device replayed (harmless but indistinguishable) or someone
+stole it (not harmless). The safe reading of an ambiguous signal here is
+the hostile one, so the device is revoked and the owner must re-pair.
 """
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 
@@ -41,6 +49,8 @@ from django.utils import timezone
 
 from . import dpop
 from .policy import PolicyError
+
+logger = logging.getLogger(__name__)
 
 # companion-architecture.md: "a random 10-character human code from a
 # 32-symbol alphabet". Crockford-style: no I, L, O, U — the characters people
@@ -456,3 +466,187 @@ def finalize_pairing(pairing, thumbprint):
     pairing.save(update_fields=["state", "finalized_at", "device"])
 
     return device, mint_access_token(device, thumbprint), refresh
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# RC-007b — credential life: rotation, liveness, revocation
+# ══════════════════════════════════════════════════════════════════════════
+
+# PairedDevice.last_seen_at's docstring: "Coarse on purpose — persisted at
+# most every 5 minutes. Real liveness is a Redis record with a 6-second TTL;
+# this column must never gate a lease."
+DEVICE_ONLINE_TTL_SECONDS = 6
+LAST_SEEN_PERSIST_SECONDS = 300
+_ONLINE_PREFIX = "collab:device:online:"
+
+
+def mark_online(device):
+    """Record liveness in Redis, and persist `last_seen_at` at most every 5
+    minutes.
+
+    🔴 The DB write is throttled deliberately. A 10-second heartbeat per
+    device that wrote a row every time would put a sustained write load on
+    the one box whose `max_connections` is the capacity wall. Redis carries
+    the truth; the column is for a human reading the device list.
+    """
+    from django.core.cache import cache
+
+    try:
+        cache.set(f"{_ONLINE_PREFIX}{device.id}", "1",
+                  timeout=DEVICE_ONLINE_TTL_SECONDS)
+    except Exception:  # noqa: BLE001 — liveness is a display concern
+        logger.warning("device liveness cache unavailable")
+
+    now = timezone.now()
+    if (device.last_seen_at is None
+            or (now - device.last_seen_at).total_seconds() >= LAST_SEEN_PERSIST_SECONDS):
+        from sessions_app.models import PairedDevice
+        PairedDevice.objects.filter(pk=device.pk).update(last_seen_at=now)
+        device.last_seen_at = now
+
+
+def is_online(device_id):
+    """🔴 Never consult this for authorization. It answers "should the UI say
+    online", and a stale or flushed cache must not be able to grant or deny
+    anything."""
+    from django.core.cache import cache
+
+    try:
+        return bool(cache.get(f"{_ONLINE_PREFIX}{device_id}"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def protocol_compatible(device):
+    """Whether this device's protocol range overlaps the server's v1."""
+    return (device.protocol_min or 1) <= 1 <= (device.protocol_max or 1)
+
+
+def rotate_credentials(device_id, refresh_token, thumbprint):
+    """Spend a refresh token, mint the next pair, and detect reuse.
+
+    Returns `(device, access_token, refresh_token)`.
+
+    🔴 **Presenting the PREVIOUS refresh token revokes the device.** Two
+    parties holding one single-use credential is either a replay or a theft,
+    and the two are indistinguishable from here — so this takes the hostile
+    reading. That is the standard OAuth refresh-rotation response and it is
+    the whole reason `previous_credential_hash` exists on the model.
+
+    🔴 `select_for_update` means two concurrent refreshes cannot both
+    succeed: the loser re-reads a row whose current hash has already moved
+    on, and is then treated as reuse.
+
+    🔴 **The reuse branch revokes OUTSIDE the transaction, and that is not a
+    style choice.** The first version of this function was wrapped in
+    `@transaction.atomic` and called `revoke_device` before raising — so the
+    raise rolled back the very revocation it was reporting. The caller got
+    "this device was unlinked for security" and the device was still paired.
+    Caught by `test_reusing_a_spent_refresh_token_REVOKES_the_device`, which
+    asserts the row afterwards rather than trusting the status code. Same
+    family as this project's `transaction.savepoint()` no-op: **a mutation
+    that must survive an error cannot live in the transaction the error
+    unwinds.**
+    """
+    from sessions_app.models import PairedDevice
+
+    reuse_detected = False
+
+    with transaction.atomic():
+        device = (
+            PairedDevice.objects.select_for_update().filter(id=device_id).first()
+        )
+        if device is None:
+            raise PairingError("device_unknown", "This device is not paired.",
+                               status=401)
+
+        if not hmac.compare_digest(str(device.key_thumbprint), str(thumbprint)):
+            raise PairingError("device_proof_invalid", "Invalid device proof.",
+                               status=401)
+
+        if device.status == PairedDevice.STATUS_REVOKED:
+            raise PairingError("device_revoked", "This device was unlinked.",
+                               status=401)
+
+        if hashes_match(refresh_token, device.previous_credential_hash):
+            # 🔴 Theft, as far as this code is concerned. Flagged here and
+            # acted on after the transaction closes — see the docstring.
+            reuse_detected = True
+        else:
+            if not hashes_match(refresh_token, device.credential_hash):
+                raise PairingError("credential_invalid",
+                                   "Sign this device in again.", status=401)
+
+            if (device.credential_expires_at
+                    and timezone.now() >= device.credential_expires_at):
+                raise PairingError(
+                    "credential_expired",
+                    "This device's credential expired. Pair it again.",
+                    status=401)
+
+            issued = new_refresh_token()
+            device.previous_credential_hash = device.credential_hash
+            device.credential_hash = keyed_hash(issued)
+            device.credential_expires_at = timezone.now() + timezone.timedelta(
+                days=REFRESH_TOKEN_TTL_DAYS)
+            # 🔴 Bumping the version invalidates every outstanding access
+            # token for this device — `authenticate_device` compares
+            # `cred_ver`. Rotation is therefore also a revocation of
+            # whatever came before it.
+            device.credential_version += 1
+            device.save(update_fields=[
+                "previous_credential_hash", "credential_hash",
+                "credential_expires_at", "credential_version",
+            ])
+
+    if reuse_detected:
+        revoke_device(device, reason="refresh_reuse_detected")
+        raise PairingError(
+            "credential_reuse_detected",
+            "This device was unlinked for security. Pair it again.",
+            status=401)
+
+    return device, mint_access_token(device, thumbprint), issued
+
+
+@transaction.atomic
+def revoke_device(device, *, reason="unlinked"):
+    """Unlink a device and terminate everything it holds.
+
+    🔴 Order matters and the contract states it: "revoke bindings/grants
+    first". A caller that marked the device revoked and *then* failed partway
+    through terminating grants would leave a live grant pointing at a device
+    nobody can stop through the normal path.
+
+    🔴 `credential_version` is bumped so outstanding access tokens die inside
+    their own 5-minute window — `PairedDevice`'s docstring is explicit that
+    holding a valid token must not be sufficient.
+    """
+    from sessions_app.models import PairedDevice, RemoteControlGrant
+
+    now = timezone.now()
+
+    terminated = (
+        RemoteControlGrant.objects
+        .filter(device=device, status__in=RemoteControlGrant.NONTERMINAL_STATUSES)
+        .update(status=RemoteControlGrant.STATUS_REVOKED, ended_at=now,
+                reason=reason)
+    )
+
+    PairedDevice.objects.filter(pk=device.pk).update(
+        status=PairedDevice.STATUS_REVOKED,
+        revoked_at=now,
+        credential_hash=None,
+        previous_credential_hash=None,
+        credential_expires_at=None,
+        credential_version=device.credential_version + 1,
+    )
+    device.refresh_from_db()
+
+    try:
+        from django.core.cache import cache
+        cache.delete(f"{_ONLINE_PREFIX}{device.id}")
+    except Exception:  # noqa: BLE001
+        pass
+
+    return terminated
