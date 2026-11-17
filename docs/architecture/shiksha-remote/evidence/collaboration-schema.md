@@ -20,7 +20,20 @@ Regenerated against the actual branch base; it is now `0019` and depends on `('s
 
 The same staleness nearly caused a worse error: copying the local `models.py` onto the branch would have **deleted `InstantCollaborationGuest`**, because the local file predates it. The edits were applied to the branch's own file instead, and the guest model is asserted still present.
 
-## Deliberate divergence from the specification — one, flagged
+## Deliberate divergence from the specification — one, SIGNED OFF 17 November 2026
+
+> ✅ **RESOLVED by the contract owner, 17 November 2026: CASCADE is accepted.**
+> The legacy group `session` FK stays `CASCADE` permanently; the specification
+> is amended rather than the code. Rationale accepted as written below, plus:
+> deleting a `GroupSession` destroys its grant rows, but it does **not** destroy
+> the history of what happened — `CollaborationAuditEvent` has no FK to any
+> session and keeps its own `resource_type`/`resource_id` pair, so the audit
+> trail survives the cascade. That separation is what makes CASCADE safe here,
+> and it is a property RC-008 and RC-029 must not undo: **never add a session
+> FK to `CollaborationAuditEvent`.**
+>
+> This closes the only RC-005 loose end. `database-specification.md` and
+> `validation-report.md` carry the same amendment. No code change was needed.
 
 `database-specification.md` says the grant's `session` FK should be **PROTECT**. It is left as **CASCADE**.
 
@@ -28,7 +41,7 @@ The same staleness nearly caused a worse error: copying the local `models.py` on
 
 The three **new** session FKs (`private_session`, `live_session`, `skill_session`) and `device` do use PROTECT as specified, because nothing depends on them yet and there is no existing behaviour to preserve.
 
-**This needs the contract owner's decision**, not an implementer's: either accept CASCADE for the legacy group FK, or schedule the PROTECT change with a plan for admin deletion. Recorded rather than silently adopted.
+~~**This needs the contract owner's decision**, not an implementer's: either accept CASCADE for the legacy group FK, or schedule the PROTECT change with a plan for admin deletion.~~ **Decided 17 November 2026 — CASCADE accepted, see the block at the top of this section.** Recorded rather than silently adopted, and that is why it could be decided in one line four days later instead of being discovered during RC-029 sign-off.
 
 ## A real bug the constraint caught
 
