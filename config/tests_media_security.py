@@ -164,9 +164,25 @@ class SessionFileMediaSecurityTest(TestCase):
     def test_private_session_outsider_is_denied(self):
         self.assertFalse(is_authorized(_req(self.outsider), self.private_file.file.name))
 
-    def test_staff_can_read_either(self):
+    def test_staff_can_read_a_group_room_file(self):
+        """Unchanged: staff keep review access to files shared in a group
+        room, matching _check_chat_attachment / _check_forum_attachment."""
         self.assertTrue(is_authorized(_req(self.staff), self.group_file.file.name))
-        self.assertTrue(is_authorized(_req(self.staff), self.private_file.file.name))
+
+    def test_staff_cannot_read_a_private_session_file(self):
+        """🔴 CHANGED BY RC-031 — this assertion used to be assertTrue.
+
+        A PrivateSession is 1:1 tutoring; its files are recipient-only. The
+        old blanket `is_staff: return True` in _check_session_file let any
+        staff account read them, which RC-031 ("without granting private-
+        recipient access to staff") removes. Staff moderation of group rooms
+        is untouched — see the test above.
+
+        Compatibility note: nothing in the codebase consumes these files as
+        staff (no admin view, export or report reads PrivateSessionFile), so
+        this narrows an unused capability rather than breaking a workflow.
+        """
+        self.assertFalse(is_authorized(_req(self.staff), self.private_file.file.name))
 
     def test_unknown_session_file_path_is_denied(self):
         self.assertFalse(is_authorized(_req(self.outsider), "session_files/2026/08/20/ghost.pdf"))

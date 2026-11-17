@@ -356,27 +356,33 @@ def _check_session_file(request, name):
     so both have to be checked. Had NO rule at all, so every file shared in
     a live class or private session 404'd for every non-staff user —
     including the teacher/student who just uploaded or was in the room.
-    Mirrors the exact authorization the live views themselves use
-    (sessions_app/live_files_views.py's _in_room / _is_private_session_participant)
-    rather than reinventing it, so the two can't silently drift apart."""
+    Mirrors the exact authorization the live views themselves use rather
+    than reinventing it, so the two can't silently drift apart — the rule
+    now lives in sessions_app/live_files_views.py's can_read_group_file /
+    can_read_private_file and this function only dispatches to it.
+
+    🔴 RC-031 changed two things here, both deliberate:
+      * Expiry is enforced. It previously was not enforced anywhere on any
+        read path, so a "self-destructing" room file stayed downloadable
+        indefinitely — the sweeper that was supposed to remove the bytes is
+        registered in no beat/cron entry in this repo.
+      * The blanket `is_staff` bypass is gone. Staff keep review access to
+        GROUP room files (inside can_read_group_file); they no longer read
+        1:1 PrivateSessionFiles, which are recipient-only."""
     from sessions_app.models import SessionFile, PrivateSessionFile
-    from sessions_app.live_files_views import _in_room
-    from sessions_app.views import _is_private_session_participant
+    from sessions_app.live_files_views import can_read_group_file, can_read_private_file
 
     user = request.user
     if not user.is_authenticated:
         return False
-    if user.is_staff:
-        return True
 
     group_file = SessionFile.objects.select_related("session").filter(file=name).first()
     if group_file:
-        session = group_file.session
-        return _in_room(user, session) or user.id == session.host_id
+        return can_read_group_file(user, group_file)
 
     private_file = PrivateSessionFile.objects.select_related("session").filter(file=name).first()
     if private_file:
-        return _is_private_session_participant(private_file.session, user)
+        return can_read_private_file(user, private_file)
 
     return False
 
