@@ -1,0 +1,122 @@
+{
+  "_readme": [
+    "Resolutions for the duplicate sections in abroad3.docx, so that whoever",
+    "imports it does not have to re-derive these decisions or guess.",
+    "",
+    "abroad3.docx is a database kept in Word: 18 phases, 54 country guides and",
+    "121 course records. Parts of it were regenerated rather than edited, so a",
+    "few sections exist twice with DIFFERENT WORDING. Textual dedupe cannot",
+    "resolve those - the two copies share very few lines - and picking the",
+    "longer one is not always right either. The rule used here is:",
+    "",
+    "  RULE: keep the copy that satisfies the document's own A-Q section",
+    "  schema. Where both are complete, keep the one with more numbered",
+    "  questions. Never merge two copies: they are independently written and",
+    "  interleaving them produces claims neither source makes.",
+    "",
+    "Line numbers refer to a `pdftotext`-free plain-text extraction of the",
+    ".docx (see design_handoff_career_counselling_v3/source_bundle/",
+    "converted_txt/abroad__abroad3.docx.txt). They WILL drift if the .docx is",
+    "re-exported - match on the heading text, and treat the line numbers as a",
+    "hint for where to look."
+  ],
+
+  "duplicates": [
+    {
+      "what": "Canada country guide",
+      "heading": "13.5 CANADA - COUNTRY-WISE EDUCATION GUIDE",
+      "keep": {
+        "line": 15145,
+        "sections": "A-Q (17)",
+        "questions": 67,
+        "words": 1773
+      },
+      "drop": {
+        "line": 15232,
+        "sections": "A-P (16, no Q)",
+        "questions": 61,
+        "words": 1518
+      },
+      "why": [
+        "The kept copy completes the document's own A-Q schema; the dropped one",
+        "stops at P. It also carries 6 more questions, and names Canada's PAL",
+        "(Provincial Attestation Letter) which the dropped copy omits entirely.",
+        "Only 17 lines are shared between them, so this is a rewrite, not a",
+        "copy-paste: do not attempt a textual merge."
+      ]
+    },
+    {
+      "what": "Greece country guide",
+      "heading": "1. Why study in Greece?",
+      "keep": {
+        "line": 29313,
+        "sections": "A-Q (17)",
+        "questions": 79,
+        "words": 3420
+      },
+      "drop": {
+        "line": 26793,
+        "sections": "A-Q (17)",
+        "questions": 73,
+        "words": 3123
+      },
+      "why": [
+        "Both copies complete the A-Q schema, so the tie-break applies: the kept",
+        "copy answers 6 more questions. 192 lines are shared and ~300 differ on",
+        "each side - again a rewrite, not a copy-paste."
+      ]
+    }
+  ],
+
+  "not_duplicates": [
+    {
+      "what": "PHASE 11, which appears twice",
+      "lines": [5838, 6720],
+      "finding": [
+        "NOT a duplicate, despite both being headed 'PHASE 11 - SUBJECTS,",
+        "STREAMS & COURSE OPTIONS ABROAD' and both opening at '11.1'.",
+        "The first is general guidance on how to choose a course (2,787 words);",
+        "the second is the stream-by-stream catalogue, opening at '11.1 SCIENCE",
+        "STREAM' (3,823 words). They share 221 lines out of ~950.",
+        "KEEP BOTH. Deleting either loses real content. Treat the first as the",
+        "phase introduction and the second as its body, and renumber the second",
+        "block's subsections when importing so two sections do not both claim",
+        "11.1."
+      ]
+    },
+    {
+      "what": "PHASE 14",
+      "line": 45786,
+      "finding": [
+        "Present, not missing. Its heading carries a leading emoji",
+        "('🌍 PHASE 14 - UNIVERSITY & COLLEGE GUIDE'), so a pattern anchored on",
+        "'^PHASE' skips it and the phase list looks like it jumps 13 -> 15.",
+        "Anchor on the phase number, not the line start."
+      ]
+    }
+  ],
+
+  "open_for_a_human": [
+    {
+      "what": "Undated immigration claims",
+      "detail": [
+        "The country guides name live instruments - Canada PGWP/PAL/TAL,",
+        "Australia's Genuine Student test, the UK Graduate visa, US OPT/CPT -",
+        "with no date stamp anywhere in the document, and no 'not immigration",
+        "advice' line. One claim has a hard expiry: the UK Graduate visa text",
+        "states 2 years for applications 'on or before 31 December 2026'.",
+        "This is a publishing decision, not a parsing one. Do not publish the",
+        "country guides undated."
+      ]
+    },
+    {
+      "what": "Generation chat left in the body",
+      "detail": [
+        "Conversational residue survives in the document text (for example",
+        "'YESSS - now I understand the level of detail you want.'). The guide",
+        "importer's noise filter does not cover these; they need removing at",
+        "the source or an added rule before any of this ships."
+      ]
+    }
+  ]
+}

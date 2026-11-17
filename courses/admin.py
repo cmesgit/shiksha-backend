@@ -83,8 +83,8 @@ class SubjectAdmin(admin.ModelAdmin):
 @admin.register(Chapter)
 class ChapterAdmin(admin.ModelAdmin):
     # is_covered is editable right in the list for quick ticking.
-    list_display = ("title", "subject", "get_course", "get_board", "order", "is_covered")
-    list_editable = ("is_covered",)
+    list_display = ("title", "subject", "get_course", "get_board", "order", "is_covered", "planned_date")
+    list_editable = ("is_covered", "planned_date")
 
     list_filter = (
         "is_covered",

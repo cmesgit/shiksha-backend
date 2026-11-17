@@ -22,6 +22,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db import models
 
+from .upload_paths import cms_upload_to
 from .validators import validate_cms_image
 from django.db.models import Q
 from django.db.models.functions import Cast
@@ -233,7 +234,7 @@ class BlogPost(PublishableModel):
         help_text="Short summary shown on listing cards (≈1–2 sentences).",
     )
     cover = models.ImageField(
-        upload_to="content/blog/%Y/%m/", blank=True, null=True,
+        upload_to=cms_upload_to("content/blog", dated=True), blank=True, null=True,
         validators=[validate_cms_image],
         help_text="Card thumbnail. ~800×450 recommended.",
     )
@@ -606,7 +607,7 @@ class Announcement(StatusedContentModel):
     # serializer. Registered in content/media.py so the Pictures screen counts
     # it and the 409 delete guard protects it.
     image = models.ImageField(
-        upload_to="content/ticker/", blank=True, null=True,
+        upload_to=cms_upload_to("content/ticker"), blank=True, null=True,
         validators=[validate_cms_image],
     )
     image_url = models.URLField(
@@ -853,7 +854,7 @@ class ShowcaseCourse(StatusedContentModel):
         help_text="Two rgba() stops for the thumbnail overlay.",
     )
     image = models.ImageField(
-        upload_to="content/showcase/", blank=True, null=True,
+        upload_to=cms_upload_to("content/showcase"), blank=True, null=True,
         validators=[validate_cms_image],
     )
     image_url = models.URLField(
@@ -1093,7 +1094,7 @@ class HomeContentBlock(StatusedContentModel):
     cta_secondary_label = models.CharField(max_length=60, blank=True, default="")
     cta_secondary_href = models.CharField(max_length=200, blank=True, default="")
     image = models.ImageField(
-        upload_to="content/home/", blank=True, null=True,
+        upload_to=cms_upload_to("content/home"), blank=True, null=True,
         validators=[validate_cms_image],
     )
     image_url = models.URLField(
@@ -1196,7 +1197,7 @@ class HomeListItem(StatusedContentModel):
     # before this, those images were hardcoded frontend imports and could only
     # be changed with a deploy.
     image = models.ImageField(
-        upload_to="content/home/", blank=True, null=True,
+        upload_to=cms_upload_to("content/home"), blank=True, null=True,
         validators=[validate_cms_image],
     )
     image_url = models.URLField(
@@ -1310,7 +1311,7 @@ class ContentImage(TimeStampedModel):
     several, and deleting the post shouldn't cascade-delete an image that
     might still be referenced elsewhere in its body_html_source history."""
     file = models.ImageField(
-        upload_to="content/editor/%Y/%m/",
+        upload_to=cms_upload_to("content/editor", dated=True),
         validators=[validate_cms_image],
     )
     uploaded_by = models.ForeignKey(
@@ -1724,3 +1725,90 @@ class DemoVideo(StatusedContentModel):
 
     def __str__(self):
         return f"{self.title} ({self.key})"
+
+
+# ── Redirects (design_handoff_admin_counsellor, Admin v2 Phase 5) ─────────
+
+class Redirect(models.Model):
+    """One old path → one new path, for links that have already escaped.
+
+    WHY THIS IS A MODEL AND NOT nginx CONFIG, AND NOT DJANGO MIDDLEWARE
+    ──────────────────────────────────────────────────────────────────
+    The public site is a React SPA. nginx serves `index.html` for every
+    unmatched path, so a Django middleware — including
+    `django.contrib.redirects` — **never sees** `/old-course-slug`: the
+    request is answered by the static server before Django is consulted.
+    The only place that knows the URL failed is the SPA's own catch-all
+    route, so the SPA asks `GET /api/content/redirects/resolve/` before it
+    renders a 404.
+
+    That also means these are **client-side** redirects. They fix the visitor
+    experience and internal links; they do NOT pass PageRank the way a 301
+    from the origin would. Said plainly here so nobody reports it as a bug:
+    `permanent` controls the wording the SPA uses and is the flag to honour
+    if these are ever promoted into nginx or an edge worker.
+
+    The problem this exists for is real and documented: `Course.slug` is
+    derived from the title on first save and **never re-derived on rename**
+    (see the workspace CLAUDE.md). Renaming a course leaves every shared link
+    to its old slug dead, with nothing an admin can do about it until now.
+    """
+
+    from_path = models.CharField(
+        max_length=300,
+        unique=True,
+        db_index=True,
+        help_text="The dead path, including the leading slash — e.g. /courses/old-name",
+    )
+    to_path = models.CharField(
+        max_length=300,
+        help_text="Where it should go instead. A site path, or a full URL for off-site.",
+    )
+    # 301 vs 302. Default permanent: the overwhelming case is a rename, and a
+    # temporary redirect for a permanent move is the one that ages badly.
+    permanent = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=True)
+
+    # Evidence that a redirect is earning its place. A rule with zero hits a
+    # year after a rename is a rule you can retire; one with thousands says
+    # the old link is still in circulation.
+    hits = models.PositiveIntegerField(default=0, editable=False)
+    last_hit_at = models.DateTimeField(null=True, blank=True, editable=False)
+
+    note = models.CharField(max_length=200, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="content_redirects",
+    )
+
+    class Meta:
+        ordering = ["from_path"]
+        verbose_name = "Redirect"
+
+    def __str__(self):
+        return f"{self.from_path} → {self.to_path}"
+
+    @staticmethod
+    def normalise(path):
+        """One spelling per path, so a lookup cannot miss on punctuation.
+
+        `/A/B/`, `/a/b` and `a/b?x=1` are the same destination as far as a
+        redirect rule is concerned. Lower-cased, query and fragment dropped,
+        trailing slash removed (except for the root), leading slash forced.
+        """
+        if not path:
+            return ""
+        p = str(path).strip().split("#")[0].split("?")[0]
+        if not p.startswith("/"):
+            p = "/" + p
+        p = p.rstrip("/") or "/"
+        return p.lower()
+
+    def save(self, *args, **kwargs):
+        self.from_path = self.normalise(self.from_path)
+        # `to_path` is only normalised when it is a site path; an off-site URL
+        # must keep its scheme, case and query string intact.
+        if not self.to_path.lower().startswith(("http://", "https://")):
+            self.to_path = self.normalise(self.to_path)
+        return super().save(*args, **kwargs)

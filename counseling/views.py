@@ -36,6 +36,8 @@
 #   GET  /counseling/admin/applications/?status=
 #   POST /counseling/admin/applications/<id>/action/   approve · reject ·
 #                                                      suspend · relist
+#        400s when the action doesn't apply to the row's current status —
+#        see AdminApplicationActionView.LEGAL_FROM for the transition table.
 #   GET  /counseling/admin/appointments/?status=&search=   (+ stats)
 #
 # Every event notifies through the site-wide notifications app
@@ -134,18 +136,56 @@ def _default_template():
 def _grant_counselor_role(user, approved_by=None):
     """Attach the COUNSELOR role to the account (idempotent). Uses the
     same Role/UserRole tables the rest of the platform uses, so
-    user.has_role('COUNSELOR') — and forum COUNSELOR badges — work."""
+    user.has_role('COUNSELOR') — and forum COUNSELOR badges — work.
+
+    `approved_by` IS recorded. It used to be accepted and dropped, which
+    left the role row claiming nobody granted it: `accounts/admin.py:124`
+    puts `approved_by`/`approved_at` in `list_display` and
+    `accounts/rbac_views.py:214` returns them per role row, so a counsellor
+    showed a blank approver on both surfaces. Every other admin grant path
+    stamps them — the teacher branch (`accounts/views.py:1704`), the manual
+    RBAC grant (`rbac_views.py:229`) and `UserRole.approve()`
+    (`accounts/models.py:466`) — counselling was the only one that didn't.
+    (`CounselorProfile.reviewed_by`/`reviewed_at` also record the decision,
+    so this was never a total loss of audit trail.)
+
+    On a re-approval the ORIGINAL `approved_at` is kept, matching the
+    teacher branch: this stamp answers "when did this account first become
+    a counsellor", while `CounselorProfile.reviewed_at` carries the latest
+    decision. Overwriting here would leave nothing recording the first."""
     from accounts.models import Role, UserRole
 
     role, _ = Role.objects.get_or_create(name="COUNSELOR")
-    defaults = {"is_active": True}
+    now = timezone.now()
+    defaults = {"is_active": True, "approved_at": now,
+                "approved_by": approved_by}
     ur, created = UserRole.objects.get_or_create(
         user=user, role=role, defaults=defaults
     )
-    if not created and not ur.is_active:
+    if not created and (not ur.is_active or ur.approved_at is None):
         ur.is_active = True
-        ur.save(update_fields=["is_active"])
+        ur.approved_at = ur.approved_at or now
+        ur.approved_by = ur.approved_by or approved_by
+        ur.save(update_fields=["is_active", "approved_at", "approved_by"])
     return ur
+
+
+def _revoke_counselor_role(user):
+    """Deactivate the COUNSELOR role (idempotent). Mirrors the reject branch
+    of the teacher endpoint (accounts/views.py:1727). There is only one
+    counselling track, so unlike teachers there is no "another track is still
+    approved" case to check first.
+
+    ⚠ This matters even though `IsApprovedCounselor` gates the console on
+    `status` and not on the role: `forum/utils.py:39` reads
+    has_role("COUNSELOR") to award a COUNSELOR badge, so a rejected
+    applicant kept wearing one. Deactivates rather than deletes, so a later
+    `_grant_counselor_role` reactivates the same row."""
+    from accounts.models import UserRole
+
+    return UserRole.objects.filter(
+        user=user, role__name="COUNSELOR", is_active=True
+    ).update(is_active=False)
 
 
 def _appointment_label(appt):
@@ -709,6 +749,60 @@ class ApplyCounselorView(APIView):
         )
 
 
+class ReapplyCounselorView(APIView):
+    """POST /api/counseling/counselor/reapply/ — put a REJECTED application
+    back in front of the admins.
+
+    Why this exists as its own endpoint rather than letting the profile PUT
+    do it: `status` is read-only on CounselorSelfSerializer, deliberately, so
+    nobody can approve themselves by PATCHing a field. That also meant a
+    rejected applicant could edit their details forever and never re-enter
+    the queue — while the console's rejected screen told them "you can update
+    your profile details and our team can take another look". The promise was
+    real; the route back was missing.
+
+    The ONLY transition allowed here is rejected → pending. Pending is
+    already in the queue, approved has nothing to re-apply for, and
+    suspended is an admin action a user must not be able to undo — each is
+    refused explicitly rather than silently ignored.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        profile = getattr(request.user, "counselor_profile", None)
+        if profile is None:
+            return Response({"detail": "No counselor profile."},
+                            status=status.HTTP_404_NOT_FOUND)
+        if profile.status != CounselorProfile.STATUS_REJECTED:
+            return Response(
+                {"detail": "Only a rejected application can be re-submitted.",
+                 "status": profile.status},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        profile.status = CounselorProfile.STATUS_PENDING
+        # The old note belongs to the decision just superseded; leaving it
+        # would show the applicant last round's rejection reason while they
+        # wait for this round's verdict.
+        profile.review_note = ""
+        profile.reviewed_by = None
+        profile.reviewed_at = None
+        profile.save(update_fields=[
+            "status", "review_note", "reviewed_by", "reviewed_at",
+        ])
+
+        notify(
+            recipient=request.user,
+            verb="counseling.application",
+            title="Counsellor application re-submitted",
+            body="Our team will take another look and get back to you.",
+            link_url="/counselor/apply",
+            payload={"counselor_profile_id": profile.id},
+        )
+        return Response(CounselorSelfSerializer(profile).data)
+
+
 class CounselorMeView(APIView):
     """The counselor's own profile — visible in any status so an applicant
     can watch/edit their pending application."""
@@ -991,26 +1085,144 @@ class AdminApplicationsView(APIView):
 class AdminApplicationActionView(APIView):
     """approve · reject · suspend · relist. Approve grants the COUNSELOR
     role; suspend hides from the directory and blocks the counselor
-    console (status gate) without deleting anything."""
+    console (status gate) without deleting anything.
+
+    ⚠ Every action re-checks the row's CURRENT status under
+    `select_for_update()` before touching it, and refuses with a 400 when
+    the transition isn't legal. Without that re-check two admins clicking
+    Approve seconds apart BOTH got a 200 and the applicant was emailed
+    twice, and approve-then-reject silently un-approved a live counsellor
+    with no error at all. The guard is PER ACTION rather than a blanket
+    "must be pending" — see LEGAL_FROM."""
 
     permission_classes = [IsAdmin]
 
-    ACTIONS = ("approve", "reject", "suspend", "relist")
+    # Which statuses each action may act FROM. Decided per action, and these
+    # match the buttons CounselorApprovals.jsx offers on each tab:
+    #
+    #   approve   pending, rejected    Re-approving after a decline is a real
+    #                                  admin path (the Rejected tab offers
+    #                                  it). NOT from `approved` — that is the
+    #                                  double-click that emails twice. NOT
+    #                                  from `suspended`; `relist` is that.
+    #   reject    pending, suspended   The ordinary decline, plus the terminal
+    #                                  step for someone already paused. NOT
+    #                                  from `approved`: un-approving a live
+    #                                  counsellor must go through `suspend`
+    #                                  first, so taking them down is a
+    #                                  deliberate two-step rather than one
+    #                                  mis-click on the Approved tab.
+    #   suspend   approved             The only state with something to hide.
+    #   relist    suspended, approved  `approved` is in there on purpose and
+    #                                  is the genuinely repeatable case: the
+    #                                  Django admin can clear `is_listed`
+    #                                  while leaving the status approved, and
+    #                                  relist is what re-lists them.
+    #
+    # approve and reject are the only two that notify, and neither can now
+    # run twice on a row without an intervening state change in between.
+    LEGAL_FROM = {
+        "approve": (CounselorProfile.STATUS_PENDING,
+                    CounselorProfile.STATUS_REJECTED),
+        "reject": (CounselorProfile.STATUS_PENDING,
+                   CounselorProfile.STATUS_SUSPENDED),
+        "suspend": (CounselorProfile.STATUS_APPROVED,),
+        "relist": (CounselorProfile.STATUS_SUSPENDED,
+                   CounselorProfile.STATUS_APPROVED),
+    }
+    ACTIONS = tuple(LEGAL_FROM)
+
+    # The refusals an admin actually hits, phrased as "what happened and what
+    # to do instead" — whoever reads this string is usually someone who just
+    # clicked a button a colleague had already clicked.
+    REFUSALS = {
+        ("approve", CounselorProfile.STATUS_APPROVED):
+            "This counsellor is already approved.",
+        ("approve", CounselorProfile.STATUS_SUSPENDED):
+            "This counsellor is suspended — use 'relist' to put them back "
+            "in the directory.",
+        ("reject", CounselorProfile.STATUS_REJECTED):
+            "This application has already been rejected.",
+        ("reject", CounselorProfile.STATUS_APPROVED):
+            "This counsellor is already approved — suspend them first if you "
+            "want to take them down.",
+        ("suspend", CounselorProfile.STATUS_SUSPENDED):
+            "This counsellor is already suspended.",
+        ("suspend", CounselorProfile.STATUS_PENDING):
+            "This application hasn't been approved yet — reject it instead.",
+        ("suspend", CounselorProfile.STATUS_REJECTED):
+            "This application was rejected, so there is nothing to suspend.",
+        ("relist", CounselorProfile.STATUS_PENDING):
+            "This application hasn't been approved yet — approve it instead.",
+        ("relist", CounselorProfile.STATUS_REJECTED):
+            "This application was rejected — approve it to put them in the "
+            "directory.",
+    }
+
+    def _refusal(self, action, current):
+        known = self.REFUSALS.get((action, current))
+        if known:
+            return known
+        allowed = " or ".join(self.LEGAL_FROM[action])
+        return (f"Cannot '{action}' an application that is '{current}' — "
+                f"that action applies to a {allowed} application.")
 
     def post(self, request, profile_id):
-        profile = get_object_or_404(
-            CounselorProfile.objects.select_related("user"), pk=profile_id
-        )
         action = request.data.get("action")
         note = (request.data.get("note") or "")[:300]
         if action not in self.ACTIONS:
             return Response({"detail": f"Unknown action '{action}'."},
                             status=status.HTTP_400_BAD_REQUEST)
 
+        # The read-check-write runs locked inside one transaction so a second
+        # request blocks until the first commits and then sees the new status.
+        # The notification is sent AFTER the commit, deliberately: an email
+        # cannot be un-sent, so it must never go out for a write that a later
+        # rollback discards.
+        with transaction.atomic():
+            profile = (
+                CounselorProfile.objects
+                .select_for_update()
+                .select_related("user")
+                .filter(pk=profile_id)
+                .first()
+            )
+            if profile is None:
+                return Response({"detail": "Application not found."},
+                                status=status.HTTP_404_NOT_FOUND)
+
+            current = profile.status
+            if current not in self.LEGAL_FROM[action]:
+                return Response(
+                    {"detail": self._refusal(action, current), "status": current},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if action == "approve":
+                profile.status = CounselorProfile.STATUS_APPROVED
+                profile.is_listed = True
+                _grant_counselor_role(profile.user, approved_by=request.user)
+            elif action == "reject":
+                profile.status = CounselorProfile.STATUS_REJECTED
+                # `is_listed` defaults to True, so a rejected row was left
+                # claiming to be listed. Every directory query also filters
+                # on status, so this was never a leak — but it made the admin
+                # list read wrong.
+                profile.is_listed = False
+                _revoke_counselor_role(profile.user)
+            elif action == "suspend":
+                profile.status = CounselorProfile.STATUS_SUSPENDED
+                profile.is_listed = False
+            elif action == "relist":
+                profile.status = CounselorProfile.STATUS_APPROVED
+                profile.is_listed = True
+
+            profile.review_note = note
+            profile.reviewed_by = request.user
+            profile.reviewed_at = timezone.now()
+            profile.save()
+
         if action == "approve":
-            profile.status = CounselorProfile.STATUS_APPROVED
-            profile.is_listed = True
-            _grant_counselor_role(profile.user, approved_by=request.user)
             notify(
                 recipient=profile.user,
                 actor=request.user,
@@ -1022,7 +1234,6 @@ class AdminApplicationActionView(APIView):
                 email=True,
             )
         elif action == "reject":
-            profile.status = CounselorProfile.STATUS_REJECTED
             notify(
                 recipient=profile.user,
                 actor=request.user,
@@ -1033,17 +1244,7 @@ class AdminApplicationActionView(APIView):
                 link_url="/counselor/apply",
                 email=True,
             )
-        elif action == "suspend":
-            profile.status = CounselorProfile.STATUS_SUSPENDED
-            profile.is_listed = False
-        elif action == "relist":
-            profile.status = CounselorProfile.STATUS_APPROVED
-            profile.is_listed = True
 
-        profile.review_note = note
-        profile.reviewed_by = request.user
-        profile.reviewed_at = timezone.now()
-        profile.save()
         return Response({"detail": f"{action} done.", "status": profile.status,
                          "is_listed": profile.is_listed})
 

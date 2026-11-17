@@ -1366,3 +1366,93 @@ class SaveRecordingChapterTagTest(RecordingAccessBase):
         })
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
         self.assertFalse(Chapter.objects.filter(title="Ghost chapter").exists())
+
+
+class StudentAllRecordingsTest(RecordingAccessBase):
+    """GET /api/courses/student/recordings/all/ — the learner twin of
+    TeacherAllRecordingsView, added for the Live Sessions rail's "Latest
+    recordings" card.
+
+    The rules are copied from SubjectRecordingsView rather than re-derived, so
+    these tests assert the copy did not drift. A list that shows a row the
+    per-id endpoint then 403s is the exact bug _authorize_subject_recordings
+    exists to prevent.
+    """
+
+    URL = "/api/courses/student/recordings/all/"
+
+    def _titles(self, res):
+        return {r["title"] for r in res.data}
+
+    def test_learner_sees_course_wide_and_own_batch_only(self):
+        res = _client(self.parent, "learner", self.child_a).get(self.URL)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(
+            self._titles(res), {"Course-wide lecture", "Batch A only"}
+        )
+
+    def test_another_batchs_recording_never_appears(self):
+        """The leak this endpoint most easily introduces."""
+        res = _client(self.parent, "learner", self.child_a).get(self.URL)
+        self.assertNotIn("Batch B only", self._titles(res))
+
+    def test_unpublished_recordings_are_hidden(self):
+        """is_published defaults to TRUE on the model, so this filter is the
+        only thing between a half-finished upload and a student."""
+        SessionRecording.objects.create(
+            subject=self.subject, batch=None, title="Still processing",
+            bunny_video_id="vid-wip", uploaded_by=self.teacher, status=4,
+            is_published=False,
+        )
+        res = _client(self.parent, "learner", self.child_a).get(self.URL)
+        self.assertNotIn("Still processing", self._titles(res))
+
+    def test_outsider_gets_nothing(self):
+        """Not enrolled anywhere — must not enumerate any library."""
+        res = _client(self.outsider, "learner", self.outsider_profile).get(self.URL)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.data, [])
+
+    def test_no_active_profile_gets_nothing(self):
+        res = _client(self.parent, "learner").get(self.URL)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.data, [])
+
+    def test_batch_is_resolved_PER_COURSE(self):
+        """One profile can sit in different batches in different courses.
+        Resolving the batch once globally would admit the other course's
+        batch-scoped rows — which is why the queryset ORs per course."""
+        Enrollment.objects.create(
+            user=self.parent, learner_profile=self.child_a,
+            course=self.other_course, batch=self.foreign_batch,
+            status=Enrollment.STATUS_ACTIVE,
+        )
+        mine = SessionRecording.objects.create(
+            subject=self.other_subject, batch=self.foreign_batch,
+            title="Maths batch lecture", bunny_video_id="vid-m",
+            uploaded_by=self.teacher, status=4, is_published=True,
+        )
+        # A row in the OTHER course scoped to a batch this learner is NOT in.
+        stranger_batch = Batch.objects.create(
+            course=self.other_course, name="Maths Batch 2", code="M2",
+        )
+        SessionRecording.objects.create(
+            subject=self.other_subject, batch=stranger_batch,
+            title="Not my maths batch", bunny_video_id="vid-m2",
+            uploaded_by=self.teacher, status=4, is_published=True,
+        )
+        res = _client(self.parent, "learner", self.child_a).get(self.URL)
+        titles = self._titles(res)
+        self.assertIn(mine.title, titles)
+        self.assertNotIn("Not my maths batch", titles)
+        # And Batch B of the FIRST course is still excluded.
+        self.assertNotIn("Batch B only", titles)
+
+    def test_limit_caps_the_list(self):
+        res = _client(self.parent, "learner", self.child_a).get(self.URL + "?limit=1")
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(len(res.data), 1)
+
+    def test_garbage_limit_is_a_400_not_a_500(self):
+        res = _client(self.parent, "learner", self.child_a).get(self.URL + "?limit=abc")
+        self.assertEqual(res.status_code, 400, res.content)

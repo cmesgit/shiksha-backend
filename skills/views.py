@@ -252,6 +252,23 @@ class SessionRequestView(APIView):
 
         serializer = SkillSessionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        # ENFORCED, not decorative. The dashboard has always shown an
+        # "Accepting bookings" badge; it was a hardcoded <span>, so turning it
+        # off was impossible and leaving it on meant nothing. Now that experts
+        # can actually pause, the pause has to hold here — otherwise the badge
+        # is still a label that does nothing, which is the bug it replaces.
+        #
+        # 409, not 400: the request is well-formed, the expert's state is what
+        # refuses it. Checked AFTER validation so a malformed body still gets
+        # its field errors rather than this.
+        expert = serializer.validated_data.get("expert")
+        if expert is not None and not expert.accepting_bookings:
+            return Response(
+                {"detail": "This expert isn't taking new bookings right now."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         session = serializer.save(
             learner_profile=learner,
             status=SkillSession.STATUS_REQUESTED,
@@ -339,9 +356,11 @@ class CreateOrderView(APIView):
                     {"listing": "That skill isn't taking bookings right now."}
                 )
         else:
-            listing = expert.listings.filter(
-                is_active=True, is_suspended=False
-            ).order_by("order").first()
+            # `order_by("order")` alone has an undefined tie-break when two
+            # listings share an `order`, so the amount charged could differ
+            # from the price the learner was just shown. default_listing()
+            # is the single definition the card and the profile also use.
+            listing = expert.default_listing()
 
         # The rate the learner owes the expert directly (paise on the model).
         amount = listing.price_paise if listing else (expert.hourly_rate or 0)
@@ -642,9 +661,14 @@ class AdminExpertSuspendView(APIView):
             if sub and sub.status not in ("cancelled", "expired"):
                 sub.cancel()             # pauses the ad subscription + decays reach
         elif action == "unsuspend":
+            # `sync_listing` has never existed — the method is `refresh_listing`
+            # (models.py). This raised AttributeError -> 500 AFTER the save
+            # above had already committed is_suspended=False, so the expert
+            # came back unsuspended AND still delisted, with no way back
+            # through this endpoint: a second unsuspend hit the same line.
             ep.is_suspended = False
             ep.save(update_fields=["is_suspended", "updated_at"])
-            ep.sync_listing(save=True)   # re-list if the profile is complete
+            ep.refresh_listing(save=True)   # re-list if the profile is complete
         else:
             raise ValidationError("action must be 'suspend' or 'unsuspend'.")
 

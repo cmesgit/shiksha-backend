@@ -38,7 +38,7 @@ Per-slice _guard() hardening from the previous version is preserved.
 import logging
 from datetime import timedelta
 
-from django.db.models import Q, Prefetch, Count
+from django.db.models import Q, Prefetch, Count, Exists, OuterRef
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -60,7 +60,7 @@ from enrollments.services import legacy_profile_q
 from config.timezone_utils import local_day_start
 from livestream.models import LiveSession
 from quizzes.models import Quiz, QuizAttempt
-from sessions_app.models import PrivateSession
+from sessions_app.models import PrivateSession, GroupSession
 
 from .serializers import (
     DashboardSessionSerializer,
@@ -68,6 +68,7 @@ from .serializers import (
     DashboardQuizSerializer,
     DashboardActivitySerializer,
     DashboardPrivateSessionSerializer,
+    DashboardGroupSessionSerializer,
     DashboardGradingItemSerializer,
 )
 
@@ -390,6 +391,33 @@ def _teacher_quizzes(user):
     )
 
 
+def _teacher_group_sessions(user, now):
+    """Group sessions this teacher is part of today or later.
+
+    /dashboard/ returned no group_sessions key at all, so the Today timeline
+    silently omitted them — a teacher hosting a group session at 4pm saw an
+    empty afternoon. Live sessions and private sessions were both there; this
+    was the only one of the three missing.
+
+    A teacher reaches a group session EITHER as its host or as the invited
+    teacher, so both are matched. One Q, not two chained .filter()s: chaining
+    across a multi-valued relation would be two joins (CLAUDE.md rule 3) —
+    these are both plain FKs so it would not multiply here, but the single-Q
+    habit is what keeps that true when someone adds a third clause.
+    """
+    # localtime: see _learner_private_sessions above.
+    return list(
+        GroupSession.objects.filter(
+            Q(host=user) | Q(invited_teacher=user),
+            scheduled_date__gte=timezone.localtime(now).date(),
+            status__in=["scheduled", "live"],
+        )
+        .select_related("host", "invited_teacher")
+        .order_by("scheduled_date", "scheduled_time")
+        .distinct()
+    )
+
+
 def _teacher_private_sessions(user, now):
     # localtime: see _learner_private_sessions above.
     return list(
@@ -419,10 +447,34 @@ def _ungraded_submissions_q(user):
     unreachable for the life of the account — so the card stopped meaning
     anything and got ignored, which is the failure mode a work queue can least
     afford.
+
+    ── Why this delegates ───────────────────────────────────────────────
+    This filter used to be SUBJECT-level: any active TeachingAssignment on the
+    assignment's subject qualified, whatever batch either was in. But the
+    per-object gate is batch-aware, so the queue listed work the teacher could
+    not act on — a teacher staffed only on Maths/10-B saw 10-A's submissions,
+    the "N pending" badge counted them, and every Grade button on those rows
+    403'd.
+
+    It now delegates to assignments.views.teacher_scope_filter, which is the
+    queryset-shaped twin of _assert_teacher_owns_assignment and already
+    encodes both of the gate's branches (they are NOT the same rule: a
+    course-wide assignment gates on any active staffing row, a batch-scoped
+    one on that batch or a course-wide row — so a 10-B-only teacher may grade
+    a course-wide assignment but not a 10-A one).
+
+    Delegating rather than re-deriving is the whole point. Two independent
+    implementations of "assignments this teacher may act on" is exactly how
+    the queue and the gate drifted apart in the first place; there is now one.
+
+    `assignment__in=<subquery>` rather than a join on this queryset: IN
+    de-duplicates, so submissions cannot multiply across the course-wide +
+    batch-scoped staffing pair that 171 of 172 prod subjects carry.
     """
+    from assignments.views import teacher_scope_filter
+
     return AssignmentSubmission.objects.filter(
-        assignment__subject__teaching_assignments__teacher=user,
-        assignment__subject__teaching_assignments__is_active=True,
+        assignment__in=teacher_scope_filter(Assignment.objects.all(), user),
         graded_at__isnull=True,
     )
 
@@ -570,6 +622,9 @@ class DashboardView(APIView):
             private_sessions = _guard(
                 "teacher.private_sessions",
                 lambda: _teacher_private_sessions(user, now), [])
+            group_sessions = _guard(
+                "teacher.group_sessions",
+                lambda: _teacher_group_sessions(user, now), [])
             grading_queue = _guard(
                 "teacher.grading_queue",
                 lambda: _teacher_grading_queue(user), [])
@@ -656,6 +711,9 @@ class DashboardView(APIView):
             private_sessions = _guard(
                 "learner.private_sessions",
                 lambda: _learner_private_sessions(user, now), [])
+            # Learner dashboards have their own group-session surface;
+            # this key exists so the payload shape is stable either way.
+            group_sessions = []
             grading_queue = []  # learner dashboards have no grading queue
             grading_count = 0   # ditto
             notifications = _guard(
@@ -705,6 +763,10 @@ class DashboardView(APIView):
                                        lambda: DashboardQuizSerializer(quizzes, many=True).data, []),
             "private_sessions": _guard("ser.private_sessions",
                                        lambda: DashboardPrivateSessionSerializer(private_sessions, many=True).data, []),
+            "group_sessions":   _guard("ser.group_sessions",
+                                       lambda: DashboardGroupSessionSerializer(
+                                           group_sessions, many=True,
+                                           context={"user": user}).data, []),
             "grading_queue":    _guard("ser.grading_queue",
                                        lambda: DashboardGradingItemSerializer(grading_queue, many=True).data, []),
             "grading_count":    grading_count,

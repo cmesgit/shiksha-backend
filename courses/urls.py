@@ -38,6 +38,7 @@ from .views import (
 from .views import MySubjectsView
 from .views_recordings import (
     TeacherAllRecordingsView,
+    StudentAllRecordingsView,
     SubjectRecordingsView,
     DeleteRecordingView,
     CreateVideoSlotView,
@@ -168,6 +169,7 @@ urlpatterns = [
     # RECORDINGS — subjects-scoped
     # Flat: every recording across the subjects this teacher is assigned to.
     path("teacher/recordings/all/", TeacherAllRecordingsView.as_view()),
+    path("student/recordings/all/", StudentAllRecordingsView.as_view()),
     path("subjects/<uuid:subject_id>/recordings/",
          SubjectRecordingsView.as_view()),
     # `subjects/<id>/recordings/create/` was removed with CreateRecordingView —

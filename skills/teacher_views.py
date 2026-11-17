@@ -137,9 +137,28 @@ class TeacherDashboardView(APIView):
 
         # Upcoming bookings — everything from now onward (not just today),
         # soonest first. Unscheduled requests sort last.
+        # NEEDS_RECONFIRMATION and PENDING_PAYMENT belong here too. Both are
+        # live, upcoming commitments the expert still has to think about:
+        #
+        #   needs_reconfirmation — the EXPERT proposed a new time and is
+        #     waiting on the learner. Excluding it meant that the moment an
+        #     expert rescheduled, the session vanished from their own
+        #     schedule — the one view that should still show it, because they
+        #     are the party waiting.
+        #   pending_payment — confirmed in every sense except the money, and
+        #     it is already cancellable by the learner (cancel_views.py's
+        #     CANCELLABLE), so it is not a settled booking either.
+        #
+        # Everything else is terminal (completed/cancelled/declined/
+        # auto_declined/lapsed) and has no place on an UPCOMING list.
         upcoming_qs = (
             sessions
-            .filter(status__in=[SkillSession.STATUS_CONFIRMED, SkillSession.STATUS_REQUESTED])
+            .filter(status__in=[
+                SkillSession.STATUS_CONFIRMED,
+                SkillSession.STATUS_REQUESTED,
+                SkillSession.STATUS_NEEDS_RECONFIRMATION,
+                SkillSession.STATUS_PENDING_PAYMENT,
+            ])
             .exclude(scheduled_for__lt=now)
             .order_by("scheduled_for")
         )
@@ -160,6 +179,11 @@ class TeacherDashboardView(APIView):
                 "duration_mins": s.duration_mins,
                 "live":          is_live,
                 "status":        s.status,
+                # What this session is worth. The expert's own schedule
+                # showed the time and the learner but not the fee, so the
+                # one number that decides whether a day is worth it was the
+                # one thing missing.
+                "amount_rupees": (s.amount or 0) // 100,
             })
 
         # Activity feed (last 8 state-changed sessions)
@@ -268,6 +292,12 @@ class TeacherDashboardView(APIView):
             "today_schedule":  today_schedule,
             "next_up":         next_up,
             "recent_reviews":  recent_reviews,
+            "accepting_bookings": ep.accepting_bookings,
+            # S3 — the REAL completeness, not an invented "profile strength"
+            # percentage. completeness() returns {is_complete, missing[]};
+            # `missing` is a list of stable field keys the frontend maps to
+            # labels, and it is the only honest basis for this panel.
+            "completeness": ep.completeness(),
             "advertising":  advertising,
             "profile_todo": profile_todo,
             "activity":     activity,

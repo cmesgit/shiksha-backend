@@ -16,7 +16,7 @@ from .views import (
     IntakeView, MatchView,
     CreateAppointmentView, MyAppointmentsView, CancelAppointmentView,
     AssessmentView, SubmitAssessmentView, MyReportsView,
-    ApplyCounselorView, CounselorMeView,
+    ApplyCounselorView, CounselorMeView, ReapplyCounselorView,
     AvailabilityView, AvailabilityDeleteView,
     CounselorAppointmentsView, SetMeetingLinkView, CompleteAppointmentView,
     CounselorStudentView, SessionNotesView, CounselorNotesIndexView, SessionReportView,
@@ -48,6 +48,8 @@ urlpatterns = [
 
     # Counselor
     path("counselor/apply/", ApplyCounselorView.as_view()),
+    # rejected → pending. The only self-service status change there is.
+    path("counselor/reapply/", ReapplyCounselorView.as_view()),
     path("counselor/me/", CounselorMeView.as_view()),
     path("counselor/availability/", AvailabilityView.as_view()),
     path("counselor/availability/<int:slot_id>/", AvailabilityDeleteView.as_view()),

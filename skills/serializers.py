@@ -120,12 +120,22 @@ class ExpertCardSerializer(serializers.ModelSerializer):
     # than a single price + "Book a session".
     listings       = serializers.SerializerMethodField()
     from_rate      = serializers.SerializerMethodField()
+    # `from_rate` alone could not say whether it was a floor or a flat price,
+    # nor whether zero meant free or merely rounded down. These three carry
+    # that, so the card and the profile quote the same thing.
+    price_is_from  = serializers.SerializerMethodField()
+    is_free        = serializers.SerializerMethodField()
+    default_listing_id = serializers.SerializerMethodField()
     open_slots_week = serializers.SerializerMethodField()
 
     class Meta:
         model = ExpertProfile
         fields = [
             "id", "name", "title", "skills", "cat",
+            # Whether this expert is taking NEW requests. Public, because the
+            # profile page has to be able to say so BEFORE someone fills in a
+            # booking form the server will refuse.
+            "accepting_bookings",
             "rating", "sessions", "rate", "img", "bio",
             "badges", "availability", "mastery_target",
             "teacher_profile_id",
@@ -139,7 +149,8 @@ class ExpertCardSerializer(serializers.ModelSerializer):
             "intro_video_embed_url",
             "reviews_count", "my_mastery_progress",
             # multi-skill
-            "listings", "from_rate", "open_slots_week",
+            "listings", "from_rate", "price_is_from", "is_free",
+            "default_listing_id", "open_slots_week",
         ]
 
     def get_listings(self, obj):
@@ -178,13 +189,42 @@ class ExpertCardSerializer(serializers.ModelSerializer):
             return "No open slots this week"
         return f"{n} slot{'' if n == 1 else 's'} open this week"
 
+    def _price_paise(self, obj):
+        """The paise figure the card should show, and whether it is a floor.
+
+        Returns (paise, is_from). `is_from` is True when the expert publishes
+        more than one bookable listing at different prices — the card showed
+        `min(listings)` captioned "per 60-min session" with no qualifier, so
+        a two-listing expert advertised their cheapest skill as their flat
+        rate while the profile page quoted the default listing instead.
+        """
+        rows = obj.bookable_listings()
+        if not rows:
+            return obj.hourly_rate or 0, False
+        prices = [l.price_paise for l in rows]
+        return min(prices), len(set(prices)) > 1
+
     def get_from_rate(self, obj):
-        """Lowest active listing price in rupees, falling back to hourly_rate."""
-        prices = [
-            l.price_paise for l in obj.listings.all()
-            if l.is_active and not l.is_suspended
-        ]
-        return (min(prices) if prices else obj.hourly_rate) // 100
+        """Lowest bookable listing price in rupees, falling back to hourly_rate."""
+        return self._price_paise(obj)[0] // 100
+
+    def get_price_is_from(self, obj):
+        return self._price_paise(obj)[1]
+
+    def get_is_free(self, obj):
+        """Free means the price is ZERO, not that it floors to zero rupees.
+
+        `price_paise // 100` turns anything under ₹1 into 0, and the card
+        branched on that integer — so a ₹0.50 listing, or a rupee amount
+        mistakenly stored unmultiplied, advertised itself as "Free".
+        """
+        return self._price_paise(obj)[0] == 0
+
+    def get_default_listing_id(self, obj):
+        """Which listing the booking form should preselect — and the one the
+        server will charge for if the client sends no `listing`."""
+        row = obj.default_listing()
+        return str(row.id) if row else None
 
     def get_open_slots_week(self, obj):
         grid = obj.availability_slots or {}
