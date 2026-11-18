@@ -1547,7 +1547,12 @@ class ContactMessage(models.Model):
         CLOSED = "closed", "Closed"
 
     name = models.CharField(max_length=120)
-    email = models.EmailField()
+    # Optional since the Admission Abroad lead form (the board's "Get
+    # admission help" / "Talk to counsellor" modal) makes MOBILE the
+    # required contact method and email the optional one — the reverse of
+    # the original /contact page. Still validated as a real address when
+    # given; only a blank submission is now allowed.
+    email = models.EmailField(blank=True)
     # Optional on the form, so blank rather than null — this is a CharField and
     # the codebase's convention is "" for absent text, never NULL.
     phone = models.CharField(max_length=40, blank=True)
