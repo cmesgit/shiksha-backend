@@ -389,43 +389,52 @@
   "specializations": [
    "University Admissions"
   ],
-  "_note": "Abroad twin of study-in-india. Chosen over abroad3.docx: abroad2.0 has 9 cleanly numbered chapters and ZERO duplicate section titles, where abroad3 is a COMPOSITE (handbook ch1-11 + subject catalogue + ~53 country guides at 13.1-13.60) with 243 duplicate titles, most of them a per-country template repeated 53 times. abroad3's country blocks are the source for the Countries screen's missing 9 entries, NOT for this handbook. Chapters are the source's 'PHASE N —' headings (heading 1); --propose got this WRONG, offering 'Public Universities / Community Colleges' because those are heading-3 institution types inside chapter 2. Sections span heading 1 AND 2: PHASE 1's subsections are heading 2 (1.1-1.13) while PHASE 2+ put theirs at heading 1 (2.2, 2.3 ...).",
+  "_note": "Abroad twin of study-in-india. Chosen over abroad3.docx: abroad2.0 has 9 cleanly numbered chapters and ZERO duplicate section titles, where abroad3 is a COMPOSITE (handbook ch1-11 + subject catalogue + ~53 country guides at 13.1-13.60) with 243 duplicate titles, most of them a per-country template repeated 53 times. abroad3's country blocks are the source for the Countries screen's missing 9 entries, NOT for this handbook. Chapters are the source's 'PHASE N —' headings (heading 1); --propose got this WRONG, offering 'Public Universities / Community Colleges' because those are heading-3 institution types inside chapter 2. Sections span heading 1 AND 2: PHASE 1's subsections are heading 2 (1.1-1.13) while PHASE 2+ put theirs at heading 1 (2.2, 2.3 ...). chapter_titles use keep_as_section=false: these ARE real chapter headings, renamed for display only. Without the flag the importer also emits the matched heading as the chapter's first section, which printed the shouted 'PHASE 6 — STUDY DESTINATION: UNITED STATES OF AMERICA (USA)' at the top of chapters 2, 6, 7, 8 and 9 — the ones with intro prose under the PHASE heading. 1/3/4/5 looked fine only because their leaked section was empty and got dropped.",
   "chapter_titles": [
    {
     "match": "PHASE 1 — OVERVIEW OF HIGHER EDUCATION ABROAD",
-    "title": "1: Overview of Higher Education Abroad"
+    "title": "1: Overview of Higher Education Abroad",
+    "keep_as_section": false
    },
    {
     "match": "PHASE 2 — TYPES OF HIGHER EDUCATION INSTITUTIONS ABROAD",
-    "title": "2: Types of Institutions Abroad"
+    "title": "2: Types of Institutions Abroad",
+    "keep_as_section": false
    },
    {
     "match": "PHASE 3 — INTERNATIONAL RECOGNITION, ACCREDITATION & QUALITY",
-    "title": "3: Recognition, Accreditation & Quality"
+    "title": "3: Recognition, Accreditation & Quality",
+    "keep_as_section": false
    },
    {
     "match": "PHASE 4 — ADMISSION TO STUDY ABROAD",
-    "title": "4: Admission to Study Abroad"
+    "title": "4: Admission to Study Abroad",
+    "keep_as_section": false
    },
    {
     "match": "PHASE 5 — MAJOR STUDY DESTINATIONS ABROAD",
-    "title": "5: Major Study Destinations"
+    "title": "5: Major Study Destinations",
+    "keep_as_section": false
    },
    {
     "match": "PHASE 6 — STUDY DESTINATION: UNITED STATES OF AMERICA (USA)",
-    "title": "6: Study Destination — United States"
+    "title": "6: Study Destination — United States",
+    "keep_as_section": false
    },
    {
     "match": "PHASE 7 — STUDY DESTINATION: CANADA",
-    "title": "7: Study Destination — Canada"
+    "title": "7: Study Destination — Canada",
+    "keep_as_section": false
    },
    {
     "match": "PHASE 8 — STUDY DESTINATION: UNITED KINGDOM (UK)",
-    "title": "8: Study Destination — United Kingdom"
+    "title": "8: Study Destination — United Kingdom",
+    "keep_as_section": false
    },
    {
     "match": "PHASE 9 — STUDY DESTINATION: AUSTRALIA",
-    "title": "9: Study Destination — Australia"
+    "title": "9: Study Destination — Australia",
+    "keep_as_section": false
    }
   ]
  }
