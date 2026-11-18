@@ -95,6 +95,15 @@ class ContactFormTests(TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertFalse(ContactMessage.objects.exists())
 
+    def test_blank_email_is_accepted(self):
+        """The Admission Abroad lead form makes mobile the required contact
+        method and email optional — the reverse of this page's original
+        form. A blank email must still be accepted; only a malformed one
+        (above) is rejected."""
+        res = self.post(email="")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(ContactMessage.objects.get().email, "")
+
     def test_blank_name_and_message_are_rejected(self):
         for field in ("name", "message"):
             with self.subTest(field=field):
