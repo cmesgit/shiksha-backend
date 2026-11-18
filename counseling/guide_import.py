@@ -666,6 +666,9 @@ def parse_docx(fileobj, spec: dict | None = None) -> dict:
                        — e.g. New DOCX Document.docx chapter 8 begins at
                        "8.1 Overview of Fees, Scholarships & Financial
                        Assistance" with no "8: Fees" heading above it.
+                       A dict may also carry "keep_as_section": false when
+                       the match is a real chapter heading being renamed for
+                       display, so it is not also emitted as a section.
                        Absent/empty → a flat guide with no chapters.
       section_levels   outline levels treated as section headings
                        (default [1, 2]). Deeper headings become `h3`
@@ -688,17 +691,28 @@ def parse_docx(fileobj, spec: dict | None = None) -> dict:
 
     # chapter_titles entries are either "Heading text" or
     # {"match": "Heading text", "title": "Display title"}.
+    #
+    # A dict has TWO distinct uses, and they want opposite things from the
+    # matched heading:
+    #   1. the chapter has no chapter-level heading and must be opened on its
+    #      first subsection — that subsection has to survive as a section;
+    #   2. the chapter DOES have its own heading and we are only renaming it
+    #      for display — keeping it would print the source heading twice.
+    # `keep_as_section` says which. It defaults True so every manifest entry
+    # written before this flag existed behaves exactly as it did.
     chapter_specs = []
     for entry in spec.get("chapter_titles") or []:
+        keep = True
         if isinstance(entry, dict):
             raw_match = entry.get("match") or entry.get("title") or ""
             display = entry.get("title") or raw_match
+            keep = entry.get("keep_as_section", True)
         else:
             raw_match = display = entry
         key = match_key(raw_match)
         if key:
-            chapter_specs.append((key, display))
-    chapter_lookup = {key: i for i, (key, _) in enumerate(chapter_specs)}
+            chapter_specs.append((key, display, bool(keep)))
+    chapter_lookup = {key: i for i, (key, _, _) in enumerate(chapter_specs)}
 
     # Pass 1 — every heading in the document, and where real chapter
     # content begins, for TOC detection.
@@ -717,7 +731,7 @@ def parse_docx(fileobj, spec: dict | None = None) -> dict:
     # opened on a {match, title} entry (no chapter-level heading exists in
     # the source at all) still get restated in the document's own TOC,
     # under a title that will never otherwise appear as a real heading.
-    heading_keys = {norm(title) for _, title in chapter_specs}
+    heading_keys = {norm(title) for _, title, _ in chapter_specs}
     # A handful of documents restate a chapter in the TOC under wording
     # that never appears as a real heading anywhere in the body (an
     # abbreviated or lightly-retyped title) — e.g. New DOCX Document.docx's
@@ -836,6 +850,7 @@ def parse_docx(fileobj, spec: dict | None = None) -> dict:
                 seen_chapter.add(idx)
                 close_section()
                 display = chapter_specs[idx][1]
+                keep_as_section = chapter_specs[idx][2]
                 chapter_index = len(chapters)
                 ch_kind = chapter_kind(display)
                 chapters.append({
@@ -844,9 +859,11 @@ def parse_docx(fileobj, spec: dict | None = None) -> dict:
                     "_kind": ch_kind,
                 })
                 stats["chapters_matched"] += 1
-                # A dict entry means this heading is really the chapter's
-                # first subsection, so keep it as a section too.
-                if match_key(display) != match_key(text):
+                # Case 1 above: this heading is really the chapter's first
+                # subsection, so keep it as a section too. Case 2 (a pure
+                # rename, keep_as_section=False) drops it — the chapter
+                # already carries the title.
+                if keep_as_section and match_key(display) != match_key(text):
                     open_section(text, level, chapter_index)
                 continue
 
