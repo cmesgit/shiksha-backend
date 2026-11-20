@@ -5,6 +5,7 @@ from . import instant_guest_views as guest_views
 from . import live_files_views as lf_views
 from . import remote_control_views as rc_views
 from .collaboration import device_views
+from .collaboration import grant_views
 from .collaboration import views as collab_views
 from .views import subject_teachers, subject_students  # 👈 add this
 
@@ -255,4 +256,42 @@ urlpatterns = [
     path("collaboration/v1/device-heartbeat/",
          device_views.device_heartbeat,
          name="collaboration-device-heartbeat"),
+
+    # Control grants (RC-008 part 2d). Two authentication planes on one
+    # resource: browser routes take cookie + CSRF + exact Origin, device
+    # routes take a device token + DPoP proof and consult no cookie. The
+    # three shared routes dispatch on the credential actually presented, so
+    # a caller cannot choose which plane validates it.
+    #
+    # 🔴 These answer 404 unless BOTH collaboration_bindings_enabled and
+    # collaboration_control_enabled are on; both ship False.
+    path("collaboration/v1/grants/",
+         grant_views.create_grant,
+         name="collaboration-grant-create"),
+    path("collaboration/v1/grants/<str:grant_id>/decision/",
+         grant_views.decide_grant,
+         name="collaboration-grant-decision"),
+    path("collaboration/v1/grants/<str:grant_id>/activate/",
+         grant_views.activate_grant,
+         name="collaboration-grant-activate"),
+    path("collaboration/v1/grants/<str:grant_id>/resume/",
+         grant_views.resume_grant,
+         name="collaboration-grant-resume"),
+    path("collaboration/v1/grants/<str:grant_id>/resume-intent/",
+         grant_views.resume_intent,
+         name="collaboration-grant-resume-intent"),
+    path("collaboration/v1/grants/<str:grant_id>/lease/",
+         grant_views.renew_lease,
+         name="collaboration-grant-lease"),
+    path("collaboration/v1/grants/<str:grant_id>/pause/",
+         grant_views.pause_grant,
+         name="collaboration-grant-pause"),
+    path("collaboration/v1/grants/<str:grant_id>/terminate/",
+         grant_views.terminate_grant,
+         name="collaboration-grant-terminate"),
+    # Declared last: a bare <id>/ would otherwise swallow the action routes
+    # above, since "decision" and the rest parse happily as <str:grant_id>.
+    path("collaboration/v1/grants/<str:grant_id>/",
+         grant_views.read_grant,
+         name="collaboration-grant-read"),
 ]
