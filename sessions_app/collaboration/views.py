@@ -17,6 +17,7 @@ Routes here (the HTTP half of RC-006):
 The socket those tickets open is ``collaboration/consumers.py``; the events
 it carries are ``collaboration/events.py``.
 """
+import logging
 import uuid
 
 from django.conf import settings
@@ -35,6 +36,8 @@ from .auth import (
     parse_body,
 )
 from .policy import PolicyError
+
+logger = logging.getLogger(__name__)
 
 
 def _server_time():
@@ -263,14 +266,27 @@ def delete_binding(request, binding_id):
 
 
 def _terminate_grants_for_binding(record):
-    """Hook for "terminal grants referencing binding".
+    """"Terminal grants referencing binding", filled in by RC-008 part 2a.
 
-    Deliberately a no-op in RC-006a and deliberately still called: no grant
-    can reference a binding yet, because nothing mints grants against one
-    until RC-008 builds the consent state machine. Leaving the call site here
-    means RC-008 fills in a function that is already wired, rather than
-    having to remember that release must cascade.
+    RC-006a left this a wired no-op so the cascade would have a call site
+    waiting rather than needing release to remember a new one. It now ends
+    every live grant that referenced the binding, in either role.
+
+    A failure here must not fail the delete: the binding record is already
+    gone from the store, so refusing the 204 would leave the caller retrying
+    a delete that cannot succeed. Grants that outlive their binding are
+    caught again on the next lease renewal, which re-reads fresh presence.
     """
+    from . import grants
+
+    binding_id = (record or {}).get("binding_id")
+    if not binding_id:
+        return None
+    try:
+        grants.terminate_for_binding(binding_id, reason="disconnected")
+    except Exception:  # noqa: BLE001
+        logger.warning("could not cascade grant termination for binding %s",
+                       binding_id, exc_info=True)
     return None
 
 

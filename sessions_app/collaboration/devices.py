@@ -621,14 +621,26 @@ def revoke_device(device, *, reason="unlinked"):
     🔴 `credential_version` is bumped so outstanding access tokens die inside
     their own 5-minute window — `PairedDevice`'s docstring is explicit that
     holding a valid token must not be sufficient.
+
+    🔴 **v1 grants go through the state machine, not a bulk UPDATE.** Until
+    RC-008 part 2a there was no state machine, so this terminated grants with
+    a single ``.update()``. That is now wrong for v1 rows: it would skip the
+    version bump, the audit row and the notification, leaving a browser
+    showing live control over a device that no longer exists. Legacy
+    (``schema_version=0``) rows keep the bulk path — they are not addressable
+    through the collaboration plane at all, by design.
     """
     from sessions_app.models import PairedDevice, RemoteControlGrant
 
     now = timezone.now()
 
-    terminated = (
+    from . import grants as grant_svc
+
+    terminated = grant_svc.terminate_for_device(device, reason="local_stop")
+    terminated += (
         RemoteControlGrant.objects
-        .filter(device=device, status__in=RemoteControlGrant.NONTERMINAL_STATUSES)
+        .filter(device=device, schema_version=RemoteControlGrant.SCHEMA_LEGACY,
+                status__in=RemoteControlGrant.NONTERMINAL_STATUSES)
         .update(status=RemoteControlGrant.STATUS_REVOKED, ended_at=now,
                 reason=reason)
     )

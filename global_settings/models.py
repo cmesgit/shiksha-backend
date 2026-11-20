@@ -165,6 +165,20 @@ class GlobalSettings(models.Model):
             "merely forbidden, it is absent."
         ),
     )
+    collaboration_control_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Shiksha Remote: the narrower kill switch, for screen CONTROL "
+            "only (RC-008). Both this and collaboration_bindings_enabled "
+            "must be on before any grant can be requested, approved, "
+            "activated or renewed; turning this off invalidates new leases "
+            "while leaving bindings and the notification socket working, so "
+            "an operator can stop every control session mid-incident "
+            "without blanking the room UI for everyone. Stopping an existing "
+            "grant keeps working while this is off — otherwise flipping it "
+            "would strand live grants instead of ending them."
+        ),
+    )
     live_chat_enabled = models.BooleanField(
         default=True, help_text="Master switch for in-room chat."
     )

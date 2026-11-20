@@ -401,3 +401,103 @@ class RoomFileQuotaRaceTest(PostgresOnly):
                          f"quota of {quota} must admit exactly {quota}; {results}")
         self.assertEqual(
             SessionFile.objects.filter(session=self.session).count(), quota)
+
+
+class ConsentStateMachineRaceTest(PostgresOnly):
+    """RC-008 part 2a's own claim, through the real state machine.
+
+    ``DeviceReservationRaceTest`` above proves the *pattern* — it hand-rolls
+    lock-then-reserve, because when it was written there was no state machine
+    to call. This class proves the shipped code: two targets approving two
+    pending requests against one device, concurrently, through
+    ``grants.decide``. If a future refactor drops the device lock from
+    ``_lock_grant``, the hand-rolled test still passes and this one does not,
+    which is the whole reason it exists separately.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from global_settings.models import GlobalSettings
+
+        self.owner = User.objects.create_user(
+            username="smrace_owner", email="o@smrace.test", password="x")
+        self.a = User.objects.create_user(
+            username="smrace_a", email="a@smrace.test", password="x")
+        self.b = User.objects.create_user(
+            username="smrace_b", email="b@smrace.test", password="x")
+        self.room_one = self._room()
+        self.room_two = self._room()
+        self.device = PairedDevice.objects.create(
+            owner=self.owner, name="desk", platform="windows", arch="x64",
+            public_jwk={"kty": "OKP"}, key_thumbprint=f"tp-{uuid.uuid4()}",
+            status=PairedDevice.STATUS_PAIRED)
+
+        conf = GlobalSettings.load()
+        conf.collaboration_bindings_enabled = True
+        conf.collaboration_control_enabled = True
+        conf.save(update_fields=["collaboration_bindings_enabled",
+                                 "collaboration_control_enabled"])
+
+        # Both requests exist BEFORE either is approved — once one reserves
+        # the device, request_control itself refuses the other, so there
+        # would be nothing left to race.
+        self.grant_one = self._request(self.room_one, self.a)
+        self.grant_two = self._request(self.room_two, self.b)
+
+    def _room(self):
+        return GroupSession.objects.create(
+            host=self.owner, topic="race",
+            scheduled_date=timezone.now().date(),
+            scheduled_time=timezone.now().time(), duration_minutes=45,
+            status="live", session_type="instant",
+            short_code=uuid.uuid4().hex[:12],
+            room_name=f"room-{uuid.uuid4().hex[:8]}",
+            room_started_at=timezone.now())
+
+    def _request(self, session, controller):
+        from sessions_app.collaboration import grants
+        from sessions_app.collaboration.policy import Principal
+
+        return grants.request_control(
+            principal=Principal(user=controller, auth_sid=f"sid-{controller.id}",
+                                context="learner", profile_id=None),
+            session=session, device=self.device, target_user=self.owner,
+            controller_binding_id=uuid.uuid4(),
+            host_binding_id=uuid.uuid4(),
+            capabilities=["pointer.move"])
+
+    def test_simultaneous_approvals_produce_exactly_one_active_reservation(self):
+        from sessions_app.collaboration import grants
+        from sessions_app.collaboration.policy import Principal
+
+        def attempt(index, barrier):
+            grant = self.grant_one if index == 0 else self.grant_two
+            principal = Principal(user=self.owner,
+                                  auth_sid=f"sid-{self.owner.id}",
+                                  context="learner", profile_id=None)
+            # Barrier before the call, never inside a held lock.
+            barrier.wait()
+            try:
+                grants.decide(grant.public_id, principal=principal, allow=True,
+                              capabilities=["pointer.move"],
+                              expected_version=grant.version)
+                return "granted"
+            except grants.GrantError as exc:
+                return f"refused:{exc.code}"
+
+        results, errors = run_in_parallel(attempt)
+
+        self.assertTrue(all(e is None for e in errors),
+                        f"no thread should raise anything but GrantError; {errors}")
+        self.assertEqual(results.count("granted"), 1,
+                         f"exactly one approval may win; got {results}")
+        # 🔴 The loser must be refused for the RIGHT reason. A version
+        # conflict here would mean the two transactions interleaved on the
+        # grant row instead of serialising on the device.
+        self.assertIn("refused:busy", results, f"got {results}")
+        self.assertEqual(
+            RemoteControlGrant.objects.filter(
+                device=self.device,
+                status__in=RemoteControlGrant.DEVICE_RESERVING_STATUSES,
+            ).count(),
+            1)
