@@ -1,41 +1,62 @@
-"""Teacher -> student screen control (design screen 06).
+"""The retired teacher→student screen-control path (demoted by RC-008 2c).
 
-Three rules, enforced here and not merely in the UI:
-  1. the controller must be a teacher,
-  2. the target must be publishing a screen-share track,
-  3. one active grant per session.
+**This module no longer grants anything.** It is a compatibility adapter:
+two endpoints that refuse, and one that can still *stop* a grant made
+before the retirement. ``api-contracts.md`` and RC-008's prompt both require
+it — "legacy request/respond never mint native authority" — and the reason
+is worth stating plainly rather than leaving to the commit log.
 
-Students can never request control of anyone's screen. The admin can disable
-the whole feature with GlobalSettings.live_remote_access_enabled.
+What this used to do, and why it had to stop:
 
-Adapted from the design handoff's reference implementation
-(``design_handoff_live_sessions/backend/sessions_app/remote_control_views.py``)
-to this repo's real role check: there is no scalar ``user.role`` attribute —
-the real check is ``user.has_role("TEACHER")`` (RBAC, see accounts/models.py
-and sessions_app/permissions.py's ``IsTeacher``). ``participant.is_sharing_screen``
-is backed by the new ``GroupSessionParticipant`` model (see sessions_app/
-models.py's module note next to it) — nothing currently flips that flag to
-True (no LiveKit track-published webhook wired for group sessions yet), so
-in practice ``request_remote_control`` will always 409 with "not_sharing"
-until that producer exists. Left as-is rather than silently bypassing the
-check, per the handoff's own "Open question" section.
+``respond_remote_control`` moved a grant straight from ``requested`` to
+``active`` on a **browser click alone**. Shiksha Remote's entire consent
+design rests on the opposite rule — a browser approval reserves a device
+and nothing more; only the companion's locally-operated physical dialog can
+reach ``active``. Leaving a second, weaker door into the same ``active``
+state would have made that guarantee a matter of which URL a caller chose.
 
-See that same "Open question" section for why this only covers
-authorisation + audit, not the actual input-replay transport.
+It was already unreachable in practice: nothing in the codebase ever sets
+``GroupSessionParticipant.is_sharing_screen``, so ``request_remote_control``
+always answered 409 ``not_sharing``. Demoting it turns "unreachable by
+accident" into "refused on purpose", which is the difference between a
+guarantee and a coincidence.
+
+🔴 **The one real hole this closes.** ``revoke_remote_control`` looked a
+grant up by raw ``id`` with no ``schema_version`` filter, so a **v1**
+grant — one belonging to the new collaboration plane — could be terminated
+through here. That bypasses ``collaboration.grants`` entirely: no version
+bump, no audit row, no notification. Both ends would keep showing live
+control over a grant the database had already revoked, and the only thing
+that would eventually correct them is lease expiry. It now refuses anything
+that is not a legacy row and points the caller at the proper plane.
+
+Rows written by this module keep ``schema_version = 0``. The collaboration
+state machine refuses to address them at all (``grants._lock_grant`` filters
+to v1), so the two worlds cannot reach into each other in either direction.
+
+``GlobalSettings.live_remote_access_enabled`` still gates this module and
+still defaults **True** — it is not the switch for Shiksha Remote. See the
+help text on it and on ``collaboration_bindings_enabled``.
 """
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from accounts.permissions import _in_teacher_context
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 
-from . import live_rules
-from .group_session_policy import policy_for
-from .models import GroupSession, RemoteControlGrant
+from .models import RemoteControlGrant
+
+#: What a retired endpoint tells a caller. 410 rather than 404: the route
+#: existed and has been withdrawn, which is a different thing from never
+#: having been there, and a client that distinguishes them can log usefully.
+RETIRED_DETAIL = (
+    "Screen control has moved to Shiksha Remote, which requires a paired "
+    "companion and a local approval on the device being controlled."
+)
+RETIRED_CODE = "legacy_remote_control_retired"
 
 
 def _push(session_id, payload):
@@ -50,112 +71,57 @@ def _push(session_id, payload):
         pass
 
 
+def _retired():
+    return Response({"code": RETIRED_CODE, "detail": RETIRED_DETAIL},
+                    status=410)
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def request_remote_control(request, session_id):
-    session = get_object_or_404(GroupSession, id=session_id)
-    if not policy_for(session).remote_control_enabled:
-        return Response({"detail": "Remote control is not available in instant collaboration yet."}, status=403)
-    if not live_rules.features()["remote_access"]:
-        return Response({"detail": "Disabled by the admin."}, status=403)
+    """Retired. Creates nothing.
 
-    # has_role alone is NOT enough — accounts/permissions.py says so
-    # explicitly: on a teacher's account a learner-context token (a child on a
-    # shared device) also passes the role check. Require real teacher context.
-    if not _in_teacher_context(request):
-        return Response(
-            {"detail": "Only teachers may control a screen.", "code": "role"},
-            status=403,
-        )
-
-    # AND the caller must actually be running this room. Previously the only
-    # gates were "logged in" + "has TEACHER role", with no check that the
-    # requester was the host or even present — so any teacher-role account
-    # could target any screen-sharing participant of ANY session, push a
-    # remote-control prompt into that room, and (if the victim tapped Allow)
-    # take control of a stranger's shared screen. It could also burn the
-    # room's single active-grant slot, locking out the real teacher.
-    is_host = session.host_id == request.user.id
-    in_room = session.participants.filter(
-        user_id=request.user.id, left_at__isnull=True
-    ).exists()
-    if not (is_host or in_room):
-        return Response(
-            {"detail": "You are not in this session.", "code": "not_in_room"},
-            status=403,
-        )
-
-    target_id = request.data.get("target_user_id")
-    participant = session.participants.filter(
-        user_id=target_id, left_at__isnull=True
-    ).first()
-    if not participant:
-        return Response({"detail": "Not in the room."}, status=404)
-    if not participant.is_sharing_screen:
-        return Response(
-            {"detail": "They must share a screen first.", "code": "not_sharing"},
-            status=409,
-        )
-    if session.remote_grants.filter(status=RemoteControlGrant.STATUS_ACTIVE).exists():
-        return Response(
-            {"detail": "Another control session is active.", "code": "busy"},
-            status=409,
-        )
-
-    grant = RemoteControlGrant.objects.create(
-        session=session, controller=request.user, target_id=target_id
-    )
-    _push(
-        session.id,
-        {
-            "type": "remote_control_requested",
-            "grant_id": grant.id,
-            "target_user_id": int(target_id),
-            "controller": request.user.get_full_name() or request.user.username,
-        },
-    )
-    return Response({"grant_id": grant.id, "status": grant.status}, status=201)
+    Previously this inserted a ``requested`` grant after a role and
+    membership check. It is now a flat refusal — there is no argument and no
+    account state that makes it create a row, which is what "never mint
+    native authority" has to mean to be worth anything.
+    """
+    return _retired()
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def respond_remote_control(request, session_id):
-    grant = get_object_or_404(
-        RemoteControlGrant,
-        id=request.data.get("grant_id"),
-        session_id=session_id,
-        target=request.user,  # only the target may answer
-        status=RemoteControlGrant.STATUS_REQUESTED,
-    )
-    if request.data.get("allow"):
-        grant.status = RemoteControlGrant.STATUS_ACTIVE
-        grant.granted_at = timezone.now()
-        grant.save(update_fields=["status", "granted_at"])
-        _push(
-            session_id,
-            {
-                "type": "remote_control_granted",
-                "grant_id": grant.id,
-                "controller_user_id": grant.controller_id,
-                "target_user_id": grant.target_id,
-            },
-        )
-    else:
-        grant.status = RemoteControlGrant.STATUS_DECLINED
-        grant.ended_at = timezone.now()
-        grant.ended_by = "target"
-        grant.save(update_fields=["status", "ended_at", "ended_by"])
-        _push(session_id, {"type": "remote_control_declined", "grant_id": grant.id})
-    return Response({"status": grant.status})
+    """Retired. Cannot move any grant to ``active``.
+
+    🔴 This is the endpoint the retirement is actually about. A browser
+    click must never be sufficient to open an injection gate, and while this
+    existed it was.
+    """
+    return _retired()
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def revoke_remote_control(request, session_id):
+    """Still works — stopping must keep working after a retirement.
+
+    Deliberately NOT demoted alongside the other two. A grant made before
+    this change may still be sitting ``active`` in some deployment's
+    database, and withdrawing the only endpoint that can stop it would be
+    the opposite of safe. Retiring the ways to *start* something while
+    keeping the way to *stop* it is the correct asymmetry.
+
+    🔴 Restricted to ``schema_version = 0``. A v1 grant must be terminated
+    through ``collaboration.grants.terminate`` so the version moves, the
+    audit row is written and both ends are told; see this module's
+    docstring for what went wrong when it was not.
+    """
     grant = get_object_or_404(
         RemoteControlGrant,
         id=request.data.get("grant_id"),
         session_id=session_id,
+        schema_version=RemoteControlGrant.SCHEMA_LEGACY,
         status=RemoteControlGrant.STATUS_ACTIVE,
     )
     if request.user.id not in (
