@@ -130,11 +130,38 @@ class GroupSessionPolicyTests(TestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_instant_remote_control_stays_unavailable(self):
+        """Still unavailable — but now for a stronger reason (RC-008 2c).
+
+        This used to assert 403 "not available in instant collaboration
+        yet", which came from `policy_for(session).remote_control_enabled`
+        being False for instant rooms. RC-008 retired the whole legacy path:
+        `request_remote_control` now answers **410** unconditionally, for
+        every session type, because a browser click must never be able to
+        open an injection gate.
+
+        So the guarantee this test exists to protect is not weakened, it is
+        widened — instant rooms are no longer a special case, they are
+        covered by a blanket refusal. Asserting the retirement keeps the
+        test meaningful instead of pinning a message that no longer exists.
+        """
         self.session.session_type = "instant"
         self.session.save(update_fields=["session_type"])
         response = self.client.post(
             f"/api/sessions/group-sessions/{self.session.id}/remote-control/request/",
             {"target_user_id": str(self.host.id)},
         )
-        self.assertEqual(response.status_code, 403)
-        self.assertIn("not available", response.data["detail"])
+        self.assertEqual(response.status_code, 410)
+        self.assertEqual(response.data["code"], "legacy_remote_control_retired")
+
+    def test_scheduled_remote_control_is_retired_too(self):
+        """The counterpart: a scheduled room used to be the one place the
+        legacy path was *enabled*, so it is the case most likely to regress
+        if someone revives `remote_control_enabled`."""
+        self.session.session_type = "scheduled"
+        self.session.save(update_fields=["session_type"])
+        response = self.client.post(
+            f"/api/sessions/group-sessions/{self.session.id}/remote-control/request/",
+            {"target_user_id": str(self.host.id)},
+        )
+        self.assertEqual(response.status_code, 410)
+        self.assertEqual(response.data["code"], "legacy_remote_control_retired")
