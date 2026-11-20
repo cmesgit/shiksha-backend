@@ -180,6 +180,7 @@ def create(*, principal, session, device, browser_binding_id,
     }
     _write(host_binding_id, record, READINESS_DEADLINE_SECONDS)
     _claim_device(device.id, host_binding_id)
+    _index_add(session.room_name, host_binding_id)
     return host_binding_id, record
 
 
@@ -217,6 +218,59 @@ def _release_device(device_id):
         cache.delete(_device_key(device_id))
     except Exception:  # noqa: BLE001
         pass
+
+
+# ── Per-room index ───────────────────────────────────────────────────────
+# The store is keyed by id, so "which shares are in this room" needs an
+# index. It is a HINT, never the truth: ids are resolved through get(), so a
+# lapsed or terminal binding drops out on read rather than needing the index
+# to be cleaned up correctly. That ordering matters — an index trusted
+# directly would advertise shares that no longer exist.
+
+_ROOM_PREFIX = "collab:hostbinding:room:"
+_ROOM_INDEX_TTL = 60 * 60
+
+
+def _room_key(room_name):
+    return f"{_ROOM_PREFIX}{room_name}"
+
+
+def _index_add(room_name, host_binding_id):
+    if not room_name:
+        return
+    try:
+        current = json.loads(cache.get(_room_key(room_name)) or "[]")
+    except (TypeError, ValueError):
+        current = []
+    if host_binding_id not in current:
+        current.append(host_binding_id)
+    try:
+        cache.set(_room_key(room_name), json.dumps(current[-200:]),
+                  timeout=_ROOM_INDEX_TTL)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def list_for_room(room_name):
+    """Live host bindings in this room, resolved rather than trusted."""
+    if not room_name:
+        return []
+    try:
+        ids = json.loads(cache.get(_room_key(room_name)) or "[]")
+    except (TypeError, ValueError):
+        return []
+    out = []
+    for host_binding_id in ids:
+        try:
+            record = get(host_binding_id)
+        except StoreUnavailable:
+            return []
+        if record is None or record.get("state") in TERMINAL_STATES:
+            continue
+        if record.get("room_name") != room_name:
+            continue
+        out.append(record)
+    return out
 
 
 def mark_joining(host_binding_id, *, device, display):

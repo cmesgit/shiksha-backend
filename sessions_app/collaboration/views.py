@@ -394,10 +394,8 @@ def ws_ticket(request):
 def snapshot(request):
     """What this binding is allowed to see. Never strangers' private requests.
 
-    ⚠️ ``host_bindings`` is always ``[]`` in RC-006a — not a simplification,
-    but because no host binding can exist yet: the model and its routes are
-    RC-007/RC-009. The key is present and correctly shaped so the client
-    contract does not change when those land.
+    ``host_bindings`` was always ``[]`` until RC-009a gave host bindings
+    something to be; it now lists real availability.
     """
     principal = policy.principal_from_request(request)
     binding_id = request.query_params.get("binding_id")
@@ -407,10 +405,44 @@ def snapshot(request):
 
     return ok({
         "server_time": _server_time(),
-        "host_bindings": [],
+        "host_bindings": _visible_host_bindings(principal, record),
         "grants": _own_grants(principal, record),
         "transfers": _own_transfers(principal, record),
     })
+
+
+def _visible_host_bindings(principal, record):
+    """Availability for this room — never the display descriptor.
+
+    🔴 Two filters, and both matter:
+
+    * **Only shares whose owner enabled assistance.** `allow_requests`
+      defaults False, so sharing a screen does not advertise it to the
+      room. Without this filter the snapshot would turn every share into an
+      invitation.
+    * **Only the availability view.** ``public_availability`` omits the
+      capture descriptor deliberately — display geometry is a fingerprint
+      of someone's desk, not a room-wide fact. The owner reads their own
+      descriptor through ``GET host-bindings/{id}/``.
+
+    A principal's own share is always listed, so their UI can show its
+    state without a second call.
+    """
+    from . import host_bindings as host_store
+
+    try:
+        live = host_store.list_for_room(record.get("room_name"))
+    except host_store.StoreUnavailable:
+        # A snapshot is a convenience; an unavailable index should not fail
+        # the whole call, and the client refetches on the next event anyway.
+        return []
+
+    out = []
+    for item in live:
+        mine = item.get("owner_user_id") == str(principal.user.id)
+        if mine or item.get("allow_requests"):
+            out.append(host_store.public_availability(item))
+    return out
 
 
 def _own_grants(principal, record):

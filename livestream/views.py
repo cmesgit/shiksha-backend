@@ -1224,9 +1224,50 @@ def livekit_webhook(request):
     return HttpResponse(status=200)
 
 
+def _is_companion_participant(event):
+    """True for a Shiksha Remote companion, which is not a human attendee.
+
+    🔴 **Checked before any session lookup or identity parsing**, and
+    deliberately on the reserved prefix alone rather than on registration.
+
+    The prefix test is *fail-safe*: the worst a forged ``rcdev_`` identity
+    achieves is excluding itself from a count it was never entitled to
+    appear in. Gating on registration instead would leave the gap this
+    guard exists to close — an unregistered prefixed identity would fall
+    through to legacy parsing, where
+    ``group_attendance.parse_user_id`` splits on ``_`` and returns
+    ``parts[0]``, i.e. the literal string ``"rcdev"``, as a user id.
+
+    Trust runs the other way and never comes through here: granting a
+    participant any companion privilege requires
+    ``companion_tokens.registered_companion``, which demands a live host
+    binding for this room.
+
+    An unregistered companion-shaped identity is still an anomaly worth
+    seeing, so it is logged — quietly, because a noisy log on an
+    attacker-controlled field is its own problem.
+    """
+    from sessions_app.collaboration import companion_tokens
+
+    identity = str(getattr(getattr(event, "participant", None), "identity", ""))
+    if not companion_tokens.looks_like_companion(identity):
+        return False
+    if companion_tokens.registered_companion(
+            identity, room_name=_event_room_name(event)) is None:
+        logger.info(
+            "LiveKit: companion-shaped identity with no live host binding in "
+            "room %s; excluded from attendance", _event_room_name(event))
+    return True
+
+
 @transaction.atomic
 def _handle_participant_join(event):
     room_name = _event_room_name(event)
+    # 🔴 Before everything. A companion publishes a screen; it is not a
+    # person in the room, and must not open an attendance interval, count
+    # toward presence, or stamp a session's "first join".
+    if _is_companion_participant(event):
+        return
     # See _handle_participant_left: both handlers must take the same row lock
     # or the lock is worthless.
     session = LiveSession.objects.select_for_update().filter(
@@ -1336,6 +1377,12 @@ def _handle_participant_join(event):
 @transaction.atomic
 def _handle_participant_left(event):
     room_name = _event_room_name(event)
+    # Symmetry matters more than it looks. If join excluded the companion
+    # and leave did not, a companion disconnect would run close_intervals
+    # for an interval that was never opened — and for whichever user the
+    # legacy parse invented from the identity.
+    if _is_companion_participant(event):
+        return
     # Locked: participant_joined and participant_left arrive concurrently and
     # both mutate the session row. Without this, a read here can be flushed
     # over a commit that landed in between. @transaction.atomic alone gives
