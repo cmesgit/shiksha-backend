@@ -73,7 +73,30 @@ class LeaseBase(TestCase):
 
         self.controller_binding = str(uuid.uuid4())
         self._write_binding(self.controller_binding)
+        # RC-009a made the host side of the freshness rule real, so a grant
+        # needs a host binding that actually exists and is ready. Before
+        # that it was a placeholder uuid nobody checked.
+        self.host_binding = self._ready_host_binding()
         self.grant = self._active_grant()
+
+    def _ready_host_binding(self):
+        from .collaboration import host_bindings
+
+        hb_id, _ = host_bindings.create(
+            principal=Principal(user=self.bob, auth_sid=f"sid-{self.bob.id}",
+                                context="learner", profile_id=None),
+            session=self.session, device=self.device,
+            browser_binding_id=uuid.uuid4(), owner_display_name="Bob")
+        host_bindings.mark_joining(hb_id, device=self.device, display={
+            "display_id": "DISPLAY1", "pixel_width": 1920,
+            "pixel_height": 1080, "rotation": 0, "dpi_scale": 1.0,
+            "desktop_bounds": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+            "source": "display"})
+        host_bindings.mark_ready(hb_id, device=self.device,
+                                 participant_sid="PA_companion",
+                                 track_sid="TR_screen", capture_generation=3,
+                                 verify_sid=lambda *a: True)
+        return hb_id
 
     def _write_binding(self, binding_id, *, age=0.0):
         """A binding record as the store would hold it, optionally stale."""
@@ -103,7 +126,7 @@ class LeaseBase(TestCase):
             principal=_principal(self.alice), session=self.session,
             device=self.device, target_user=self.bob,
             controller_binding_id=self.controller_binding,
-            host_binding_id=uuid.uuid4(),
+            host_binding_id=self.host_binding,
             capabilities=["pointer.move", "pointer.button"],
             room_name=self.session.room_name,
             controller_identity=f"{self.alice.id}_{self.session.id}",

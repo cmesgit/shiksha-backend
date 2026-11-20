@@ -6,6 +6,7 @@ from . import live_files_views as lf_views
 from . import remote_control_views as rc_views
 from .collaboration import device_views
 from .collaboration import grant_views
+from .collaboration import host_binding_views
 from .collaboration import views as collab_views
 from .views import subject_teachers, subject_students  # 👈 add this
 
@@ -256,6 +257,30 @@ urlpatterns = [
     path("collaboration/v1/device-heartbeat/",
          device_views.device_heartbeat,
          name="collaboration-device-heartbeat"),
+
+    # Host bindings (RC-009a) — one paired device sharing one display in one
+    # room. The owner's browser creates and can stop one; only the DEVICE
+    # can share, declare ready or heartbeat, which is how "no browser API
+    # can cause unattended capture" is enforced rather than merely stated.
+    # Action routes before the bare <id>/, same reason as the grants block.
+    path("collaboration/v1/host-bindings/",
+         host_binding_views.create_host_binding,
+         name="collaboration-host-binding-create"),
+    path("collaboration/v1/host-bindings/<str:host_binding_id>/share/",
+         host_binding_views.share_display,
+         name="collaboration-host-binding-share"),
+    path("collaboration/v1/host-bindings/<str:host_binding_id>/ready/",
+         host_binding_views.mark_ready,
+         name="collaboration-host-binding-ready"),
+    path("collaboration/v1/host-bindings/<str:host_binding_id>/heartbeat/",
+         host_binding_views.heartbeat,
+         name="collaboration-host-binding-heartbeat"),
+    path("collaboration/v1/host-bindings/<str:host_binding_id>/preferences/",
+         host_binding_views.preferences,
+         name="collaboration-host-binding-preferences"),
+    path("collaboration/v1/host-bindings/<str:host_binding_id>/",
+         host_binding_views.host_binding_detail,
+         name="collaboration-host-binding-detail"),
 
     # Control grants (RC-008 part 2d). Two authentication planes on one
     # resource: browser routes take cookie + CSRF + exact Origin, device

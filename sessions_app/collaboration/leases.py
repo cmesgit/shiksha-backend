@@ -413,23 +413,18 @@ def _assert_bindings_fresh(grant):
     the binding-deletion cascade and by LiveKit SID verification, neither of
     which is the 3s bound the protocol specifies. RC-009 must close it.
     """
-    for binding_id, who in ((grant.controller_binding_id, "controller"),
-                            (grant.host_binding_id, "host")):
+    from . import host_bindings as host_store
+
+    checks = (
+        (grant.controller_binding_id, "controller", binding_store),
+        (grant.host_binding_id, "host", host_store),
+    )
+    for binding_id, who, store in checks:
         if not binding_id:
             continue
-        # 🔴 The RC-009 seam is tested FIRST, before the record is even
-        # fetched. Checking it after the "did this lapse?" test made every
-        # lease unmintable: a host_binding_id is a placeholder until RC-009
-        # creates real records, so the lookup always missed and always
-        # reported binding_lapsed. That turns the entire lease path into
-        # dead code behind a plausible-looking refusal — the kind of bug
-        # that passes every refusal test and fails only the ones expecting
-        # success.
-        if who == "host" and not _host_bindings_exist():
-            continue
         try:
-            record = binding_store.get(str(binding_id))
-        except binding_store.StoreUnavailable:
+            record = store.get(str(binding_id))
+        except store.StoreUnavailable:
             # "Backend dependencies unavailable means no renewal." Failing
             # open here would keep input flowing during exactly the outage
             # that stops us detecting a disconnect.
@@ -439,19 +434,15 @@ def _assert_bindings_fresh(grant):
         if record is None:
             raise GrantError("binding_lapsed",
                              f"The {who} is no longer connected.", status=409)
-        if not binding_store.is_fresh_for_lease(record):
+        if who == "host" and record.get("state") != host_store.STATE_READY:
+            # Sharing stopped, or never finished starting. Either way there
+            # is no live capture for this grant to be driving.
+            raise GrantError("capture_lost",
+                             "The shared display is no longer live.",
+                             status=409)
+        if not store.is_fresh_for_lease(record):
             raise GrantError("binding_stale",
                              f"The {who} connection is stale.", status=409)
-
-
-def _host_bindings_exist():
-    """RC-009 seam. False until host bindings are real.
-
-    Deliberately a named function rather than a bare ``False``: the thing
-    RC-009 has to change is then greppable, and the reason is written down
-    next to it instead of living in a reviewer's memory.
-    """
-    return False
 
 
 def verify_lease(token, *, expected_grant_id=None, expected_epoch=None,

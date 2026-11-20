@@ -61,7 +61,30 @@ class GrantRouteBase(CollaborationTestBase):
 
         self.controller_binding = str(uuid.uuid4())
         self._store_binding(self.controller_binding, self.student)
+        # RC-009a: the host side of the lease freshness rule is now real, so
+        # a grant needs a host binding that exists and is ready.
+        self.host_binding = self._ready_host_binding()
         self.grant = self._service_grant()
+
+    def _ready_host_binding(self):
+        from sessions_app.collaboration import host_bindings
+
+        hb_id, _ = host_bindings.create(
+            principal=Principal(user=self.student2, auth_sid="sess-2",
+                                context="learner", profile_id="p1"),
+            session=self.session, device=self.device,
+            browser_binding_id=uuid.uuid4(),
+            owner_display_name=self.student2.username)
+        host_bindings.mark_joining(hb_id, device=self.device, display={
+            "display_id": "DISPLAY1", "pixel_width": 1920,
+            "pixel_height": 1080, "rotation": 0, "dpi_scale": 1.0,
+            "desktop_bounds": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+            "source": "display"})
+        host_bindings.mark_ready(hb_id, device=self.device,
+                                 participant_sid="PA_companion",
+                                 track_sid="TR_screen", capture_generation=3,
+                                 verify_sid=lambda *a: True)
+        return hb_id
 
     # -- fixtures ---------------------------------------------------------
 
@@ -102,7 +125,7 @@ class GrantRouteBase(CollaborationTestBase):
             session=self.session, device=self.device,
             target_user=self.student2,
             controller_binding_id=self.controller_binding,
-            host_binding_id=uuid.uuid4(),
+            host_binding_id=self.host_binding,
             capabilities=["pointer.move", "pointer.button"],
             room_name=self.session.room_name,
             controller_identity=f"{self.student.id}_{self.session.id}",
@@ -413,21 +436,59 @@ class FeatureFlagTests(GrantRouteBase):
         self.assertEqual(res.json()["state"], "revoked")
 
 
-class Rc009GapTests(GrantRouteBase):
+class CreateGrantTests(GrantRouteBase):
+    """What RC-009a unblocked: `POST grants/` can now return 201.
 
-    def test_creating_a_grant_reports_the_rc009_gap(self):
-        """🔴 POST grants/ cannot succeed until RC-009 ships host bindings.
+    Until host bindings existed this route could only ever refuse, because
+    the target and device are derived from the host binding and there was
+    none to derive from.
+    """
 
-        The request body names a *host binding*, and the target and device
-        are derived from it — "no client controller/target IDs". Host
-        bindings do not exist, so there is nothing to derive from. Accepting
-        a device id from the body instead would be precisely the rule the
-        contract forbids, so the route refuses with the contract's own
-        ``capture_not_ready`` rather than inventing a resolution.
+    def _enable_assistance(self):
+        from sessions_app.collaboration import host_bindings
+        host_bindings.set_allow_requests(
+            self.host_binding, allow=True,
+            principal=Principal(user=self.student2, auth_sid="sess-2",
+                                context="learner", profile_id="p1"))
 
-        This test exists to make that a stated, asserted limitation rather
-        than a mystery 409 for whoever wires the frontend.
+    def test_a_grant_can_finally_be_created_over_http(self):
+        """🔴 The happy path this route has never had.
+
+        Note what the body does NOT contain: any controller or target id.
+        Both are derived — the controller from the authenticated principal,
+        the target and device from the host binding's own record.
         """
+        self._enable_assistance()
+        # setUp already left one pending request from this controller on
+        # this device, and one-pending-per-(controller, device) is exactly
+        # the rule that stops a controller flooding a desktop. Clear it so
+        # this test exercises creation rather than that guard.
+        grant_svc.terminate(self.grant.public_id, reason="user_stop",
+                            actor_user=self.student)
+
+        res = self.post(self.as_controller(), "/grants/", {
+            "controller_binding_id": self.controller_binding,
+            "host_binding_id": self.host_binding,
+            "capabilities": ["pointer.move"]})
+        self.assertEqual(res.status_code, 201, res.content)
+        body = res.json()
+        self.assertEqual(body["state"], "requested")
+        self.assertEqual(body["target"]["user_id"], str(self.student2.id))
+        self.assertEqual(body["controller"]["user_id"], str(self.student.id))
+        self.assertEqual(body["device"]["id"], str(self.device.id))
+
+    def test_assistance_must_be_enabled_first(self):
+        """Sharing a screen is not offering it for control — allow_requests
+        defaults False, and the route must honour that."""
+        res = self.post(self.as_controller(), "/grants/", {
+            "controller_binding_id": self.controller_binding,
+            "host_binding_id": self.host_binding,
+            "capabilities": ["pointer.move"]})
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.json()["code"], "requests_disabled")
+
+    def test_an_unknown_host_binding_is_not_ready(self):
+        self._enable_assistance()
         res = self.post(self.as_controller(), "/grants/", {
             "controller_binding_id": self.controller_binding,
             "host_binding_id": str(uuid.uuid4()),
@@ -435,11 +496,26 @@ class Rc009GapTests(GrantRouteBase):
         self.assertEqual(res.status_code, 409)
         self.assertEqual(res.json()["code"], "capture_not_ready")
 
-    def test_creating_a_grant_still_checks_the_caller_owns_its_binding(self):
-        """The RC-009 refusal must come *after* the caller's own binding is
-        validated, or the route would leak that a binding exists."""
+    def test_creating_a_grant_checks_the_caller_owns_its_own_binding_first(self):
+        """The host-binding checks must come *after* the caller's own
+        binding is validated, or the route would leak that a share
+        exists to someone with no standing in the room at all."""
         res = self.post(self.as_controller(), "/grants/", {
             "controller_binding_id": str(uuid.uuid4()),
-            "host_binding_id": str(uuid.uuid4()),
+            "host_binding_id": self.host_binding,
             "capabilities": ["pointer.move"]})
         self.assertEqual(res.status_code, 404)
+
+    def test_a_closed_share_cannot_be_requested(self):
+        from sessions_app.collaboration import host_bindings
+        self._enable_assistance()
+        host_bindings.close(
+            self.host_binding,
+            principal=Principal(user=self.student2, auth_sid="sess-2",
+                                context="learner", profile_id="p1"))
+        res = self.post(self.as_controller(), "/grants/", {
+            "controller_binding_id": self.controller_binding,
+            "host_binding_id": self.host_binding,
+            "capabilities": ["pointer.move"]})
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.json()["code"], "capture_not_ready")

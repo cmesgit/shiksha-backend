@@ -938,11 +938,31 @@ def terminate(public_id, *, reason, expected_version=None, actor_user=None,
     if expire_if_due(grant, now=now):
         return grant
 
+    target = _REASON_TO_STATE[reason]
+    if grant.status not in TRANSITIONS[target]:
+        # 🔴 The protocol reserves `failed` for approved/active/paused —
+        # "disconnect, SID change, capture loss, crash or protocol
+        # violation" are all things that happen to a grant that had already
+        # been approved. A grant still at `requested` when its capture
+        # vanishes was never approved, so `failed` is not a legal
+        # destination for it.
+        #
+        # Before this, the cascade just gave up: terminate_for_binding
+        # caught the GrantError and moved on, leaving a pending request
+        # alive against a share that no longer exists. It would then sit
+        # there until its own 60-second deadline — visible to the target as
+        # a consent prompt for a screen nobody is sharing.
+        #
+        # `revoked` is legal from any nonterminal state, and the original
+        # reason is still recorded, so nothing about why is lost.
+        target = REVOKED
+
     return _apply(
-        grant, _REASON_TO_STATE[reason], reason=reason,
+        grant, target, reason=reason,
         event_type="grant.terminated", actor_user=actor_user,
         actor_device=actor_device, now=now,
-        metadata={"moderator": bool(moderator)},
+        metadata={"moderator": bool(moderator),
+                  "requested_state": _REASON_TO_STATE[reason]},
     )
 
 

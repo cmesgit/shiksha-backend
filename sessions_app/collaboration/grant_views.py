@@ -207,24 +207,58 @@ def _require_own_binding(binding_id, principal):
 
 
 def _resolve_host_binding(host_binding_id, session):
-    """Who is being asked, and on which device.
+    """Who is being asked, and on which device — derived, never supplied.
 
-    🔴 **RC-009 seam, and the one place this route cannot be finished.**
-    A host binding is what ties a paired device to a participant who has
-    locally chosen to share a display. It does not exist yet — RC-009 owns
-    it — so there is no way to resolve the pair here without inventing one.
+    Filled in by RC-009a. Both the target and the device come from the host
+    binding's own record, so a request body cannot name either: that is the
+    contract's "no client controller/target IDs", and without it anyone
+    could push a consent prompt at anyone.
 
-    Inventing one would mean accepting a device id from the request body and
-    trusting that its owner consented to being asked, which is exactly the
-    "no client controller/target IDs" rule the contract forbids. So this
-    refuses with the contract's own error code instead of guessing, and
-    RC-009 replaces the body of this function.
+    Four gates, and each one refuses differently on purpose:
+
+    * the share must exist and be **ready** — an intent that never reached a
+      published track is not something to ask about;
+    * it must be in **this room** — a share in another session is not
+      visible here and must not be reachable by id;
+    * the owner must have **enabled assistance** — sharing a screen is not
+      offering it for control, and `allow_requests` defaults False;
+    * the device must still be **paired**.
     """
-    raise PolicyError(
-        "capture_not_ready",
-        "The owner must select and share a display in the companion.",
-        status=409,
-    )
+    from sessions_app.models import PairedDevice
+    from . import host_bindings as host_store
+
+    try:
+        record = host_store.get(str(host_binding_id))
+    except host_store.StoreUnavailable:
+        raise PolicyError("dependency_unavailable",
+                          "Collaboration is temporarily unavailable.",
+                          status=503)
+    if record is None or record.get("state") in host_store.TERMINAL_STATES:
+        raise PolicyError("capture_not_ready",
+                          "The owner must select and share a display in the "
+                          "companion.", status=409)
+    if record.get("session_id") != str(session.id):
+        # 404, not 403: a share in another room must not be distinguishable
+        # from one that does not exist.
+        raise PolicyError("not_found", "No such share.", status=404)
+    if record.get("state") != host_store.STATE_READY:
+        raise PolicyError("capture_not_ready",
+                          "That display is not being shared yet.", status=409)
+    if not record.get("allow_requests"):
+        raise PolicyError("requests_disabled",
+                          "That participant has not enabled assistance.",
+                          status=403)
+
+    device = PairedDevice.objects.filter(id=record.get("device_id")).first()
+    if device is None or not device.is_usable:
+        raise PolicyError("device_revoked", "That device is not paired.",
+                          status=409)
+
+    from accounts.models import User
+    target = User.objects.filter(id=record.get("owner_user_id")).first()
+    if target is None:
+        raise PolicyError("not_found", "No such share.", status=404)
+    return target, device
 
 
 # ── GET grants/{id}/ ──────────────────────────────────────────────────────
