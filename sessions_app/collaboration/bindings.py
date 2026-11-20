@@ -39,6 +39,14 @@ logger = logging.getLogger(__name__)
 BINDING_TTL_SECONDS = 6
 BINDING_HEARTBEAT_SECONDS = 2
 
+# 🔴 The lease rule is STRICTER than the record's TTL, deliberately.
+# remote-control-protocol.md: "While a grant is active, last browser and
+# native binding heartbeat must be ≤3s old for lease renewal, even though
+# Redis retains the record for 6s." The 6s TTL is how long a binding stays
+# *usable*; this is how fresh it must be to keep authorising input. Without
+# the gap, a participant who vanished could keep control for a full TTL.
+BINDING_LEASE_FRESHNESS_SECONDS = 3
+
 # ws-ticket: "one-use", `expires_in: 30`.
 TICKET_TTL_SECONDS = 30
 
@@ -87,6 +95,8 @@ def create(principal, session, participant_sid, identity, capabilities):
         "participant_sid": participant_sid,
         "capabilities": list(capabilities),
         "created_at": time.time(),
+        # Creation counts as the first heartbeat; see heartbeat_age.
+        "heartbeat_at": time.time(),
     }
     _write(binding_id, record)
     return binding_id, record
@@ -126,8 +136,37 @@ def get(binding_id):
 
 def renew(binding_id, record):
     """Re-set the same record at a full TTL. A plain SET, not an EXPIRE, so
-    the renewed value always reflects the membership we just re-verified."""
+    the renewed value always reflects the membership we just re-verified.
+
+    🔴 Stamps ``heartbeat_at``. Before RC-008 this only reset the TTL, which
+    left nothing to measure: a record one second from expiry and one just
+    renewed were indistinguishable to a reader, so the lease rule's "≤3s
+    old" could not be enforced at all. The timestamp is what makes
+    ``heartbeat_age`` meaningful.
+    """
+    record = dict(record)
+    record["heartbeat_at"] = time.time()
     _write(binding_id, record)
+    return record
+
+
+def heartbeat_age(record, *, now=None):
+    """Seconds since this binding last proved it was alive.
+
+    A record written before RC-008 added the stamp has no ``heartbeat_at``.
+    Such a record is treated as **maximally stale** rather than fresh: during
+    a deploy the only rows lacking the field are ones nobody has heartbeat
+    since, and guessing "fresh" there would authorise input on the strength
+    of a missing field.
+    """
+    stamped = (record or {}).get("heartbeat_at")
+    if stamped is None:
+        return float("inf")
+    return max(0.0, (now or time.time()) - float(stamped))
+
+
+def is_fresh_for_lease(record, *, now=None):
+    return heartbeat_age(record, now=now) <= BINDING_LEASE_FRESHNESS_SECONDS
 
 
 def delete(binding_id):

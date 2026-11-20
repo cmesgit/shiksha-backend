@@ -297,6 +297,18 @@ COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN", ".shikshacom.com")
 # verbatim — but production must set it.
 COLLABORATION_DEVICE_KEY = os.getenv("COLLABORATION_DEVICE_KEY", "")
 
+# 🔴 The Ed25519 PEM that signs control activation tickets and leases
+# (RC-008). Distinct from COLLABORATION_DEVICE_KEY by purpose: that one is a
+# symmetric HMAC key the server uses to recognise its own device tokens,
+# this is an asymmetric key a companion can PIN and verify without holding
+# any secret of ours. Unset falls back to a key DERIVED from SECRET_KEY, so
+# development works and a forgetful deployment still does not sign control
+# authority with the session secret verbatim — but production must set it,
+# and rotating SECRET_KEY while it is unset invalidates every live grant.
+COLLABORATION_CONTROL_SIGNING_KEY = os.getenv(
+    "COLLABORATION_CONTROL_SIGNING_KEY", ""
+)
+
 # 🔴 The canonical origin DPoP proofs are validated against (RFC 9449 `htu`).
 # Deliberately configured, never derived from Host/X-Forwarded-* — those are
 # attacker-influenced, and `htu` is the field that stops a proof captured for
