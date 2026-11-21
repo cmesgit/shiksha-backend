@@ -145,3 +145,61 @@ mistaken for having covered the hard cases.
 
 The toolchain was the gate. It is open; the measurements behind it are not
 done.
+---
+
+## Addendum 2 — WGC capture measured; measurement 2 is now closed
+
+Same machine, same session. The capture half now runs, so RC-003's
+measurement 2 is complete for the simple case:
+
+    d3d driver   : hardware   frames: 5   first frame: 16.6 ms
+    item size    : 1920x1080
+    frame size   : 1920x1080
+    monitor size : 1920x1080   -> capture matches display: YES
+
+**The captured frame is exactly the monitor's physical pixel size.** That
+is the claim the injection mapping rests on. Had it differed by any factor,
+`x = left + round(u × (width − 1))` would be wrong by that proportion —
+near-perfect in the centre of the screen and worst at the edges, which is
+the signature that gets misdiagnosed for weeks as "the remote mouse feels
+slightly off" rather than as a scale error.
+
+Five consecutive frames were taken rather than one, so the size is stable
+rather than correct once by luck on the first buffer.
+
+**First frame arrived in 16.6 ms** — about one refresh at 60 Hz. That is
+the capture-side contribution to the 150 ms p95 event→inject budget, and it
+is small. It is *not* the full path; see below.
+
+The D3D device came up on **hardware**, not WARP. Worth recording: a spike
+that silently measured the software rasteriser would say nothing useful
+about what a teacher's laptop does.
+
+### Two implementation notes for RC-012/RC-013
+
+🔴 **`Direct3D11CaptureFramePool::CreateFreeThreaded`, not `Create`.** The
+ordinary `Create` requires a `DispatcherQueue` on the calling thread. A
+console or service process has none, and the failure is an opaque
+`RPC_E_WRONG_THREAD` that names nothing about the real cause.
+
+**Windows draws its own capture border** around a display under WGC. The
+permission model wants the companion to be *observable* — "a visible
+associated LiveKit participant", so an unexpected second companion is
+noticeable rather than silent. The OS border is a second, stronger version
+of that same guarantee, enforced below our code and not removable by a
+modified companion. Worth stating in the UX spec as a feature rather than
+discovering it as a surprise.
+
+### RC-003 status after this
+
+| Measurement | State |
+|---|---|
+| 1 — native screen publish into a live LiveKit room | **not started** (needs the LiveKit Rust SDK and real credentials) |
+| 2 — WGC ↔ SendInput coordinate fidelity ≤2 px | **closed** for one display at scale 1.00 — both halves exact |
+| 3 — p95 event→inject < 150 ms | **partial**: capture 16.6 ms, injection 0.73 ms p95. The browser→SFU→companion hops are unmeasured and are where the budget will actually go |
+
+Still unobserved, and still needing no software: **multi-monitor and
+fractional DPI**. One display at scale 1.00 is the easy case. The spec's
+own example descriptor carries `"x": -1920`, a display to the LEFT of
+primary, and that negative origin is exactly what breaks code assuming the
+desktop starts at (0,0).
