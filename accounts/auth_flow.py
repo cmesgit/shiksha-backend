@@ -615,14 +615,27 @@ class TeacherContextView(APIView):
     Setting or clearing the PIN still requires the account password; that
     lives in TeacherPinView, not here.
 
-    ⚠ MOBILE IMPACT — the Flutter app has NOT been updated.
-    `shikshacom_app/lib/core/auth/auth_api.dart:193` sends `{password, track}`
-    and switches on a `bad_password` code that this view no longer returns.
-    Nothing is broken today: no account has a PIN yet (the field is new), and
-    an unrecognised `password` key is simply ignored while `check_pin("")`
-    returns True for a PIN-less profile. But the FIRST teacher to set a PIN
-    can no longer enter teacher mode from the phone — they get `bad_pin`,
-    which the app does not handle.
+    CLIENT STATUS — all three clients now send `pin`. This block used to
+    warn that the Flutter app still sent `{password, track}` and switched on
+    a `bad_password` code this view no longer returns; that was fixed on
+    2026-11-15 (`shikshacom_app` 47b66d5, "Defuse the teacher-mode PIN time
+    bomb"), and its `auth_api.dart` now omits the field entirely unless the
+    server has already answered `bad_pin`.
+
+    ⚠ The two web dashboards were in the SAME position and nobody had
+    noticed — the warning named only the phone. `shiksha-student-dashboard`
+    and `shiksha-teacher-dashboard` both posted `{password, track}` from
+    `AuthContext.enterTeacherMode` with no `bad_pin` branch, so the first
+    teacher to set a PIN would have been locked out of teacher mode on the
+    web too, with no useful message. Fixed in each repo's
+    `rc010/teacher-pin-flow`.
+
+    Why it stayed invisible, and the shape to watch for: nothing breaks until
+    the first PIN exists. An unrecognised `password` key is ignored and
+    `check_pin("")` returns True for a PIN-less profile, so every client
+    looks healthy right up to the moment the feature is actually used. If a
+    future change narrows what this view accepts, re-check every client
+    rather than trusting that a green deployment means they agree with it.
 
     Accepting the account password here as a fallback was considered and
     rejected: the PIN exists to stop someone who ALREADY holds the session —
