@@ -92,3 +92,56 @@ rather than measured, and RC-003 lists them as Stop criteria.
 The remaining risk in RC-003 is concentrated where it always was: capture,
 the SDK, and multi-monitor geometry. None of it can be reached without the
 toolchain.
+---
+
+## Addendum, same day — the toolchain kill-criterion is closed
+
+RC-003 could not be started at all because this machine had no Rust, no
+MSVC, no cmake, no ninja and no Windows SDK. That is no longer true:
+
+| | |
+|---|---|
+| Rust | 1.100.0, host `x86_64-pc-windows-msvc` |
+| MSVC | 14.44.35207 (VS 2022 Build Tools 17.14.45) |
+| Windows SDK | 10.0.22621.0 and 10.0.26100.0 |
+| `windows` crate | 0.58.0, compiles and links |
+
+The installer asks for a restart; command-line builds do not need one.
+
+A throwaway spike at `C:\work\rc003-spike` (**not** the companion, and not
+committed — the roadmap's Phase 0 rollback is "delete isolated spike; keep
+documents/tests") builds and runs:
+
+    per-monitor-v2 DPI awareness : YES
+    virtual desktop              : origin=(0,0) size=1920x1080 monitors=1
+
+    \.\DISPLAY1    1920x1080  at (0,0)  dpi=96  scale=1.00  [primary]
+        u=0 v=0 -> physical (0,0)       -> SendInput abs (0,0)
+        u=1 v=1 -> physical (1919,1079) -> SendInput abs (65535,65535)
+
+Both corners map exactly, which is where an off-by-one in the `width − 1`
+term would appear first — this is the same arithmetic the PowerShell probe
+exercised, now reproduced in the language the companion will be written in.
+
+🔴 It declares `PER_MONITOR_AWARE_V2` **before** reading anything and prints
+whether that succeeded. Without it Windows returns virtualised coordinates
+and every number would be a confident, plausible lie — the same failure
+shape as the 0/81 above. The spike also prints an explicit warning when it
+sees one monitor or all-96-DPI displays, so a green run here can never be
+mistaken for having covered the hard cases.
+
+### What is now genuinely left in RC-003
+
+1. **Native screen publish into an existing LiveKit room.** Needs the
+   LiveKit Rust SDK and real credentials. Untouched.
+2. **WGC capture, and the capture→desktop mapping.** The injection half is
+   measured; the capture half is not.
+3. **Multi-monitor and fractional DPI.** Still unobservable here: one
+   display, scale 1.00. The spec's example descriptor carries `"x": -1920`,
+   a monitor to the LEFT of primary, and that negative origin is exactly
+   what breaks code assuming the desktop starts at (0,0). **Attaching a
+   second display is the cheapest way to close this**, and it needs no
+   further software.
+
+The toolchain was the gate. It is open; the measurements behind it are not
+done.
