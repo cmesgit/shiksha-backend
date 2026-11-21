@@ -150,9 +150,9 @@ site, and only for some sites.
 
 ## What is still open
 
-- **A native screen publish into a live room.** The join is proven; publishing a
-  captured display into it is not. That is the step that exercises the capture
-  path from `sendinput-fidelity.md` against the SFU.
+- **A native screen publish into a live room.** Done — see `screen-publish.md`.
+  A WGC frame reaches the SFU as a 1920x1080 VP8 screen-share track, confirmed
+  server-side.
 - **Measurement 3, the full event-to-inject path.** Capture at 16.6 ms and
   injection at 0.73 ms p95 are both small; the browser and SFU hops, where the
   latency budget will actually be spent, remain unmeasured.
