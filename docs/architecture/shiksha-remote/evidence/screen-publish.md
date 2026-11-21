@@ -119,10 +119,9 @@ longer negligible, and is worth re-measuring before promising 4K support.
 
 ## What this does not cover
 
-- **No subscriber.** The frames reach the SFU; nothing has decoded them. That
-  the image is correct — upright, unmirrored, the right display — is still
-  unverified end to end, and the geometry spike's guarantees are about capture,
-  not about what survives encode and transport.
+- **A subscriber now exists.** See `controller-subscribe.md`: a browser decodes
+  the track at 1920x1080 and the image is upright, unmirrored and the right
+  display, so the contract holds across encode and transport too.
 - **One display, scale 1.00, hardware D3D.** Multi-monitor and fractional DPI
   remain untested and still need only a second display placed to the LEFT of
   primary.
