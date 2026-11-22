@@ -50,6 +50,14 @@ from .models import Batch, Course, Subject, TeachingAssignment
 
 User = get_user_model()
 
+# Mirrors courses.management.commands.seed_academy_launch.SEED_EMAIL_DOMAIN
+# and content.views.SEED_EMAIL_DOMAIN (same reasoning there: a local copy,
+# not an import of a management command module). The academy-launch demo
+# roster lives entirely on this domain and is deliberately built without a
+# TeacherProfile or TEACHER role, so this is the one signal that reliably
+# tells a demo account apart from a real one here.
+SEED_EMAIL_DOMAIN = "example.shikshacom.com"
+
 # The course-wide (batch=NULL) assign endpoints only ever offer these two —
 # SUBSTITUTE is a batch-roster concept (a temporary stand-in for a specific
 # batch's classes), not something that makes sense course-wide.
@@ -519,11 +527,39 @@ class AdminTeacherDirectoryView(APIView):
         track = request.query_params.get("track", "").strip().lower()
         board = request.query_params.get("board", "").strip()
         class_level = request.query_params.get("class_level", "").strip()
+        # Was teacher_profile__is_approved + active TEACHER role ONLY —
+        # which sounds right until checked against prod: every one of the
+        # 16 people actually staffing real subjects (the academy-launch demo
+        # roster, 1-24 active assignments each) has NEITHER, by design — see
+        # SEED_EMAIL_DOMAIN below. That gate meant this screen, the one
+        # place an admin manages faculty, showed a dozen mostly-idle
+        # accounts and ZERO of the people actually teaching.
+        #
+        # Now OR's two independent, genuine reasons to appear here, with the
+        # seed domain excluded from both: actually teaching something right
+        # now (ground truth: an active TeachingAssignment, profile or not —
+        # catches the 16), or approved-and-role-holding even with nothing
+        # currently assigned (the original intent this screen already had,
+        # e.g. a newly-approved teacher waiting for their first subject —
+        # test_a_teacher_with_nothing_assigned_is_still_listed pins this).
+        # Dropping the second clause instead of OR-ing it would have fixed
+        # the 16 at the cost of silently un-listing every idle-but-approved
+        # teacher already relying on the old behaviour.
+        #
+        # _teacher_row()/teacher_brief() already read the profile
+        # defensively (getattr(..., None)) for display, so a user matched
+        # via the first clause with no profile degrades to blank
+        # qualification/rating/photo fields, not a crash.
         qs = (
-            User.objects.filter(
-                teacher_profile__is_approved=True,
-                user_roles__role__name="TEACHER",
-                user_roles__is_active=True,
+            User.objects
+            .exclude(email__iendswith=f"@{SEED_EMAIL_DOMAIN}")
+            .filter(
+                Q(teaching_assignments__is_active=True)
+                | Q(
+                    teacher_profile__is_approved=True,
+                    user_roles__role__name="TEACHER",
+                    user_roles__is_active=True,
+                )
             )
             .select_related("teacher_profile")
             .distinct()
