@@ -38,6 +38,8 @@ urlpatterns = [
     path("home-section-order/", views.HomeSectionOrderListView.as_view(), name="home-section-order-list"),
 
     path("demo-videos/", views.DemoVideoListView.as_view(), name="demo-video-list"),
+
+    path("home/hero-highlights/", views.HomeHeroHighlightsView.as_view(), name="home-hero-highlights"),
 ]
 
 # ── Staff-only CMS admin API (content/admin_views.py) ──────────────
