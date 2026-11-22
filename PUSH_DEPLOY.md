@@ -103,9 +103,30 @@ Verified ON THE BOX:
   installing from requirements.txt also pulled `pyopenssl` to 26.4.0, which
   supports cryptography 50. The local venv is the stale one, not dev.
 
-⚠ **Push is live but silent on dev, by design.** `FIREBASE_SERVICE_ACCOUNT_JSON`
-is not set there, so `FIREBASE_APP` is None: tokens register and accumulate,
-sends no-op. Add the key and restart to switch sending on.
+### ✅ The credential is installed on dev — sending is LIVE
+
+Added 2026-11-21, after the code deploy.
+
+* Key at `/home/appuser/backend/secrets/firebase-adminsdk.json` — **mode 600,
+  dir 700, owned by appuser, and OUTSIDE the git checkout** so it cannot be
+  committed by accident. Verified intact on the box: project `shikshacom`,
+  `firebase-adminsdk-fbsvc@…`, private key present.
+* `.env` gained `FIREBASE_SERVICE_ACCOUNT_JSON=<path>` (a path, never the
+  JSON, so it cannot leak through an env dump or a process list). The previous
+  `.env` was backed up to `.env.bak-prefcm-<timestamp>` first.
+* `settings.FIREBASE_APP` reports **INITIALISED**.
+
+🔴 **"Initialised" is not "can reach Google", so that was proven separately.**
+A `messaging.send(..., dry_run=True)` with a deliberately bogus token returned
+**`InvalidArgumentError: The registration token is not a valid FCM
+registration token`** — FCM evaluated the token, which means the credential
+*authenticated*. A bad credential fails earlier and differently
+(`UnauthenticatedError` / permission denied). Nothing was delivered: `dry_run`
+validates only.
+
+⚠ Noted, not fixed: firebase-admin 7.8 warns `Message.token is deprecated, use
+Message.fid`. Harmless today — real delivery works — but it will need
+attention on a future SDK bump.
 
 ⚠ **The authenticated round trip was proven on the LOCAL stack, not on dev** —
 registering a device on dev needs a dev account credential. What dev proves is
