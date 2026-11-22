@@ -627,13 +627,17 @@ class HomeHeroHighlightsView(APIView):
                 "title": course.title,
                 "subtitle": " · ".join(bits) or "Now enrolling",
                 "timestamp": course.created_at,
+                # The one feed type with a real, purpose-built anonymous
+                # destination (PublicCourseBySlugView). blank for a course
+                # with no slug yet rather than linking to a 404.
+                "course_slug": course.slug or None,
             })
 
         materials = (
             StudyMaterial.objects.filter(
                 subject__course__status__in=PUBLIC_COURSE_STATUSES, created_at__gte=since,
             )
-            .select_related("subject", "chapter")
+            .select_related("subject__course", "chapter")
             .order_by("-created_at")[:limit]
         )
         for material in materials:
@@ -645,6 +649,11 @@ class HomeHeroHighlightsView(APIView):
                 "title": material.title,
                 "subtitle": " · ".join(bits),
                 "timestamp": material.created_at,
+                # No public page for an individual material exists (nor does
+                # the "Guest Preview" the marketing copy advertises — it was
+                # never built). The honest destination is the parent course
+                # page, not a fabricated material-detail link that 404s.
+                "course_slug": material.subject.course.slug or None,
             })
 
         quizzes = (
@@ -653,7 +662,7 @@ class HomeHeroHighlightsView(APIView):
                 subject__course__status__in=PUBLIC_COURSE_STATUSES,
                 created_at__gte=since,
             )
-            .select_related("subject")
+            .select_related("subject__course")
             .order_by("-created_at")[:limit]
         )
         for quiz in quizzes:
@@ -665,6 +674,12 @@ class HomeHeroHighlightsView(APIView):
                 "title": quiz.title,
                 "subtitle": " · ".join(bits),
                 "timestamp": quiz.created_at,
+                # This Quiz (quizzes.models.Quiz) has no anonymous detail
+                # page, and the Public Quiz Hub is a disjoint model
+                # (PracticeSet) with no FK to this row at all — it cannot
+                # resolve to this specific quiz. Fall back to the parent
+                # course, same honesty reasoning as new_material above.
+                "course_slug": quiz.subject.course.slug or None,
             })
 
         now = timezone.now()
@@ -678,7 +693,7 @@ class HomeHeroHighlightsView(APIView):
                 ],
                 end_time__gte=now,
             )
-            .select_related("subject")
+            .select_related("subject", "course")
             .order_by("start_time")[:limit]
         )
         for session in sessions:
@@ -688,6 +703,9 @@ class HomeHeroHighlightsView(APIView):
                 "title": session.title,
                 "subtitle": f"{session.subject.name} · {'Live now' if live_now else 'Starting soon'}",
                 "timestamp": session.start_time,
+                # Joining a session is always ProtectedRoute-gated and has no
+                # anonymous deep-link; the course page is the honest fallback.
+                "course_slug": session.course.slug or None,
             })
 
         items.sort(key=lambda item: item["timestamp"], reverse=True)

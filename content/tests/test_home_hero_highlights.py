@@ -261,6 +261,42 @@ class HomeHeroHighlightsTests(TestCase):
         self.assertIn("new_quiz", types)
         self.assertIn("live_session", types)
 
+    def test_course_slug_links_to_the_right_destination_per_type(self):
+        """Only new_course has a real, purpose-built anonymous page
+        (PublicCourseBySlugView). Material/quiz/live_session have no
+        anonymous page of their own — no "Guest Preview" exists in code
+        despite being advertised — so they fall back to the honest
+        destination: the parent course they came from, not a fabricated
+        per-item link that 404s. new_teacher gets no course_slug at all:
+        it isn't tied to one course, and no public teacher-profile page
+        exists to send it to regardless."""
+        chapter = Chapter.objects.create(subject=self.subject, title="Kinematics")
+        StudyMaterial.objects.create(
+            subject=self.subject, chapter=chapter, title="Formula sheet",
+            uploaded_by=self._teacher("link_uploader"),
+        )
+        Quiz.objects.create(subject=self.subject, title="Link Quiz", is_assigned=True)
+        now = timezone.now()
+        LiveSession.objects.create(
+            course=self.course, subject=self.subject,
+            title="Link session", start_time=now - timedelta(minutes=5),
+            end_time=now + timedelta(minutes=30), room_name="room_link_test",
+            created_by=self._teacher("link_host"), status=LiveSession.STATUS_LIVE,
+        )
+        self._teacher("link_named", full_name="Link Named")
+
+        feed = self.client.get(self.url).json()["feed"]
+        by_type = {i["type"]: i for i in feed if i["type"] != "new_teacher"}
+        self.assertEqual(len(by_type), 4)
+        for item in by_type.values():
+            self.assertEqual(item["course_slug"], self.course.slug)
+            self.assertTrue(item["course_slug"])
+
+        teacher_items = [i for i in feed if i["type"] == "new_teacher"]
+        self.assertTrue(teacher_items)
+        for item in teacher_items:
+            self.assertNotIn("course_slug", item)
+
     def test_live_session_excludes_cancelled_and_completed(self):
         now = timezone.now()
         host = self._teacher("host2")
