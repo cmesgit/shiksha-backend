@@ -11,6 +11,12 @@ from .media_views import secure_media_view
 
 from global_settings.views import PublicConfigView
 
+from fcm_django.api.rest_framework import FCMDeviceAuthorizedViewSet
+from rest_framework.routers import DefaultRouter
+
+push_router = DefaultRouter()
+push_router.register("devices", FCMDeviceAuthorizedViewSet, basename="fcmdevice")
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     # Authenticated gate for private media (see config/media_security.py) —
@@ -46,6 +52,14 @@ urlpatterns = [
     # missing both mounts below (likely server-side urls.py edits that
     # never landed back in the repo — reconcile on deploy).
     path("api/notifications/", include("notifications.urls")),
+    # Push device registration — POST /api/push/devices/ with
+    # {registration_id, type: "android"|"ios"}. `FCMDeviceAuthorizedViewSet`
+    # (as opposed to FCMDeviceViewSet) is the load-bearing choice: it forces
+    # IsAuthenticated and binds the row to request.user, so a device can only
+    # ever be registered against the caller's own account. The unauthorized
+    # variant would let anyone attach a token to any user id and receive that
+    # person's notifications.
+    path("api/push/", include(push_router.urls)),
     path("api/counseling/", include("counseling.urls")),
     path("api/content/", include("content.urls")),  # ← ADDED (content CMS app)
     path("api/news/", include("news.urls")),  # ← ADDED (GNews proxy)
