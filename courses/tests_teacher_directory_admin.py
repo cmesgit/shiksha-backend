@@ -233,3 +233,34 @@ class AdminTeacherDirectoryShapeTests(TestCase):
         r = self.client.get(DIRECTORY, {"board": "cbse", "class_level": "11"})
         ids = {x["user_id"] for x in r.json()["data"]}
         self.assertEqual(ids, {str(self.teacher.id)})
+
+    def test_a_real_teacher_with_no_profile_or_role_is_listed(self):
+        """The real prod shape this screen was blind to: a real, named
+        person actively teaching a subject with NO TeacherProfile and NO
+        TEACHER role at all. Profile/role completeness must not be a
+        precondition for appearing on the one screen an admin uses to find
+        and manage faculty."""
+        bare = User.objects.create_user(
+            username="td_bare_real", email="td_bare_real@example.com",
+            password="x", first_name="Bare", last_name="Real",
+        )
+        subject = Subject.objects.create(course=self.cbse_10, name="Bare Real's Subject")
+        TeachingAssignment.objects.create(subject=subject, teacher=bare, is_active=True)
+        r = self.client.get(DIRECTORY)
+        ids = {x["user_id"] for x in r.json()["data"]}
+        self.assertIn(str(bare.id), ids)
+
+    def test_a_seed_domain_account_is_excluded_even_while_actively_teaching(self):
+        """The academy-launch demo roster (real names, real active
+        assignments, deliberately no profile/role) must stay off this
+        screen — it is demo content, not real faculty, even though it now
+        passes every other check a real teacher would."""
+        demo = User.objects.create_user(
+            username="demo.teacher", email="demo.teacher@example.shikshacom.com",
+            password="x", first_name="Demo", last_name="Teacher",
+        )
+        subject = Subject.objects.create(course=self.cbse_10, name="Demo Teacher's Subject")
+        TeachingAssignment.objects.create(subject=subject, teacher=demo, is_active=True)
+        r = self.client.get(DIRECTORY)
+        ids = {x["user_id"] for x in r.json()["data"]}
+        self.assertNotIn(str(demo.id), ids)
