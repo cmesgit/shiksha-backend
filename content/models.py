@@ -603,6 +603,17 @@ class Announcement(StatusedContentModel):
         blank=True, default="",
         help_text="Optional second line on card slots. The navbar strip ignores it.",
     )
+    # Deliberately separate from metric_label: that one is the UNIT paired
+    # with metric_value (and is only ever shown when this kind carries a
+    # number — KINDS_WITHOUT_METRIC and DEADLINE never see it). caption is a
+    # short standalone line next to the kind badge, available on every kind
+    # regardless of whether it has a number at all.
+    caption = models.CharField(
+        max_length=60, blank=True, default="",
+        help_text="Optional short line next to the kind badge, e.g. "
+                  "'Enrolling now'. Shown (or not) on every kind — unlike "
+                  "the featured number below, it never depends on one.",
+    )
     # Same dual field/URL pair as HomeListItem, resolved to one `img` by the
     # serializer. Registered in content/media.py so the Pictures screen counts
     # it and the 409 delete guard protects it.

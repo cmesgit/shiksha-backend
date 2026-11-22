@@ -378,6 +378,20 @@ class PublicEndpointTest(TestCase):
         self.assertIsNone(
             self.client.get(self.URL, {"slot": TickerSlot.HERO}).json()[0]["metric"])
 
+    def test_caption_is_independent_of_metric(self):
+        """NEW_COURSE is in KINDS_WITHOUT_METRIC — `metric` is always null for
+        it — but the caption is a separate field and must still come through."""
+        _pub(message="x", slots=[TickerSlot.HERO], kind=TickerKind.NEW_COURSE,
+             caption="Enrolling now")
+        row = self.client.get(self.URL, {"slot": TickerSlot.HERO}).json()[0]
+        self.assertEqual(row["caption"], "Enrolling now")
+        self.assertIsNone(row["metric"])
+
+    def test_caption_defaults_to_empty_string(self):
+        _pub(message="x", slots=[TickerSlot.HERO], kind=TickerKind.MILESTONE)
+        row = self.client.get(self.URL, {"slot": TickerSlot.HERO}).json()[0]
+        self.assertEqual(row["caption"], "")
+
     def test_the_cache_does_not_serve_one_slot_to_another(self):
         """`list_cache_key` folds the query string in. If it ever stopped,
         the hero would silently render the navbar's content."""
@@ -423,6 +437,17 @@ class AdminEndpointTest(TestCase):
         self.assertEqual(res.json()["slots"], ["hero", "footer"])
         self.assertEqual(Announcement.objects.get().slots, ["hero", "footer"])
 
+    def test_caption_round_trips_independent_of_metric(self):
+        """Posted against NEW_COURSE — a metric-less kind — to pin that
+        caption isn't accidentally gated behind KINDS_WITHOUT_METRIC."""
+        res = self._client().post(self.URL, {
+            "message": "card", "slots": ["hero"], "kind": "new_course",
+            "caption": "Enrolling now",
+        }, format="json")
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(res.json()["caption"], "Enrolling now")
+        self.assertEqual(Announcement.objects.get().caption, "Enrolling now")
+
     def test_an_unknown_slot_is_a_400_not_a_500(self):
         """FullCleanMixin is what turns Announcement.clean() into a readable
         field error. Without it this is an uncaught ValidationError — a 500."""
@@ -464,8 +489,8 @@ class AdminEndpointTest(TestCase):
              image_url="https://cdn.example.com/a.png", metric_value="9")
         row = self._client().get(self.URL).json()
         row = (row["results"] if isinstance(row, dict) else row)[0]
-        for key in ("slots", "kind", "body", "image", "image_url", "img",
-                    "pinned", "metric_value", "metric_label", "status"):
+        for key in ("slots", "kind", "body", "caption", "image", "image_url",
+                    "img", "pinned", "metric_value", "metric_label", "status"):
             self.assertIn(key, row, f"admin serializer is missing {key}")
         self.assertEqual(row["img"], "https://cdn.example.com/a.png")
 

@@ -151,7 +151,7 @@ class AnnouncementSerializer(serializers.ModelSerializer):
         # dismissed the previous wording — the row id never changes.
         fields = [
             "id", "message", "link_url", "link_label", "level", "updated_at",
-            "kind", "body", "img", "metric", "pinned",
+            "kind", "body", "caption", "img", "metric", "pinned",
         ]
 
     def get_img(self, obj):
