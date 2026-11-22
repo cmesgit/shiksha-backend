@@ -265,7 +265,7 @@ class AnnouncementAdminSerializer(
         fields = [
             "id", "message", "link_url", "link_label", "level",
             "starts_at", "ends_at", "status", "order",
-            "slots", "kind", "body", "image", "image_url", "img",
+            "slots", "kind", "body", "caption", "image", "image_url", "img",
             "pinned", "metric_value", "metric_label",
         ]
 
