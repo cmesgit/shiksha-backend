@@ -74,9 +74,52 @@ That short-circuit is also why there is no log spam: without it, every
 recipient of every one of the ~45 push-eligible verbs would log a full
 `ValueError: The default Firebase app does not exist` traceback.
 
+## Deployment status
+
+### ✅ DEV — deployed 2026-11-21 (`ad62d5c`)
+
+Merged to `dev` and deployed by hand; `shiksha-backend` has no deploy Action.
+
+```
+git pull --ff-only origin dev
+./venv/bin/pip install -r requirements.txt
+./venv/bin/python manage.py migrate        # fcm_django 0001..0011
+sudo systemctl restart uvicorn celery celery-beat
+```
+
+Verified ON THE BOX:
+
+* `uvicorn`, `celery`, `celery-beat` all report `SubState=running` — `is-active`
+  is not a reliable signal here, use `SubState`.
+* `POST /api/push/devices/` → **401** unauthenticated. Endpoint live and
+  protected.
+* `skill/categories/` and `courses/public/catalog/` still **200** — no
+  regression from the dependency bump.
+* **Zero** errors or tracebacks in `journalctl -u uvicorn` after restart.
+* `signxml`, `cryptography 50.0.2`, `pyOpenSSL 26.4.0` all import and
+  `XMLVerifier` resolves.
+* 🔴 **`pip check` on dev: "No broken requirements found."** The
+  `pyopenssl wants cryptography<49` complaint seen locally is GONE, because
+  installing from requirements.txt also pulled `pyopenssl` to 26.4.0, which
+  supports cryptography 50. The local venv is the stale one, not dev.
+
+⚠ **Push is live but silent on dev, by design.** `FIREBASE_SERVICE_ACCOUNT_JSON`
+is not set there, so `FIREBASE_APP` is None: tokens register and accumulate,
+sends no-op. Add the key and restart to switch sending on.
+
+⚠ **The authenticated round trip was proven on the LOCAL stack, not on dev** —
+registering a device on dev needs a dev account credential. What dev proves is
+that the route exists, rejects anonymous callers, and did not break anything.
+
+⚠ **Still worth doing on dev: a REAL Aadhaar offline e-KYC verification.**
+Imports and a test suite are not a signed XAdES document, and that path is the
+one thing `cryptography` could break in a way nothing here would catch.
+
+### ❌ PROD — not deployed
+
 ## What is NOT done
 
-* **Nothing is deployed.** This branch has never run on dev or prod.
+* **Prod has not been touched.**
 * **No push has ever been delivered to a real device.** The client registers
   tokens and the server stores them; an end-to-end send is unproven.
 * **iOS**: `type` is hardcoded `"android"` in the client because iOS has never
