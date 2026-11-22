@@ -132,9 +132,26 @@ attention on a future SDK bump.
 registering a device on dev needs a dev account credential. What dev proves is
 that the route exists, rejects anonymous callers, and did not break anything.
 
-⚠ **Still worth doing on dev: a REAL Aadhaar offline e-KYC verification.**
-Imports and a test suite are not a signed XAdES document, and that path is the
-one thing `cryptography` could break in a way nothing here would catch.
+### ⏭ Aadhaar e-KYC re-verification — DEFERRED BY THE OWNER, work for later
+
+🔴 **This is a known, accepted, OPEN risk — not an oversight, and not done.**
+`firebase-admin` moved `cryptography` 46 → 50, and `signxml` verifies Aadhaar
+offline e-KYC signatures on top of it (scholarship app). What has been checked
+is only that `signxml`, `cryptography` and `pyOpenSSL` import, that
+`XMLVerifier` resolves, that `pip check` is clean, and that 275
+scholarship+accounts tests pass.
+
+**None of that exercises a real signed XAdES document.** A signature library
+can import perfectly and still reject — or wrongly accept — a real UIDAI
+signature after a major version bump. The failure mode is quiet: scholarship
+applicants fail verification, or worse, pass when they should not.
+
+**What to do when it is picked up:** run one real Aadhaar offline e-KYC XML
+through the scholarship verification path on dev and confirm it validates
+exactly as it did before. Then do the same on prod after deployment.
+
+The owner has explicitly deferred this to later work. Do not treat the deploy
+as proof it is fine.
 
 ### ❌ PROD — not deployed
 
