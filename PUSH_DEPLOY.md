@@ -153,7 +153,42 @@ exactly as it did before. Then do the same on prod after deployment.
 The owner has explicitly deferred this to later work. Do not treat the deploy
 as proof it is fine.
 
-### ❌ PROD — not deployed
+### ✅ PROD — deployed 2026-11-22 (`030ba1db`), CODE ONLY
+
+A fresh 6.1 MB DB backup was taken first and its **size checked** — a prod
+`pg_dump` has previously failed silently with exit 0 and a 20-byte file.
+
+```
+sudo systemctl start shiksha-db-backup.service    # then CHECK THE SIZE
+git pull --ff-only origin main
+./venv/bin/pip install -r requirements.txt
+./venv/bin/python manage.py check                 # BEFORE migrating
+./venv/bin/python manage.py migrate               # fcm_django 0001..0011 only
+sudo systemctl restart uvicorn celery celery-beat
+```
+
+🔴 **Sending is OFF on prod, deliberately.** `FIREBASE_APP` is `None` — the
+credential was NOT installed. Real users' devices register tokens and bank
+them; nothing can notify anyone by accident. Adding the key and restarting
+turns sending on, and every token collected until then starts working at that
+moment.
+
+⚠ **This release also shipped gasey's TeacherContextView fix**, which had been
+merged to main and undeployed for ~24h. Prod was 2 commits behind main, so
+there was no way to release push without it. Confirmed with the owner first
+rather than shipped quietly.
+
+Verified from OUTSIDE, over public HTTPS — not just localhost:
+
+* `api.shikshacom.com/api/skill/categories/` → **200**
+* `api.shikshacom.com/api/courses/public/catalog/` → **200**
+* `api.shikshacom.com/api/push/devices/` → **401** unauthenticated
+* `shikshacom.com` → **200**
+* All three units `SubState=running`, **zero** tracebacks after restart
+* `cryptography 50.0.2`, `pyOpenSSL 26.4.0`, `XMLVerifier` resolves,
+  `pip check` clean
+
+### ⏭ Not deployed
 
 ## What is NOT done
 
