@@ -26,6 +26,22 @@ def push_to_users(user_ids, title, body="", data=None):
     except ImportError:
         logger.debug("push: fcm_django not installed — skipping (%s)", title)
         return 0
+
+    # 🔴 Short-circuit when Firebase was never initialised, BEFORE touching
+    # the SDK. Without this the send raises deep inside firebase_admin
+    # ("The default Firebase app does not exist") and the except below logs a
+    # full traceback — for EVERY recipient of EVERY one of the ~45 verbs that
+    # notify. On a box with no credential (which is both of them today) that
+    # turns an expected, handled condition into a wall of stack traces that
+    # buries real errors. A missing credential is a deployment state, not a
+    # fault.
+    from django.conf import settings
+
+    if getattr(settings, "FIREBASE_APP", None) is None:
+        logger.debug("push: no Firebase credential on this box — skipping (%s)",
+                     title)
+        return 0
+
     try:
         devices = FCMDevice.objects.filter(user_id__in=list(user_ids),
                                            active=True)

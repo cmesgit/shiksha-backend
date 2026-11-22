@@ -73,6 +73,12 @@ INSTALLED_APPS = [
     # back to the repo — see settings.py.save.1). Required by
     # notifications.tasks.send_session_reminders.
     "counseling",
+    # Device-token storage for push. Listed UNCONDITIONALLY, and deliberately:
+    # the app must be able to register a token before the Firebase credential
+    # reaches a box, otherwise the first deploy has nowhere to put tokens and
+    # every device has to be re-registered later. Sending is what degrades
+    # when the credential is missing, not storing. See FIREBASE_APP below.
+    "fcm_django",
 ]
 
 MIDDLEWARE = [
@@ -336,6 +342,62 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 # a dedicated value so rotating SECRET_KEY doesn't also reshuffle every
 # existing eligibility record's hash.
 SCHOLARSHIP_DEDUP_PEPPER = os.getenv("SCHOLARSHIP_DEDUP_PEPPER", "") or SECRET_KEY
+
+# ── Push notifications (FCM) ────────────────────────────────────────────────
+#
+# Path to the Firebase service-account JSON. It is a REAL SECRET — it grants
+# full access to the Firebase project — so it is a path to a file deployed out
+# of band, never the JSON itself in an env var or this repo.
+#
+# 🔴 INITIALISATION MUST NOT BE ABLE TO KILL THE PROCESS. Settings run on
+# every management command, every worker and every test. Calling
+# `initialize_app()` unguarded means one missing or malformed file takes the
+# WHOLE SITE down — not just push — and the symptom is Django failing to boot,
+# which reads as a deploy failure rather than a credential problem. So this
+# stays best-effort and leaves FIREBASE_APP as None, exactly matching
+# notifications/push.py, which already no-ops when it cannot send.
+#
+# Consequence to design around, not around which to design: with no
+# credential, device tokens still REGISTER and store (fcm_django is installed
+# unconditionally) and sends silently do nothing. That is the intended
+# ordering — tokens accumulate, and the day the key lands they all work.
+FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+FIREBASE_APP = None
+if FIREBASE_SERVICE_ACCOUNT_JSON:
+    try:
+        import firebase_admin
+        from firebase_admin import credentials as _fb_credentials
+
+        FIREBASE_APP = firebase_admin.initialize_app(
+            _fb_credentials.Certificate(FIREBASE_SERVICE_ACCOUNT_JSON)
+        )
+    except Exception as exc:  # noqa: BLE001 — never block boot on push
+        # Imported here, not at module scope: the only other `warnings` use in
+        # this file is also a local import inside a conditional, so relying on
+        # it would NameError whenever that branch did not run.
+        import warnings
+
+        warnings.warn(
+            "FIREBASE_SERVICE_ACCOUNT_JSON is set but Firebase could not be "
+            f"initialised ({exc.__class__.__name__}: {exc}). Push will be a "
+            "no-op; everything else is unaffected. Check the path and that "
+            "the file is the service-account JSON from Firebase console → "
+            "Project settings → Service accounts.",
+            RuntimeWarning,
+        )
+
+FCM_DJANGO_SETTINGS = {
+    "DEFAULT_FIREBASE_APP": FIREBASE_APP,
+    "APP_VERBOSE_NAME": "Shikshacom",
+    # Phones AND tablets, and a shared device can carry several profiles —
+    # one-device-per-user would silently deactivate a learner's token every
+    # time a sibling signed in on the same phone.
+    "ONE_DEVICE_PER_USER": False,
+    # FCM reports permanently dead tokens; pruning them keeps send batches
+    # small and stops a reinstalled app accumulating ghost rows forever.
+    "DELETE_INACTIVE_DEVICES": True,
+    "UPDATE_ON_DUPLICATE_REG_ID": True,
+}
 
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
