@@ -427,17 +427,19 @@ def _public_teacher_name(user):
     """A name safe to show to an anonymous visitor, or None.
 
     Mirrors courses/admin_academy_views.py's `_teacher_name`, which is
-    admin-only and falls back to `user.email` as a last resort — that
-    fallback is exactly the PII leak a public feed card must not repeat, so
-    it is dropped here rather than copied. A caller gets None (not an email)
-    when no presentable name exists, and skips the card.
+    admin-only and falls back to `user.email`, then `user.username`, as a
+    last resort — the email fallback is exactly the PII leak a public feed
+    card must not repeat, and the username fallback is exactly what turned
+    a real, unremarkable "no display name set yet" account into a public
+    card reading "nili020903 joined". A username is an identifier, not a
+    name a visitor should be shown as one. A caller gets None when no
+    presentable human name exists, and skips the card.
     """
     lp = getattr(user, "default_learner_profile", None)
     lp = lp() if callable(lp) else None
     if lp and getattr(lp, "full_name", ""):
         return lp.full_name
-    full = (user.get_full_name() or "").strip()
-    return full or user.username or None
+    return (user.get_full_name() or "").strip() or None
 
 
 class HomeHeroHighlightsView(APIView):
@@ -535,6 +537,17 @@ class HomeHeroHighlightsView(APIView):
         User = get_user_model()
         limit = self.FEED_LIMIT_PER_TYPE
         items = []
+        # A low-activity subject can make an 84-day-old row the "most
+        # recent" one it has — without this, a seeded example quiz from the
+        # academy launch, or a teacher who joined months ago, surfaces in a
+        # "just published" feed as if it happened today. Bounding every
+        # creation-ordered query to NEW_WINDOW_DAYS means an empty result
+        # here is the honest answer (nothing recent), not a stale one
+        # dressed up as recent. Live sessions are excluded from this bound —
+        # they're already filtered on end_time (is it happening now/soon),
+        # which is the right recency notion for a scheduled event, not when
+        # the DB row was created.
+        since = timezone.now() - timezone.timedelta(days=self.NEW_WINDOW_DAYS)
 
         teachers = (
             User.objects.filter(
@@ -542,6 +555,7 @@ class HomeHeroHighlightsView(APIView):
                 user_roles__role__name="TEACHER",
                 user_roles__is_active=True,
                 teaching_assignments__is_active=True,
+                teacher_profile__created_at__gte=since,
             )
             .distinct()
             .select_related("teacher_profile")
@@ -566,7 +580,7 @@ class HomeHeroHighlightsView(APIView):
             })
 
         courses = (
-            Course.objects.filter(status__in=PUBLIC_COURSE_STATUSES)
+            Course.objects.filter(status__in=PUBLIC_COURSE_STATUSES, created_at__gte=since)
             .select_related("board")
             .order_by("-created_at")[:limit]
         )
@@ -584,7 +598,9 @@ class HomeHeroHighlightsView(APIView):
             })
 
         materials = (
-            StudyMaterial.objects.filter(subject__course__status__in=PUBLIC_COURSE_STATUSES)
+            StudyMaterial.objects.filter(
+                subject__course__status__in=PUBLIC_COURSE_STATUSES, created_at__gte=since,
+            )
             .select_related("subject", "chapter")
             .order_by("-created_at")[:limit]
         )
@@ -603,6 +619,7 @@ class HomeHeroHighlightsView(APIView):
             Quiz.objects.filter(
                 visible_quiz_q(None),
                 subject__course__status__in=PUBLIC_COURSE_STATUSES,
+                created_at__gte=since,
             )
             .select_related("subject")
             .order_by("-created_at")[:limit]

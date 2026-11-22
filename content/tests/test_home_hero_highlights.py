@@ -143,9 +143,11 @@ class HomeHeroHighlightsTests(TestCase):
         self.assertNotIn("@", teacher_items[0]["subtitle"])
 
     def test_feed_omits_a_teacher_with_no_presentable_name(self):
-        """No first/last name and a username that IS the email-local-part
-        is the realistic "nothing safe to show" case — must be skipped, not
-        fall back to the raw address."""
+        """No first/last name set is the realistic "nothing safe to show"
+        case — must be skipped entirely, never fall back to the raw email
+        OR the raw username. A real prod account (73 days old, no name set)
+        surfaced publicly as "nili020903 joined" before this was fixed —
+        a username is an identifier, not a name a visitor should be shown."""
         user = User.objects.create_user(
             username="bare", email="bare@example.com", password="x",
         )
@@ -153,8 +155,41 @@ class HomeHeroHighlightsTests(TestCase):
         TeacherProfile.objects.create(user=user, academy_status=TeacherProfile.TRACK_APPROVED)
         TeachingAssignment.objects.create(subject=self.subject, teacher=user, is_active=True)
         feed = self.client.get(self.url).json()["feed"]
+        self.assertFalse([i for i in feed if i["type"] == "new_teacher"])
         for item in feed:
-            self.assertNotIn("bare@example.com", item["title"] + item["subtitle"])
+            self.assertNotIn("bare", item["title"] + item["subtitle"])
+
+    def test_feed_excludes_stale_content_even_when_it_is_the_newest_of_its_type(self):
+        """The real prod bug this pins: a low-activity subject can make an
+        84-day-old row the ONLY/most-recent one it has. Without a recency
+        bound, that surfaces in a "just published" feed as if it happened
+        today — this is exactly how 84-day-old academy-launch seed rows
+        ("— example quiz") showed up as current activity. An empty feed is
+        the honest answer when nothing is actually recent."""
+        stale_course = Course.objects.create(title="Stale Course", status=Course.STATUS_PUBLISHED)
+        Course.objects.filter(pk=stale_course.pk).update(created_at=timezone.now() - timedelta(days=84))
+
+        stale_subject = Subject.objects.create(course=stale_course, name="Stale Subject")
+        stale_chapter = Chapter.objects.create(subject=stale_subject, title="Stale Chapter")
+        stale_material = StudyMaterial.objects.create(
+            subject=stale_subject, chapter=stale_chapter, title="Stale — example notes",
+            uploaded_by=self._teacher("stale_uploader"),
+        )
+        StudyMaterial.objects.filter(pk=stale_material.pk).update(created_at=timezone.now() - timedelta(days=84))
+
+        stale_quiz = Quiz.objects.create(subject=stale_subject, title="Stale — example quiz", is_assigned=True)
+        Quiz.objects.filter(pk=stale_quiz.pk).update(created_at=timezone.now() - timedelta(days=84))
+
+        stale_teacher = self._teacher("stale_teacher", staffed=False, full_name="Stale Teacher")
+        TeachingAssignment.objects.create(subject=stale_subject, teacher=stale_teacher, is_active=True)
+        TeacherProfile.objects.filter(user=stale_teacher).update(created_at=timezone.now() - timedelta(days=84))
+
+        feed = self.client.get(self.url).json()["feed"]
+        titles = [i["title"] for i in feed]
+        self.assertNotIn("Stale Course", titles)
+        self.assertNotIn("Stale — example notes", titles)
+        self.assertNotIn("Stale — example quiz", titles)
+        self.assertNotIn("Stale Teacher joined", titles)
 
     def test_feed_includes_course_material_quiz_and_live_session(self):
         chapter = Chapter.objects.create(subject=self.subject, title="Kinematics")
