@@ -442,6 +442,20 @@ def _public_teacher_name(user):
     return (user.get_full_name() or "").strip() or None
 
 
+# Mirrors courses.management.commands.seed_academy_launch.SEED_EMAIL_DOMAIN.
+# Kept as a local copy rather than importing from a management command
+# module — those are entry points, not a library surface other code should
+# depend on. The academy-launch roster (16 named demo teachers, real
+# TeachingAssignment rows, no TeacherProfile/role by design) lives entirely
+# on this domain, and this is the only thing that reliably tells them apart
+# from a real account: the investigation that led here found a
+# TeacherProfile+role gate does NOT separate "real" from "demo" on this
+# platform — every real account currently lacks both, and every demo
+# account was deliberately built to lack them too. Domain is the one signal
+# the seeder cannot accidentally omit.
+SEED_EMAIL_DOMAIN = "example.shikshacom.com"
+
+
 class HomeHeroHighlightsView(APIView):
     """GET /api/content/home/hero-highlights/ — the hero's stat counters and
     "just published" feed (homepage hero v3, floating-stack/orbit design).
@@ -474,7 +488,6 @@ class HomeHeroHighlightsView(APIView):
         return Response(payload)
 
     def _stats(self):
-        from accounts.models import TeacherProfile
         from courses.models import Course
         from courses.views import PUBLIC_COURSE_STATUSES
         from django.contrib.auth import get_user_model
@@ -484,25 +497,38 @@ class HomeHeroHighlightsView(APIView):
         User = get_user_model()
         since = timezone.now() - timezone.timedelta(days=self.NEW_WINDOW_DAYS)
 
-        # Approved academy teachers who currently hold at least one active
-        # staffed subject. ONE filter() call across the multi-valued
-        # relations (teaching_assignments, user_roles), then .distinct() —
-        # chaining separate .filter() calls on a multi-valued relation
-        # produces independent joins and inflates the count. See
-        # courses/admin_academy_views.py's own documented version of this
-        # trap.
-        teachers_qs = User.objects.filter(
-            teacher_profile__academy_status=TeacherProfile.TRACK_APPROVED,
-            user_roles__role__name="TEACHER",
-            user_roles__is_active=True,
-            teaching_assignments__is_active=True,
-        ).distinct()
-        # "New" is an approximation: TeacherProfile has no approved_at field,
-        # only created_at (profile creation, not approval). Fine for a
-        # decorative hero stat; would not be fine for anything audit-shaped.
-        teachers_new = teachers_qs.filter(
-            teacher_profile__created_at__gte=since,
-        ).count()
+        # Originally gated on an approved TeacherProfile + active TEACHER
+        # role, which sounded like the obviously-correct definition of "a
+        # real teacher" — until it was checked against prod. Every one of
+        # the 16 people actually staffing subjects (real names, 1-24 active
+        # assignments each) turned out to be the academy-launch's demo
+        # roster, which is deliberately built WITHOUT a profile or role
+        # precisely so it stays invisible on real-facing surfaces like the
+        # chat directory. Meanwhile the only accounts that DID have a
+        # profile+role were two dev/test logins and one real person with no
+        # display name. Gating on profile+role was therefore gating on
+        # "is this a demo account" by accident, not on "is this a real
+        # teacher" — the two happened to be inverses of each other on this
+        # platform at the time. The actual ground truth for "is teaching
+        # something" is an active TeachingAssignment; the actual ground
+        # truth for "is this a demo account" is the seed email domain. Using
+        # those two signals directly, rather than profile/role as a proxy
+        # for both, is what makes this count both inclusive of real teachers
+        # whose profile bookkeeping never got filled in AND still honest
+        # about not counting demo content as real activity.
+        #
+        # ONE filter() call across the multi-valued relation
+        # (teaching_assignments), then .distinct() — chaining separate
+        # .filter() calls on a multi-valued relation produces independent
+        # joins and inflates the count. See courses/admin_academy_views.py's
+        # own documented version of this trap.
+        teachers_qs = (
+            User.objects
+            .exclude(email__iendswith=f"@{SEED_EMAIL_DOMAIN}")
+            .filter(teaching_assignments__is_active=True)
+            .distinct()
+        )
+        teachers_new = teachers_qs.filter(date_joined__gte=since).count()
 
         courses_qs = Course.objects.filter(status__in=PUBLIC_COURSE_STATUSES)
         courses_new = courses_qs.filter(created_at__gte=since).count()
@@ -525,8 +551,7 @@ class HomeHeroHighlightsView(APIView):
         }
 
     def _feed(self):
-        from accounts.models import TeacherProfile
-        from courses.models import Course
+        from courses.models import Course, TeachingAssignment
         from courses.views import PUBLIC_COURSE_STATUSES
         from django.contrib.auth import get_user_model
         from livestream.models import LiveSession
@@ -549,25 +574,32 @@ class HomeHeroHighlightsView(APIView):
         # the DB row was created.
         since = timezone.now() - timezone.timedelta(days=self.NEW_WINDOW_DAYS)
 
+        # See _stats() for why this counts real (non-seed) teaching accounts
+        # by email domain + active assignment, not by profile/role.
         teachers = (
-            User.objects.filter(
-                teacher_profile__academy_status=TeacherProfile.TRACK_APPROVED,
-                user_roles__role__name="TEACHER",
-                user_roles__is_active=True,
-                teaching_assignments__is_active=True,
-                teacher_profile__created_at__gte=since,
-            )
+            User.objects
+            .exclude(email__iendswith=f"@{SEED_EMAIL_DOMAIN}")
+            .filter(teaching_assignments__is_active=True, date_joined__gte=since)
             .distinct()
-            .select_related("teacher_profile")
-            .order_by("-teacher_profile__created_at")[:limit]
+            .order_by("-date_joined")[:limit]
         )
         for user in teachers:
             name = _public_teacher_name(user)
             if not name:
                 continue
-            profile = user.teacher_profile
-            subject = profile.get_subject_display() if profile.subject else ""
-            years = profile.teaching_experience_years
+            # A teacher's own self-reported subject lived on TeacherProfile,
+            # which real accounts here don't reliably have — the subject
+            # they're actually assigned to teach is the ground truth anyway.
+            assignment = (
+                TeachingAssignment.objects
+                .filter(teacher=user, is_active=True)
+                .select_related("subject")
+                .order_by("-assigned_at")
+                .first()
+            )
+            subject = assignment.subject.name if assignment else ""
+            profile = getattr(user, "teacher_profile", None)
+            years = profile.teaching_experience_years if profile else None
             if subject and years:
                 subtitle = f"{subject} · {years} years teaching"
             else:
@@ -576,7 +608,7 @@ class HomeHeroHighlightsView(APIView):
                 "type": "new_teacher",
                 "title": f"{name} joined",
                 "subtitle": subtitle,
-                "timestamp": profile.created_at,
+                "timestamp": user.date_joined,
             })
 
         courses = (

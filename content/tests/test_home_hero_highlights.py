@@ -2,9 +2,20 @@
 (HomeHeroHighlightsView, /api/content/home/hero-highlights/).
 
 The interesting cases are all about NOT counting or showing something that
-isn't actually public-facing: an unapproved or unstaffed teacher, a draft
-course, a batch-scoped quiz nobody anonymous could ever see, or a teacher's
-email address. Each test below pins one of those boundaries.
+isn't actually public-facing: a demo/seed account, an unstaffed teacher, a
+draft course, a batch-scoped quiz nobody anonymous could ever see, or a
+teacher's email address. Each test below pins one of those boundaries.
+
+The teacher tests in particular pin a real inversion found on prod: gating
+on an approved TeacherProfile + TEACHER role looked like the right
+definition of "a real teacher" until it was checked against actual data —
+every real, actively-teaching account on prod had neither, and every
+academy-launch DEMO account was deliberately built to have neither either,
+specifically so demo accounts stay off real-facing surfaces like chat
+search. Profile+role was gating on "is this a demo account" by accident.
+The real signals are an active TeachingAssignment (ground truth for "is
+teaching something") and the seed email domain (ground truth for "is this
+a demo account") — see SEED_EMAIL_DOMAIN in content/views.py.
 """
 from datetime import timedelta
 
@@ -68,12 +79,49 @@ class HomeHeroHighlightsTests(TestCase):
 
     # ---- teacher count --------------------------------------------------
 
-    def test_teacher_count_excludes_unapproved_and_unstaffed(self):
+    def test_teacher_count_ignores_approval_status_but_requires_staffing(self):
+        """Approval status is no longer the gate — a real pending teacher
+        who is actually staffed on a subject counts; approval alone, with
+        no staffing, does not."""
         self._teacher("approved_staffed", approved=True, staffed=True)
-        self._teacher("pending", approved=False, staffed=True)
-        self._teacher("unstaffed", approved=True, staffed=False)
+        self._teacher("pending_staffed", approved=False, staffed=True)
+        self._teacher("approved_unstaffed", approved=True, staffed=False)
+        stats = self.client.get(self.url).json()["stats"]
+        self.assertEqual(stats["teachers"]["total"], 2)
+
+    def test_teacher_count_excludes_seed_domain_regardless_of_activity(self):
+        """The real prod inversion this pins: the academy-launch demo
+        roster (real names, 1-24 active assignments each, zero profile or
+        role) must NOT count as real teachers just because they look
+        exactly like real, highly active ones. Excluded by email domain,
+        not by profile/role — which is the one signal that actually
+        distinguishes them."""
+        real = self._teacher("real_one", full_name="Real Teacher")
+        seed = User.objects.create_user(
+            username="demo.teacher", email="demo.teacher@example.shikshacom.com",
+            password="x", first_name="Demo", last_name="Teacher",
+        )
+        seed_subject = Subject.objects.create(course=self.course, name="Demo Subject")
+        TeachingAssignment.objects.create(subject=seed_subject, teacher=seed, is_active=True)
         stats = self.client.get(self.url).json()["stats"]
         self.assertEqual(stats["teachers"]["total"], 1)
+        feed = self.client.get(self.url).json()["feed"]
+        self.assertFalse([i for i in feed if "Demo Teacher" in i["title"]])
+
+    def test_teacher_counts_with_no_profile_or_role_at_all(self):
+        """The exact shape of the real accounts found on prod: a real,
+        named, actively-staffed person with NO TeacherProfile and NO
+        TEACHER role — the profile/role bookkeeping lagging reality must
+        not make them invisible."""
+        user = User.objects.create_user(
+            username="bare_but_real", email="bare_but_real@example.com",
+            password="x", first_name="Bare", last_name="Teacher",
+        )
+        TeachingAssignment.objects.create(subject=self.subject, teacher=user, is_active=True)
+        stats = self.client.get(self.url).json()["stats"]
+        self.assertEqual(stats["teachers"]["total"], 1)
+        feed = self.client.get(self.url).json()["feed"]
+        self.assertTrue([i for i in feed if "Bare Teacher joined" == i["title"]])
 
     def test_teacher_count_not_inflated_by_multiple_assignments(self):
         """Two active TeachingAssignment rows for the same teacher must still
@@ -93,10 +141,11 @@ class HomeHeroHighlightsTests(TestCase):
         self.assertEqual(stats["teachers"]["total"], 0)
 
     def test_teacher_new_count_respects_30_day_window(self):
-        recent = self._teacher("recent")
+        """"New" is keyed on the account's own date_joined — the only
+        recency signal every real account reliably has, profile or not."""
+        self._teacher("recent")
         old = self._teacher("old")
-        old.teacher_profile.created_at = timezone.now() - timedelta(days=90)
-        old.teacher_profile.save(update_fields=["created_at"])
+        User.objects.filter(pk=old.pk).update(date_joined=timezone.now() - timedelta(days=90))
         stats = self.client.get(self.url).json()["stats"]
         self.assertEqual(stats["teachers"]["total"], 2)
         self.assertEqual(stats["teachers"]["new_count"], 1)
@@ -182,7 +231,7 @@ class HomeHeroHighlightsTests(TestCase):
 
         stale_teacher = self._teacher("stale_teacher", staffed=False, full_name="Stale Teacher")
         TeachingAssignment.objects.create(subject=stale_subject, teacher=stale_teacher, is_active=True)
-        TeacherProfile.objects.filter(user=stale_teacher).update(created_at=timezone.now() - timedelta(days=84))
+        User.objects.filter(pk=stale_teacher.pk).update(date_joined=timezone.now() - timedelta(days=84))
 
         feed = self.client.get(self.url).json()["feed"]
         titles = [i["title"] for i in feed]
