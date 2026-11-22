@@ -167,11 +167,32 @@ git pull --ff-only origin main
 sudo systemctl restart uvicorn celery celery-beat
 ```
 
-🔴 **Sending is OFF on prod, deliberately.** `FIREBASE_APP` is `None` — the
-credential was NOT installed. Real users' devices register tokens and bank
-them; nothing can notify anyone by accident. Adding the key and restarting
-turns sending on, and every token collected until then starts working at that
-moment.
+### ✅ The credential was installed on prod shortly after — sending is LIVE
+
+🔴 **Done at a deliberately safe moment: prod had ZERO registered devices**, so
+switching sending on changed nothing that day. It only starts mattering when
+an app build pointed at prod reaches real users.
+
+* Key at `/app/secrets/firebase-adminsdk.json` — **mode 600, dir 700, OUTSIDE
+  the git checkout** (`/app/shiksha-backend`), so it cannot be committed.
+* 🔴 **Prod services run as `root`** (`uvicorn` and `celery` both `User=root`),
+  unlike dev which runs as `appuser`. The key is root-owned accordingly —
+  copying dev's ownership here would have produced a file the service could
+  not read, and the only symptom would have been push silently not working.
+* `.env` references it by **path, never the JSON**. Old `.env` backed up to
+  `.env.bak-prefcm-<timestamp>` first. **Deleting that one line turns sending
+  off again without a code change or a deploy.**
+
+**Proven, not assumed:** `messaging.send(..., dry_run=True)` with a bogus
+token returned `InvalidArgumentError: The registration token is not a valid
+FCM registration token` — FCM evaluated the token, so the credential
+*authenticated*. A bad credential fails earlier and differently. `dry_run`
+validates only; nothing was delivered.
+
+⚠ **Prod and dev now share one Firebase project** (`shikshacom`, owned by
+`cmesgithub@gmail.com`). A dev test send and a prod send carry the same sender
+identity. Separate projects per environment would be cleaner if that ever
+matters.
 
 ⚠ **This release also shipped gasey's TeacherContextView fix**, which had been
 merged to main and undeployed for ~24h. Prod was 2 commits behind main, so
