@@ -66,6 +66,7 @@ from .batch_progress_views import (
     BatchProgressView,
     BatchChapterCoverageView,
     MyBatchProgressView,
+    MyBatchRosterView,
 )
 # Admin academy management: subject-teacher assignment + batch CRUD.
 from .admin_academy_views import (
@@ -148,6 +149,8 @@ urlpatterns = [
          BatchChapterCoverageView.as_view()),
     path("my-batch-progress/",
          MyBatchProgressView.as_view()),
+    path("my-batch-roster/",
+         MyBatchRosterView.as_view()),
     path("<uuid:course_id>/public/",   EnrollCourseSummaryView.as_view()),
     path("<uuid:course_id>/",          UpdateCourseView.as_view()),
     path("<uuid:course_id>/delete/",   DeleteCourseView.as_view()),
