@@ -1,0 +1,1112 @@
+[
+  {
+    "subject_id": "a1e10719-a7fb-4b20-9e3e-362afc3bb587",
+    "subject_name": "Accountancy",
+    "quiz_title": "Accountancy — Practice Set",
+    "questions": [
+      {
+        "text": "What is the primary objective of financial accounting for a business?",
+        "options": [
+          "To maintain systematic records of transactions and ascertain profit or loss and financial position",
+          "To only calculate the taxes owed to the government",
+          "To advertise the business to new customers",
+          "To decide which employees should be hired"
+        ],
+        "correct_index": 0,
+        "explanation": "Accounting exists to systematically record transactions so that profit/loss and financial position can be determined and communicated to users.",
+        "topic": "Introduction to Accounting",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which basic accounting concept assumes that a business will continue to operate for the foreseeable future, rather than being wound up?",
+        "options": [
+          "Matching concept",
+          "Going concern concept",
+          "Realisation concept",
+          "Dual aspect concept"
+        ],
+        "correct_index": 1,
+        "explanation": "The going concern concept assumes the business will continue operating indefinitely, which is why assets are not valued at forced-sale prices.",
+        "topic": "Theory Base of Accounting",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Under the double entry system of bookkeeping, every single transaction affects at least how many accounts?",
+        "options": [
+          "One",
+          "Two",
+          "Three",
+          "Four"
+        ],
+        "correct_index": 1,
+        "explanation": "Double entry bookkeeping is based on the principle that every debit has a corresponding credit, so at least two accounts are affected.",
+        "topic": "Recording of Transactions I",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A cheque that has been issued by a firm but has not yet been presented to the bank for payment is referred to as a/an:",
+        "options": [
+          "Outstanding cheque",
+          "Dishonoured cheque",
+          "Post-dated cheque",
+          "Stale cheque"
+        ],
+        "correct_index": 0,
+        "explanation": "A cheque issued but not yet presented for payment is called an outstanding (unpresented) cheque, a common reason for differences between the cash book and passbook balances.",
+        "topic": "Bank Reconciliation Statement",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A transaction that has been left out of the books of account entirely, neither debited nor credited anywhere, is an example of an error of:",
+        "options": [
+          "Commission",
+          "Principle",
+          "Complete omission",
+          "Compensating error"
+        ],
+        "correct_index": 2,
+        "explanation": "When a transaction is not recorded at all, it is called an error of complete omission, and such an error does not usually affect the trial balance's agreement.",
+        "topic": "Trial Balance and Rectification of Errors",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A trader who keeps incomplete, unscientific records (not following full double entry) is said to be maintaining accounts under the:",
+        "options": [
+          "Double entry system",
+          "Single entry system",
+          "Computerised accounting system",
+          "Cost accounting system"
+        ],
+        "correct_index": 1,
+        "explanation": "The single entry system is an unscientific, incomplete way of recording transactions, commonly used by very small traders, and is not a full double-entry method.",
+        "topic": "Accounts from Incomplete Records",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Under the Written Down Value (WDV) method of depreciation, depreciation each year is calculated on:",
+        "options": [
+          "The original cost of the asset, every year",
+          "The book value of the asset (cost minus accumulated depreciation so far)",
+          "The market value of the asset",
+          "The estimated scrap value of the asset"
+        ],
+        "correct_index": 1,
+        "explanation": "Under WDV, a fixed percentage is applied each year to the asset's reducing book value, not its original cost, so the depreciation amount declines over time.",
+        "topic": "Depreciation, Provisions and Reserves",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In a company's Balance Sheet, which of the following would be classified as a current asset?",
+        "options": [
+          "Goodwill",
+          "Machinery",
+          "Closing stock",
+          "Furniture and fixtures"
+        ],
+        "correct_index": 2,
+        "explanation": "Closing stock (inventory) is expected to be converted into cash or consumed within the normal operating cycle, making it a current asset, unlike goodwill, machinery and furniture which are non-current.",
+        "topic": "Financial Statements - I",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "59e05cb1-a40a-44c3-a7a2-f77c5f14b030",
+    "subject_name": "Business Studies",
+    "quiz_title": "Business Studies — Concept Checkpoint",
+    "questions": [
+      {
+        "text": "Which of the following best describes the term 'commerce'?",
+        "options": [
+          "Only the manufacturing of goods",
+          "All activities that help in the exchange of goods and services, including trade and its auxiliaries",
+          "Only the banking sector",
+          "Only advertising and marketing"
+        ],
+        "correct_index": 1,
+        "explanation": "Commerce covers trade along with the auxiliary services (like banking, insurance, transport, and warehousing) that make exchange of goods and services possible.",
+        "topic": "Business, Trade and Commerce",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In a sole proprietorship, the liability of the owner for business debts is:",
+        "options": [
+          "Limited to the capital invested in the business",
+          "Unlimited, extending to the owner's personal assets",
+          "Shared equally among partners",
+          "Limited to the face value of shares held"
+        ],
+        "correct_index": 1,
+        "explanation": "A sole proprietor has unlimited liability, meaning personal assets can be used to settle business debts if business assets are insufficient.",
+        "topic": "Forms of Business Organisation",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Trade that is carried on entirely within the geographical boundaries of one country is known as:",
+        "options": [
+          "International trade",
+          "Internal (domestic) trade",
+          "Entrepot trade",
+          "Foreign trade"
+        ],
+        "correct_index": 1,
+        "explanation": "Internal trade refers to the buying and selling of goods within the borders of a single country, as opposed to trade across national borders.",
+        "topic": "Internal Trade",
+        "difficulty": "easy"
+      },
+      {
+        "text": "As per the Companies Act, a 'government company' is one in which the government holds at least what share of the paid-up capital?",
+        "options": [
+          "26%",
+          "51%",
+          "74%",
+          "100%"
+        ],
+        "correct_index": 1,
+        "explanation": "A government company is defined as one in which the government holds not less than 51% of the paid-up share capital.",
+        "topic": "Private , Public and Global Enterprise",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which document of a company lays down its fundamental conditions of existence, including its name, registered office and objects clause?",
+        "options": [
+          "Articles of Association",
+          "Memorandum of Association",
+          "Prospectus",
+          "Certificate of Incorporation"
+        ],
+        "correct_index": 1,
+        "explanation": "The Memorandum of Association is the charter document defining the company's name, objects and scope of operations; the Articles govern its internal rules.",
+        "topic": "Formation of a Company",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Retained earnings, used by a company to finance its operations, are best classified as a/an:",
+        "options": [
+          "External source of long-term finance",
+          "Internal source of finance",
+          "Short-term borrowed finance",
+          "Trade credit"
+        ],
+        "correct_index": 1,
+        "explanation": "Retained earnings (ploughed-back profits) are generated from within the business itself, making them an internal source of finance.",
+        "topic": "Sources of Business Finance",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of the following is NOT generally considered a benefit of a country engaging in international business?",
+        "options": [
+          "Earning valuable foreign exchange",
+          "Access to a wider market for goods and services",
+          "Achieving complete self-sufficiency with no dependence on any other economy",
+          "More optimum utilisation of national resources"
+        ],
+        "correct_index": 2,
+        "explanation": "International business increases interdependence among economies rather than eliminating it; complete self-sufficiency is not a typical outcome or goal of international trade.",
+        "topic": "International Business",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Under the MSME classification (post-2020 amendment), a 'small enterprise' is primarily distinguished from a 'micro enterprise' by:",
+        "options": [
+          "Having a higher investment in plant/machinery or equipment and higher turnover than a micro enterprise",
+          "Having fewer employees than a micro enterprise",
+          "Operating only in export markets",
+          "Having no registration requirement at all"
+        ],
+        "correct_index": 0,
+        "explanation": "MSME categories (micro, small, medium) are defined by composite investment and annual turnover limits, with a small enterprise permitted higher thresholds than a micro enterprise.",
+        "topic": "Small Business",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "f76afbad-bc55-412b-81f7-92373fe3d621",
+    "subject_name": "Economics (Indian Economic Development)",
+    "quiz_title": "Indian Economic Development — Quick Practice",
+    "questions": [
+      {
+        "text": "At the time of India's independence, which sector employed the largest share of the workforce?",
+        "options": [
+          "Industry",
+          "Services",
+          "Agriculture",
+          "Information technology"
+        ],
+        "correct_index": 2,
+        "explanation": "On the eve of independence, agriculture and allied activities employed the overwhelming majority of India's working population, even though its contribution to national income was comparatively low.",
+        "topic": "Indian Economy on the Eve of Independence",
+        "difficulty": "easy"
+      },
+      {
+        "text": "India's post-independence economic strategy up to 1990 was broadly characterised by:",
+        "options": [
+          "A pure free-market (laissez-faire) economy with no government role",
+          "Planned development through five-year plans with significant state control over industry",
+          "Complete abolition of private enterprise",
+          "A barter-based economic system"
+        ],
+        "correct_index": 1,
+        "explanation": "Between 1950 and 1990, India followed a mixed-economy model with centralised five-year planning and substantial public-sector and licensing control over industry.",
+        "topic": "Indian Economy (1950-1990)",
+        "difficulty": "easy"
+      },
+      {
+        "text": "India's New Economic Policy, introducing major liberalisation reforms, was launched in the year:",
+        "options": [
+          "1947",
+          "1991",
+          "1969",
+          "2000"
+        ],
+        "correct_index": 1,
+        "explanation": "The New Economic Policy of 1991 introduced liberalisation, privatisation and globalisation reforms in response to a severe balance-of-payments crisis.",
+        "topic": "Liberalisation, Privatisation and Globalisation",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The 'poverty line' in India is conventionally estimated mainly on the basis of:",
+        "options": [
+          "The literacy rate of a region",
+          "A minimum level of income or consumption expenditure needed to meet basic needs",
+          "Life expectancy at birth",
+          "The unemployment rate"
+        ],
+        "correct_index": 1,
+        "explanation": "The poverty line is usually defined using a minimum acceptable level of consumption expenditure (often expressed via calorie norms), not literacy or life expectancy directly.",
+        "topic": "Poverty",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of the following is a core focus area of rural development programmes in India?",
+        "options": [
+          "Expansion of urban stock markets",
+          "Providing credit and marketing facilities to farmers",
+          "Building urban housing complexes",
+          "Space research programmes"
+        ],
+        "correct_index": 1,
+        "explanation": "Rural development emphasises timely institutional credit, marketing support, diversification and infrastructure for the rural, largely agrarian, population.",
+        "topic": "Rural Development",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Spending on education and healthcare is best described as an investment in:",
+        "options": [
+          "Physical capital",
+          "Human capital",
+          "Natural resources",
+          "Financial capital"
+        ],
+        "correct_index": 1,
+        "explanation": "Expenditure that improves people's skills, knowledge and health is treated as human capital formation, since it raises the productive capacity of individuals.",
+        "topic": "Human Capital Formation in India",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which statement best distinguishes 'social infrastructure' from 'economic infrastructure'?",
+        "options": [
+          "Social infrastructure includes roads and power plants, economic infrastructure includes schools",
+          "Social infrastructure directly supports human capital (e.g. education, health), while economic infrastructure directly supports production (e.g. energy, transport)",
+          "They refer to exactly the same set of facilities",
+          "Social infrastructure exists only in rural areas"
+        ],
+        "correct_index": 1,
+        "explanation": "Economic infrastructure (power, transport, communication) directly supports production activities, while social infrastructure (education, health, sanitation) builds human capital.",
+        "topic": "Infrastructure",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Workers in the informal sector of the Indian economy are typically characterised by:",
+        "options": [
+          "Strong job security and full social security benefits",
+          "Lack of job security, irregular work hours, and absence of formal social security benefits",
+          "Mandatory employer-provided pension and health insurance",
+          "Employment exclusively in large, government-registered enterprises"
+        ],
+        "correct_index": 1,
+        "explanation": "Informal sector employment is marked by the absence of job security, regulated hours and statutory social security cover, unlike organised/formal sector jobs.",
+        "topic": "Employment : Growth , Informalisation and Other Issues",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "39a98918-5442-4388-9697-f315e6dec48d",
+    "subject_name": "Economics (Statistics)",
+    "quiz_title": "Statistics for Economics — Practice Set",
+    "questions": [
+      {
+        "text": "In economics, statistical methods are primarily used to:",
+        "options": [
+          "Predict individual human behaviour with complete certainty",
+          "Analyse quantitative data to draw meaningful conclusions about economic phenomena",
+          "Completely replace the need for economic theory",
+          "Create artistic representations of numbers"
+        ],
+        "correct_index": 1,
+        "explanation": "Statistics provides tools to collect, organise, analyse and interpret numerical data so that economic relationships and patterns can be understood.",
+        "topic": "Introduction to Statistics",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Data collected directly by an investigator or agency for the first time, for a specific purpose, is called:",
+        "options": [
+          "Secondary data",
+          "Primary data",
+          "Index data",
+          "Historical data"
+        ],
+        "correct_index": 1,
+        "explanation": "Primary data is original data gathered firsthand (e.g. through surveys or interviews) specifically for the investigation at hand.",
+        "topic": "Collection of Data",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A bar diagram is typically used to present data as:",
+        "options": [
+          "A continuous curve joining data points",
+          "Vertical or horizontal bars of equal width, usually for discrete or categorical data",
+          "Only as a pie chart divided into sectors",
+          "Only time values expressed in decimals"
+        ],
+        "correct_index": 1,
+        "explanation": "Bar diagrams use bars of uniform width (with gaps between them) to represent discrete categories or values, making comparison across categories easy.",
+        "topic": "Presentation of Data",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Grouping raw data into class intervals along with their corresponding frequencies is the process of constructing a:",
+        "options": [
+          "Frequency distribution",
+          "Scatter diagram",
+          "Correlation table",
+          "Index series"
+        ],
+        "correct_index": 0,
+        "explanation": "Organising raw, ungrouped data into class intervals with frequencies produces a frequency distribution, the basic tool for summarising large datasets.",
+        "topic": "Organisation of Data",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which measure of central tendency is most affected by extreme values (outliers) in a dataset?",
+        "options": [
+          "Median",
+          "Mode",
+          "Arithmetic mean",
+          "None of these; all are equally affected"
+        ],
+        "correct_index": 2,
+        "explanation": "Because the arithmetic mean uses every value in its calculation, a single extreme value can pull it noticeably, unlike the median or mode.",
+        "topic": "Measures of Central Tendency",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which measure of dispersion is obtained by taking the square root of the average of squared deviations from the mean?",
+        "options": [
+          "Range",
+          "Quartile deviation",
+          "Standard deviation",
+          "Mean deviation"
+        ],
+        "correct_index": 2,
+        "explanation": "Standard deviation is defined as the square root of the variance, i.e. the square root of the mean of squared deviations from the arithmetic mean.",
+        "topic": "Measures of Dispersion",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A correlation coefficient of -0.9 between two variables indicates:",
+        "options": [
+          "A strong positive relationship",
+          "A strong negative (inverse) relationship",
+          "No relationship at all between the variables",
+          "A perfect positive relationship"
+        ],
+        "correct_index": 1,
+        "explanation": "A coefficient close to -1 indicates a strong inverse relationship: as one variable rises, the other tends to fall sharply.",
+        "topic": "Correlation",
+        "difficulty": "hard"
+      },
+      {
+        "text": "An index number is primarily designed to measure:",
+        "options": [
+          "The absolute value of a variable at one point in time",
+          "The relative change in a variable (such as price or quantity) over time compared to a base period",
+          "The total population of a country",
+          "The correlation between two unrelated variables"
+        ],
+        "correct_index": 1,
+        "explanation": "Index numbers express changes in a variable relative to its value in a chosen base period, commonly used for prices, production or cost of living.",
+        "topic": "Index Numbers",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "4e825237-bb12-4f08-a53d-7aef7b41961d",
+    "subject_name": "English (Grammar)",
+    "quiz_title": "English Grammar — Skill Check",
+    "questions": [
+      {
+        "text": "Identify the sentence type: \"Although it was raining, the match continued.\"",
+        "options": [
+          "Simple sentence",
+          "Compound sentence",
+          "Complex sentence",
+          "Compound-complex sentence"
+        ],
+        "correct_index": 2,
+        "explanation": "The sentence has one independent clause ('the match continued') and one dependent clause ('Although it was raining'), which makes it a complex sentence.",
+        "topic": "Advanced Grammar - Clauses and Sentence Types",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A letter written to a newspaper editor about a civic issue in your locality should generally be written in which style?",
+        "options": [
+          "Informal and casual, like a text message",
+          "Formal style, with a clear subject line and structured paragraphs",
+          "Poetic style, using rhyme throughout",
+          "Using abbreviations and slang"
+        ],
+        "correct_index": 1,
+        "explanation": "A letter to the editor is a formal communication addressing a public issue and should follow formal letter conventions, including a clear subject and organised paragraphs.",
+        "topic": "Formal and Informal Letter Writing",
+        "difficulty": "easy"
+      },
+      {
+        "text": "When answering questions based on a comprehension passage, the best approach is to:",
+        "options": [
+          "Answer purely from memory without reading the passage",
+          "Read the passage carefully and base your answers on the information given in the text",
+          "Copy the entire passage as your answer",
+          "Ignore the specific questions and write a random summary"
+        ],
+        "correct_index": 1,
+        "explanation": "Comprehension questions test understanding of the given passage, so answers must be grounded in the text itself, written in the student's own words where asked.",
+        "topic": "Comprehension Passages",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In the sentence \"The book that you gave me was interesting,\" the clause \"that you gave me\" functions as a/an:",
+        "options": [
+          "Noun clause",
+          "Adjective (relative) clause",
+          "Adverb clause",
+          "Independent/main clause"
+        ],
+        "correct_index": 1,
+        "explanation": "The clause 'that you gave me' describes which book is being talked about, modifying the noun 'book', which makes it an adjective (relative) clause.",
+        "topic": "Advanced Grammar - Clauses and Sentence Types",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A key difference between a report and an article is that a report usually:",
+        "options": [
+          "Is written in the first person, full of personal opinions",
+          "Presents factual, organised information about an event or situation, typically in a third-person, objective tone",
+          "Must always be written in rhyme",
+          "Is used only for fictional stories"
+        ],
+        "correct_index": 1,
+        "explanation": "A report conveys factual information about a real event or situation in an objective, organised manner, unlike an article which may carry more personal opinion or reflection.",
+        "topic": "Report and Article Writing",
+        "difficulty": "medium"
+      },
+      {
+        "text": "When making notes from a passage, headings and sub-headings are used mainly to:",
+        "options": [
+          "Decorate the page",
+          "Organise the main points and supporting details in a clear, hierarchical structure",
+          "Replace the need to read the passage carefully",
+          "Add information unrelated to the passage"
+        ],
+        "correct_index": 1,
+        "explanation": "Headings and sub-headings in note-making help structure the main ideas and their supporting points logically, making the notes easy to review later.",
+        "topic": "Note - Making and Summarising",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which salutation and closing pair is most appropriate for a FORMAL letter addressed to an unknown official?",
+        "options": [
+          "\"Hi there,\" ... \"Bye for now\"",
+          "\"Dear Sir/Madam,\" ... \"Yours faithfully\"",
+          "\"Hey buddy,\" ... \"Love\"",
+          "\"Yo,\" ... \"Cheers mate\""
+        ],
+        "correct_index": 1,
+        "explanation": "When the recipient's name is unknown, 'Dear Sir/Madam' paired with the closing 'Yours faithfully' is the conventional formal letter format.",
+        "topic": "Formal and Informal Letter Writing",
+        "difficulty": "hard"
+      },
+      {
+        "text": "An 'inference-based' question on a comprehension passage requires the student to:",
+        "options": [
+          "Find information stated word-for-word in the text",
+          "Draw a logical conclusion based on clues in the text, even though it is not directly stated",
+          "Ignore the passage and answer from general knowledge only",
+          "Simply count the number of paragraphs in the passage"
+        ],
+        "correct_index": 1,
+        "explanation": "Inference questions go beyond literal recall, asking students to use textual clues to reach a reasonable conclusion the passage implies but does not state outright.",
+        "topic": "Comprehension Passages",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "ecac0cb6-c14e-454c-a067-195ce86e83ed",
+    "subject_name": "English (Hornbill)",
+    "quiz_title": "Hornbill — Chapter Practice Set",
+    "questions": [
+      {
+        "text": "In 'Landscape of the Soul', the author contrasts Western and Chinese art mainly on the basis of:",
+        "options": [
+          "Colour usage versus black-and-white technique",
+          "Literal likeness versus capturing the inner spirit or essence of the subject",
+          "The price at which the paintings sold",
+          "The physical size of the canvas used"
+        ],
+        "correct_index": 1,
+        "explanation": "The essay contrasts the Western pursuit of exact physical likeness with the Chinese artistic tradition's goal of capturing the inner spirit of the subject, illustrated through anecdotes like Wu Daozi's painting.",
+        "topic": "Landscape of the Soul",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'The Portrait of a Lady', the narrator's closeness with his grandmother begins to change most noticeably when he:",
+        "options": [
+          "Moves to the city for an English-medium education",
+          "Gets married",
+          "Becomes a schoolteacher himself",
+          "Travels abroad together with her"
+        ],
+        "correct_index": 0,
+        "explanation": "Once the narrator starts attending an English-medium school in the city, his grandmother can no longer help him with his studies, and the earlier closeness between them gradually fades.",
+        "topic": "The Portrait of a Lady",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'We are Not Afraid to Die', the family undertakes its long sea voyage aboard a:",
+        "options": [
+          "Commercial airliner",
+          "Sailing yacht named Wavewalker",
+          "Submarine",
+          "Passenger train"
+        ],
+        "correct_index": 1,
+        "explanation": "The narrative recounts the family's journey around the world on their sailing yacht, Wavewalker, which is struck by a massive wave during the voyage.",
+        "topic": "We are Not Afraid to Die",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In Jayant Narlikar's 'The Adventure', the protagonist Gangadharpant finds himself in an alternate reality where:",
+        "options": [
+          "India never gained independence from British rule",
+          "The outcome of the Battle of Panipat (1761) was different from actual recorded history",
+          "Dinosaurs are still living on Earth",
+          "He has travelled far into the future"
+        ],
+        "correct_index": 1,
+        "explanation": "The story's science-fiction premise is a 'catastrophe theory' of alternate histories, where Gangadharpant experiences a world shaped by a different outcome of the Third Battle of Panipat.",
+        "topic": "The Adventure",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'The Browning Version', the parting gift that the student Taplow gives his retiring teacher, Crocker-Harris, is:",
+        "options": [
+          "A wristwatch",
+          "A used copy of Robert Browning's translation of Agamemnon",
+          "A cricket bat",
+          "A letter of recommendation"
+        ],
+        "correct_index": 1,
+        "explanation": "Taplow gives Crocker-Harris a second-hand copy of Browning's translation of Agamemnon, a gesture that moves the otherwise reserved teacher deeply.",
+        "topic": "The Browning Version",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'Silk Road', the author Nick Middleton travels through Western Tibet primarily to reach:",
+        "options": [
+          "The Great Wall of China",
+          "Mount Kailash, a mountain considered sacred by several religions",
+          "The Taj Mahal",
+          "The base camp of Mount Everest"
+        ],
+        "correct_index": 1,
+        "explanation": "The travelogue follows the author's journey along part of the old Silk Route in Western Tibet toward Mount Kailash, a site of pilgrimage.",
+        "topic": "Silk Road",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The 2005 scientific study described in 'Discovering Tut: The Saga Continues' primarily examined Tutankhamun's mummy using:",
+        "options": [
+          "Only X-rays, as had been done back in 1968",
+          "Computed Tomography (CT) scanning",
+          "MRI scanning",
+          "Ultrasound imaging"
+        ],
+        "correct_index": 1,
+        "explanation": "The passage describes a 2005 team using CT scan technology to examine Tutankhamun's mummy in far greater detail than the earlier 1968 X-ray study.",
+        "topic": "Discovering Tut: The Saga Continues",
+        "difficulty": "hard"
+      },
+      {
+        "text": "According to Nani Palkhivala in 'The Ailing Planet: The Green Movement's Role', the depletion of which layer was a major environmental concern discussed at international forums like the Rio Earth Summit?",
+        "options": [
+          "The topsoil layer",
+          "The ozone layer",
+          "The Earth's magnetic field",
+          "The core mantle layer"
+        ],
+        "correct_index": 1,
+        "explanation": "The essay highlights ozone layer depletion, along with the greenhouse effect and loss of biodiversity, as central concerns of the global environmental movement.",
+        "topic": "The Ailing Planet : The Green Movement's Role",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "016787b4-2609-46aa-ae77-e026218438c1",
+    "subject_name": "English (Snapshots)",
+    "quiz_title": "Snapshots — Story Review Quiz",
+    "questions": [
+      {
+        "text": "In Marga Minco's 'The Address', the narrator visits Mrs Dorling's house mainly to:",
+        "options": [
+          "Claim a family inheritance of money",
+          "Reclaim household belongings her mother had left with Mrs Dorling before being taken away",
+          "Find a lost family pet",
+          "Collect old school certificates"
+        ],
+        "correct_index": 1,
+        "explanation": "After the war, the narrator goes to the address to reclaim her family's belongings that her mother had entrusted to Mrs Dorling for safekeeping, but is met with a cold, unfamiliar reception.",
+        "topic": "The Address",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'Ranga's Marriage', Ranga stands out among the villagers mainly because he:",
+        "options": [
+          "Is the richest man in the village",
+          "Has been educated in Bangalore, unlike most people in the village",
+          "Is the village headman",
+          "Refuses to ever marry"
+        ],
+        "correct_index": 1,
+        "explanation": "Ranga's education in Bangalore sets him apart from the other villagers and is central to the narrator's humorous scheme to get him married.",
+        "topic": "Ranga's Marriage",
+        "difficulty": "easy"
+      },
+      {
+        "text": "At the start of J.B. Priestley's play 'Mother's Day', Mrs Pearson is portrayed as a wife and mother who:",
+        "options": [
+          "Dominates and firmly controls her household",
+          "Is overworked and taken for granted by her family",
+          "Refuses to do any housework from the beginning",
+          "Lives alone with no family around her"
+        ],
+        "correct_index": 1,
+        "explanation": "Mrs Pearson is shown as meek and constantly taken for granted by her husband and children, which is why Mrs Fitzgerald intervenes to help her assert herself.",
+        "topic": "Mother's Day",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'The Summer of the Beautiful White Horse', Aram and Mourad keep the horse a secret mainly because:",
+        "options": [
+          "They had taken (borrowed) it without the owner's permission",
+          "The horse actually belonged to their school",
+          "They had legally purchased the horse",
+          "It was a surprise gift from their father"
+        ],
+        "correct_index": 0,
+        "explanation": "The boys had taken the horse belonging to farmer John Byro without asking, so they keep it hidden and later return it secretly to avoid trouble.",
+        "topic": "The Summer of the Beautiful White Horse",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In A.J. Cronin's 'Birth', the central tension of the story revolves around the narrator-doctor's attempt to:",
+        "options": [
+          "Diagnose a rare disease in an elderly patient",
+          "Revive a newborn baby who shows no signs of life at birth",
+          "Perform a complex surgery on a child",
+          "Convince a rural family to move to the city"
+        ],
+        "correct_index": 1,
+        "explanation": "The story follows the doctor's desperate, determined efforts to revive an apparently stillborn baby, culminating in the infant's first cry.",
+        "topic": "Birth",
+        "difficulty": "medium"
+      },
+      {
+        "text": "'The Ghat of the Only World' by Amitav Ghosh is primarily a tribute written about:",
+        "options": [
+          "A famous political leader",
+          "The poet Agha Shahid Ali during his final days",
+          "A religious pilgrimage to Varanasi",
+          "A fictional character invented by Ghosh"
+        ],
+        "correct_index": 1,
+        "explanation": "The piece is Amitav Ghosh's personal memoir about his friendship with the poet Agha Shahid Ali and the poet's final days battling illness.",
+        "topic": "The Ghat of the Only World",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In Vikram Seth's narrative poem 'The Tale of Melon City', the king's rigid, irrational insistence on following his own decree ultimately leads to:",
+        "options": [
+          "A wise minister peacefully taking over the throne",
+          "The king's own accidental death by his hanging decree, after which a melon is whimsically crowned king",
+          "The people abolishing the monarchy through revolt",
+          "A war breaking out with a neighbouring city"
+        ],
+        "correct_index": 1,
+        "explanation": "The king, testing the height of a hanging arch himself, ends up being executed by his own decree; afterward, a melon rolling under the arch is crowned king, satirising blind rule-following.",
+        "topic": "The Tale of Melon City",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The passage 'Albert Einstein at School' primarily contrasts:",
+        "options": [
+          "Two of Einstein's famous scientific theories",
+          "The rigid, authoritarian schooling Einstein faced in Munich with the more liberal schooling in Aarau, Switzerland",
+          "Einstein's childhood years with his later career as a scientist",
+          "Germany's education system with that of the United States"
+        ],
+        "correct_index": 1,
+        "explanation": "The passage draws a contrast between the strict, militaristic schooling in Munich that Einstein disliked and the freer, more encouraging Swiss school system in Aarau.",
+        "topic": "Albert Einstein at School",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "d76758e7-d181-40f8-8d7a-0e1f55cd4865",
+    "subject_name": "Hindi ( Aroh I)",
+    "quiz_title": "Hindi (आरोह) — अभ्यास प्रश्न",
+    "questions": [
+      {
+        "text": "'विद्या' + 'आलय' के मेल से बनने वाला सही संधि-शब्द कौन-सा है?",
+        "options": [
+          "विद्यालय",
+          "विद्यआलय",
+          "विद्यालय्",
+          "विद्याआलय"
+        ],
+        "correct_index": 0,
+        "explanation": "'आ' + 'आ' मिलकर दीर्घ स्वर संधि के नियम से एक 'आ' बनता है, इसलिए 'विद्या' + 'आलय' = 'विद्यालय' बनता है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'पर्यायवाची शब्द' किसे कहा जाता है?",
+        "options": [
+          "विपरीत अर्थ देने वाले शब्दों को",
+          "समान अर्थ देने वाले शब्दों को",
+          "केवल संस्कृत भाषा के शब्दों को",
+          "एक से अधिक अर्थ वाले शब्दों को"
+        ],
+        "correct_index": 1,
+        "explanation": "पर्यायवाची (समानार्थी) शब्द वे होते हैं जिनका अर्थ लगभग एक जैसा होता है, जैसे 'सूर्य' और 'दिनकर'।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'सूर्य' शब्द का सही पर्यायवाची शब्द कौन-सा है?",
+        "options": [
+          "चंद्र",
+          "दिनकर",
+          "पवन",
+          "सरिता"
+        ],
+        "correct_index": 1,
+        "explanation": "'दिनकर' सूर्य का पर्यायवाची शब्द है, जबकि चंद्र (चाँद), पवन (हवा) और सरिता (नदी) के पर्यायवाची अलग हैं।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'राजपुत्र' शब्द में कौन-सा समास है?",
+        "options": [
+          "द्वंद्व समास",
+          "तत्पुरुष समास",
+          "बहुव्रीहि समास",
+          "अव्ययीभाव समास"
+        ],
+        "correct_index": 1,
+        "explanation": "'राजपुत्र' का अर्थ है 'राजा का पुत्र', जहाँ विभक्ति का लोप होता है — यह तत्पुरुष समास का उदाहरण है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "'आरंभ' शब्द का सही विलोम (विपरीतार्थक) शब्द कौन-सा है?",
+        "options": [
+          "प्रारंभ",
+          "अंत",
+          "मध्य",
+          "शुरुआत"
+        ],
+        "correct_index": 1,
+        "explanation": "'आरंभ' का विलोम 'अंत' है, क्योंकि 'प्रारंभ' और 'शुरुआत' दोनों 'आरंभ' के ही पर्यायवाची हैं।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "गद्यांश पर आधारित प्रश्नों को सही ढंग से हल करने के लिए सबसे पहले क्या करना चाहिए?",
+        "options": [
+          "बिना पढ़े सीधे उत्तर लिखना",
+          "गद्यांश को ध्यानपूर्वक पढ़कर उसका केंद्रीय भाव समझना",
+          "केवल प्रश्नों को रट लेना",
+          "गद्यांश को पूरी तरह नज़रअंदाज़ कर देना"
+        ],
+        "correct_index": 1,
+        "explanation": "गद्यांश आधारित प्रश्नों के सही उत्तर के लिए पहले गद्यांश को ध्यान से पढ़कर उसका भाव और मुख्य बिंदु समझना आवश्यक है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "भारतीय काव्यशास्त्र में परंपरागत रूप से कुल कितने रस माने जाते हैं?",
+        "options": [
+          "आठ",
+          "नौ",
+          "दस",
+          "बारह"
+        ],
+        "correct_index": 1,
+        "explanation": "भरतमुनि के नाट्यशास्त्र में मूल रूप से आठ रस बताए गए थे; बाद में 'शांत रस' को जोड़कर कुल नौ रस (नवरस) मान्य किए गए, जो आज पाठ्यक्रम में पढ़ाए जाते हैं।",
+        "topic": "",
+        "difficulty": "hard"
+      },
+      {
+        "text": "मुहावरा 'आँखों में धूल झोंकना' का सही अर्थ क्या है?",
+        "options": [
+          "किसी को सच्चाई बताना",
+          "किसी को धोखा देना",
+          "किसी की मदद करना",
+          "आँखें साफ करना"
+        ],
+        "correct_index": 1,
+        "explanation": "'आँखों में धूल झोंकना' मुहावरे का अर्थ है किसी को छल या धोखा देना, न कि शाब्दिक रूप से आँखें साफ करना।",
+        "topic": "",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "3c89d7be-9f63-4ab8-86c9-9fb332fcf966",
+    "subject_name": "Hindi (Vitan I)",
+    "quiz_title": "Hindi (वितान) — व्याकरण अभ्यास",
+    "questions": [
+      {
+        "text": "'संज्ञा' किसे कहते हैं?",
+        "options": [
+          "क्रिया को दर्शाने वाला शब्द",
+          "किसी व्यक्ति, वस्तु, स्थान या भाव के नाम को दर्शाने वाला शब्द",
+          "किसी की विशेषता बताने वाला शब्द",
+          "दो शब्दों को जोड़ने वाला शब्द"
+        ],
+        "correct_index": 1,
+        "explanation": "संज्ञा वह शब्द है जो किसी व्यक्ति, वस्तु, स्थान, गुण या भाव के नाम का बोध कराता है, जैसे 'राम', 'दिल्ली', 'किताब'।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'मैं', 'तुम', 'वह' जैसे शब्द किस शब्द-भेद के अंतर्गत आते हैं?",
+        "options": [
+          "सर्वनाम",
+          "विशेषण",
+          "क्रिया-विशेषण",
+          "संज्ञा"
+        ],
+        "correct_index": 0,
+        "explanation": "'मैं', 'तुम', 'वह' आदि शब्द संज्ञा के स्थान पर प्रयोग होते हैं, इसलिए ये सर्वनाम कहलाते हैं।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "औपचारिक पत्र (formal letter) सामान्यतः किसे लिखा जाता है?",
+        "options": [
+          "किसी घनिष्ठ मित्र को",
+          "किसी अधिकारी या संस्था को",
+          "परिवार के किसी सदस्य को",
+          "किसी काल्पनिक पात्र को"
+        ],
+        "correct_index": 1,
+        "explanation": "औपचारिक पत्र आमतौर पर किसी अधिकारी, संस्था या सरकारी कार्यालय को लिखा जाता है और इसकी भाषा शैली विनम्र व संयत होती है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "\"वह तेज़ दौड़ता है\" इस वाक्य में 'तेज़' शब्द किस शब्द-भेद का उदाहरण है?",
+        "options": [
+          "संज्ञा",
+          "सर्वनाम",
+          "क्रिया-विशेषण (adverb)",
+          "समुच्चयबोधक"
+        ],
+        "correct_index": 2,
+        "explanation": "'तेज़' शब्द यहाँ क्रिया 'दौड़ता है' की विशेषता (किस प्रकार दौड़ता है) बता रहा है, इसलिए यह क्रिया-विशेषण है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "निबंध लेखन में पहला अनुच्छेद सामान्यतः क्या प्रस्तुत करता है?",
+        "options": [
+          "निष्कर्ष",
+          "विषय का परिचय (भूमिका)",
+          "केवल उदाहरण",
+          "केवल आंकड़े"
+        ],
+        "correct_index": 1,
+        "explanation": "निबंध का प्रारंभिक अनुच्छेद आमतौर पर विषय की भूमिका या परिचय प्रस्तुत करता है, जिसके बाद मुख्य विवेचन और अंत में निष्कर्ष आता है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "'लोकोक्ति' और 'मुहावरे' में मुख्य अंतर क्या है?",
+        "options": [
+          "दोनों पूरी तरह एक समान होते हैं",
+          "लोकोक्ति अपने आप में पूर्ण वाक्य होती है, जबकि मुहावरा एक वाक्यांश है जिसे वाक्य में प्रयोग करना पड़ता है",
+          "मुहावरे केवल अंग्रेज़ी भाषा में पाए जाते हैं",
+          "लोकोक्ति का कोई अर्थ नहीं होता"
+        ],
+        "correct_index": 1,
+        "explanation": "लोकोक्ति अपने आप में एक पूर्ण, सार्थक वाक्य होती है (जैसे कहावत), जबकि मुहावरा एक वाक्यांश होता है जो वाक्य में जुड़कर अर्थ देता है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "निम्नलिखित में से व्याकरणिक दृष्टि से शुद्ध वाक्य कौन-सा है?",
+        "options": [
+          "वह प्रतिदिन रोज़ स्कूल जाता है।",
+          "वह प्रतिदिन स्कूल जाता है।",
+          "वह रोज़ प्रतिदिन स्कूल जाता है।",
+          "वह प्रतिदिन-प्रतिदिन स्कूल जाता है।"
+        ],
+        "correct_index": 1,
+        "explanation": "'प्रतिदिन' और 'रोज़' दोनों का अर्थ 'हर दिन' है; दोनों का एक साथ प्रयोग पुनरुक्ति दोष है, इसलिए केवल एक शब्द का प्रयोग व्याकरणिक रूप से शुद्ध है।",
+        "topic": "",
+        "difficulty": "hard"
+      },
+      {
+        "text": "छंद में 'मात्रा' की गणना किस आधार पर की जाती है?",
+        "options": [
+          "शब्दों की कुल संख्या के आधार पर",
+          "स्वर और व्यंजन के उच्चारण समय (लघु-गुरु) पर आधारित ध्वनि की इकाई के आधार पर",
+          "वाक्य की लंबाई के आधार पर",
+          "पृष्ठ की कुल संख्या के आधार पर"
+        ],
+        "correct_index": 1,
+        "explanation": "छंदशास्त्र में मात्रा की गणना अक्षरों के उच्चारण में लगने वाले समय (लघु और गुरु ध्वनि-इकाइयों) के आधार पर होती है, न कि शब्दों की संख्या पर।",
+        "topic": "",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "0cb44487-847a-4860-acc8-0accd0422493",
+    "subject_name": "Mathematics",
+    "quiz_title": "Mathematics — Practice Set",
+    "questions": [
+      {
+        "text": "If A = {1, 2, 3} and B = {2, 3, 4}, what is A ∩ B?",
+        "options": [
+          "{1, 2, 3, 4}",
+          "{2, 3}",
+          "{1, 4}",
+          "{} (the empty set)"
+        ],
+        "correct_index": 1,
+        "explanation": "The intersection of two sets contains only the elements common to both; here, 2 and 3 appear in both A and B.",
+        "topic": "Sets",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A relation f from set A to set B is called a function if:",
+        "options": [
+          "Every element of A maps to more than one element of B",
+          "Every element of A maps to exactly one element of B",
+          "No element of A maps to any element of B",
+          "Every element of B must map to exactly one element of A"
+        ],
+        "correct_index": 1,
+        "explanation": "By definition, a function assigns exactly one image in B to every element of the domain A; mapping to more than one element would violate the definition of a function.",
+        "topic": "Relations and Functions",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What is the value of sin(90°)?",
+        "options": [
+          "0",
+          "1",
+          "-1",
+          "1/2"
+        ],
+        "correct_index": 1,
+        "explanation": "sin(90°) equals 1, the maximum value the sine function attains.",
+        "topic": "Trigonometric Functions",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What is the value of i² (i being the imaginary unit used in complex numbers)?",
+        "options": [
+          "1",
+          "-1",
+          "i",
+          "-i"
+        ],
+        "correct_index": 1,
+        "explanation": "By definition, the imaginary unit i satisfies i² = -1, which is the basis of the complex number system.",
+        "topic": "Complex Numbers and Quadratic Equations",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In how many distinct ways can 3 distinct books be arranged in a row on a shelf?",
+        "options": [
+          "3",
+          "6",
+          "9",
+          "27"
+        ],
+        "correct_index": 1,
+        "explanation": "The number of arrangements of 3 distinct objects is 3! = 3 × 2 × 1 = 6.",
+        "topic": "Permutations and Combinations",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the slope of the straight line passing through the points (2, 3) and (4, 7)?",
+        "options": [
+          "1",
+          "2",
+          "3",
+          "4"
+        ],
+        "correct_index": 1,
+        "explanation": "Slope = (y2 - y1)/(x2 - x1) = (7 - 3)/(4 - 2) = 4/2 = 2.",
+        "topic": "Straight Lines",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In the binomial expansion of (x + y)^5, how many terms does the expansion contain?",
+        "options": [
+          "4",
+          "5",
+          "6",
+          "10"
+        ],
+        "correct_index": 2,
+        "explanation": "The expansion of (x + y)^n always has (n + 1) terms, so for n = 5 there are 6 terms, from x^5 down to y^5.",
+        "topic": "Binomial Theorem",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In an arithmetic progression whose first term is 2 and common difference is 3, what is the 5th term?",
+        "options": [
+          "11",
+          "14",
+          "17",
+          "20"
+        ],
+        "correct_index": 1,
+        "explanation": "The nth term of an A.P. is a + (n-1)d. Here, 2 + (5-1) × 3 = 2 + 12 = 14.",
+        "topic": "Sequences and Series",
+        "difficulty": "hard"
+      }
+    ]
+  }
+]

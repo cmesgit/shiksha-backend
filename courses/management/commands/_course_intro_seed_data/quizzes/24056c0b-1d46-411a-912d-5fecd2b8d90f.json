@@ -1,0 +1,854 @@
+[
+  {
+    "subject_id": "da75252b-2fa4-45e7-9227-8c4350fa80cd",
+    "subject_name": "Economics",
+    "quiz_title": "Economics — Practice Set",
+    "questions": [
+      {
+        "text": "In economics, what is the primary purpose of studying statistics?",
+        "options": ["To collect, organise, analyse and interpret numerical data for decision-making", "To predict stock market prices with certainty", "To replace qualitative economic theory entirely", "To design government advertising campaigns"],
+        "correct_index": 0,
+        "explanation": "Statistics is a tool used in economics to systematically collect, organise, present and analyse numerical data so that meaningful conclusions can be drawn.",
+        "topic": "Introduction to Statistics",
+        "difficulty": "easy"
+      },
+      {
+        "text": "At the time of independence in 1947, which sector employed the largest share of India's workforce?",
+        "options": ["Agriculture", "Manufacturing industry", "Information technology services", "Banking and finance"],
+        "correct_index": 0,
+        "explanation": "On the eve of independence, India's economy was predominantly agrarian, with the majority of the workforce dependent on agriculture and allied activities.",
+        "topic": "Indian Economy on the Eve of Independence",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which measure of central tendency is most affected by a few extremely high or low values in a data set?",
+        "options": ["Mean", "Median", "Mode", "None of these are affected by extreme values"],
+        "correct_index": 0,
+        "explanation": "The arithmetic mean uses every value in its calculation, so one or two extreme values can pull it noticeably higher or lower, whereas the median and mode are less disturbed by outliers.",
+        "topic": "Measures of Central Tendency",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In which year did India formally launch its New Economic Policy of Liberalisation, Privatisation and Globalisation?",
+        "options": ["1991", "1975", "2000", "1947"],
+        "correct_index": 0,
+        "explanation": "Facing a severe balance-of-payments crisis, the Government of India introduced the New Economic Policy in 1991, opening the economy through liberalisation, privatisation and globalisation.",
+        "topic": "Liberalisation , Privatisation and Globalisation",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In India's official poverty estimates, a person is generally classified as poor when their consumption expenditure falls below a level needed to meet which of the following?",
+        "options": ["A minimum calorie-based consumption requirement", "The average income of a software engineer", "The cost of owning a car", "The state's total tax revenue per person"],
+        "correct_index": 0,
+        "explanation": "India's traditional poverty line methodology defines the poor as those whose per capita consumption expenditure is insufficient to secure a minimum, calorie-based level of food and other basic needs.",
+        "topic": "Poverty",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The coefficient of correlation between two variables can range between which of the following limits?",
+        "options": ["-1 and +1", "0 and 100", "-100 and +100", "0 and 1 only, never negative"],
+        "correct_index": 0,
+        "explanation": "The correlation coefficient always lies between -1 (perfect negative correlation) and +1 (perfect positive correlation), with 0 indicating no linear relationship.",
+        "topic": "Correlation",
+        "difficulty": "hard"
+      },
+      {
+        "text": "A Consumer Price Index (CPI) is primarily designed to measure changes in which of the following?",
+        "options": ["The general level of retail prices paid by a specific group of consumers over time", "The total volume of goods exported by a country", "The exchange rate of the rupee against the dollar", "The number of registered companies in an economy"],
+        "correct_index": 0,
+        "explanation": "A Consumer Price Index tracks how the cost of a fixed basket of goods and services purchased by a defined consumer group changes over time, making it a key measure of retail inflation.",
+        "topic": "Index Numbers",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which of the following is the best example of 'human capital formation'?",
+        "options": ["Government spending on school education and public healthcare", "A company buying new factory machinery", "A farmer purchasing additional farmland", "A bank increasing its gold reserves"],
+        "correct_index": 0,
+        "explanation": "Human capital formation refers to investment in people — mainly through education, health and training — that raises their productive skills and capabilities; machinery, land and gold are physical or financial capital, not human capital.",
+        "topic": "Human Capital Formation in India",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "db76d2c8-ccd0-4db6-8d49-5e6c13d96d83",
+    "subject_name": "English ( Grammar)",
+    "quiz_title": "English Grammar — Skill Builder Set",
+    "questions": [
+      {
+        "text": "When a formal letter begins with the salutation 'Dear Sir/Madam', which of the following is the conventionally correct complimentary close?",
+        "options": ["Yours faithfully", "Lots of love", "Bye for now", "Yours romantically"],
+        "correct_index": 0,
+        "explanation": "In formal letter writing, 'Dear Sir/Madam' (used when the recipient's name is unknown) is conventionally closed with 'Yours faithfully', while a letter addressed by name is closed with 'Yours sincerely'.",
+        "topic": "Formal and Informal Letter Writing",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What distinguishes an independent (main) clause from a dependent (subordinate) clause?",
+        "options": ["An independent clause can stand alone as a complete sentence; a dependent clause cannot", "A dependent clause always contains a verb while an independent clause never does", "An independent clause has no subject", "A dependent clause must always come first in a sentence"],
+        "correct_index": 0,
+        "explanation": "An independent clause expresses a complete thought and can function as a sentence on its own, whereas a dependent clause relies on a main clause to complete its meaning.",
+        "topic": "Advanced Grammar - Clauses and Sentence Types",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In the technique of note-making, what is the main purpose of using abbreviations and symbols such as '&', '→' or 'govt.'?",
+        "options": ["To record key points quickly and save space while keeping the meaning clear", "To make the notes harder for anyone else to read", "To replace the need for headings and sub-headings", "To increase the word count of the summary"],
+        "correct_index": 0,
+        "explanation": "Abbreviations and symbols let a note-maker capture information concisely and quickly without losing essential meaning, which is the whole purpose of note-making.",
+        "topic": "Note - Making and Summarising",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of the following best describes a compound sentence?",
+        "options": ["Two or more independent clauses joined by a coordinating conjunction such as 'and' or 'but'", "A single clause with no conjunction at all", "One independent clause combined with one dependent clause", "A sentence that contains only a question"],
+        "correct_index": 0,
+        "explanation": "A compound sentence consists of two or more independent clauses of equal grammatical rank, usually linked by a coordinating conjunction like 'and', 'but' or 'or'.",
+        "topic": "Advanced Grammar - Clauses and Sentence Types",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A good factual report (e.g., of a school event) is expected to be written mainly in which style?",
+        "options": ["Objective, third person, and based on verifiable facts", "Highly emotional and written entirely in the first person", "Full of the writer's personal opinions with no facts", "Written as a series of unexplained bullet points with no context"],
+        "correct_index": 0,
+        "explanation": "A report is meant to inform readers accurately about an event, so it is conventionally written in an objective, factual, third-person style rather than as a personal or opinion-driven piece.",
+        "topic": "Report and Article Writing",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Identify the complex sentence among the following options.",
+        "options": ["Although it was raining heavily, the match continued without any delay.", "It was raining heavily and the match continued.", "It was raining heavily; the match continued.", "It was raining heavily. The match continued."],
+        "correct_index": 0,
+        "explanation": "A complex sentence contains one independent clause and at least one dependent clause; 'Although it was raining heavily' is a dependent clause attached to the independent clause 'the match continued without any delay'.",
+        "topic": "Advanced Grammar - Clauses and Sentence Types",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which combination of features is most expected in a newspaper or magazine article written for publication?",
+        "options": ["A catchy heading, a byline, and ideas developed logically across paragraphs", "No heading, no byline, and ideas listed with no paragraph breaks", "A heading only, with the entire article in one unbroken sentence", "A byline but no reference to the topic in the opening paragraph"],
+        "correct_index": 0,
+        "explanation": "A well-structured article conventionally has an attention-grabbing heading, the writer's byline, and a logical flow of ideas from introduction to conclusion across clear paragraphs.",
+        "topic": "Report and Article Writing",
+        "difficulty": "hard"
+      },
+      {
+        "text": "When first approaching an unseen comprehension passage, which reading technique helps a student quickly grasp its overall theme before answering detailed questions?",
+        "options": ["Skimming the passage for the main idea before reading it closely", "Memorising every word before reading any question", "Answering questions without reading the passage at all", "Reading only the last sentence of the passage"],
+        "correct_index": 0,
+        "explanation": "Skimming — a quick first reading to catch the gist and structure of a passage — helps readers build a framework of understanding before they scan for specific details to answer comprehension questions.",
+        "topic": "Comprehension Passages",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "497647ee-a91f-4920-8c3b-8fee0928b778",
+    "subject_name": "English ( Snapshots)",
+    "quiz_title": "English (Snapshots) — Chapter Recall Set",
+    "questions": [
+      {
+        "text": "In William Saroyan's story, which character borrows the horse without the owner's permission?",
+        "options": ["Mourad, the narrator's cousin", "The narrator's father", "A stranger from another village", "The horse's original owner"],
+        "correct_index": 0,
+        "explanation": "Mourad, known in the family for his wild and reckless nature, is the one who takes the horse belonging to farmer John Byro, setting the story's events in motion.",
+        "topic": "The Summer of the Beautiful White Horse",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In Masti Venkatesha Iyengar's 'Ranga's Marriage', who is the narrator that plays matchmaker and shapes the story's outcome?",
+        "options": ["Shastri, the elderly narrator of the village", "Ranga himself", "Ratna's mother", "The village schoolteacher"],
+        "correct_index": 0,
+        "explanation": "The story is narrated by Shastri, an elder of the village, who cleverly engineers circumstances so that Ranga and Ratna end up married, despite Ranga's earlier resistance to the idea.",
+        "topic": "Ranga's Marriage",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In Marga Minco's 'The Address', why does the narrator visit the house at the given address after the war?",
+        "options": ["To try to reclaim her family's belongings left there for safekeeping", "To buy the house from its new owner", "To meet an old school friend living there", "To deliver a letter from her mother"],
+        "correct_index": 0,
+        "explanation": "After the war, the narrator visits Mrs Dorling's house hoping to recover her family's possessions, which had been left there for safekeeping before her family was forced to flee.",
+        "topic": "The Address",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In the extract 'Albert Einstein at School', what is Einstein chiefly shown to dislike about his schooling?",
+        "options": ["The rigid, rote-learning methods that left little room for independent thought", "The subject of mathematics itself", "Having classmates from different backgrounds", "The length of the school day"],
+        "correct_index": 0,
+        "explanation": "The extract portrays young Einstein as frustrated with an authoritarian, drill-based system of education that discouraged questioning and independent thinking, rather than with any particular subject.",
+        "topic": "Albert Einstein at School",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In J.B. Priestley's play 'Mother's Day', how does Mrs Fitzgerald help the overburdened Mrs Pearson?",
+        "options": ["By using a magic charm to swap Mrs Pearson's personality and voice with her daughter's", "By doing all of Mrs Pearson's housework herself", "By reporting the family to the police for neglect", "By convincing Mrs Pearson to leave her family permanently"],
+        "correct_index": 0,
+        "explanation": "Mrs Fitzgerald casts a charm that swaps Mrs Pearson's voice and manner with her daughter Doris's, which lets the normally timid Mrs Pearson finally assert herself against her inconsiderate family.",
+        "topic": "Mother's Day",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In A.J. Cronin's 'Birth', what is the central crisis Dr Andrew Manson faces during the delivery?",
+        "options": ["The newborn baby initially shows no signs of life and he must try to revive it", "He cannot find the patient's house in time", "The mother refuses any medical treatment", "He runs out of medical supplies mid-delivery"],
+        "correct_index": 0,
+        "explanation": "After a difficult delivery, the baby appears stillborn, and the story centres on Dr Manson's desperate, ultimately successful efforts to revive the infant while also attending to the exhausted mother.",
+        "topic": "Birth",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In Vikram Seth's narrative poem 'The Tale of Melon City', how does the city eventually come to have a new king?",
+        "options": ["A melon that falls on the gatekeeper's head is arbitrarily crowned king", "The old king's son is crowned after an election", "The people elect a king by majority vote", "A foreign army invades and installs its own ruler"],
+        "correct_index": 0,
+        "explanation": "Through a chain of absurd, literal-minded decisions, the gatekeeper ends up sentenced to hang, but when a melon falls on his head instead, the melon itself is whimsically declared king — the poem's satire on arbitrary authority.",
+        "topic": "The Tale of Melon City",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Amitav Ghosh's essay 'The Ghat of the Only World' is a tribute centred on the final days of which figure?",
+        "options": ["The poet Agha Shahid Ali", "Mahatma Gandhi", "Rabindranath Tagore", "Jawaharlal Nehru"],
+        "correct_index": 0,
+        "explanation": "The essay recounts Amitav Ghosh's visits to the poet Agha Shahid Ali during his final illness, reflecting on their friendship and Shahid's attitude towards his approaching death.",
+        "topic": "The Ghat of the Only World",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "e7b71718-88a1-493d-adb1-52b32cbc398c",
+    "subject_name": "English (Hornbill)",
+    "quiz_title": "English (Hornbill) — Reader Review Set",
+    "questions": [
+      {
+        "text": "In Khushwant Singh's 'The Portrait of a Lady', whose personality and relationship with the author does the essay mainly describe?",
+        "options": ["His grandmother", "His schoolteacher", "His mother", "A family friend"],
+        "correct_index": 0,
+        "explanation": "The essay is a warm, reflective portrait of the author's grandmother, tracing how their close relationship changed over different phases of his life.",
+        "topic": "The Portrait of a Lady",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In Nick Middleton's 'Silk Road', what is the ultimate destination of the author's journey described in the chapter?",
+        "options": ["Mount Kailash in Tibet", "The Great Wall of China", "The city of Samarkand", "Lhasa"],
+        "correct_index": 0,
+        "explanation": "The chapter follows the author's journey along an old silk trading route towards Mount Kailash, a mountain held sacred in several religious traditions.",
+        "topic": "Silk Road",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Jayant Narlikar's 'The Adventure' is built around which central science-fiction premise?",
+        "options": ["A man slipping into an alternate history where the outcome of the Battle of Panipat was different", "A scientist travelling to the moon", "Robots replacing human historians", "A time machine built to prevent a war"],
+        "correct_index": 0,
+        "explanation": "The story's protagonist, Professor Gaitonde, finds himself in a parallel universe where the historical Battle of Panipat went differently, leading to an alternate course of Indian history.",
+        "topic": "The Adventure",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'We Are Not Afraid to Die if We Can All Be Together', what major challenge does the sailing family encounter during their round-the-world voyage?",
+        "options": ["Their boat is severely damaged and capsizes in a violent storm in the Southern Ocean", "They run out of food near the equator", "Their boat is attacked by pirates", "They lose radio contact permanently and are never found"],
+        "correct_index": 0,
+        "explanation": "During their voyage, the family's boat Wavewalker is struck by huge waves in a storm and capsizes, badly damaging the vessel and testing the family's courage and resourcefulness at sea.",
+        "topic": "We Are Not Afraid to Die",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'Discovering Tut: The Saga Continues', which modern technology is used to study Tutankhamun's mummy without physically unwrapping it?",
+        "options": ["Computed tomography (CT) scanning", "DNA sequencing of surrounding soil", "Satellite imaging of the tomb", "Carbon dating of the sarcophagus only"],
+        "correct_index": 0,
+        "explanation": "A team of scientists uses a portable CT scanner to capture detailed images of Tutankhamun's mummy, allowing them to study his body and the circumstances of his death without disturbing the remains.",
+        "topic": "Discovering Tut : The Saga Continues",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the central concern Nani Palkhivala raises in 'The Ailing Planet: The Green Movement's Role'?",
+        "options": ["The need for environmental protection and sustainable development to counter ecological degradation", "The economic benefits of rapid industrialisation without regulation", "The decline of classical literature", "The growth of global trade agreements"],
+        "correct_index": 0,
+        "explanation": "The essay surveys the scale of environmental damage caused by human activity and argues for urgent, sustained action — including the green movement — to protect the planet's ecological balance.",
+        "topic": "The Ailing Planet: The Green Movement's Role",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In Terence Rattigan's play extract 'The Browning Version', what gift does the student Taplow give to his retiring teacher, Crocker-Harris?",
+        "options": ["A second-hand copy of Robert Browning's translation of Aeschylus's 'Agamemnon'", "A handwritten letter of apology", "A trophy from the school's sports day", "A box of chocolates"],
+        "correct_index": 0,
+        "explanation": "Taplow presents Crocker-Harris with a used copy of Robert Browning's verse translation of the 'Agamemnon', a gesture that deeply moves the otherwise stern and unpopular teacher.",
+        "topic": "The Browning Version",
+        "difficulty": "hard"
+      },
+      {
+        "text": "According to 'Landscape of the Soul', what is a key difference between traditional Chinese and European approaches to art, as illustrated by the story of the painter and the butcher?",
+        "options": ["Chinese art seeks to capture the inner spirit or essence of a subject rather than its outward likeness, unlike the literal realism prized in much European art", "Chinese art uses only black ink while European art uses only oil paint", "European art never depicts nature, while Chinese art depicts only nature", "Chinese artists never studied their subjects before painting them"],
+        "correct_index": 0,
+        "explanation": "The essay contrasts European art's historical emphasis on exact, literal likeness with the traditional Chinese pursuit of a subject's inner spirit or essence, illustrated through anecdotes like the painter who captures the 'idea' of a prawn or a butcher's practised inner understanding of an ox.",
+        "topic": "Landscape of the Soul",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "85532121-b84f-442e-a99e-895eb5b3c50a",
+    "subject_name": "Geography (India)",
+    "quiz_title": "Geography (India) — Practice Set",
+    "questions": [
+      {
+        "text": "Which of the following is one of the major physiographic divisions of India?",
+        "options": ["The Northern Plains", "The Amazon Basin", "The Sahara region", "The Siberian Plateau"],
+        "correct_index": 0,
+        "explanation": "India is physiographically divided into major units such as the Himalayan Mountains, the Northern Plains, the Peninsular Plateau, the Coastal Plains and the Islands; the other options are not part of India's landmass.",
+        "topic": "Structure and Physiography",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The Tropic of Cancer passes through India and roughly divides the country into which two climatic zones?",
+        "options": ["A tropical southern part and a sub-tropical northern part", "An entirely desert country with no climatic variation", "Two equally polar zones", "A purely coastal nation with no interior"],
+        "correct_index": 0,
+        "explanation": "Because the Tropic of Cancer (23°30'N) runs roughly through the middle of India, the area south of it experiences a tropical climate while the area to its north shows sub-tropical characteristics.",
+        "topic": "India - Location",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Why are Himalayan rivers like the Ganga generally described as perennial, unlike many Peninsular rivers?",
+        "options": ["They are fed by both melting snow/glaciers and rainfall throughout the year", "They flow only during the monsoon months", "They originate from artificial reservoirs", "They are shorter and drain smaller basins than peninsular rivers"],
+        "correct_index": 0,
+        "explanation": "Himalayan rivers receive water from snow and glacier melt as well as monsoon rainfall, which keeps them flowing year-round, whereas most Peninsular rivers depend mainly on seasonal rainfall and can dry up considerably in summer.",
+        "topic": "Drainage System",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the defining feature of the monsoon that drives India's seasonal climate pattern?",
+        "options": ["A seasonal reversal in the direction of prevailing winds between summer and winter", "Constant wind direction throughout the year", "The complete absence of rainfall in all seasons", "Winds that blow only from west to east year-round"],
+        "correct_index": 0,
+        "explanation": "The Indian monsoon is characterised by a complete reversal of wind direction with the seasons — moisture-laden winds blow landward from the sea in summer and reverse to blow seaward in winter — which drives the wet and dry seasons.",
+        "topic": "Climate",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Tropical evergreen forests in India are typically found in regions with which characteristic?",
+        "options": ["Very high annual rainfall, such as parts of the Western Ghats and north-eastern India", "Extremely low and unreliable rainfall", "Cold temperate climate at high altitudes only", "Desert conditions with sparse vegetation"],
+        "correct_index": 0,
+        "explanation": "Tropical evergreen forests develop in areas receiving abundant rainfall (generally over 200 cm annually) and high humidity, conditions found along the Western Ghats and much of north-eastern India.",
+        "topic": "Natural Vegetation",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Alluvial soil, found extensively in India's river plains, is best described by which of the following?",
+        "options": ["A fertile soil formed by river-deposited sediments, occurring as older bhangar and newer khadar", "A soil formed purely from decomposed volcanic rock found only in Maharashtra", "An infertile, saline soil found only in coastal Gujarat", "A soil type found exclusively in hilly, high-altitude regions"],
+        "correct_index": 0,
+        "explanation": "Alluvial soils are formed from sediments deposited by rivers and are divided into older alluvium (bhangar) and newer, more fertile alluvium (khadar) found in the active floodplains; they are known for high fertility.",
+        "topic": "Soils",
+        "difficulty": "hard"
+      },
+      {
+        "text": "What is the key distinction geographers draw between a 'natural hazard' and a 'natural disaster'?",
+        "options": ["A hazard is a potential threat, while a disaster is the actual occurrence of significant loss of life or property from that threat", "They are two words for exactly the same event with no difference", "A hazard only occurs in cities, while a disaster only occurs in rural areas", "A hazard is man-made, while a disaster is always natural"],
+        "correct_index": 0,
+        "explanation": "A natural hazard refers to a potentially damaging natural event or condition, while a natural disaster is the realisation of that hazard causing substantial loss of life, property or livelihood.",
+        "topic": "Natural Hazards and Disasters",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which of the following best describes India's overall climate classification?",
+        "options": ["Monsoon type of climate, marked by seasonal rainfall and wind reversal", "A purely Mediterranean climate throughout the country", "An Arctic climate with permanent snow cover everywhere", "A climate with absolutely no seasonal variation"],
+        "correct_index": 0,
+        "explanation": "India's climate is classified as a monsoon type, distinguished by markedly seasonal rainfall concentrated in a few months and the characteristic reversal of wind directions between summer and winter.",
+        "topic": "Climate",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "134c2059-fc96-40e0-93ab-c10546f01502",
+    "subject_name": "Geography (Physical )",
+    "quiz_title": "Physical Geography — Foundations Set",
+    "questions": [
+      {
+        "text": "Geography is often described as an 'integrating discipline' because it:",
+        "options": ["Combines knowledge from both the natural/physical sciences and the social sciences", "Only studies rocks and minerals", "Is a branch of pure mathematics", "Deals exclusively with map-making and nothing else"],
+        "correct_index": 0,
+        "explanation": "Geography is considered an integrating discipline because it draws on both physical sciences (like geology and climatology) and social sciences (like economics and sociology) to study the relationship between humans and their environment.",
+        "topic": "Geography as a Discipline",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which of the following correctly lists the Earth's interior layers from the outside inward?",
+        "options": ["Crust, Mantle, Core", "Core, Mantle, Crust", "Mantle, Crust, Core", "Crust, Core, Mantle"],
+        "correct_index": 0,
+        "explanation": "The Earth's interior is structured, from the surface inward, as the crust (outermost solid layer), the mantle (a thick layer of dense rock), and finally the core at the centre.",
+        "topic": "Interior of the Earth",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Igneous rocks are formed primarily through which process?",
+        "options": ["The cooling and solidification of molten magma or lava", "The compaction and cementation of sediments over millions of years", "The transformation of existing rocks under intense heat and pressure", "The chemical weathering of limestone"],
+        "correct_index": 0,
+        "explanation": "Igneous rocks form when molten magma (below the surface) or lava (above the surface) cools and solidifies, unlike sedimentary rocks (from compacted sediments) or metamorphic rocks (from altered existing rocks).",
+        "topic": "Minerals and Rocks",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Alfred Wegener's theory that explains the historical distribution of continents and oceans is known as:",
+        "options": ["Continental Drift", "Plate Stability Theory", "Ocean Current Theory", "The Big Bang Theory"],
+        "correct_index": 0,
+        "explanation": "Alfred Wegener proposed the theory of Continental Drift, suggesting that all continents were once joined in a single landmass (Pangaea) that later broke apart and drifted to their present positions.",
+        "topic": "Distribution of the Oceans and Continents",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The Coriolis force, which influences global wind patterns, causes moving air to deflect in which direction in the Northern Hemisphere?",
+        "options": ["To the right of its direction of motion", "To the left of its direction of motion", "Straight upward, away from the Earth's surface", "It has no effect on wind direction at all"],
+        "correct_index": 0,
+        "explanation": "Due to the Earth's rotation, the Coriolis force deflects moving air to the right of its path in the Northern Hemisphere and to the left in the Southern Hemisphere, shaping large-scale wind systems.",
+        "topic": "Atmosphere Circulation and Weather Systems",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Ocean tides are primarily caused by which of the following?",
+        "options": ["The gravitational pull of the moon and, to a lesser extent, the sun on the Earth's oceans", "Underwater volcanic eruptions", "Wind blowing continuously over the ocean surface", "Temperature differences between the equator and the poles alone"],
+        "correct_index": 0,
+        "explanation": "Tides result mainly from the gravitational attraction exerted by the moon on the Earth's oceans, with the sun's gravity playing a secondary, reinforcing or weakening role depending on their relative alignment.",
+        "topic": "Movements of Ocean Water",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The ozone layer, which absorbs most of the sun's harmful ultraviolet radiation, is mainly located in which layer of the atmosphere?",
+        "options": ["The stratosphere", "The troposphere", "The thermosphere", "The exosphere"],
+        "correct_index": 0,
+        "explanation": "Most atmospheric ozone is concentrated in the stratosphere, roughly 15 to 35 km above the Earth's surface, where it absorbs a large portion of incoming ultraviolet radiation.",
+        "topic": "Composition and Structure of Atmosphere",
+        "difficulty": "hard"
+      },
+      {
+        "text": "What is a 'biodiversity hotspot'?",
+        "options": ["A region with an exceptionally high level of species diversity and endemism that is also under significant threat", "An area with no living organisms at all", "A region known only for its mineral deposits", "A place where biodiversity never changes over time"],
+        "correct_index": 0,
+        "explanation": "A biodiversity hotspot is a biogeographic region recognised for having a remarkably rich variety of species, including many found nowhere else, while also facing serious threats of habitat loss.",
+        "topic": "Biodiversity and Conservation",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "836d5850-51c0-471d-8f85-a477297f6da4",
+    "subject_name": "Hindi ( Aroh I)",
+    "quiz_title": "हिंदी व्याकरण — अभ्यास सेट",
+    "questions": [
+      {
+        "text": "दो वर्णों (ध्वनियों) के निकट आने पर उनमें होने वाले परिवर्तन या मेल को हिंदी व्याकरण में क्या कहा जाता है?",
+        "options": ["संधि", "समास", "उपसर्ग", "प्रत्यय"],
+        "correct_index": 0,
+        "explanation": "जब दो वर्ण या ध्वनियाँ पास-पास आती हैं और उनमें मेल के कारण परिवर्तन होता है, तो इस प्रक्रिया को संधि कहा जाता है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "जब दो या दो से अधिक शब्द आपस में मिलकर एक नया और संक्षिप्त शब्द बनाते हैं, तो उसे क्या कहते हैं?",
+        "options": ["समास", "संधि", "अलंकार", "छंद"],
+        "correct_index": 0,
+        "explanation": "दो या अधिक शब्दों के मेल से बनने वाले संक्षिप्त एवं सार्थक शब्द को समास कहा जाता है, जैसे 'राजपुत्र' (राजा का पुत्र)।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'सूर्य' शब्द का एक सही पर्यायवाची (समानार्थी) शब्द कौन-सा है?",
+        "options": ["भास्कर", "निशा", "सरिता", "पर्वत"],
+        "correct_index": 0,
+        "explanation": "'भास्कर' सूर्य का ही एक पर्यायवाची शब्द है; 'निशा' रात्रि के लिए, 'सरिता' नदी के लिए और 'पर्वत' एक अलग शब्द है, इसलिए ये पर्यायवाची नहीं हैं।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "'अंधकार' शब्द का विलोम (विपरीतार्थक) शब्द क्या होगा?",
+        "options": ["प्रकाश", "अंधेरा", "रात्रि", "काला"],
+        "correct_index": 0,
+        "explanation": "'अंधकार' का सीधा विपरीत अर्थ देने वाला शब्द 'प्रकाश' है, जबकि शेष विकल्प या तो पर्यायवाची हैं या असंबद्ध हैं।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "भारतीय काव्यशास्त्र की पारंपरिक मान्यता के अनुसार रसों की कुल संख्या कितनी मानी जाती है?",
+        "options": ["नौ", "चार", "दो", "बारह"],
+        "correct_index": 0,
+        "explanation": "परंपरागत भारतीय काव्यशास्त्र में श्रृंगार, हास्य, करुण, रौद्र, वीर, भयानक, बीभत्स, अद्भुत और शांत — इन नौ रसों को मुख्य रस माना गया है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "'नाक में दम करना' मुहावरे का सही अर्थ क्या है?",
+        "options": ["किसी को बहुत परेशान कर देना", "किसी की बहुत प्रशंसा करना", "बहुत तेज़ दौड़ना", "चुपचाप सो जाना"],
+        "correct_index": 0,
+        "explanation": "'नाक में दम करना' मुहावरे का प्रयोग तब किया जाता है जब कोई किसी को लगातार तंग करके बहुत परेशान कर देता है।",
+        "topic": "",
+        "difficulty": "hard"
+      },
+      {
+        "text": "छंद के भेदों में से कौन-सा छंद 'मात्रिक छंद' का उदाहरण है, जो मात्राओं की गणना पर आधारित होता है?",
+        "options": ["दोहा", "कवित्त", "सवैया (वर्णिक रूप में)", "इनमें से कोई मात्रिक छंद नहीं है"],
+        "correct_index": 0,
+        "explanation": "दोहा एक प्रसिद्ध मात्रिक छंद है जिसकी रचना मात्राओं की गिनती के आधार पर होती है, जबकि कवित्त और सवैया जैसे छंद सामान्यतः वर्णों की गणना पर आधारित वर्णिक छंद माने जाते हैं।",
+        "topic": "",
+        "difficulty": "hard"
+      },
+      {
+        "text": "हिंदी व्याकरण में कारक के कुल कितने भेद (रूप) माने जाते हैं?",
+        "options": ["आठ", "पाँच", "तीन", "दस"],
+        "correct_index": 0,
+        "explanation": "हिंदी व्याकरण में कर्ता, कर्म, करण, संप्रदान, अपादान, संबंध, अधिकरण और संबोधन — इन आठ कारकों को मान्यता दी गई है।",
+        "topic": "",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "b3ee2b6f-7356-44b7-bedb-b1389f993a78",
+    "subject_name": "Hindi (Vitan I)",
+    "quiz_title": "हिंदी व्याकरण एवं भाषा — दूसरा अभ्यास सेट",
+    "questions": [
+      {
+        "text": "हिंदी व्याकरण में संज्ञा के मुख्यतः कितने भेद माने जाते हैं?",
+        "options": ["पाँच", "दो", "सात", "नौ"],
+        "correct_index": 0,
+        "explanation": "संज्ञा को सामान्यतः पाँच भेदों में बाँटा जाता है — व्यक्तिवाचक, जातिवाचक, भाववाचक, द्रव्यवाचक और समूहवाचक संज्ञा।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "क्रिया के कर्म की दृष्टि से मुख्यतः कितने भेद होते हैं?",
+        "options": ["दो (सकर्मक और अकर्मक)", "तीन (भूत, वर्तमान, भविष्य)", "चार", "छह"],
+        "correct_index": 0,
+        "explanation": "कर्म की उपस्थिति के आधार पर क्रिया के दो मुख्य भेद होते हैं — सकर्मक क्रिया, जिसमें कर्म होता है, और अकर्मक क्रिया, जिसमें कर्म नहीं होता।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'राम ने पुस्तक पढ़ी' — इस वाक्य में 'ने' चिन्ह किस कारक को दर्शाता है?",
+        "options": ["कर्ता कारक", "कर्म कारक", "करण कारक", "संप्रदान कारक"],
+        "correct_index": 0,
+        "explanation": "सकर्मक क्रिया के भूतकाल के वाक्यों में कर्ता के साथ लगने वाला 'ने' चिन्ह कर्ता कारक को दर्शाता है, न कि कर्म कारक को (कर्म कारक में सामान्यतः 'को' चिन्ह प्रयुक्त होता है)।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "अव्यय (अविकारी शब्द) की सबसे प्रमुख विशेषता क्या है?",
+        "options": ["इनके रूप में लिंग, वचन या कारक के अनुसार कोई परिवर्तन नहीं होता", "ये सदैव वाक्य के अंत में ही आते हैं", "ये केवल संज्ञा के साथ प्रयुक्त होते हैं", "इनका प्रयोग केवल कविता में होता है"],
+        "correct_index": 0,
+        "explanation": "अव्यय शब्दों की पहचान यही है कि लिंग, वचन, कारक आदि बदलने पर भी इनका रूप अपरिवर्तित रहता है, इसीलिए इन्हें अविकारी शब्द भी कहा जाता है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "हिंदी व्याकरण में संधि के कितने प्रकार माने गए हैं?",
+        "options": ["तीन (स्वर संधि, व्यंजन संधि, विसर्ग संधि)", "दो (स्वर संधि और समास संधि)", "पाँच", "संधि का कोई प्रकार नहीं होता"],
+        "correct_index": 0,
+        "explanation": "संधि को तीन भेदों में बाँटा गया है — स्वर संधि, व्यंजन संधि और विसर्ग संधि — जो इस आधार पर तय होते हैं कि मेल किन ध्वनियों के बीच हो रहा है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "'यथासंभव' शब्द में कौन-सा समास है?",
+        "options": ["अव्ययीभाव समास", "तत्पुरुष समास", "द्वंद्व समास", "बहुव्रीहि समास"],
+        "correct_index": 0,
+        "explanation": "'यथासंभव' में पहला पद 'यथा' अव्यय है और पूरा शब्द एक अव्यय की तरह प्रयुक्त होता है ('जहाँ तक संभव हो'), इसलिए यह अव्ययीभाव समास का उदाहरण है।",
+        "topic": "",
+        "difficulty": "hard"
+      },
+      {
+        "text": "'उपसर्ग' की सबसे उपयुक्त परिभाषा कौन-सी है?",
+        "options": ["वह शब्दांश जो किसी शब्द के पहले जुड़कर उसका अर्थ बदल देता है", "वह शब्दांश जो किसी शब्द के अंत में जुड़कर नया शब्द बनाता है", "दो स्वतंत्र शब्दों का मेल", "वाक्य के अंत में लगने वाला विराम चिन्ह"],
+        "correct_index": 0,
+        "explanation": "उपसर्ग वह शब्दांश है जो किसी मूल शब्द से पहले जुड़कर उसके अर्थ में परिवर्तन या विशेषता जोड़ता है, जैसे 'प्र+भाव = प्रभाव'; शब्द के अंत में जुड़ने वाले अंश को प्रत्यय कहा जाता है।",
+        "topic": "",
+        "difficulty": "hard"
+      },
+      {
+        "text": "वाक्य के अंत में प्रश्न पूछे जाने पर प्रयुक्त होने वाले '?' चिन्ह को क्या कहा जाता है?",
+        "options": ["प्रश्नवाचक चिन्ह", "विस्मयादिबोधक चिन्ह", "अल्पविराम", "पूर्णविराम"],
+        "correct_index": 0,
+        "explanation": "'?' चिन्ह का प्रयोग प्रश्नवाचक वाक्यों के अंत में किया जाता है, इसलिए इसे प्रश्नवाचक चिन्ह कहा जाता है।",
+        "topic": "",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "89ec91eb-6803-4a03-acf5-81e2b3f71933",
+    "subject_name": "History",
+    "quiz_title": "World History — Themes Practice Set",
+    "questions": [
+      {
+        "text": "According to the widely accepted 'Out of Africa' model discussed in early human history, where did Homo sapiens first evolve?",
+        "options": ["In Africa", "In Australia", "In North America", "In Antarctica"],
+        "correct_index": 0,
+        "explanation": "Fossil and genetic evidence support the 'Out of Africa' model, which holds that Homo sapiens first evolved in Africa before later migrating to other continents.",
+        "topic": "From the Beginning of Time",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The early Mesopotamian cities, often cited as among the world's first urban civilisations, developed along which rivers?",
+        "options": ["The Tigris and Euphrates", "The Nile and Congo", "The Ganga and Yamuna", "The Yangtze and Yellow River"],
+        "correct_index": 0,
+        "explanation": "Mesopotamia, meaning 'land between rivers', refers to the region between the Tigris and Euphrates rivers in present-day Iraq, where some of the earliest cities emerged.",
+        "topic": "Early Cities",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In medieval European feudal society, the division into clergy, nobility and commoners is commonly referred to as:",
+        "options": ["The Three Orders (or Estates)", "The Caste System", "The Guild System", "The Parliamentary System"],
+        "correct_index": 0,
+        "explanation": "Medieval European society was often conceptualised as divided into three orders — those who prayed (clergy), those who fought (nobility), and those who worked (peasants/commoners).",
+        "topic": "The Three Orders",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which ruler is most closely associated with building one of history's largest nomadic empires across Central Asia?",
+        "options": ["Genghis Khan", "Julius Caesar", "Ashoka", "Napoleon Bonaparte"],
+        "correct_index": 0,
+        "explanation": "Genghis Khan united the Mongol tribes and built a vast nomadic empire across Central Asia in the 13th century, making the Mongols a classic example studied under 'Nomadic Empires'.",
+        "topic": "Normadic Empires",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The Roman Empire, discussed under 'An Empire Across Three Continents', extended its control over territories spanning which three continents?",
+        "options": ["Europe, Asia and Africa", "Europe, North America and Australia", "Asia, Australia and Antarctica", "Africa, South America and Asia"],
+        "correct_index": 0,
+        "explanation": "At its height, the Roman Empire controlled territory across Europe, parts of Asia (such as Asia Minor and the Levant), and North Africa, making it a genuinely tri-continental empire.",
+        "topic": "An Empire Across Three Continents",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The rise of Islam, central to the chapter on 'The Central Islamic Lands', began in the 7th century CE in which region?",
+        "options": ["Arabia, with the teachings of Prophet Muhammad", "Northern Europe", "The Indian subcontinent", "East Asia"],
+        "correct_index": 0,
+        "explanation": "Islam originated in 7th-century Arabia with the revelations received by Prophet Muhammad, and it subsequently spread rapidly across the Arabian Peninsula and beyond.",
+        "topic": "The Central Islamic Lands",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The Industrial Revolution, marked by the shift from hand production to machine-based manufacturing, is generally considered to have begun first in which country?",
+        "options": ["Britain", "Japan", "India", "Brazil"],
+        "correct_index": 0,
+        "explanation": "Historians generally identify Britain in the second half of the 18th century as the birthplace of the Industrial Revolution, due to factors like access to capital, raw materials and new technology.",
+        "topic": "The Industrial Revolution",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which historical event is commonly cited as Japan's distinctive path to modernisation in the late 19th century?",
+        "options": ["The Meiji Restoration", "The French Revolution", "The Russian Revolution", "The American Civil War"],
+        "correct_index": 0,
+        "explanation": "The Meiji Restoration of 1868 restored imperial rule in Japan and triggered rapid modernisation of its economy, military and institutions, offering a path to modernisation distinct from Western European models.",
+        "topic": "Paths to Modernisation",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "ce51e1bb-9a6b-44e3-9371-9567aca88918",
+    "subject_name": "Political Science (Indian Constitution)",
+    "quiz_title": "Indian Constitution — Practice Set",
+    "questions": [
+      {
+        "text": "Who chaired the Drafting Committee responsible for preparing the draft of the Indian Constitution?",
+        "options": ["Dr. B.R. Ambedkar", "Mahatma Gandhi", "Jawaharlal Nehru", "Sardar Vallabhbhai Patel"],
+        "correct_index": 0,
+        "explanation": "Dr. B.R. Ambedkar chaired the Drafting Committee of the Constituent Assembly, which played the central role in preparing the draft of the Indian Constitution.",
+        "topic": "Constitution : Why and How?",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which fundamental right did Dr. B.R. Ambedkar describe as the 'heart and soul' of the Indian Constitution?",
+        "options": ["The Right to Constitutional Remedies (Article 32)", "The Right to Property", "The Right to Equality before the law only", "The Right to Freedom of Speech alone"],
+        "correct_index": 0,
+        "explanation": "Ambedkar called the Right to Constitutional Remedies, under Article 32, the 'heart and soul' of the Constitution because it allows citizens to directly approach the Supreme Court to enforce their fundamental rights.",
+        "topic": "Rights in the Indian Constitution",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which of the following best defines 'federalism' as a system of government?",
+        "options": ["A system in which governmental powers are constitutionally divided between a central authority and constituent states", "A system in which all power is concentrated solely in one central government with no states", "A system where only local governments have any legislative power", "A system with no written constitution at all"],
+        "correct_index": 0,
+        "explanation": "Federalism refers to a constitutional arrangement in which power is shared between a central/national government and regional (state) governments, each with its own defined sphere of authority.",
+        "topic": "Federalism",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The Indian Parliament is described as 'bicameral' because it consists of which two houses?",
+        "options": ["The Lok Sabha and the Rajya Sabha", "The Lok Sabha and the Supreme Court", "The Rajya Sabha and the Election Commission", "The Cabinet and the Judiciary"],
+        "correct_index": 0,
+        "explanation": "India's Parliament is bicameral, comprising the Lok Sabha (House of the People, directly elected) and the Rajya Sabha (Council of States, representing the states).",
+        "topic": "Legislature",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which institution functions as the highest court of appeal and final interpreter of the Indian Constitution?",
+        "options": ["The Supreme Court of India", "The Lok Sabha", "The Election Commission of India", "The Attorney General's office"],
+        "correct_index": 0,
+        "explanation": "The Supreme Court of India is the apex judicial body, acting as both the final court of appeal and the ultimate interpreter and guardian of the Constitution.",
+        "topic": "Judiciary",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In India's parliamentary system, how are the roles of the President and the Prime Minister generally distinguished?",
+        "options": ["The President is the nominal/titular head of state, while the Prime Minister is the real executive head of government", "The President makes all policy decisions alone, with no role for the Prime Minister", "The Prime Minister is elected directly by the people in a separate national election for the post", "There is no distinction; the two terms refer to the same office"],
+        "correct_index": 0,
+        "explanation": "In India's parliamentary democracy, the President is the constitutional/nominal head of state who acts largely on the advice of the Council of Ministers, while real executive power and day-to-day governance rest with the Prime Minister and the Cabinet.",
+        "topic": "Executive",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In the 'First-Past-the-Post' electoral system used for Lok Sabha elections, how is a winning candidate determined in a constituency?",
+        "options": ["The candidate who secures the highest number of votes wins, even without an absolute majority", "The candidate must win more than 50 percent of all votes cast", "Seats are allotted to parties strictly in proportion to their vote share nationwide", "Winners are selected by a committee rather than by voting"],
+        "correct_index": 0,
+        "explanation": "Under First-Past-the-Post, the candidate who polls the largest number of votes in a constituency is declared the winner, regardless of whether that number constitutes a majority of the total votes cast.",
+        "topic": "Election and Representation",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The 73rd Constitutional Amendment Act, 1992, is primarily associated with strengthening which tier of government?",
+        "options": ["Rural local self-government through Panchayati Raj institutions", "The central government's control over foreign policy", "Urban municipal corporations only", "The judiciary's powers of judicial review"],
+        "correct_index": 0,
+        "explanation": "The 73rd Amendment gave constitutional status to Panchayati Raj institutions, strengthening rural local self-government, while the 74th Amendment did the same for urban local bodies like municipalities.",
+        "topic": "Local Governments",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "e2a5e04d-1d1a-42eb-9cc2-66e58015e48f",
+    "subject_name": "Political Science (Political Theory)",
+    "quiz_title": "Political Theory — Concepts Practice Set",
+    "questions": [
+      {
+        "text": "Political theory, as an area of study, is primarily concerned with which of the following?",
+        "options": ["Examining and clarifying concepts such as freedom, equality, justice and rights that underlie political life", "Predicting the exact outcome of the next election", "Designing the architecture of government buildings", "Recording only the biographies of political leaders"],
+        "correct_index": 0,
+        "explanation": "Political theory studies the key ideas and concepts — such as liberty, equality, justice, rights and democracy — that shape how we think about and organise political life, rather than focusing on electoral forecasting or other unrelated concerns.",
+        "topic": "Political Theory : An Introduction",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which of the following best captures the idea of 'citizenship' in a political community?",
+        "options": ["Full and equal membership of a political community, involving both rights and responsibilities", "Simply living within the geographical boundary of a country for a short visit", "A status granted only to those who own property", "A title that applies only to elected officials"],
+        "correct_index": 0,
+        "explanation": "Citizenship denotes full membership in a political community, which comes with a set of rights (such as voting) as well as obligations (such as obeying the law), rather than merely physical presence or property ownership.",
+        "topic": "Citizenship",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'Equality of opportunity' primarily refers to which idea?",
+        "options": ["Ensuring that everyone has a fair and equal chance to compete for positions and resources, regardless of background", "Giving every person the exact same income regardless of effort", "Treating people differently based on their caste or religion", "Abolishing all forms of competition in society"],
+        "correct_index": 0,
+        "explanation": "Equality of opportunity means that people should have a fair chance to develop their abilities and compete for social goods like jobs and education, without being blocked by arbitrary barriers of birth or background.",
+        "topic": "Equality",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The distinction between 'negative liberty' and 'positive liberty' in political theory refers to which contrast?",
+        "options": ["Freedom as the absence of external restraint, versus freedom as having the real conditions and capacities to act and fulfil oneself", "Freedom that is legal versus freedom that is illegal", "Freedom enjoyed only by citizens versus freedom enjoyed only by non-citizens", "Freedom in sports versus freedom in politics"],
+        "correct_index": 0,
+        "explanation": "Negative liberty refers to the absence of external interference or restraint on a person's actions, while positive liberty refers to having the actual resources, capacities and conditions needed to exercise genuine self-determination.",
+        "topic": "Freedom",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Indian secularism, as commonly explained through the idea of 'principled distance', means that the state should:",
+        "options": ["Maintain equal respect for all religions while intervening or staying away from each based on context, rather than keeping a rigid wall of separation", "Promote one official state religion while tolerating others", "Ban all religious practices from public life entirely", "Allow religious leaders to directly control government policy"],
+        "correct_index": 0,
+        "explanation": "Indian secularism, as theorised through 'principled distance', does not mean a strict wall of separation between religion and state as in some other democracies; rather, the state maintains equal respect for all religions and may engage with or distance itself from religious practices depending on the context, to ensure fairness.",
+        "topic": "Secularism",
+        "difficulty": "medium"
+      },
+      {
+        "text": "'Distributive justice' in political theory is mainly concerned with which question?",
+        "options": ["How benefits, resources and burdens should be fairly distributed among members of society", "How criminals should be punished for their crimes", "How international borders should be drawn", "How elections should be scheduled"],
+        "correct_index": 0,
+        "explanation": "Distributive justice focuses on the fair allocation of social goods — such as wealth, opportunities and resources — among members of a society, which is central to debates on social justice.",
+        "topic": "Social Justice",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Political theory generally argues that a 'nation' is best understood as being held together by which of the following?",
+        "options": ["A shared sense of history, culture and the aspiration to self-determination, not necessarily a single religion or race", "Belonging to exactly one religion, with no exceptions", "Sharing the same blood/race with no cultural element at all", "Living permanently within the exact same city"],
+        "correct_index": 0,
+        "explanation": "A nation is generally understood as a community bound by shared history, culture, and a common aspiration for self-determination or self-government, rather than by a single religion or race, which allows for diversity within a nation.",
+        "topic": "Nationalism",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which of the following is used as a broader alternative to GDP for assessing a country's 'development', by also factoring in health and education outcomes?",
+        "options": ["The Human Development Index (HDI)", "The Gross Industrial Output", "The Stock Market Index", "The Consumer Confidence Index"],
+        "correct_index": 0,
+        "explanation": "The Human Development Index incorporates indicators of life expectancy, education and per-capita income, offering a broader measure of development than income-based measures like GDP alone.",
+        "topic": "Development",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "1187d2a0-1de8-40d6-bcf3-38e27daac0f9",
+    "subject_name": "Sociology",
+    "quiz_title": "Sociology — Concepts and Thinkers Set",
+    "questions": [
+      {
+        "text": "Sociology, as an academic discipline, is best defined as the:",
+        "options": ["Scientific study of society, social relationships and social institutions", "Study of individual human anatomy", "Study of chemical reactions in living organisms", "Study of celestial bodies and planetary motion"],
+        "correct_index": 0,
+        "explanation": "Sociology is the systematic and scientific study of society, examining social relationships, institutions and the patterns that structure collective human life.",
+        "topic": "Society and Sociolgy",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which thinker is widely credited with coining the term 'sociology' in the early 19th century?",
+        "options": ["Auguste Comte", "Isaac Newton", "Adam Smith", "Charles Darwin"],
+        "correct_index": 0,
+        "explanation": "The French philosopher Auguste Comte coined the term 'sociology' in the 1830s, envisioning it as a positive science that would study society using scientific methods.",
+        "topic": "Introducing Western Sociologists",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The concept of 'Sanskritisation' — describing how a lower caste or group adopts the customs of a higher caste to claim higher status — is associated with which Indian sociologist?",
+        "options": ["M.N. Srinivas", "B.R. Ambedkar", "Jawaharlal Nehru", "Rabindranath Tagore"],
+        "correct_index": 0,
+        "explanation": "M.N. Srinivas developed the concept of Sanskritisation through his field studies of Indian rural society, describing the process by which groups emulate the customs and rituals of higher castes to improve their social standing.",
+        "topic": "Indian Sociologists",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Historical untouchability practised against certain castes in India is most accurately described in sociology as an example of:",
+        "options": ["Social exclusion based on ascribed (birth-based) status", "A form of social equality", "Economic inequality unrelated to caste", "A temporary, voluntary social arrangement"],
+        "correct_index": 0,
+        "explanation": "Untouchability denied certain castes access to public spaces, resources and social participation purely on the basis of birth, making it a textbook example of ascription-based social exclusion.",
+        "topic": "Social Inequality and Exclusion",
+        "difficulty": "medium"
+      },
+      {
+        "text": "'Social stratification' refers to which of the following?",
+        "options": ["The hierarchical ranking of individuals or groups in society based on factors like class, caste, or gender", "A process where all members of society are treated as completely equal", "The physical layering of rocks in geology", "A type of government policy on foreign trade"],
+        "correct_index": 0,
+        "explanation": "Social stratification describes how society is structured into layers or strata that are unequally ranked based on criteria such as wealth, caste, occupation, or gender, resulting in differential access to resources and power.",
+        "topic": "Social Structure, Stratification and Social Processes in Society",
+        "difficulty": "medium"
+      },
+      {
+        "text": "One documented social effect of the Green Revolution (from the 1960s onward) on rural Indian society was:",
+        "options": ["The emergence and strengthening of a class of prosperous capitalist farmers, especially in regions like Punjab and Haryana", "The complete elimination of landlessness across India", "A uniform and equal distribution of agricultural income across all farmers", "The disappearance of agriculture as an occupation"],
+        "correct_index": 0,
+        "explanation": "The Green Revolution's new technology and irrigation inputs benefited mainly farmers who could afford them, leading to the rise of a wealthier class of capitalist farmers in states like Punjab and Haryana and increasing rural economic inequality.",
+        "topic": "Change and Development in Rural Society",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The concept of 'sustainable development' is best described as development that:",
+        "options": ["Meets the needs of the present generation without compromising the ability of future generations to meet their own needs", "Maximises industrial output regardless of environmental cost", "Focuses only on short-term profit with no regard for the future", "Excludes any use of natural resources whatsoever"],
+        "correct_index": 0,
+        "explanation": "Sustainable development, as popularised by the Brundtland Commission, balances current economic and social needs with the responsibility to preserve resources and ecological balance for future generations.",
+        "topic": "Environment and Society",
+        "difficulty": "hard"
+      },
+      {
+        "text": "India's social fabric, marked by numerous languages, religions and regional cultures coexisting within one nation, is often summarised by which phrase?",
+        "options": ["Unity in diversity", "Cultural uniformity", "Religious homogeneity", "Linguistic isolation"],
+        "correct_index": 0,
+        "explanation": "India's coexistence of immense linguistic, religious and regional diversity within a single political and national framework is commonly described using the phrase 'unity in diversity'.",
+        "topic": "The Challenges of Cultural Diversity",
+        "difficulty": "easy"
+      }
+    ]
+  }
+]

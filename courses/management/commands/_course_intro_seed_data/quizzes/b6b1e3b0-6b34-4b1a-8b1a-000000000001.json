@@ -1,0 +1,779 @@
+[
+  {
+    "subject_id": "134d4ff3-2e8e-43b4-8adb-51bcca7b535f",
+    "subject_name": "Biology",
+    "quiz_title": "Biology — Practice Set",
+    "questions": [
+      {
+        "text": "Which of the following correctly describes the rule for writing a binomial scientific name of an organism?",
+        "options": [
+          "Genus name starts with a capital letter, species name is in lowercase, and both are italicised",
+          "Both genus and species names are capitalised and never italicised",
+          "Only the species name is capitalised, the genus name is lowercase",
+          "Both names are written in capital letters and underlined"
+        ],
+        "correct_index": 0,
+        "explanation": "Under binomial nomenclature, the genus name begins with a capital letter and the species epithet is lowercase; the complete name is italicised in print (or underlined when handwritten).",
+        "topic": "The Living World",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which cell organelle is mainly responsible for producing ATP through aerobic respiration?",
+        "options": [
+          "Golgi apparatus",
+          "Mitochondria",
+          "Ribosome",
+          "Lysosome"
+        ],
+        "correct_index": 1,
+        "explanation": "Mitochondria carry out the aerobic steps of cellular respiration, including the electron transport chain, which generates most of a cell's ATP.",
+        "topic": "Cell: The Unit of Life",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In R.H. Whittaker's five-kingdom classification, which kingdom consists entirely of prokaryotic organisms?",
+        "options": [
+          "Protista",
+          "Fungi",
+          "Monera",
+          "Plantae"
+        ],
+        "correct_index": 2,
+        "explanation": "Monera is the kingdom reserved for prokaryotes such as bacteria and cyanobacteria, which lack a membrane-bound nucleus.",
+        "topic": "Biological Classification",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In the life cycle of a plant showing alternation of generations, the diploid sporophyte produces haploid spores through which process?",
+        "options": [
+          "Mitosis",
+          "Meiosis",
+          "Fertilisation",
+          "Budding"
+        ],
+        "correct_index": 1,
+        "explanation": "Spore mother cells in the sporophyte undergo meiosis, halving the chromosome number to produce haploid spores that germinate into the gametophyte.",
+        "topic": "Plant Kingdom",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Within a chloroplast, in which structure do the light-dependent reactions of photosynthesis mainly take place?",
+        "options": [
+          "Stroma",
+          "Thylakoid membrane",
+          "Outer membrane",
+          "Intermembrane space"
+        ],
+        "correct_index": 1,
+        "explanation": "The thylakoid membrane houses the photosystems and electron transport chain components that capture light energy and generate ATP and NADPH.",
+        "topic": "Photosynthesis in Higher Plants",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In which form is the majority of oxygen transported in human blood?",
+        "options": [
+          "Dissolved directly in plasma",
+          "Bound to haemoglobin as oxyhaemoglobin",
+          "As bicarbonate ions",
+          "Bound to plasma proteins"
+        ],
+        "correct_index": 1,
+        "explanation": "Over 97% of oxygen is carried bound to haemoglobin inside red blood cells, with only a small fraction dissolved in plasma.",
+        "topic": "Breathing and Exchange of Gases",
+        "difficulty": "medium"
+      },
+      {
+        "text": "At a chemical synapse, what directly triggers the release of neurotransmitter from the presynaptic neuron?",
+        "options": [
+          "Influx of calcium ions into the presynaptic terminal",
+          "Influx of sodium ions into the postsynaptic neuron",
+          "Efflux of potassium ions from the presynaptic terminal",
+          "Opening of chloride channels at the synapse"
+        ],
+        "correct_index": 0,
+        "explanation": "Depolarisation of the presynaptic terminal opens voltage-gated calcium channels; the resulting calcium influx causes synaptic vesicles to fuse with the membrane and release neurotransmitter.",
+        "topic": "Neural Control and Coordination",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which part of the mammalian nephron is chiefly responsible for establishing the concentration gradient in the renal medulla through the countercurrent mechanism?",
+        "options": [
+          "Bowman's capsule",
+          "Proximal convoluted tubule",
+          "Loop of Henle",
+          "Collecting duct"
+        ],
+        "correct_index": 2,
+        "explanation": "The hairpin-shaped loop of Henle, with its differing permeability to water and salts in the descending and ascending limbs, sets up the osmotic gradient that allows urine concentration.",
+        "topic": "Excretory Products and Their Elimination",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "1c7cf830-be76-44dc-9d40-a6252018db42",
+    "subject_name": "Chemistry",
+    "quiz_title": "Chemistry Practice Questions",
+    "questions": [
+      {
+        "text": "How many moles of oxygen atoms are present in 1 mole of CO2 molecules?",
+        "options": [
+          "1",
+          "2",
+          "3",
+          "4"
+        ],
+        "correct_index": 1,
+        "explanation": "Each CO2 molecule contains 2 oxygen atoms, so 1 mole of CO2 contains 2 moles of oxygen atoms.",
+        "topic": "Some Basic Concepts of Chemistry",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which quantum number determines the shape of an atomic orbital?",
+        "options": [
+          "Principal quantum number (n)",
+          "Azimuthal quantum number (l)",
+          "Magnetic quantum number (m)",
+          "Spin quantum number (s)"
+        ],
+        "correct_index": 1,
+        "explanation": "The azimuthal (angular momentum) quantum number l determines the subshell and hence the shape of the orbital, such as s, p, or d.",
+        "topic": "Structure of Atom",
+        "difficulty": "easy"
+      },
+      {
+        "text": "As you move from left to right across a period in the periodic table, the atomic radius generally:",
+        "options": [
+          "Increases",
+          "Decreases",
+          "Remains constant",
+          "First increases, then decreases sharply"
+        ],
+        "correct_index": 1,
+        "explanation": "Across a period, nuclear charge increases while electrons are added to the same shell, pulling the electron cloud closer and shrinking atomic radius.",
+        "topic": "Classification of Elements and Periodicity in Properties",
+        "difficulty": "easy"
+      },
+      {
+        "text": "According to VSEPR theory, what is the molecular geometry of a methane (CH4) molecule?",
+        "options": [
+          "Trigonal planar",
+          "Tetrahedral",
+          "Linear",
+          "Octahedral"
+        ],
+        "correct_index": 1,
+        "explanation": "Carbon in methane has four bond pairs and no lone pairs, so electron pair repulsion gives it a tetrahedral geometry with bond angles of about 109.5°.",
+        "topic": "Chemical Bonding and Molecular Structure",
+        "difficulty": "medium"
+      },
+      {
+        "text": "For an exothermic reaction occurring at constant pressure, what is the sign of the enthalpy change, ΔH?",
+        "options": [
+          "Positive",
+          "Negative",
+          "Zero",
+          "Cannot be determined"
+        ],
+        "correct_index": 1,
+        "explanation": "An exothermic reaction releases heat to the surroundings, so the enthalpy of the system decreases, giving a negative ΔH.",
+        "topic": "Thermodynamics",
+        "difficulty": "medium"
+      },
+      {
+        "text": "According to Le Chatelier's principle, increasing the pressure on a gaseous equilibrium shifts the reaction towards the side with:",
+        "options": [
+          "More moles of gas",
+          "Fewer moles of gas",
+          "Equal moles on both sides, so no shift occurs",
+          "Only solid products"
+        ],
+        "correct_index": 1,
+        "explanation": "Raising pressure favours the direction that reduces the total number of gas moles, partially relieving the increase in pressure.",
+        "topic": "Equilibrium",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the oxidation state of chromium in the dichromate ion, Cr2O7^2-?",
+        "options": [
+          "+3",
+          "+4",
+          "+6",
+          "+7"
+        ],
+        "correct_index": 2,
+        "explanation": "With each oxygen at -2 (total -14) and the ion's overall charge at -2, the two chromium atoms must together contribute +12, giving each chromium an oxidation state of +6.",
+        "topic": "Redox Reactions",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which electron displacement effect involves a permanent shift of a sigma (σ) bond's electron pair caused by a difference in electronegativity between bonded atoms?",
+        "options": [
+          "Resonance effect",
+          "Inductive effect",
+          "Hyperconjugation",
+          "Electromeric effect"
+        ],
+        "correct_index": 1,
+        "explanation": "The inductive effect is a permanent polarisation of sigma bond electrons along a carbon chain due to electronegativity differences, unlike the electromeric effect, which is temporary and needs an attacking reagent.",
+        "topic": "Organic Chemistry — Some Basic Principles and Techniques",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "928245e6-9b8b-4f81-bddd-0892379eb5b4",
+    "subject_name": "English — Grammar & Writing Skills",
+    "quiz_title": "Grammar & Writing Skills — Quick Practice",
+    "questions": [
+      {
+        "text": "Identify the type of the following sentence: 'Although it was raining heavily, the students went out to play.'",
+        "options": [
+          "Simple sentence",
+          "Compound sentence",
+          "Complex sentence",
+          "Compound-complex sentence"
+        ],
+        "correct_index": 2,
+        "explanation": "The sentence has one dependent clause ('Although it was raining heavily') joined to one independent clause, which is the structure of a complex sentence.",
+        "topic": "Advanced Grammar — Clauses and Sentence Types",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In note-making, what is the main purpose of using abbreviations and symbols?",
+        "options": [
+          "To make the notes look more impressive",
+          "To condense information quickly while retaining its key meaning",
+          "To replace the need for headings altogether",
+          "To avoid using any punctuation in the notes"
+        ],
+        "correct_index": 1,
+        "explanation": "Abbreviations and symbols let a note-taker record essential information in less space and time without losing the core meaning.",
+        "topic": "Note-Making and Summarising",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which of the following is considered an essential feature of a good newspaper report?",
+        "options": [
+          "Making the writer's personal opinion the central focus",
+          "Answering the questions who, what, when, where, why and how",
+          "Using poetic and figurative language throughout",
+          "Addressing the reader directly as 'you'"
+        ],
+        "correct_index": 1,
+        "explanation": "A factual newspaper report is expected to cover the 5 Ws and 1 H so that readers get a complete, objective picture of the event.",
+        "topic": "Report and Article Writing",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In a formal letter, which salutation is most appropriate when the name of the recipient is not known?",
+        "options": [
+          "Dear Sir/Madam",
+          "Hi there",
+          "Dear friend",
+          "Hello buddy"
+        ],
+        "correct_index": 0,
+        "explanation": "'Dear Sir/Madam' is the conventional, respectful salutation used in formal correspondence when the writer does not know the specific recipient's name.",
+        "topic": "Formal and Informal Letter Writing",
+        "difficulty": "medium"
+      },
+      {
+        "text": "When a comprehension question asks you to explain a phrase 'in your own words', what is the best approach?",
+        "options": [
+          "Copy the exact sentence from the passage",
+          "Paraphrase the idea using your own vocabulary while keeping the original meaning",
+          "Give a one-word answer",
+          "Skip the explanation and move to the next question"
+        ],
+        "correct_index": 1,
+        "explanation": "'In your own words' specifically asks the student to rephrase the idea rather than reproduce the passage's exact wording, while preserving its meaning.",
+        "topic": "Comprehension Passages",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of the following best describes a 'noun clause'?",
+        "options": [
+          "A clause that functions as an adjective, describing a noun",
+          "A subordinate clause that functions as a noun within a sentence",
+          "An independent clause that can stand alone as a sentence",
+          "A clause that always begins with the word 'because'"
+        ],
+        "correct_index": 1,
+        "explanation": "A noun clause is a dependent clause that plays the grammatical role of a noun, such as the subject or object of a verb, within a larger sentence.",
+        "topic": "Advanced Grammar — Clauses and Sentence Types",
+        "difficulty": "medium"
+      },
+      {
+        "text": "When writing a summary of a passage, which of the following practices is considered incorrect?",
+        "options": [
+          "Retaining only the main points and omitting minor illustrative examples",
+          "Using your own words wherever possible",
+          "Including your personal opinions and judgments about the content",
+          "Reducing the passage to roughly one-third of its original length"
+        ],
+        "correct_index": 2,
+        "explanation": "A summary must objectively condense the original passage's ideas; inserting personal opinions that are not present in the source text is not acceptable summarising practice.",
+        "topic": "Note-Making and Summarising",
+        "difficulty": "hard"
+      },
+      {
+        "text": "What chiefly distinguishes an 'article' from a 'report' in writing style?",
+        "options": [
+          "An article must always be written in the third person, just like a report",
+          "An article allows for the writer's personal viewpoint and analysis, while a report sticks to factual, objective description of events",
+          "A report must always include a catchy headline, which an article never has",
+          "There is no real difference between the two formats"
+        ],
+        "correct_index": 1,
+        "explanation": "A report is expected to present facts objectively, whereas an article typically allows the writer to include opinion, analysis, or a personal angle on the subject.",
+        "topic": "Report and Article Writing",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "e798da00-5989-4174-9002-21685c2453b0",
+    "subject_name": "English — Hornbill (Main Reader)",
+    "quiz_title": "Hornbill Reader — Practice Quiz",
+    "questions": [
+      {
+        "text": "In Khushwant Singh's 'The Portrait of a Lady', what unusual thing happens with the sparrows immediately after the grandmother's death?",
+        "options": [
+          "They peck noisily at the grain scattered for them, as on any other day",
+          "They sit scattered on the ground in silence and fly away without touching the crumbs laid out for them",
+          "They build a nest close to where she used to sit",
+          "They are seen singing louder than usual"
+        ],
+        "correct_index": 1,
+        "explanation": "The essay ends with the sparrows sitting silently around the grandmother's body and leaving untouched the crumbs scattered for them, a detail that marks the household's grief.",
+        "topic": "The Portrait of a Lady",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'We Are Not Afraid to Die if We Can All Be Together', what kind of vessel was the family sailing around the world on?",
+        "options": [
+          "A commercial cruise liner",
+          "A sailing yacht called Wavewalker",
+          "A naval submarine",
+          "A fishing trawler"
+        ],
+        "correct_index": 1,
+        "explanation": "The narrator's family undertakes a round-the-world voyage on their sailing yacht, Wavewalker, which is badly damaged by a huge wave near the Cape of Good Hope.",
+        "topic": "We are Not Afraid to Die",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'Discovering Tut: The Saga Continues', which modern technology is used by researchers to examine Tutankhamun's mummy without unwrapping it?",
+        "options": [
+          "X-ray crystallography",
+          "Computed Tomography (CT) scanning",
+          "Ultrasound imaging alone",
+          "Infrared photography"
+        ],
+        "correct_index": 1,
+        "explanation": "The chapter describes a CT scan carried out on the mummy, which let researchers study Tutankhamun's body and investigate the cause of his death non-invasively.",
+        "topic": "Discovering Tut: The Saga Continues",
+        "difficulty": "medium"
+      },
+      {
+        "text": "According to 'Landscape of the Soul', traditional Chinese painting primarily emphasises capturing which aspect of its subject?",
+        "options": [
+          "Exact mathematical proportion and perspective",
+          "The inner spirit or essence of the subject, rather than literal physical likeness",
+          "Photographic realism above all else",
+          "Bright, strongly contrasting colour schemes"
+        ],
+        "correct_index": 1,
+        "explanation": "The essay contrasts Western art's concern with precise outward likeness against the Chinese tradition's goal of conveying the inner spirit or 'shen' of the subject.",
+        "topic": "Landscape of the Soul",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'The Ailing Planet: The Green Movement's Role', the essay refers to the 'Gaia hypothesis', which views the Earth as:",
+        "options": [
+          "A lifeless rock simply orbiting the sun",
+          "A single living, self-regulating organism",
+          "An entirely artificial, man-made ecological system",
+          "A static system unaffected by biological processes"
+        ],
+        "correct_index": 1,
+        "explanation": "The Gaia hypothesis, referenced in the essay, proposes that the Earth functions as a single self-regulating living system rather than an inert collection of parts.",
+        "topic": "The Ailing Planet: The Green Movement's Role",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In the play extract 'The Browning Version', what gift does the student Taplow give his retiring schoolmaster Crocker-Harris, moving him deeply?",
+        "options": [
+          "A pocket watch",
+          "A copy of Robert Browning's translation of Agamemnon",
+          "A framed photograph of the class",
+          "A set of fountain pens"
+        ],
+        "correct_index": 1,
+        "explanation": "Taplow presents Crocker-Harris with Browning's translation of the Agamemnon, a gesture of genuine affection that breaks through the schoolmaster's cold exterior.",
+        "topic": "The Browning Version",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Jayant Narlikar's story 'The Adventure' imagines an alternate history in which the outcome of which historical battle is different from reality?",
+        "options": [
+          "The Battle of Plassey",
+          "The Third Battle of Panipat",
+          "The Battle of Buxar",
+          "The Battle of Haldighati"
+        ],
+        "correct_index": 1,
+        "explanation": "The story's science-fiction premise rests on Professor Gaitonde entering a catastrophe-altered timeline in which the Marathas, not the Afghans, won the Third Battle of Panipat.",
+        "topic": "The Adventure",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In Nick Middleton's travelogue 'Silk Road', what animal does the author mainly rely on to carry his luggage during the trek in Tibet?",
+        "options": [
+          "Camels",
+          "Yaks",
+          "Mules only",
+          "Motor vehicles"
+        ],
+        "correct_index": 1,
+        "explanation": "During his journey towards Mount Kailash along the old Silk Route, the author depends on yaks and their handlers to transport his gear across the Tibetan terrain.",
+        "topic": "Silk Road",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "172b6886-3f6e-4dce-b262-7ab15b5a68e9",
+    "subject_name": "English — Snapshots (Supplementary)",
+    "quiz_title": "Snapshots Supplementary — Practice Set",
+    "questions": [
+      {
+        "text": "In 'The Summer of the Beautiful White Horse', Aram and his cousin Mourad belong to a family that, despite being extremely poor, was well known in their town for:",
+        "options": [
+          "Great wealth",
+          "Honesty",
+          "Musical talent",
+          "Horse breeding"
+        ],
+        "correct_index": 1,
+        "explanation": "The story's central irony is that the Garoghlanian family, though penniless, was famous for its honesty — which makes Mourad's temporary 'borrowing' of the horse so striking.",
+        "topic": "The Summer of the Beautiful White Horse",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In Marga Minco's 'The Address', why does the narrator ultimately leave without reclaiming her family's belongings from Mrs Dorling's house?",
+        "options": [
+          "She is physically barred from entering the house",
+          "She realises the objects can no longer restore what she has lost and decides to let them go",
+          "The belongings had already been destroyed during the war",
+          "The local police confiscate the items before she can take them"
+        ],
+        "correct_index": 1,
+        "explanation": "Seeing her family's things used by strangers makes the narrator feel the past cannot be recovered through objects, so she chooses to walk away rather than reclaim them.",
+        "topic": "The Address",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'Ranga's Marriage', why was Ranga considered special among the people of the village Hosahalli?",
+        "options": [
+          "He was the richest man in the village",
+          "He was the first person from the village to go to Bangalore for higher education",
+          "He was the village headman's son",
+          "He had travelled abroad"
+        ],
+        "correct_index": 1,
+        "explanation": "Ranga's distinction in the story comes from being the village's first educated youth, having studied in Bangalore, which sets him apart from the rest of Hosahalli.",
+        "topic": "Ranga's Marriage",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'Albert Einstein at School', what aspect of the German education system does the young Einstein in the story object to most strongly?",
+        "options": [
+          "Too much emphasis on sports",
+          "Its rigid, authoritarian style that demanded rote memorisation and blind obedience",
+          "The absence of mathematics from the curriculum",
+          "Too many school holidays"
+        ],
+        "correct_index": 1,
+        "explanation": "The story portrays Einstein as frustrated with a schooling system built on strict discipline and memorisation rather than understanding and independent thought.",
+        "topic": "Albert Einstein at School",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In J.B. Priestley's play 'Mother's Day', what device helps Mrs Pearson teach her family to appreciate her?",
+        "options": [
+          "She writes them a long letter explaining her feelings",
+          "A neighbour, Mrs Fitzgerald, uses an unusual power to swap personalities between Mrs Pearson and her daughter",
+          "She simply refuses to do any housework for a single day",
+          "She leaves home permanently"
+        ],
+        "correct_index": 1,
+        "explanation": "Mrs Fitzgerald's strange gift lets her swap personalities between Mrs Pearson and her daughter, giving Mrs Pearson the assertiveness to make her family finally notice her.",
+        "topic": "Mother's Day",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Amitav Ghosh's essay 'The Ghat of the Only World' is a memoir about the final months of which poet's life?",
+        "options": [
+          "Faiz Ahmed Faiz",
+          "Agha Shahid Ali",
+          "Rabindranath Tagore",
+          "Pablo Neruda"
+        ],
+        "correct_index": 1,
+        "explanation": "The essay recounts the author's friendship with poet Agha Shahid Ali during the final period of his illness in Brooklyn.",
+        "topic": "The Ghat of the Only World",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In A.J. Cronin's 'Birth', what is unusual about the baby's condition immediately after delivery, creating the story's central crisis?",
+        "options": [
+          "The baby is born several months premature",
+          "The baby is born apparently lifeless and must be revived",
+          "The baby is born with a rare genetic disorder",
+          "Twins are born instead of a single baby"
+        ],
+        "correct_index": 1,
+        "explanation": "Dr Andrew Manson delivers a baby that shows no signs of life, and the story centres on his desperate, persistent efforts to revive it.",
+        "topic": "Birth",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Vikram Seth's 'The Tale of Melon City' is written in which literary form?",
+        "options": [
+          "A short story in prose",
+          "A narrative poem in rhyme",
+          "A one-act play",
+          "A formal essay"
+        ],
+        "correct_index": 1,
+        "explanation": "The piece tells its whimsical story of the king and the melon through rhyming verse, making it a narrative poem rather than prose fiction.",
+        "topic": "The Tale of Melon City",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "7006986f-c810-49cf-b1ac-774901e14287",
+    "subject_name": "Mathematics",
+    "quiz_title": "Mathematics — Problem Practice",
+    "questions": [
+      {
+        "text": "If A = {1, 2, 3} and B = {2, 3, 4}, what is A ∩ B?",
+        "options": [
+          "{1, 2, 3, 4}",
+          "{2, 3}",
+          "{1, 4}",
+          "{} (the empty set)"
+        ],
+        "correct_index": 1,
+        "explanation": "The intersection of two sets contains only the elements common to both; here 2 and 3 appear in both A and B.",
+        "topic": "Sets",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What is the value of sin(90°)?",
+        "options": [
+          "0",
+          "1",
+          "-1",
+          "1/2"
+        ],
+        "correct_index": 1,
+        "explanation": "On the unit circle, the angle 90° corresponds to the point (0, 1), so sin(90°) = 1.",
+        "topic": "Trigonometric Functions",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What is the value of i^2, where i is the imaginary unit?",
+        "options": [
+          "1",
+          "-1",
+          "i",
+          "-i"
+        ],
+        "correct_index": 1,
+        "explanation": "By definition, i is the square root of -1, so squaring it gives i^2 = -1.",
+        "topic": "Complex Numbers and Quadratic Equations",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In how many ways can 3 books be arranged, one after another, out of 5 distinct books on a shelf?",
+        "options": [
+          "10",
+          "15",
+          "60",
+          "120"
+        ],
+        "correct_index": 2,
+        "explanation": "The number of arrangements of 5 objects taken 3 at a time is 5P3 = 5 × 4 × 3 = 60.",
+        "topic": "Permutations and Combinations",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the coefficient of x^2 in the binomial expansion of (1 + x)^4?",
+        "options": [
+          "4",
+          "6",
+          "8",
+          "12"
+        ],
+        "correct_index": 1,
+        "explanation": "Expanding (1 + x)^4 using the binomial theorem gives coefficients 1, 4, 6, 4, 1, so the coefficient of x^2 is C(4,2) = 6.",
+        "topic": "Binomial Theorem",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the slope of the straight line passing through the points (2, 3) and (4, 7)?",
+        "options": [
+          "1",
+          "2",
+          "3",
+          "4"
+        ],
+        "correct_index": 1,
+        "explanation": "Slope is calculated as the change in y divided by the change in x: (7 - 3) / (4 - 2) = 4 / 2 = 2.",
+        "topic": "Straight Lines",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the derivative of x^3 with respect to x?",
+        "options": [
+          "x^2",
+          "2x^2",
+          "3x^2",
+          "3x^3"
+        ],
+        "correct_index": 2,
+        "explanation": "Using the power rule, the derivative of x^n is n·x^(n-1), so the derivative of x^3 is 3x^2.",
+        "topic": "Limits and Derivatives",
+        "difficulty": "hard"
+      },
+      {
+        "text": "What is the eccentricity of a circle, when treated as a special case among the conic sections?",
+        "options": [
+          "0",
+          "1",
+          "Greater than 1",
+          "Exactly 0.5"
+        ],
+        "correct_index": 0,
+        "explanation": "A circle is the conic section with zero eccentricity, since all its points are equidistant from the centre and there is no elongation.",
+        "topic": "Conic Sections",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "a0e3ee91-0a55-4ba3-814a-eade61e0c031",
+    "subject_name": "Physics",
+    "quiz_title": "Physics — Concept Check",
+    "questions": [
+      {
+        "text": "One newton of force is defined as the force required to produce an acceleration of 1 m/s² in a mass of:",
+        "options": [
+          "1 gram",
+          "1 kilogram",
+          "100 kilograms",
+          "1 milligram"
+        ],
+        "correct_index": 1,
+        "explanation": "By definition, 1 newton = 1 kg·m/s², the force needed to accelerate a 1 kg mass at 1 m/s².",
+        "topic": "Units and Measurements",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A body moving with constant velocity has an acceleration of:",
+        "options": [
+          "Positive and increasing",
+          "Zero",
+          "Equal to the velocity's numerical value",
+          "Negative"
+        ],
+        "correct_index": 1,
+        "explanation": "Acceleration is the rate of change of velocity; if velocity does not change, the acceleration is zero.",
+        "topic": "Motion in a Straight Line",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Newton's third law of motion states that for every action there is:",
+        "options": [
+          "An equal and opposite reaction",
+          "A proportional increase in mass",
+          "No corresponding reaction",
+          "A reaction only inside fluids"
+        ],
+        "correct_index": 0,
+        "explanation": "Newton's third law states that forces always occur in pairs: the force one body exerts on another is matched by an equal and opposite force from the second body on the first.",
+        "topic": "Laws of Motion",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A body of mass m moving with velocity v has kinetic energy given by which expression?",
+        "options": [
+          "mv",
+          "(1/2)mv",
+          "mv^2",
+          "(1/2)mv^2"
+        ],
+        "correct_index": 3,
+        "explanation": "The kinetic energy of a moving body is defined as one-half the product of its mass and the square of its velocity, (1/2)mv^2.",
+        "topic": "Work, Energy and Power",
+        "difficulty": "medium"
+      },
+      {
+        "text": "According to Kepler's third law of planetary motion, the square of a planet's orbital period is proportional to:",
+        "options": [
+          "The square of the orbit's semi-major axis",
+          "The cube of the orbit's semi-major axis",
+          "The planet's mass",
+          "The inverse of the orbital radius"
+        ],
+        "correct_index": 1,
+        "explanation": "Kepler's third law states T^2 ∝ a^3, relating the square of the orbital period to the cube of the semi-major axis of the orbit.",
+        "topic": "Gravitation",
+        "difficulty": "medium"
+      },
+      {
+        "text": "When a substance changes from liquid to gas at a constant temperature, the heat absorbed per unit mass is called:",
+        "options": [
+          "Specific heat capacity",
+          "Latent heat of vaporisation",
+          "Latent heat of fusion",
+          "Thermal conductivity"
+        ],
+        "correct_index": 1,
+        "explanation": "Latent heat of vaporisation is the heat energy absorbed, without a change in temperature, as a substance converts from liquid to gas.",
+        "topic": "Thermal Properties of Matter",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the moment of inertia of a uniform solid sphere of mass M and radius R about an axis passing through its centre?",
+        "options": [
+          "(2/5)MR^2",
+          "(1/2)MR^2",
+          "MR^2",
+          "(2/3)MR^2"
+        ],
+        "correct_index": 0,
+        "explanation": "For a uniform solid sphere rotating about an axis through its centre, the standard result from integrating the mass distribution is I = (2/5)MR^2.",
+        "topic": "System of Particles and Rotational Motion",
+        "difficulty": "hard"
+      },
+      {
+        "text": "For a simple pendulum undergoing small oscillations, which statement about its time period T is correct?",
+        "options": [
+          "T is proportional to the square root of the pendulum's length and inversely proportional to the square root of g",
+          "T is proportional to the mass of the bob",
+          "T is independent of both the length and the value of g",
+          "T is proportional to the amplitude of oscillation"
+        ],
+        "correct_index": 0,
+        "explanation": "The period of a simple pendulum for small oscillations is T = 2π√(L/g), which depends on length and gravitational acceleration but not on the mass of the bob or (for small angles) the amplitude.",
+        "topic": "Oscillations",
+        "difficulty": "hard"
+      }
+    ]
+  }
+]
