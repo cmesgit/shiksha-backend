@@ -2545,12 +2545,24 @@ class TeacherQuizAttemptDetailView(APIView):
                 "answered": answer is not None,
             })
 
+        # Mirrors QuizResultView's own computation exactly (views.py's student
+        # -facing result, ~line 2121): started_at is auto_now_add so it is
+        # always set, submitted_at is not for a row closed oddly by the expiry
+        # sweep. Neither this nor the aggregate roster endpoint exposed a
+        # duration before — the design's per-attempt review shows one, and the
+        # data to back it already existed on the model, just unexposed.
+        time_taken_seconds = None
+        if attempt.submitted_at and attempt.started_at:
+            time_taken_seconds = max(
+                int((attempt.submitted_at - attempt.started_at).total_seconds()), 0)
+
         return Response({
             "student_name": _attempt_learner_name(attempt),
             "score": attempt.score,
             "total": attempt.quiz.total_marks,
             "submitted_at": attempt.submitted_at,
             "attempt_number": attempt.attempt_number,
+            "time_taken_seconds": time_taken_seconds,
             "questions": result_questions,
         })
 
