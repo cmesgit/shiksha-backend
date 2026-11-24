@@ -1,0 +1,641 @@
+[
+  {
+    "subject_id": "d54eee1e-7b1a-4555-910e-0ff8832b5c19",
+    "subject_name": "3A: Social Science – History",
+    "quiz_title": "History — Practice Set",
+    "questions": [
+      {
+        "text": "Who led the process of unifying Germany in the nineteenth century through a combination of war and diplomacy?",
+        "options": ["Giuseppe Garibaldi", "Otto von Bismarck", "Klemens von Metternich", "Napoleon Bonaparte"],
+        "correct_index": 1,
+        "explanation": "Otto von Bismarck, Chancellor of Prussia, unified Germany through a combination of war and diplomacy, culminating in the proclamation of the German Empire in 1871.",
+        "topic": "The Rise of Nationalism in Europe",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What was the immediate cause for Mahatma Gandhi to withdraw the Non-Cooperation Movement in February 1922?",
+        "options": ["Jallianwala Bagh massacre", "Chauri Chaura incident", "Arrival of the Simon Commission", "Passing of the Rowlatt Act"],
+        "correct_index": 1,
+        "explanation": "Gandhi called off the Non-Cooperation Movement in February 1922 after a violent clash at Chauri Chaura in which protesters set a police station on fire, killing policemen.",
+        "topic": "Nationalism in India",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In the nineteenth century, indentured Indian and Chinese labourers were mainly transported to work:",
+        "options": ["Working in factories across industrial Britain", "On plantations, mines and road or railway projects in places like the Caribbean, Mauritius and Fiji", "Serving exclusively in colonial armies", "Settling as independent farmers in the United States"],
+        "correct_index": 1,
+        "explanation": "Nineteenth-century indentured Indian and Chinese labourers were transported mainly to plantations, mines and construction projects in the Caribbean, Mauritius, Fiji and similar colonies.",
+        "topic": "The Making of a Global World",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which city emerged as a major centre of the cotton textile industry in colonial India by the late nineteenth century?",
+        "options": ["Calcutta", "Bombay", "Delhi", "Madras"],
+        "correct_index": 1,
+        "explanation": "By the late nineteenth century, Bombay had become a leading centre of the cotton textile industry in colonial India.",
+        "topic": "The Age of Industrialisation",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In colonial Bengal's putting-out system, what was the local term for the agent appointed by the East India Company to supervise weavers and collect cloth?",
+        "options": ["Zamindar", "Mahajan", "Gomastha", "Dalal"],
+        "correct_index": 2,
+        "explanation": "The gomastha was an agent appointed by the East India Company to supervise weavers, collect cloth and enforce the terms of advances given to them.",
+        "topic": "The Age of Industrialisation",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What was 'lithography', the print technology developed in the early nineteenth century?",
+        "options": ["Printing with movable metal type on a mechanical press", "A technique of printing from a design drawn with greasy ink or crayon on a smooth stone surface", "Hand-copying manuscripts with illuminated borders", "Printing on cloth using wooden blocks dipped in dye"],
+        "correct_index": 1,
+        "explanation": "Lithography, developed in the early nineteenth century, used a design drawn with greasy ink or crayon on a smooth lithographic stone rather than movable type.",
+        "topic": "Print Culture and the Modern World",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which event marked the launch of the Civil Disobedience Movement in 1930?",
+        "options": ["Formation of the Indian National Congress", "Partition of Bengal", "Salt March to Dandi", "Quit India call"],
+        "correct_index": 2,
+        "explanation": "The Civil Disobedience Movement began in 1930 when Gandhi broke the salt law by marching to Dandi and producing salt from seawater.",
+        "topic": "Nationalism in India",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In the context of the nineteenth-century world economy, what does the term 'globalisation' broadly refer to?",
+        "options": ["A political and military alliance among European empires", "Growing interconnection of economies and markets across countries through trade, migration and capital flows", "The worldwide spread of silent cinema", "The spread of India's freedom movement to other colonies"],
+        "correct_index": 1,
+        "explanation": "Globalisation, as discussed in the chapter, refers to the growing economic interconnection of countries through flows of trade, labour and capital.",
+        "topic": "The Making of a Global World",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "267c6c2f-c5e1-47df-8914-1c84f58a2c6c",
+    "subject_name": "3B: Social Science – Geography",
+    "quiz_title": "Geography Practice Quiz",
+    "questions": [
+      {
+        "text": "Based on their origin, resources derived from plants and animals are classified as:",
+        "options": ["Abiotic resources", "Renewable resources", "Biotic resources", "Non-renewable resources"],
+        "correct_index": 2,
+        "explanation": "Resources obtained from the biosphere, such as those from plants and animals, are classified as biotic resources based on their origin.",
+        "topic": "Resources and Development",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which cropping season in India grows crops like wheat, gram and mustard, sown in winter and harvested in summer?",
+        "options": ["Kharif", "Rabi", "Zaid", "Perennial"],
+        "correct_index": 1,
+        "explanation": "Rabi crops such as wheat, gram and mustard are sown in winter and harvested in summer.",
+        "topic": "Agriculture",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What is the primary purpose of a multipurpose river valley project, as built in India after independence?",
+        "options": ["Only to generate hydroelectric power", "To serve several purposes together, such as irrigation, electricity, flood control and water supply", "Only to supply drinking water to cities", "Only to support fish farming"],
+        "correct_index": 1,
+        "explanation": "Multipurpose river valley projects are designed to meet several objectives together, including irrigation, power generation, flood control and domestic water supply.",
+        "topic": "Water Resources",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of these is classified as a ferrous mineral?",
+        "options": ["Bauxite", "Mica", "Iron ore", "Copper"],
+        "correct_index": 2,
+        "explanation": "Iron ore contains iron and is therefore classified as a ferrous mineral, unlike bauxite, mica and copper, which are non-ferrous.",
+        "topic": "Minerals and Energy Resources",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Under the IUCN classification used in this chapter, species whose population has declined to a level from which they are likely to move into the endangered category are called:",
+        "options": ["Rare species", "Endemic species", "Extinct species", "Vulnerable species"],
+        "correct_index": 3,
+        "explanation": "Vulnerable species are those whose population has declined to a level from which they are likely to move into the endangered category.",
+        "topic": "Forest and Wildlife Resources",
+        "difficulty": "hard"
+      },
+      {
+        "text": "An industry that uses minerals as raw material and supplies its products mainly to other industries is best classified as a:",
+        "options": ["Consumer goods industry", "Cottage industry", "Basic or key industry", "Tertiary sector activity"],
+        "correct_index": 2,
+        "explanation": "Industries like iron and steel that supply raw material to other industries, rather than finished goods to consumers, are classified as basic or key industries.",
+        "topic": "Manufacturing Industries",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which mode of transport carries the bulk of India's long-distance passenger and freight traffic and is considered the principal mode of transport?",
+        "options": ["Airways", "Railways", "Waterways", "Pipelines"],
+        "correct_index": 1,
+        "explanation": "Railways carry the bulk of India's long-distance passenger and freight traffic and are considered the principal mode of transport.",
+        "topic": "Lifelines of National Economy",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The planned use of resources that meets present needs without compromising the ability of future generations to meet their own needs is called:",
+        "options": ["Resource planning", "Land reform", "Sustainable development", "Resource conservation"],
+        "correct_index": 2,
+        "explanation": "Sustainable development means using resources in a planned way that meets present needs without compromising the ability of future generations to meet their own.",
+        "topic": "Resources and Development",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "14338daf-149e-4c8e-a3ad-67ae53449aff",
+    "subject_name": "3C: Social Science – Civics (Political Science)",
+    "quiz_title": "Civics — Quick Check",
+    "questions": [
+      {
+        "text": "In Belgium's power-sharing arrangement, what is a key feature of the 'community government'?",
+        "options": ["Appointed directly by the King", "Composed only of French speakers", "Elected by people belonging to one language community regardless of where they live", "Elected only by residents of Brussels"],
+        "correct_index": 2,
+        "explanation": "In Belgium's power-sharing system, the community government is elected by people belonging to one language group, no matter which region they live in.",
+        "topic": "Power Sharing",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In India's federal system, subjects like defence, currency and foreign affairs are placed under which list?",
+        "options": ["State List", "Union List", "Concurrent List", "Residuary List"],
+        "correct_index": 1,
+        "explanation": "Subjects of national importance such as defence, currency and foreign affairs are placed in the Union List, on which only the central government can legislate.",
+        "topic": "Federalism",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the minimum requirement for a multi-party system, as discussed in this chapter?",
+        "options": ["Exactly two parties", "More than two parties competing for power", "Exactly one ruling party", "No parties at all"],
+        "correct_index": 1,
+        "explanation": "A multi-party system exists when more than two parties compete for power, as opposed to a two-party or one-party system.",
+        "topic": "Political Parties",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What term describes the division of society into a hierarchy of social groups based on birth, where interaction and marriage across groups is restricted?",
+        "options": ["Communalism", "Patriarchy", "Caste system", "Federalism"],
+        "correct_index": 2,
+        "explanation": "The caste system divides society into a hierarchy of birth-based social groups, historically restricting interaction and marriage across groups.",
+        "topic": "Gender, Religion and Caste",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of these is identified in the chapter as a reasonable, expected outcome of democracy?",
+        "options": ["Immediate economic prosperity for all citizens", "Complete elimination of all social inequalities", "An accountable, responsive and legitimate government", "Total absence of political conflict"],
+        "correct_index": 2,
+        "explanation": "The chapter identifies an accountable, responsive and legitimate government as a reasonable expected outcome of democracy, unlike unrealistic expectations such as instant prosperity or zero conflict.",
+        "topic": "Outcomes of Democracy",
+        "difficulty": "hard"
+      },
+      {
+        "text": "What is meant by 'political reform' in the context of challenges facing democracies?",
+        "options": ["A change of the ruling party at every election", "Legal or rule changes made to strengthen democratic practice", "Abolishing elections altogether", "Reducing the number of parties to one"],
+        "correct_index": 1,
+        "explanation": "Political reform refers to legal and institutional changes aimed at strengthening democratic practice and addressing the challenges democracies face.",
+        "topic": "Challenges to Democracy",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The Narmada Bachao Andolan is best described as an example of which kind of democratic activity?",
+        "options": ["A registered political party contesting elections", "An armed uprising against the state", "A popular social movement pressuring the government on a public issue", "A pressure group formed only by business owners"],
+        "correct_index": 2,
+        "explanation": "The Narmada Bachao Andolan is an example of a popular movement that mobilised people to pressure the government over displacement and environmental concerns, not a political party.",
+        "topic": "Popular Struggles and Movements",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What effect does social division based on 'overlapping' identities tend to have, compared to 'cross-cutting' identities?",
+        "options": ["It reduces the chances of conflict", "It has no real political effect", "It deepens conflicts between groups", "It always leads to peaceful coexistence"],
+        "correct_index": 2,
+        "explanation": "When social differences overlap rather than cut across one another, they reinforce each other and tend to deepen conflict between groups.",
+        "topic": "Democracy and Diversity",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "e397fb02-ce28-48a3-b711-2274011c105a",
+    "subject_name": "3D: Social Science – Economics",
+    "quiz_title": "Economics — Practice Set",
+    "questions": [
+      {
+        "text": "Which of the following is NOT directly included as a component of the Human Development Index (HDI)?",
+        "options": ["Life expectancy at birth", "Per capita income (GNI)", "Total land area of the country", "Literacy and education level"],
+        "correct_index": 2,
+        "explanation": "The Human Development Index combines income, health and education indicators; a country's total land area is not one of its components.",
+        "topic": "Development",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Activities that convert natural products into other forms through manufacturing or processing belong to which sector?",
+        "options": ["Primary sector", "Secondary sector", "Tertiary sector", "Public sector"],
+        "correct_index": 1,
+        "explanation": "Activities that convert natural products into other forms through manufacturing or processing belong to the secondary sector.",
+        "topic": "Sectors of the Indian Economy",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the most commonly used medium of exchange for carrying out transactions in a modern economy?",
+        "options": ["Barter", "Gold reserves", "Money", "Shares"],
+        "correct_index": 2,
+        "explanation": "Money is the commonly accepted medium of exchange used to carry out transactions for goods and services in a modern economy.",
+        "topic": "Money and Credit",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which of the following best describes 'collateral' in a loan agreement?",
+        "options": ["The rate of interest charged on a loan", "An asset the borrower owns and pledges as a guarantee to the lender", "The maximum loan amount a bank can sanction", "A government subsidy on agricultural loans"],
+        "correct_index": 1,
+        "explanation": "Collateral is an asset that a borrower owns and offers to a lender as a guarantee, which the lender can claim if the loan is not repaid.",
+        "topic": "Money and Credit",
+        "difficulty": "hard"
+      },
+      {
+        "text": "What is the main objective of trade barriers, such as tariffs, imposed by a government on imports?",
+        "options": ["To increase foreign investment unconditionally", "To regulate or restrict foreign trade and protect domestic producers", "To lower prices of imported goods for consumers", "To eliminate competition among domestic producers"],
+        "correct_index": 1,
+        "explanation": "Trade barriers such as tariffs are imposed by governments mainly to regulate or restrict foreign trade and shield domestic producers from competition.",
+        "topic": "Globalisation and the Indian Economy",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Multinational Corporations (MNCs) often set up production in collaboration with local companies mainly in order to:",
+        "options": ["Avoid paying any taxes in the host country", "Transfer full ownership of the MNC to the local company", "Benefit from the local companies' familiarity with raw material supply and local conditions", "Deliberately reduce their own product quality"],
+        "correct_index": 2,
+        "explanation": "MNCs often collaborate with local companies to take advantage of the local firms' knowledge of raw material supply, markets and other local conditions.",
+        "topic": "Globalisation and the Indian Economy",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Under Indian consumer protection law, a consumer can file a complaint in a Consumer Court if they face:",
+        "options": ["Any disagreement with a shopkeeper's business decisions", "Exploitation or an unfair trade practice by a seller", "A better deal found at a different store", "Normal price fluctuations due to market demand"],
+        "correct_index": 1,
+        "explanation": "A consumer can approach a Consumer Court specifically when they face exploitation or an unfair trade practice, not for ordinary business disagreements.",
+        "topic": "Consumer Rights",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which certification mark found on agricultural products such as spices and honey in India indicates quality certified by the government?",
+        "options": ["ISI mark", "Hallmark", "AGMARK", "ISO mark"],
+        "correct_index": 2,
+        "explanation": "AGMARK is the certification mark used on agricultural products such as spices and honey in India to indicate quality standards set by the government.",
+        "topic": "Consumer Rights",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "93781ef7-a4ac-4da8-b77b-f409283262e6",
+    "subject_name": "4A: English – Main Reader (First Flight)",
+    "quiz_title": "First Flight — Practice Set",
+    "questions": [
+      {
+        "text": "In his letter to God, what does Lencho ask for to help him recover from the hailstorm that destroyed his crop?",
+        "options": ["A new field to farm", "One hundred pesos", "A loan from the bank", "Seeds for the next season"],
+        "correct_index": 1,
+        "explanation": "In his letter to God, Lencho asks for one hundred pesos to help him sow his field again and support his family until the next harvest.",
+        "topic": "A Letter to God",
+        "difficulty": "easy"
+      },
+      {
+        "text": "According to the chapter, what did Nelson Mandela identify as the 'twin obligations' every man has?",
+        "options": ["Obligations to his religion and his employer", "Obligations to his family and to his people and country", "Obligations to his school and his sports team", "Obligations to the law and to wealth"],
+        "correct_index": 1,
+        "explanation": "Mandela writes that every man has twin obligations — to his family and to his people or country — and that in apartheid South Africa the two became impossible to fulfil separately.",
+        "topic": "Nelson Mandela: Long Walk to Freedom",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'His First Flight', why does the young seagull initially refuse to fly from the ledge?",
+        "options": ["He has an injured wing", "He dislikes the taste of fish", "He is afraid of falling into the sea below", "He wants to stay with his mother forever"],
+        "correct_index": 2,
+        "explanation": "In 'His First Flight', the young seagull initially refuses to fly because he is terrified of falling into the sea far below the ledge.",
+        "topic": "Two Stories About Flying",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What name does Anne Frank give to her diary, treating it as a close friend?",
+        "options": ["Margot", "Kitty", "Miep", "Peter"],
+        "correct_index": 1,
+        "explanation": "Anne Frank names her diary 'Kitty' and writes to it as though confiding in a close friend.",
+        "topic": "From the Diary of Anne Frank",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Why do Peggy and Maddie tease Wanda Petronski every day at school?",
+        "options": ["About her poor performance in exams", "About her family's business", "About her height", "About her claim of owning a hundred dresses despite wearing the same faded dress every day"],
+        "correct_index": 3,
+        "explanation": "Peggy and Maddie tease Wanda daily about her claim of having a hundred dresses at home, which seems absurd since she wears the same faded blue dress to school.",
+        "topic": "The Hundred Dresses — Part I",
+        "difficulty": "hard"
+      },
+      {
+        "text": "What does Wanda's story reveal after she moves away, regarding the 'hundred dresses' she claimed to own?",
+        "options": ["That Wanda was never bothered by the teasing", "That Wanda actually had a hundred beautifully drawn dress designs, not real dresses", "That Wanda's family had always lived in the new town", "That the teasing was secretly arranged by the teacher"],
+        "correct_index": 1,
+        "explanation": "After Wanda moves away, it is revealed through the dress-design contest that her 'hundred dresses' were drawings she had created, not actual garments.",
+        "topic": "The Hundred Dresses — Part II",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The 'Coorg' section of 'Glimpses of India' primarily describes which aspect of that region?",
+        "options": ["The spice trade of Kerala", "Goa's Portuguese food culture only", "The geography, people and coffee-growing culture of Coorg in Karnataka", "Tea gardens of Assam"],
+        "correct_index": 2,
+        "explanation": "The 'Coorg' section of 'Glimpses of India' describes the geography, people and coffee cultivation of the Coorg region in Karnataka.",
+        "topic": "Glimpses of India",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Who is the central child character in 'Madam Rides the Bus' who takes her first solo bus ride?",
+        "options": ["Wanda", "Anne", "Valli", "Franz"],
+        "correct_index": 2,
+        "explanation": "Valli is the curious young girl at the centre of 'Madam Rides the Bus', who takes her first solo bus ride through her village.",
+        "topic": "Madam Rides the Bus",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "7af5a9aa-7308-4d75-8579-e9e338ea60cf",
+    "subject_name": "4B: English – Supplementary (Footprints Without Feet)",
+    "quiz_title": "Footprints Without Feet — Quick Quiz",
+    "questions": [
+      {
+        "text": "What skill does the narrator Hari Singh possess, as revealed in 'The Thief's Story'?",
+        "options": ["He is a trained classical singer", "He is a skilled thief who can pick locks and pockets", "He is a government clerk", "He is a schoolteacher"],
+        "correct_index": 1,
+        "explanation": "Hari Singh, the narrator of 'The Thief's Story', is a skilled young thief adept at picking locks and pockets.",
+        "topic": "The Thief's Story",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'The Midnight Visitor', what is Ausable's actual profession?",
+        "options": ["A hotel manager", "A journalist", "A secret agent", "A police inspector"],
+        "correct_index": 2,
+        "explanation": "Ausable, despite looking unglamorous, is actually a secret agent, which surprises the young writer Fowler who expected someone more dashing.",
+        "topic": "The Midnight Visitor",
+        "difficulty": "easy"
+      },
+      {
+        "text": "How is Horace Danby, a safecracker, fooled in 'A Question of Trust'?",
+        "options": ["He is caught red-handed by the police", "He mistakes a staged request for a genuine one and ends up with worthless paste jewellery", "He accidentally triggers the house alarm", "He forgets the combination to the safe"],
+        "correct_index": 1,
+        "explanation": "Horace Danby is tricked by a woman posing as the homeowner into opening a safe for her, only to later discover the jewellery he took was worthless paste.",
+        "topic": "A Question of Trust",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What ability does Griffin gain after conducting his scientific experiments in 'Footprints without Feet'?",
+        "options": ["Super strength", "Flight", "Invisibility", "Immortality"],
+        "correct_index": 2,
+        "explanation": "Griffin, the scientist in 'Footprints without Feet', discovers a method to make his body invisible through his experiments.",
+        "topic": "Footprints Without Feet",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which childhood habit is credited with sparking Richard Ebright's early interest in science in 'The Making of a Scientist'?",
+        "options": ["Building model aeroplanes", "Collecting butterflies and insects, including studying a viral disease among them", "Reading only science fiction novels", "Watching television documentaries"],
+        "correct_index": 1,
+        "explanation": "Richard Ebright's early interest in science was sparked by collecting butterflies and insects, including his study of a viral disease affecting monarch caterpillars.",
+        "topic": "The Making of a Scientist",
+        "difficulty": "hard"
+      },
+      {
+        "text": "What is the ironic twist at the end of 'The Necklace' regarding the necklace Mathilde borrowed and lost?",
+        "options": ["Mathilde had never actually lost the necklace", "Her friend had given her the necklace as a gift", "The original necklace was actually a cheap imitation worth very little", "The necklace was stolen before the party"],
+        "correct_index": 2,
+        "explanation": "The ironic twist in 'The Necklace' is that the necklace Mathilde borrowed and lost was, in fact, an imitation worth only a fraction of what she spent replacing it.",
+        "topic": "The Necklace",
+        "difficulty": "hard"
+      },
+      {
+        "text": "What major change does Bholi undergo by the end of the story, after being taught by a kind schoolteacher?",
+        "options": ["She becomes extremely wealthy", "She gains confidence and the courage to speak up for herself", "She moves abroad for higher studies", "She becomes a teacher immediately"],
+        "correct_index": 1,
+        "explanation": "Through the encouragement of a kind schoolteacher, Bholi gains confidence and finds the courage to speak up for herself by the end of the story.",
+        "topic": "Bholi",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'The Book That Saved the Earth', what do the invading Martians mistakenly believe 'Mother Goose' to be?",
+        "options": ["A holy religious text", "A cookbook", "A secret code or weapon of the Earthlings", "A map to hidden treasure"],
+        "correct_index": 2,
+        "explanation": "In the play, the invading Martians mistakenly believe the nursery rhyme book 'Mother Goose' to be a secret code or weapon used by Earthlings.",
+        "topic": "The Book That Saved the Earth",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "5d22a6cb-2bd8-4750-af5c-6215a2e9420b",
+    "subject_name": "4C: English – Grammar & Writing Skills",
+    "quiz_title": "Grammar and Writing — Skill Check",
+    "questions": [
+      {
+        "text": "Choose the grammatically correct sentence.",
+        "options": ["Each of the students have submitted their project.", "Each of the students has submitted their project.", "Each of the students submitting their project.", "Each of the students submit their project."],
+        "correct_index": 1,
+        "explanation": "'Each' is a singular subject, so it takes the singular verb form 'has', making the second sentence grammatically correct.",
+        "topic": "Tenses and Subject-Verb Agreement",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Choose the correct passive voice form of: 'The gardener waters the plants every morning.'",
+        "options": ["The plants water the gardener every morning.", "The plants were watered by the gardener every morning.", "The plants are watered by the gardener every morning.", "The plants had been watered by the gardener every morning."],
+        "correct_index": 2,
+        "explanation": "Since the original sentence is in simple present tense, the correct passive form keeps it in simple present: 'The plants are watered by the gardener every morning.'",
+        "topic": "Modals, Voice and Reported Speech",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which sentence uses the connector correctly to show contrast?",
+        "options": ["She was tired; moreover, she finished the race.", "She was tired; therefore she finished the race.", "She was tired; similarly, she finished the race.", "She was tired; however, she finished the race."],
+        "correct_index": 3,
+        "explanation": "'However' is the connector that correctly signals contrast between being tired and still finishing the race.",
+        "topic": "Determiners and Connectors",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In a formal letter of complaint written in the CBSE format, which of these is the correct way to close the letter?",
+        "options": ["Lots of love,", "Yours faithfully,", "Bye for now,", "Take care,"],
+        "correct_index": 1,
+        "explanation": "'Yours faithfully,' is the conventional, formal closing used in a CBSE-format formal letter such as a letter of complaint.",
+        "topic": "Formal Letter and Application Writing",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Change into reported (indirect) speech: She said, \"I am going to the market now.\"",
+        "options": ["She said that she is going to the market now.", "She says that she was going to the market now.", "She said that she was going to the market then.", "She said she is going to the market then."],
+        "correct_index": 2,
+        "explanation": "Correct reported speech requires backshifting the tense and changing time/place words: 'am going' becomes 'was going' and 'now' becomes 'then'.",
+        "topic": "Modals, Voice and Reported Speech",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which sentence correctly uses the article 'an'?",
+        "options": ["She bought an book for the trip.", "She bought an university degree.", "She bought an European car.", "She bought an umbrella for the trip."],
+        "correct_index": 3,
+        "explanation": "'An' is used before a word that begins with a vowel sound; 'umbrella' starts with a vowel sound, unlike 'book', 'university' or 'European'.",
+        "topic": "Article and Paragraph Writing",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A diary entry is conventionally written using which grammatical person and tense, as taught in this unit?",
+        "options": ["Third person, always in future tense", "Second person, only in present continuous tense", "First person, generally in past tense, recounting the day's events", "First person, exclusively in passive voice"],
+        "correct_index": 2,
+        "explanation": "A diary entry is conventionally written in the first person, generally in the past tense, as the writer recounts events of that day.",
+        "topic": "Story and Diary Entry Writing",
+        "difficulty": "hard"
+      },
+      {
+        "text": "When answering an unseen comprehension passage, what is the recommended first step?",
+        "options": ["Answer the questions first without reading the passage", "Read the passage carefully at least once before attempting the questions", "Memorise the passage word for word", "Skip all difficult questions permanently"],
+        "correct_index": 1,
+        "explanation": "The recommended approach for an unseen passage is to read it carefully at least once to grasp its overall meaning before attempting the questions.",
+        "topic": "Unseen Comprehension Passages",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "dbdf696a-7f65-4487-bc9b-c6091cfb8148",
+    "subject_name": "Mathematics",
+    "quiz_title": "Mathematics — Practice Set",
+    "questions": [
+      {
+        "text": "According to the Fundamental Theorem of Arithmetic, every composite number can be expressed as:",
+        "options": ["A sum of two prime numbers", "A product of primes, unique except for the order of the factors", "A product of exactly two primes only", "A unique even number"],
+        "correct_index": 1,
+        "explanation": "The Fundamental Theorem of Arithmetic states every composite number can be factorised as a product of primes, and this factorisation is unique apart from the order of the factors.",
+        "topic": "Real Numbers",
+        "difficulty": "easy"
+      },
+      {
+        "text": "For a quadratic polynomial ax² + bx + c, the sum of its zeroes is given by:",
+        "options": ["c/a", "b/a", "-b/a", "-c/a"],
+        "correct_index": 2,
+        "explanation": "For a quadratic polynomial ax² + bx + c, the sum of its zeroes equals -b/a.",
+        "topic": "Polynomials",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A pair of linear equations in two variables that has no solution represents a pair of lines that are:",
+        "options": ["Intersecting at one point", "Coincident", "Perpendicular", "Parallel"],
+        "correct_index": 3,
+        "explanation": "A pair of linear equations with no solution represents two parallel lines, since they never meet.",
+        "topic": "Pair of Linear Equations in Two Variables",
+        "difficulty": "medium"
+      },
+      {
+        "text": "For a quadratic equation ax² + bx + c = 0 to have two equal real roots, the discriminant (b² - 4ac) must be:",
+        "options": ["Greater than zero", "Less than zero", "Equal to one", "Equal to zero"],
+        "correct_index": 3,
+        "explanation": "A quadratic equation has two equal real roots exactly when its discriminant, b² - 4ac, equals zero.",
+        "topic": "Quadratic Equations",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In an arithmetic progression with first term a and common difference d, the nth term is given by:",
+        "options": ["a + nd", "a - (n-1)d", "na + d", "a + (n-1)d"],
+        "correct_index": 3,
+        "explanation": "The nth term of an AP with first term a and common difference d is given by the formula a + (n-1)d.",
+        "topic": "Arithmetic Progressions",
+        "difficulty": "easy"
+      },
+      {
+        "text": "By the Basic Proportionality Theorem, if a line is drawn parallel to one side of a triangle intersecting the other two sides, it divides those two sides:",
+        "options": ["Into two equal halves always", "Perpendicularly", "Into a ratio equal to the triangle's area", "In the same ratio"],
+        "correct_index": 3,
+        "explanation": "The Basic Proportionality Theorem states that a line parallel to one side of a triangle divides the other two sides in the same ratio.",
+        "topic": "Triangles",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Using the section formula, the coordinates of the point dividing the line segment joining (x1, y1) and (x2, y2) internally in the ratio m:n are:",
+        "options": ["((x1+x2)/2, (y1+y2)/2)", "((mx1+nx2)/(m+n), (my1+ny2)/(m+n))", "((mx2+nx1)/(m+n), (my2+ny1)/(m+n))", "((mx2-nx1)/(m+n), (my2-ny1)/(m+n))"],
+        "correct_index": 2,
+        "explanation": "The section formula gives the point dividing a segment joining (x1,y1) and (x2,y2) in ratio m:n internally as ((mx2+nx1)/(m+n), (my2+ny1)/(m+n)).",
+        "topic": "Coordinate Geometry",
+        "difficulty": "hard"
+      },
+      {
+        "text": "What is the angle of elevation of the sun when the length of the shadow of a vertical pole equals the height of the pole?",
+        "options": ["30°", "60°", "90°", "45°"],
+        "correct_index": 3,
+        "explanation": "The angle of elevation of the sun is 45° when the length of a vertical pole's shadow equals its height, since tan 45° = 1.",
+        "topic": "Some Applications of Trigonometry",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "d95066dc-61e1-4a96-8d6a-d6a142392770",
+    "subject_name": "Science",
+    "quiz_title": "Science — Quick Check",
+    "questions": [
+      {
+        "text": "When a magnesium ribbon is burnt in air, the white powder formed is:",
+        "options": ["Magnesium hydroxide", "Magnesium oxide", "Magnesium carbonate", "Magnesium chloride"],
+        "correct_index": 1,
+        "explanation": "Burning magnesium ribbon in air produces magnesium oxide, a white powder, along with a bright white light.",
+        "topic": "Chemical Reactions and Equations",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which indicator turns pink in a basic solution and remains colourless in an acidic solution?",
+        "options": ["Methyl orange", "Litmus", "Phenolphthalein", "Universal indicator"],
+        "correct_index": 2,
+        "explanation": "Phenolphthalein turns pink in basic solutions and remains colourless in acidic solutions, making it a common base indicator.",
+        "topic": "Acids, Bases and Salts",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Metals react with dilute acids to typically produce a salt and which gas?",
+        "options": ["Oxygen gas", "Hydrogen gas", "Carbon dioxide gas", "Nitrogen gas"],
+        "correct_index": 1,
+        "explanation": "Most metals react with dilute acids to produce a salt and hydrogen gas, which can be tested with a burning splint producing a pop sound.",
+        "topic": "Metals and Non-Metals",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Carbon forms a very large number of compounds mainly because of its property of:",
+        "options": ["High electrical conductivity", "High melting point", "Catenation, its ability to form long chains by bonding with itself", "Being a metal"],
+        "correct_index": 2,
+        "explanation": "Carbon's property of catenation — forming bonds with other carbon atoms to create long chains, branches and rings — explains the huge variety of carbon compounds.",
+        "topic": "Carbon and Its Compounds",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In human beings, the process of 'double circulation' refers to:",
+        "options": ["Blood flowing through two separate hearts", "Blood being pumped by two different organs", "Blood passing through the heart twice in one complete cycle around the body", "Two hearts beating simultaneously"],
+        "correct_index": 2,
+        "explanation": "Double circulation means that blood passes through the heart twice during one complete circuit of the body — once for pulmonary circulation and once for systemic circulation.",
+        "topic": "Life Processes",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The small gap between two adjacent neurons, across which a nerve impulse is transmitted chemically, is called:",
+        "options": ["A dendrite", "An axon", "A synapse", "A nucleus"],
+        "correct_index": 2,
+        "explanation": "A synapse is the small gap between two neurons across which a nerve impulse is transmitted chemically.",
+        "topic": "Control and Coordination",
+        "difficulty": "medium"
+      },
+      {
+        "text": "According to Mendel's experiments on pea plants, a cross between a pure tall plant (TT) and a pure dwarf plant (tt) produces first-generation (F1) offspring that are:",
+        "options": ["All dwarf", "Half tall and half dwarf", "All of medium height", "All tall"],
+        "correct_index": 3,
+        "explanation": "Since tallness is the dominant trait, crossing a pure tall (TT) plant with a pure dwarf (tt) plant produces F1 offspring that are all tall.",
+        "topic": "Heredity",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The image formed by a plane mirror is always:",
+        "options": ["Real, inverted and magnified", "Virtual, inverted and smaller", "Real, erect and smaller", "Virtual, erect and of the same size as the object"],
+        "correct_index": 3,
+        "explanation": "A plane mirror always forms a virtual, erect image that is the same size as the object.",
+        "topic": "Light — Reflection and Refraction",
+        "difficulty": "easy"
+      }
+    ]
+  }
+]

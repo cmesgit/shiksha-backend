@@ -1,0 +1,1334 @@
+[
+  {
+    "subject_id": "a967c7ff-1c1d-48e8-a57a-e714ad2d2d21",
+    "subject_name": "English ( First Flight)",
+    "quiz_title": "English (First Flight) — Chapter Practice Set",
+    "questions": [
+      {
+        "text": "In Chekhov's play 'The Proposal', what triggers the first heated argument between Lomov and Natalya, even before he can propose?",
+        "options": [
+          "A disagreement over who owns the Oxen Meadows",
+          "A disagreement over Natalya's dowry amount",
+          "A disagreement over the wedding date",
+          "A disagreement over which school their children should attend"
+        ],
+        "correct_index": 0,
+        "explanation": "The two quarrel over ownership of the Oxen Meadows, and later over whose dog is better, before Lomov can even make his proposal — the play's central comic device.",
+        "topic": "The Proposal",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'A Letter to God', why does Lencho write directly to God?",
+        "options": [
+          "To ask for forgiveness for his sins",
+          "To request a hundred pesos so he can resow his hail-destroyed crop",
+          "To thank God for a good harvest",
+          "To complain about the postmaster"
+        ],
+        "correct_index": 1,
+        "explanation": "A hailstorm destroys Lencho's entire crop, so he writes to God asking for a hundred pesos to sow his field again before his family starves.",
+        "topic": "A Letter to God",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What name does Anne Frank give her diary in 'From the Diary of Anne Frank'?",
+        "options": [
+          "Peter",
+          "Margot",
+          "Kitty",
+          "Miep"
+        ],
+        "correct_index": 2,
+        "explanation": "Anne addresses her diary entries to an imaginary confidante she names 'Kitty', treating the diary almost like a personal friend.",
+        "topic": "From the Diary of Anne Frank",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'Nelson Mandela: Long Walk to Freedom', what does Mandela describe as the 'twin obligations' every person owes?",
+        "options": [
+          "Obligations to one's family and to one's community or country",
+          "Obligations to one's employer and to the government",
+          "Obligations to education and to religion",
+          "Obligations to sport and to art"
+        ],
+        "correct_index": 0,
+        "explanation": "Mandela speaks of a man's obligations to his family, parents, wife and children on one hand, and to his people, community and country on the other.",
+        "topic": "Nelson Mandela: Long Walk to Freedom",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'The Sermon at Benares', what does the Buddha ask Kisa Gotami to fetch in order to 'cure' her dead son?",
+        "options": [
+          "A lamp lit with pure oil",
+          "A mustard seed from a house where no one has ever died",
+          "Water from a holy river",
+          "A flower that blooms only once a year"
+        ],
+        "correct_index": 1,
+        "explanation": "The Buddha sends her to find a mustard seed from a home untouched by death; her failure to find one teaches her that death is universal to all.",
+        "topic": "The Sermon at Benares",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'The Hundred Dresses – I', what does Wanda Petronski repeatedly claim to have at home?",
+        "options": [
+          "A hundred dolls",
+          "A hundred dresses hanging in her closet",
+          "A hundred pairs of shoes",
+          "A hundred storybooks"
+        ],
+        "correct_index": 1,
+        "explanation": "Wanda claims to own a hundred dresses, a claim the other girls mock, not realising she actually owns only one faded blue dress.",
+        "topic": "The Hundred Dresses – I",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of these places is NOT one of the three regions covered in 'Glimpses of India'?",
+        "options": [
+          "Goa",
+          "Coorg",
+          "Assam",
+          "Kashmir"
+        ],
+        "correct_index": 3,
+        "explanation": "'Glimpses of India' consists of three sections — a baker from Goa, Coorg, and tea from Assam. Kashmir is not covered in the chapter.",
+        "topic": "Glimpses of India",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In 'Madam Rides the Bus', how does Valliamma react when an old woman on the bus warns her about the dangers of the river crossing?",
+        "options": [
+          "She ignores the woman completely and falls asleep",
+          "She listens politely, but her resolve to complete the solo trip stays firm",
+          "She gets frightened and abandons her plan to ride the bus",
+          "She asks an adult passenger to accompany her instead"
+        ],
+        "correct_index": 1,
+        "explanation": "Valliamma hears the old woman's cautionary story about the river, but her determination to complete her first solo bus ride is not shaken.",
+        "topic": "Madam Rides the Bus",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "f2bccea7-bc44-4ba7-acb9-76d98d4abe8f",
+    "subject_name": "English ( Footrpints Without Feet)",
+    "quiz_title": "Footprints Without Feet — Quick Revision Quiz",
+    "questions": [
+      {
+        "text": "In 'Bholi', what was the protagonist's real name, with 'Bholi' being her nickname?",
+        "options": [
+          "Sulekha",
+          "Radha",
+          "Kamala",
+          "Meena"
+        ],
+        "correct_index": 0,
+        "explanation": "Sulekha is nicknamed 'Bholi' (the simpleton) by her family because of her pockmarked face and her shyness/stammer as a child.",
+        "topic": "Bholi",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In Maupassant's 'The Necklace', what does Matilda finally discover about the necklace she borrowed and lost?",
+        "options": [
+          "It had been stolen before she borrowed it",
+          "It was actually made of paste and worth far less than what she paid to replace it",
+          "It belonged to her own family originally",
+          "It was never actually lost at all"
+        ],
+        "correct_index": 1,
+        "explanation": "After ten years of hard labour to repay the replacement necklace, Matilda learns the original was an imitation worth only a fraction of what she paid.",
+        "topic": "The Necklace",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'A Triumph of Surgery', why does Tricki the dog fall ill?",
+        "options": [
+          "He catches a seasonal infection",
+          "He is overfed and pampered, leading to obesity and lethargy",
+          "He is injured in an accident",
+          "He refuses to eat anything at all"
+        ],
+        "correct_index": 1,
+        "explanation": "Tricki's owner overfeeds and spoils him with treats, so Mr Herriot puts him on a strict diet and exercise regime to restore his health.",
+        "topic": "A Triumph of Surgery",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'The Midnight Visitor', how does Ausable outwit the spy Max and get hold of his gun?",
+        "options": [
+          "He invents a story about a balcony and police waiting outside, prompting Max to look out the window",
+          "He overpowers Max in a physical struggle",
+          "He calls the police directly in front of Max",
+          "He bribes Max with money to leave quietly"
+        ],
+        "correct_index": 0,
+        "explanation": "Ausable calmly invents a tale about a balcony and police surveillance, making Max go to the window to check, which lets Ausable seize control of the situation.",
+        "topic": "The Midnight Visitor",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'The Thief's Story', what ultimately makes Hari Singh decide to return Anil's money instead of running away with it?",
+        "options": [
+          "He is caught red-handed by the police",
+          "Anil's genuine trust in him, despite being robbed, touches him and changes his resolve",
+          "He realises the money is counterfeit",
+          "Anil offers him a much larger reward"
+        ],
+        "correct_index": 1,
+        "explanation": "Anil's unexpected trust and lack of suspicion toward Hari Singh moves him, and he chooses to return the stolen money rather than flee with it.",
+        "topic": "The Thief's Story",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'The Hack Driver', who turns out to be the friendly hack driver who drives the narrator around town?",
+        "options": [
+          "A hired local taxi driver with no connection to the case",
+          "Oliver Lutkins himself, the very man the narrator was sent to find",
+          "The narrator's own law firm colleague",
+          "The town sheriff in disguise"
+        ],
+        "correct_index": 1,
+        "explanation": "The talkative hack driver is revealed to be Oliver Lutkins in disguise, the man the young lawyer had travelled to serve a summons on.",
+        "topic": "The Hack Driver",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'The Book That Saved the Earth', which Earth book do the invading Martians mistakenly believe is a dangerous secret weapon?",
+        "options": [
+          "A dictionary",
+          "A book of Mother Goose nursery rhymes",
+          "A mathematics textbook",
+          "A cookbook"
+        ],
+        "correct_index": 1,
+        "explanation": "The Martian Think-Tank badly misinterprets a simple book of Mother Goose rhymes as an encoded Earth super-weapon, which leads to the invasion's comic failure.",
+        "topic": "The Book That Saved the Earth",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In 'A Question of Trust', why is Horace Danby eventually arrested, even though his safe-cracking that night went almost unnoticed?",
+        "options": [
+          "He is arrested for an earlier, unrelated robbery because he unknowingly left fingerprints after the woman took his gloves",
+          "He confesses to the police out of guilt",
+          "The homeowner identifies him by his voice",
+          "He is caught still inside the house by a security guard"
+        ],
+        "correct_index": 0,
+        "explanation": "The mysterious woman takes Horace's gloves, so he leaves fingerprints without realising it; those prints later match an earlier, unrelated robbery and lead to his arrest.",
+        "topic": "A Question of Trust",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "ce0ff04b-afb8-45fd-816e-18b7e5051435",
+    "subject_name": "English (Grammar & Writing Skills)",
+    "quiz_title": "Grammar & Writing Skills — Practice Set",
+    "questions": [
+      {
+        "text": "Which sentence correctly follows subject-verb agreement?",
+        "options": [
+          "Neither of the boys were present at the meeting.",
+          "Neither of the boys was present at the meeting.",
+          "Neither of the boys are present at the meeting.",
+          "Neither of the boys being present at the meeting."
+        ],
+        "correct_index": 1,
+        "explanation": "'Neither' is treated as singular, so it takes the singular verb 'was', regardless of the plural noun phrase that follows it.",
+        "topic": "Tenses and Subject-Verb Agreement",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Choose the correct article to fill the blank: 'She has ___ interesting idea for the project.'",
+        "options": [
+          "a",
+          "an",
+          "the",
+          "some"
+        ],
+        "correct_index": 1,
+        "explanation": "'Interesting' begins with a vowel sound, so the indefinite article 'an' is used rather than 'a'.",
+        "topic": "Determiners and Connectors",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Choose the correct passive voice form of: 'The teacher is checking the answer sheets.'",
+        "options": [
+          "The answer sheets are checked by the teacher.",
+          "The answer sheets were being checked by the teacher.",
+          "The answer sheets are being checked by the teacher.",
+          "The answer sheets have been checked by the teacher."
+        ],
+        "correct_index": 2,
+        "explanation": "The present continuous active ('is checking') converts to present continuous passive: 'is/are being + past participle'.",
+        "topic": "Modals, Voice and Reported Speech",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In a formal job application letter, which closing phrase is most appropriate?",
+        "options": [
+          "Lots of love",
+          "Yours sincerely",
+          "Bye for now",
+          "Take care"
+        ],
+        "correct_index": 1,
+        "explanation": "Formal letters and applications conventionally close with 'Yours sincerely' or 'Yours faithfully', not casual expressions.",
+        "topic": "Formal Letter and Application Writing",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Before attempting the questions on an unseen comprehension passage, what should a student do first?",
+        "options": [
+          "Guess the answers based on the title alone",
+          "Read the passage carefully at least once to understand its overall meaning",
+          "Skip straight to writing answers without reading",
+          "Memorise the passage word for word"
+        ],
+        "correct_index": 1,
+        "explanation": "A careful first reading for overall meaning helps a student locate and frame accurate answers, rather than guessing or memorising.",
+        "topic": "Unseen Comprehension Passages",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A personal diary entry conventionally begins with which element?",
+        "options": [
+          "A formal salutation such as 'Dear Sir'",
+          "The date (and sometimes the day or time) at the top",
+          "The writer's full postal address",
+          "A list of references"
+        ],
+        "correct_index": 1,
+        "explanation": "Since a diary entry is a personal record of a specific day, it conventionally opens with the date at the top.",
+        "topic": "Story and Diary Entry Writing",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Choose the sentence with the correctly used article.",
+        "options": [
+          "He is an honest man because he never lies.",
+          "He is a honest man because he never lies.",
+          "He is an honesty man because he never lies.",
+          "He is the honest man because he never lies."
+        ],
+        "correct_index": 0,
+        "explanation": "'Honest' begins with a silent 'h', so the word is pronounced starting with a vowel sound, requiring 'an' rather than 'a'.",
+        "topic": "Article and Paragraph Writing",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Convert to reported speech: She said, 'I will finish the work tomorrow.'",
+        "options": [
+          "She said that she will finish the work tomorrow.",
+          "She said that she would finish the work the next day.",
+          "She said that she would finish the work tomorrow.",
+          "She says that she would finish the work the next day."
+        ],
+        "correct_index": 1,
+        "explanation": "In reported speech, 'will' shifts to 'would' and the time expression 'tomorrow' shifts to 'the next day' because the reporting verb is in the past tense.",
+        "topic": "Modals, Voice and Reported Speech",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "db7fed10-f56e-48b7-9796-4c0ef703a8a6",
+    "subject_name": "Hindi (Grammer)",
+    "quiz_title": "हिंदी (व्याकरण) — अभ्यास प्रश्नोत्तरी",
+    "questions": [
+      {
+        "text": "निम्नलिखित में से कौन-सा शब्द संधि से बना है?",
+        "options": [
+          "विद्यालय",
+          "पुस्तक",
+          "कक्षा",
+          "अध्यापक"
+        ],
+        "correct_index": 0,
+        "explanation": "'विद्यालय' विद्या + आलय के मेल से बना है, जहाँ आ + आ = आ होने के कारण यह दीर्घ स्वर संधि का उदाहरण है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'नदी' शब्द का लिंग पहचानिए।",
+        "options": [
+          "पुल्लिंग",
+          "स्त्रीलिंग",
+          "उभयलिंगी",
+          "नपुंसकलिंग"
+        ],
+        "correct_index": 1,
+        "explanation": "हिंदी व्याकरण में 'नदी' सदैव स्त्रीलिंग शब्द माना जाता है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'मैंने पत्र लिखा।' इस वाक्य में क्रिया किस काल को दर्शाती है?",
+        "options": [
+          "भूतकाल",
+          "वर्तमानकाल",
+          "भविष्यकाल",
+          "संभावनार्थ"
+        ],
+        "correct_index": 0,
+        "explanation": "'लिखा' क्रिया-रूप भूतकाल को दर्शाता है, क्योंकि कार्य पहले ही पूर्ण हो चुका है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'राम ने रावण को मारा' का कर्मवाच्य रूप क्या होगा?",
+        "options": [
+          "राम रावण को मारता है।",
+          "रावण राम द्वारा मारा गया।",
+          "रावण राम को मारेगा।",
+          "राम को रावण ने मारा।"
+        ],
+        "correct_index": 1,
+        "explanation": "कर्मवाच्य में कर्म (रावण) वाक्य का विषय बनता है और कर्ता के साथ 'द्वारा' जुड़ता है, इसलिए सही रूप है 'रावण राम द्वारा मारा गया।'",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "निम्नलिखित में से द्वंद्व समास का उदाहरण कौन-सा है?",
+        "options": [
+          "माता-पिता",
+          "राजपुत्र",
+          "यथाशक्ति",
+          "पीताम्बर"
+        ],
+        "correct_index": 0,
+        "explanation": "द्वंद्व समास में दोनों पद प्रधान होते हैं और बीच में 'और' का लुप्त भाव रहता है, जैसे 'माता और पिता' = 'माता-पिता'।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "'राम ने पुस्तक पढ़ी' वाक्य में 'ने' किस कारक का चिन्ह है?",
+        "options": [
+          "कर्ता कारक",
+          "कर्म कारक",
+          "करण कारक",
+          "संप्रदान कारक"
+        ],
+        "correct_index": 0,
+        "explanation": "'ने' कर्ता कारक की विभक्ति है, जो यह बताती है कि वाक्य में कार्य करने वाला (राम) कौन है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "मुहावरा 'आँखों में धूल झोंकना' का सही अर्थ क्या है?",
+        "options": [
+          "ध्यान से देखना",
+          "किसी को धोखा देना",
+          "आँसू बहाना",
+          "प्रशंसा करना"
+        ],
+        "correct_index": 1,
+        "explanation": "इस मुहावरे का अर्थ है छल या धोखे से किसी को वास्तविकता से अनजान रखना।",
+        "topic": "",
+        "difficulty": "hard"
+      },
+      {
+        "text": "निम्नलिखित में से व्यंजन संधि का उदाहरण कौन-सा है?",
+        "options": [
+          "सत् + जन = सज्जन",
+          "विद्या + आलय = विद्यालय",
+          "देव + इंद्र = देवेंद्र",
+          "गिरि + ईश = गिरीश"
+        ],
+        "correct_index": 0,
+        "explanation": "'सत्+जन' में त् का ज् में परिवर्तन होकर 'सज्जन' बनता है, जो व्यंजन संधि का उदाहरण है; शेष सभी विकल्प स्वर संधि के उदाहरण हैं।",
+        "topic": "",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "5b56a71d-57a7-438a-962f-7875469de3bb",
+    "subject_name": "Hindi (Kishtiji II)",
+    "quiz_title": "हिंदी (किश्तिजी-II) — अभ्यास राउंड",
+    "questions": [
+      {
+        "text": "'सूर्य' का सही पर्यायवाची शब्द चुनिए।",
+        "options": [
+          "दिनकर",
+          "निशा",
+          "सरिता",
+          "गगन"
+        ],
+        "correct_index": 0,
+        "explanation": "'दिनकर' सूर्य का ही एक पर्यायवाची शब्द है; शेष विकल्प क्रमशः रात्रि, नदी और आकाश के पर्यायवाची हैं।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'सुख' शब्द का विलोम शब्द कौन-सा है?",
+        "options": [
+          "आनंद",
+          "दुःख",
+          "प्रसन्नता",
+          "हर्ष"
+        ],
+        "correct_index": 1,
+        "explanation": "'सुख' का सीधा विपरीतार्थक (विलोम) शब्द 'दुःख' है; शेष विकल्प सुख के ही पर्यायवाची हैं।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'कमल के समान नेत्र' पंक्ति में किस अलंकार का प्रयोग हुआ है?",
+        "options": [
+          "उपमा अलंकार",
+          "रूपक अलंकार",
+          "अनुप्रास अलंकार",
+          "यमक अलंकार"
+        ],
+        "correct_index": 0,
+        "explanation": "जहाँ उपमेय (नेत्र) की तुलना उपमान (कमल) से 'समान' जैसे शब्द का प्रयोग करके की जाती है, वहाँ उपमा अलंकार होता है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'गंगा की गोद में गुनगुनाती गौरैया' पंक्ति में किस अलंकार के दर्शन होते हैं?",
+        "options": [
+          "अनुप्रास अलंकार",
+          "श्लेष अलंकार",
+          "मानवीकरण अलंकार",
+          "अतिशयोक्ति अलंकार"
+        ],
+        "correct_index": 0,
+        "explanation": "एक ही वर्ण 'ग' की बार-बार आवृत्ति होने के कारण यहाँ अनुप्रास अलंकार है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "करुण रस की उत्पत्ति किस स्थायी भाव से होती है?",
+        "options": [
+          "रति",
+          "शोक",
+          "हास",
+          "क्रोध"
+        ],
+        "correct_index": 1,
+        "explanation": "करुण रस का स्थायी भाव 'शोक' है, जो प्रियजन के वियोग या दुख की स्थिति में उत्पन्न होता है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "निम्नलिखित में से शुद्ध वाक्य कौन-सा है?",
+        "options": [
+          "वह लड़की पढ़ रहा है।",
+          "वह लड़की पढ़ रही है।",
+          "वह लड़की पढ़ रहे है।",
+          "वह लड़की पढ़ रही हूँ।"
+        ],
+        "correct_index": 1,
+        "explanation": "'लड़की' स्त्रीलिंग कर्ता है, इसलिए क्रिया भी स्त्रीलिंग रूप 'पढ़ रही है' में होनी चाहिए।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "मुहावरा 'हाथ-पैर फूलना' का सही अर्थ है",
+        "options": [
+          "बहुत खुश होना",
+          "घबरा जाना या भयभीत हो जाना",
+          "थक जाना",
+          "बीमार पड़ जाना"
+        ],
+        "correct_index": 1,
+        "explanation": "इस मुहावरे का अर्थ है किसी स्थिति को देखकर अत्यधिक घबरा जाना या भयभीत हो जाना।",
+        "topic": "",
+        "difficulty": "hard"
+      },
+      {
+        "text": "दोहा छंद के विषम (प्रथम व तृतीय) चरण में सामान्यतः कितनी मात्राएँ होती हैं?",
+        "options": [
+          "13 मात्राएँ",
+          "11 मात्राएँ",
+          "16 मात्राएँ",
+          "24 मात्राएँ"
+        ],
+        "correct_index": 0,
+        "explanation": "दोहा छंद के विषम चरण (पहले व तीसरे) में 13 मात्राएँ और सम चरण (दूसरे व चौथे) में 11 मात्राएँ होती हैं।",
+        "topic": "",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "1546a5fa-81e9-43a1-bbd9-88a118691e5e",
+    "subject_name": "Hindi(Kritika II)",
+    "quiz_title": "हिंदी (कृतिका-II) — त्वरित जाँच प्रश्नोत्तरी",
+    "questions": [
+      {
+        "text": "'सुंदर' शब्द किस शब्द-भेद के अंतर्गत आता है?",
+        "options": [
+          "संज्ञा",
+          "सर्वनाम",
+          "विशेषण",
+          "क्रिया-विशेषण"
+        ],
+        "correct_index": 2,
+        "explanation": "'सुंदर' किसी संज्ञा की विशेषता (गुण) बताता है, इसलिए यह विशेषण (adjective) है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'पुस्तकें' शब्द का एकवचन रूप क्या होगा?",
+        "options": [
+          "पुस्तकों",
+          "पुस्तक",
+          "पुस्तिका",
+          "पुस्तकीय"
+        ],
+        "correct_index": 1,
+        "explanation": "'पुस्तकें' बहुवचन रूप है, जिसका एकवचन रूप 'पुस्तक' होता है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "प्रश्नवाचक वाक्य के अंत में सामान्यतः कौन-सा विराम चिह्न लगाया जाता है?",
+        "options": [
+          "पूर्ण विराम (।)",
+          "प्रश्नवाचक चिह्न (?)",
+          "विस्मयादिबोधक चिह्न (!)",
+          "अल्प विराम (,)"
+        ],
+        "correct_index": 1,
+        "explanation": "जिस वाक्य में प्रश्न पूछा जाए, उसके अंत में प्रश्नवाचक चिह्न (?) लगाया जाता है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'सफलता' शब्द में मूल शब्द और प्रत्यय को सही-सही अलग कीजिए।",
+        "options": [
+          "स + फलता",
+          "सफल + ता",
+          "सफ + लता",
+          "सफला + त"
+        ],
+        "correct_index": 1,
+        "explanation": "मूल शब्द 'सफल' में 'ता' प्रत्यय जोड़कर भाववाचक संज्ञा 'सफलता' बनाई गई है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "'अन्याय' शब्द में प्रयुक्त उपसर्ग पहचानिए।",
+        "options": [
+          "अन्",
+          "अ",
+          "अन",
+          "या"
+        ],
+        "correct_index": 0,
+        "explanation": "'अन्याय' शब्द 'अन्' उपसर्ग और 'न्याय' मूल शब्द के मेल से बना है, जो निषेध (नकारात्मक) भाव दर्शाता है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "'गंगा-यमुना' शब्द-युग्म किस समास का उदाहरण है?",
+        "options": [
+          "तत्पुरुष समास",
+          "द्वंद्व समास",
+          "बहुव्रीहि समास",
+          "अव्ययीभाव समास"
+        ],
+        "correct_index": 1,
+        "explanation": "दोनों पद (गंगा और यमुना) समान रूप से प्रधान हैं और बीच में 'और' का भाव छिपा है, इसलिए यह द्वंद्व समास है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "मुहावरा 'नौ दो ग्यारह होना' का अर्थ है",
+        "options": [
+          "बहुत परिश्रम करना",
+          "भाग जाना या गायब हो जाना",
+          "संख्या गिनना",
+          "विजयी होना"
+        ],
+        "correct_index": 1,
+        "explanation": "इस मुहावरे का अर्थ है अचानक और चुपचाप वहाँ से भाग जाना या गायब हो जाना।",
+        "topic": "",
+        "difficulty": "hard"
+      },
+      {
+        "text": "'यहाँ पर बालक और बालिकाएँ खेल रही हैं' वाक्य में त्रुटि है। इसका शुद्ध रूप कौन-सा है?",
+        "options": [
+          "यहाँ पर बालक और बालिकाएँ खेल रहे हैं।",
+          "यहाँ पर बालक और बालिकाएँ खेल रही है।",
+          "यहाँ पर बालक और बालिकाएँ खेलती है।",
+          "यहाँ पर बालक और बालिकाएँ खेल रहा है।"
+        ],
+        "correct_index": 0,
+        "explanation": "पुल्लिंग (बालक) और स्त्रीलिंग (बालिकाएँ) दोनों कर्ता एक साथ होने पर क्रिया पुल्लिंग बहुवचन रूप 'खेल रहे हैं' में होनी चाहिए।",
+        "topic": "",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "42eb45b2-14ce-4865-b6b4-4d568bcf800b",
+    "subject_name": "Mathematics",
+    "quiz_title": "Mathematics — Problem-Solving Practice Set",
+    "questions": [
+      {
+        "text": "According to the Fundamental Theorem of Arithmetic, every composite number can be expressed as:",
+        "options": [
+          "A sum of prime numbers in exactly one way",
+          "A product of prime numbers, uniquely up to the order of the factors",
+          "A product of exactly two primes only",
+          "A power of a single prime, always"
+        ],
+        "correct_index": 1,
+        "explanation": "The Fundamental Theorem of Arithmetic states every composite number factorises into primes, and this factorisation is unique apart from the order of the factors.",
+        "topic": "Real Numbers",
+        "difficulty": "easy"
+      },
+      {
+        "text": "If the zeroes of a quadratic polynomial are 2 and 3, which polynomial (with leading coefficient 1) has these zeroes?",
+        "options": [
+          "x^2 - 5x + 6",
+          "x^2 + 5x + 6",
+          "x^2 - 5x - 6",
+          "x^2 - 6x + 5"
+        ],
+        "correct_index": 0,
+        "explanation": "Sum of zeroes = 2 + 3 = 5 and product of zeroes = 2 × 3 = 6, so the polynomial is x^2 - (sum)x + (product) = x^2 - 5x + 6.",
+        "topic": "Polynomials",
+        "difficulty": "easy"
+      },
+      {
+        "text": "For the pair of linear equations a1x + b1y = c1 and a2x + b2y = c2 to have a unique solution, which condition must hold?",
+        "options": [
+          "a1/a2 = b1/b2 = c1/c2",
+          "a1/a2 = b1/b2 ≠ c1/c2",
+          "a1/a2 ≠ b1/b2",
+          "a1/a2 = b1/b2"
+        ],
+        "correct_index": 2,
+        "explanation": "A unique solution exists when the two lines intersect at exactly one point, which happens precisely when a1/a2 ≠ b1/b2.",
+        "topic": "Pair of Linear Equations in Two Variables",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What are the roots of the quadratic equation x^2 - 7x + 12 = 0?",
+        "options": [
+          "3 and 4",
+          "2 and 6",
+          "-3 and -4",
+          "1 and 12"
+        ],
+        "correct_index": 0,
+        "explanation": "Factorising gives (x - 3)(x - 4) = 0, so x = 3 and x = 4 are the roots. Check: 3 + 4 = 7 and 3 × 4 = 12, matching the equation.",
+        "topic": "Quadratic Equations",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In an Arithmetic Progression with first term 5 and common difference 3, what is the 10th term?",
+        "options": [
+          "32",
+          "35",
+          "29",
+          "27"
+        ],
+        "correct_index": 0,
+        "explanation": "Using a_n = a + (n-1)d: a_10 = 5 + (10-1)×3 = 5 + 27 = 32.",
+        "topic": "Arithmetic Progressions",
+        "difficulty": "medium"
+      },
+      {
+        "text": "If sin θ = 3/5 for an acute angle θ, what is cos θ?",
+        "options": [
+          "4/5",
+          "3/4",
+          "5/4",
+          "5/3"
+        ],
+        "correct_index": 0,
+        "explanation": "Taking opposite = 3 and hypotenuse = 5 in a right triangle, the adjacent side is √(5²-3²) = 4, so cos θ = 4/5.",
+        "topic": "Introduction to Trigonometry",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the distance between the points (2, 3) and (5, 7)?",
+        "options": [
+          "5",
+          "7",
+          "√13",
+          "25"
+        ],
+        "correct_index": 0,
+        "explanation": "Using the distance formula: √[(5-2)² + (7-3)²] = √(9 + 16) = √25 = 5.",
+        "topic": "Coordinate Geometry",
+        "difficulty": "hard"
+      },
+      {
+        "text": "A bag contains 4 red balls and 6 blue balls. What is the probability of drawing a red ball at random?",
+        "options": [
+          "2/5",
+          "3/5",
+          "4/5",
+          "1/5"
+        ],
+        "correct_index": 0,
+        "explanation": "There are 4 favourable outcomes out of 10 total balls, so the probability is 4/10, which simplifies to 2/5.",
+        "topic": "Probability",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "8bc664b1-c349-439b-95dd-74459d679bbc",
+    "subject_name": "Science",
+    "quiz_title": "Science — Concept Check Quiz",
+    "questions": [
+      {
+        "text": "When a magnesium ribbon burns in air to form magnesium oxide, which type of chemical reaction occurs?",
+        "options": [
+          "Combination reaction",
+          "Decomposition reaction",
+          "Displacement reaction",
+          "Double displacement reaction"
+        ],
+        "correct_index": 0,
+        "explanation": "Magnesium and oxygen (two reactants) combine to form a single product, magnesium oxide, which is the defining feature of a combination reaction.",
+        "topic": "Chemical Reactions and Equations",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which of the following turns red litmus paper blue?",
+        "options": [
+          "An acid",
+          "A base",
+          "A neutral salt solution",
+          "Distilled water"
+        ],
+        "correct_index": 1,
+        "explanation": "Bases turn red litmus paper blue, while acids turn blue litmus paper red; neutral substances cause no colour change.",
+        "topic": "Acids, Bases and Salts",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which property is generally true of metals but NOT of non-metals?",
+        "options": [
+          "They are good conductors of heat and electricity",
+          "They are brittle in the solid state",
+          "They have low melting points",
+          "They readily gain electrons to form negative ions"
+        ],
+        "correct_index": 0,
+        "explanation": "Metals are typically good conductors of heat and electricity due to free-moving electrons, unlike most non-metals which are poor conductors.",
+        "topic": "Metals and Non-Metals",
+        "difficulty": "easy"
+      },
+      {
+        "text": "During human respiration, where does the actual exchange of oxygen and carbon dioxide between air and blood take place?",
+        "options": [
+          "Alveoli in the lungs",
+          "Trachea",
+          "Larynx",
+          "Bronchus"
+        ],
+        "correct_index": 0,
+        "explanation": "The thin-walled, richly blood-vessel-supplied alveoli are the site of gas exchange between inhaled air and the bloodstream.",
+        "topic": "Life Processes",
+        "difficulty": "medium"
+      },
+      {
+        "text": "If the length of a conductor is doubled while its cross-sectional area stays the same, what happens to its resistance?",
+        "options": [
+          "It doubles",
+          "It is halved",
+          "It remains the same",
+          "It becomes four times as much"
+        ],
+        "correct_index": 0,
+        "explanation": "Resistance is directly proportional to length (R = ρL/A), so doubling the length while keeping area constant doubles the resistance.",
+        "topic": "Electricity",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which plant hormone is primarily responsible for phototropism, the bending of a shoot toward light?",
+        "options": [
+          "Auxin",
+          "Gibberellin",
+          "Cytokinin",
+          "Abscisic acid"
+        ],
+        "correct_index": 0,
+        "explanation": "Auxin accumulates on the shaded side of the shoot, promoting faster cell elongation there and causing the shoot to bend toward the light.",
+        "topic": "Control and Coordination",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A concave mirror forms a real, inverted and highly diminished image at its focus when the object is placed:",
+        "options": [
+          "At the focus",
+          "Between the pole and the focus",
+          "At infinity (very far away)",
+          "At the centre of curvature"
+        ],
+        "correct_index": 2,
+        "explanation": "When the object is at infinity, parallel rays from it converge at the focus of a concave mirror, forming a real, inverted and highly diminished image there.",
+        "topic": "Light - Reflection and Refraction",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Using the right-hand thumb rule for a straight current-carrying conductor, what does the curling of the fingers represent, when the thumb points along the current's direction?",
+        "options": [
+          "The direction of the magnetic field lines circling the conductor",
+          "The direction of the electric field",
+          "The direction of current flow itself",
+          "The direction of induced EMF only"
+        ],
+        "correct_index": 0,
+        "explanation": "The right-hand thumb rule shows that if the thumb points along the current, the curled fingers indicate the direction of the circular magnetic field around the conductor.",
+        "topic": "Magnetic Effects of Electric Current",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "14945a55-02b8-46a0-8caf-dca8bc940d11",
+    "subject_name": "Social Science ( Civics)",
+    "quiz_title": "Civics — Practice Set",
+    "questions": [
+      {
+        "text": "What is the primary function of a political party in a democracy?",
+        "options": [
+          "To contest elections and form a government to implement policies",
+          "To conduct the national census",
+          "To appoint judges to the Supreme Court",
+          "To print currency notes"
+        ],
+        "correct_index": 0,
+        "explanation": "Political parties exist mainly to contest elections, represent voters' interests, and form or oppose the government to shape public policy.",
+        "topic": "Political Parties",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In a federal system of government, power is divided between:",
+        "options": [
+          "The central government and the state or provincial governments",
+          "The judiciary and the legislature only",
+          "Political parties and NGOs",
+          "The police and the army"
+        ],
+        "correct_index": 0,
+        "explanation": "Federalism is a system of government where power is constitutionally divided between a central authority and various constituent state/provincial units.",
+        "topic": "Federalism",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which of the following is an example of horizontal power-sharing?",
+        "options": [
+          "Power shared among the legislature, executive and judiciary at the same level",
+          "Power shared between the union government and state governments",
+          "Reservation of seats for women in local bodies",
+          "Power shared only between community-based organisations"
+        ],
+        "correct_index": 0,
+        "explanation": "Horizontal power-sharing distributes power among different organs of government at the same level — legislature, executive and judiciary — so that no single organ becomes too powerful.",
+        "topic": "Power Sharing",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which statement best distinguishes 'overlapping' social differences from 'cross-cutting' social differences?",
+        "options": [
+          "Overlapping differences reinforce each other along one dividing line, while cross-cutting differences cut across groups and tend to reduce conflict intensity",
+          "Overlapping differences occur only in rural areas",
+          "Cross-cutting differences exist only between two political parties",
+          "There is no real distinction between the two"
+        ],
+        "correct_index": 0,
+        "explanation": "When disadvantages pile up along the same line (overlapping), conflict tends to be sharper; when group memberships cut across each other (cross-cutting), conflict tends to be milder.",
+        "topic": "Democracy and Diversity",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which constitutional guarantee allows religious communities in India to set up their own educational institutions?",
+        "options": [
+          "Freedom of religion provisions in the Constitution",
+          "The right to property",
+          "The right against exploitation",
+          "The right to constitutional remedies"
+        ],
+        "correct_index": 0,
+        "explanation": "The Indian Constitution's provisions on freedom of religion allow religious communities to establish and administer their own educational institutions.",
+        "topic": "Gender, Religion and Caste",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of the following is generally considered a genuine strength of democratic government compared to non-democratic alternatives?",
+        "options": [
+          "It guarantees every decision will be economically efficient",
+          "It promotes accountability and a legitimate government based on people's consent",
+          "It eliminates all forms of inequality instantly",
+          "It guarantees rapid economic growth every year"
+        ],
+        "correct_index": 1,
+        "explanation": "Democracies are valued less for guaranteeing specific outcomes and more for being accountable, responsive, and legitimate because they rest on the people's consent.",
+        "topic": "Outcomes of Democracy",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of these best describes a 'foundational' challenge to democracy, as distinct from an 'expansion' challenge?",
+        "options": [
+          "Transforming a non-democratic regime into a democratic one and setting up basic democratic institutions",
+          "Extending democratic principles to more institutions and social groups within an already democratic country",
+          "Deepening democracy where it already exists through greater citizen participation",
+          "Improving the day-to-day functioning of existing democratic institutions only"
+        ],
+        "correct_index": 0,
+        "explanation": "A foundational challenge involves bringing down a non-democratic regime and establishing the basic structures of democracy, unlike expansion or deepening challenges faced within established democracies.",
+        "topic": "Challenges to Democracy",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The April 2006 movement in Nepal that restored democracy is a textbook example of what kind of political mobilisation?",
+        "options": [
+          "A popular struggle combining political organisations, movement groups and spontaneous public mobilisation",
+          "A struggle led purely by the army to seize power",
+          "An economic trade dispute between two countries",
+          "A judicial reform initiated entirely by the courts"
+        ],
+        "correct_index": 0,
+        "explanation": "The April 2006 movement combined political parties, civil society groups and ordinary citizens mobilising together, making it a classic popular struggle for democracy.",
+        "topic": "Popular Struggles and Movements",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "94debb4d-e49e-416f-b74a-5e1ffb21da8e",
+    "subject_name": "Social Science (Geography)",
+    "quiz_title": "Geography — Quick Revision Quiz",
+    "questions": [
+      {
+        "text": "Resources that can be renewed or replenished naturally within a relatively short time are called:",
+        "options": [
+          "Renewable resources",
+          "Non-renewable resources",
+          "Abiotic resources",
+          "Potential resources"
+        ],
+        "correct_index": 0,
+        "explanation": "Renewable resources, such as solar energy or forests, can regenerate or be replenished naturally within a relatively short span of time.",
+        "topic": "Resources and Development",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which of the following is a kharif crop, sown with the onset of the monsoon in India?",
+        "options": [
+          "Rice",
+          "Wheat",
+          "Mustard",
+          "Gram"
+        ],
+        "correct_index": 0,
+        "explanation": "Rice is a typical kharif crop, sown in the rainy season (June-July) and harvested around September-October; wheat, mustard and gram are rabi crops.",
+        "topic": "Agriculture",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which of the following is a traditional method of rainwater harvesting practised in many parts of India?",
+        "options": [
+          "Rooftop rainwater harvesting into storage tanks",
+          "Desalination of seawater",
+          "Nuclear power generation",
+          "Deep-sea fishing"
+        ],
+        "correct_index": 0,
+        "explanation": "Rooftop rainwater harvesting, where rain is collected and stored in tanks or channelled to recharge groundwater, is a long-practised traditional method in India.",
+        "topic": "Water Resources",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which of these is classified as a non-conventional (renewable) source of energy?",
+        "options": [
+          "Solar energy",
+          "Coal",
+          "Petroleum",
+          "Natural gas"
+        ],
+        "correct_index": 0,
+        "explanation": "Solar energy is a non-conventional, renewable energy source, unlike coal, petroleum and natural gas, which are conventional, exhaustible fossil fuels.",
+        "topic": "Minerals and Energy Resources",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Based on the source of its raw material, which category does the iron and steel industry belong to?",
+        "options": [
+          "Mineral-based industry",
+          "Agro-based industry",
+          "Forest-based industry",
+          "Marine-based industry"
+        ],
+        "correct_index": 0,
+        "explanation": "The iron and steel industry draws its main raw material, iron ore, from minerals, so it is classified as a mineral-based industry.",
+        "topic": "Manufacturing Industries",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Species whose population has declined so much that they are at risk of extinction are classified as:",
+        "options": [
+          "Endangered species",
+          "Extinct species",
+          "Common species",
+          "Domesticated species"
+        ],
+        "correct_index": 0,
+        "explanation": "Endangered species are those whose numbers have fallen to a level that puts them at risk of extinction if the decline continues.",
+        "topic": "Forest and Wildlife Resources",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which mode of transport in India carries the bulk of long-distance, heavy and bulky freight at relatively low cost?",
+        "options": [
+          "Railways",
+          "Airways",
+          "Pipelines",
+          "Roadways alone"
+        ],
+        "correct_index": 0,
+        "explanation": "Railways are the backbone of India's inland transport system for moving heavy and bulky goods cheaply over long distances.",
+        "topic": "Lifelines of National Economy",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Land that remains uncultivated for one or more agricultural years but less than five years, to let it regain fertility, is classified as:",
+        "options": [
+          "Fallow land",
+          "Net sown area",
+          "Wasteland",
+          "Forest land"
+        ],
+        "correct_index": 0,
+        "explanation": "Fallow land is cultivable land left temporarily unused (under five years) to restore fertility, unlike wasteland, which is unfit for cultivation.",
+        "topic": "Resources and Development",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "5a5d7d02-dde6-4d39-88ab-08a8b20e355f",
+    "subject_name": "Social Science (History)",
+    "quiz_title": "History — Practice Round",
+    "questions": [
+      {
+        "text": "Mahatma Gandhi launched the Non-Cooperation Movement in which year?",
+        "options": [
+          "1920",
+          "1930",
+          "1942",
+          "1905"
+        ],
+        "correct_index": 0,
+        "explanation": "The Non-Cooperation Movement was launched by Gandhi in 1920, urging Indians to withdraw cooperation from British institutions.",
+        "topic": "Nationalism in India",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In the years following the French Revolution, French artists and poets personified the 'nation' as a woman, giving her the name:",
+        "options": [
+          "Marianne",
+          "Germania",
+          "Britannia",
+          "Helvetia"
+        ],
+        "correct_index": 0,
+        "explanation": "French revolutionaries personified Liberty and the Nation as a female figure named Marianne, whose image became a symbol of republican France.",
+        "topic": "The Rise of Nationalism in Europe",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which mid-fifteenth-century invention dramatically increased the speed and scale of book production in Europe?",
+        "options": [
+          "Gutenberg's printing press",
+          "The telegraph",
+          "The steam engine",
+          "The typewriter"
+        ],
+        "correct_index": 0,
+        "explanation": "Johannes Gutenberg's printing press, developed around the mid-1400s, allowed books to be produced far faster and more cheaply than by hand-copying.",
+        "topic": "Print Culture and the Modern World",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In pre-industrial Europe, what term describes the system where merchants supplied raw materials to rural households, who produced goods from their own homes for a wider market?",
+        "options": [
+          "Proto-industrialisation (the putting-out system)",
+          "The factory system",
+          "The guild system",
+          "The plantation system"
+        ],
+        "correct_index": 0,
+        "explanation": "Before factories became dominant, merchants used the putting-out system (proto-industrialisation), supplying raw material to rural producers who worked from home.",
+        "topic": "The Age of Industrialisation",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The mass migration of indentured labourers from India in the nineteenth century was primarily to work on:",
+        "options": [
+          "Plantations in colonies such as the Caribbean, Mauritius and Fiji",
+          "Factories in Britain",
+          "Shipyards in Japan",
+          "Mines in Australia only"
+        ],
+        "correct_index": 0,
+        "explanation": "Thousands of Indian indentured labourers were shipped to work on sugar, tea and rubber plantations in colonies like the Caribbean islands, Mauritius and Fiji.",
+        "topic": "The Making of a Global World",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The Simon Commission of 1928 was widely opposed by Indians chiefly because:",
+        "options": [
+          "It did not include a single Indian member",
+          "It proposed complete independence too quickly",
+          "It increased taxes on salt",
+          "It was formed by the Indian National Congress itself"
+        ],
+        "correct_index": 0,
+        "explanation": "The Simon Commission was boycotted because it was composed entirely of British members with no Indian representation, which many saw as insulting.",
+        "topic": "Nationalism in India",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In colonial India, why did many handloom weavers face a sharp decline in demand for their cloth during the nineteenth century?",
+        "options": [
+          "Cheap machine-made cloth imported from British mills flooded Indian markets",
+          "The colonial government banned handloom weaving entirely",
+          "Cotton cultivation stopped completely in India",
+          "Weavers voluntarily shifted to farming en masse"
+        ],
+        "correct_index": 0,
+        "explanation": "Machine-made cloth from British mills was cheaper and flooded Indian markets, undercutting demand for hand-woven cloth and devastating many weaving communities.",
+        "topic": "The Age of Industrialisation",
+        "difficulty": "hard"
+      },
+      {
+        "text": "How did the spread of print culture contribute to the rise of nationalism in colonial India?",
+        "options": [
+          "It had no real connection to nationalist politics",
+          "It allowed ideas, news and nationalist arguments to circulate widely through newspapers, pamphlets and books, building shared public opinion",
+          "It was used exclusively by the colonial government for administration",
+          "It only helped spread religious texts with no political content"
+        ],
+        "correct_index": 1,
+        "explanation": "Newspapers, pamphlets and books let nationalist ideas reach a wide, dispersed readership, helping build shared political consciousness across regions.",
+        "topic": "Print Culture and the Modern World",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "e6a88eea-e728-4916-b912-6c6e2985fb7e",
+    "subject_name": "Social Science(Economics)",
+    "quiz_title": "Economics — Concept Check Set",
+    "questions": [
+      {
+        "text": "Which of these is commonly used, alongside other indicators, as a measure of a country's development by comparing average income?",
+        "options": [
+          "Per capita income (average income)",
+          "Total land area",
+          "Number of political parties",
+          "Total population alone"
+        ],
+        "correct_index": 0,
+        "explanation": "Per capita income (average income per person) is a commonly used comparative measure of development, though it is not the only indicator used.",
+        "topic": "Development",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Activities such as farming, fishing and mining that directly exploit natural resources belong to which sector of the economy?",
+        "options": [
+          "Primary sector",
+          "Secondary sector",
+          "Tertiary sector",
+          "Quaternary sector"
+        ],
+        "correct_index": 0,
+        "explanation": "The primary sector covers activities that directly use natural resources, such as agriculture, fishing, forestry and mining.",
+        "topic": "Sectors of the Indian Economy",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which institution is the apex body that regulates and supervises the banking system in India?",
+        "options": [
+          "Reserve Bank of India (RBI)",
+          "State Bank of India (SBI)",
+          "World Bank",
+          "Life Insurance Corporation (LIC)"
+        ],
+        "correct_index": 0,
+        "explanation": "The Reserve Bank of India is the central bank that regulates and supervises all banks and the overall banking system in the country.",
+        "topic": "Money and Credit",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Under India's consumer protection system, which forum would a consumer typically approach first for a grievance of relatively small monetary value?",
+        "options": [
+          "The District Consumer Disputes Redressal Forum/Commission",
+          "The Supreme Court of India directly",
+          "The National Human Rights Commission",
+          "The Parliament"
+        ],
+        "correct_index": 0,
+        "explanation": "India's three-tier consumer dispute redressal system begins at the district level for cases up to a certain value, before escalating to state and national commissions.",
+        "topic": "Consumer Rights",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What does 'globalisation' primarily refer to in an economic context?",
+        "options": [
+          "The closer integration of countries through trade, investment, and the flow of capital, labour and services",
+          "A single country becoming fully self-reliant and stopping all trade",
+          "A policy restricting all foreign companies from operating locally",
+          "The conversion of all national currencies into one global currency"
+        ],
+        "correct_index": 0,
+        "explanation": "Globalisation refers to the growing interconnection of economies through trade, investment, capital flows and movement of people and services across borders.",
+        "topic": "Globalisation and the Indian Economy",
+        "difficulty": "medium"
+      },
+      {
+        "text": "When the value of goods and services produced by a sector is divided by the number of people employed in it, what does this measure represent?",
+        "options": [
+          "Productivity, or output per worker, in that sector",
+          "The total GDP of the whole country",
+          "The literacy rate of the sector's workers",
+          "The country's foreign exchange reserves"
+        ],
+        "correct_index": 0,
+        "explanation": "Dividing a sector's total output value by the number of workers in it gives a measure of productivity, or output per worker.",
+        "topic": "Sectors of the Indian Economy",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Why might formal sources of credit, like banks, generally be preferred by borrowers over informal sources, like moneylenders?",
+        "options": [
+          "Formal credit is typically regulated by the RBI and charges lower, more transparent interest rates",
+          "Informal credit is always interest-free",
+          "Formal credit requires absolutely no documentation",
+          "Informal lenders are legally required to charge the same rate as banks"
+        ],
+        "correct_index": 0,
+        "explanation": "Formal sources are regulated by the RBI and generally offer lower, transparent interest rates, while informal lenders can charge very high rates with little oversight.",
+        "topic": "Money and Credit",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Why do economists argue that an average measure like per capita income can sometimes hide important facts about real development?",
+        "options": [
+          "Because an average can mask large income inequalities between the richest and poorest in a population",
+          "Because per capita income is always calculated incorrectly",
+          "Because averages apply only to agricultural economies",
+          "Because per capita income automatically decreases every year"
+        ],
+        "correct_index": 0,
+        "explanation": "An average figure does not show how income is actually distributed, so two regions with the same per capita income can still have very different levels of real inequality.",
+        "topic": "Development",
+        "difficulty": "hard"
+      }
+    ]
+  }
+]

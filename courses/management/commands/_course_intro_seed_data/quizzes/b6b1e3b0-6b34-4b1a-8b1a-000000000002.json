@@ -1,0 +1,890 @@
+[
+  {
+    "subject_id": "1e6265e9-4153-4e71-a248-1493c923250f",
+    "subject_name": "Accountancy",
+    "quiz_title": "Accountancy — Practice Set",
+    "questions": [
+      {
+        "text": "Which of the following best describes the primary objective of accounting?",
+        "options": [
+          "To record, classify and summarise financial transactions to determine results and position",
+          "To advertise products to customers",
+          "To manufacture goods at the lowest possible cost",
+          "To recruit employees for a firm"
+        ],
+        "correct_index": 0,
+        "explanation": "Accounting's core purpose is systematically recording, classifying and summarising monetary transactions to ascertain profit/loss and financial position.",
+        "topic": "Introduction to Accounting",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A company prepares its financial statements assuming it will continue its operations for the foreseeable future and has no plan to liquidate its assets. Which accounting concept is being applied?",
+        "options": [
+          "Going Concern concept",
+          "Money Measurement concept",
+          "Consistency concept",
+          "Conservatism concept"
+        ],
+        "correct_index": 0,
+        "explanation": "The going concern concept assumes indefinite continuity of the business, which justifies valuing assets at cost rather than at forced-sale/liquidation value.",
+        "topic": "Theory Base of Accounting",
+        "difficulty": "easy"
+      },
+      {
+        "text": "When goods are purchased for cash, which journal entry correctly records the transaction?",
+        "options": [
+          "Purchases A/c Dr., To Cash A/c",
+          "Cash A/c Dr., To Purchases A/c",
+          "Sales A/c Dr., To Cash A/c",
+          "Cash A/c Dr., To Sales A/c"
+        ],
+        "correct_index": 0,
+        "explanation": "Purchases (an expense/asset-in-trade) increase and are debited, while Cash, an asset, decreases and is credited in a cash purchase transaction.",
+        "topic": "Recording of Transactions I",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A firm's cash book (bank column) shows a higher balance than its passbook on a given date, with no errors involved. Which of the following best explains this?",
+        "options": [
+          "Cheques deposited by the firm but not yet collected/cleared by the bank",
+          "Cheques issued by the firm but not yet presented for payment",
+          "Bank charges debited by the bank but not yet recorded in the cash book",
+          "Interest credited by the bank but not yet recorded in the cash book"
+        ],
+        "correct_index": 0,
+        "explanation": "Cheques deposited are debited (added) in the cash book as soon as they are deposited, but the bank credits the account only once the cheque is actually collected, so the cash book temporarily shows a higher balance than the passbook.",
+        "topic": "Bank Reconciliation Statement",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which type of error will NOT be detected by preparing a trial balance?",
+        "options": [
+          "Complete omission of a transaction from both the accounts it should affect",
+          "Posting an entry to the wrong side of an account",
+          "Writing a wrong amount in only one of the two accounts affected",
+          "Omitting to post one side of a journal entry"
+        ],
+        "correct_index": 0,
+        "explanation": "A complete omission affects neither the debit nor the credit side of the books, so the trial balance still balances; the other errors create a one-sided mismatch that the trial balance would reveal.",
+        "topic": "Trial Balance and Rectification of Errors",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A machine is purchased for ₹2,00,000. Depreciation is charged at 10% per annum under the Written Down Value (Diminishing Balance) method. What is the book value of the machine at the end of the second year?",
+        "options": [
+          "₹1,62,000",
+          "₹1,60,000",
+          "₹1,80,000",
+          "₹1,44,000"
+        ],
+        "correct_index": 0,
+        "explanation": "Under the WDV method, depreciation is calculated on the reducing balance each year: ₹2,00,000 becomes ₹1,80,000 after year 1 (10% deducted), and ₹1,80,000 becomes ₹1,62,000 after year 2 (10% of ₹1,80,000 deducted).",
+        "topic": "Depreciation, Provisions and Reserves",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In a bill of exchange, the person directed to pay the specified amount is called the:",
+        "options": [
+          "Drawee",
+          "Drawer",
+          "Payee",
+          "Endorser"
+        ],
+        "correct_index": 0,
+        "explanation": "The drawee is the party ordered by the drawer to pay the stated sum on the bill, and is typically the debtor who accepts the bill of exchange.",
+        "topic": "Bill of Exchange",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The Trading Account of a business is prepared mainly to ascertain:",
+        "options": [
+          "Gross profit or gross loss",
+          "Net profit or net loss",
+          "The overall financial position of the business",
+          "The amount of capital introduced by the owner"
+        ],
+        "correct_index": 0,
+        "explanation": "The Trading Account matches sales revenue against the cost of goods sold to determine the gross profit or gross loss for the period.",
+        "topic": "Financial Statements — I",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "c5db5de1-54f7-443c-ad20-f99174bf12c6",
+    "subject_name": "Business Studies",
+    "quiz_title": "Business Studies — Quick Quiz",
+    "questions": [
+      {
+        "text": "Which of the following is a distinguishing feature of 'commerce' as compared with 'industry'?",
+        "options": [
+          "Commerce deals with the distribution and exchange of goods and services",
+          "Commerce deals only with the extraction of raw materials",
+          "Commerce deals only with manufacturing processes",
+          "Commerce refers exclusively to international trade"
+        ],
+        "correct_index": 0,
+        "explanation": "Commerce covers trade and auxiliary activities (banking, transport, insurance, etc.) that facilitate the distribution and exchange of goods, which is distinct from industry, concerned with production.",
+        "topic": "Business, Trade and Commerce",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In a partnership firm, what is the nature of the partners' liability for the firm's debts, unless otherwise agreed?",
+        "options": [
+          "Unlimited and joint liability",
+          "Limited strictly to the amount of capital invested",
+          "No liability at all",
+          "Liability limited to profits earned that year"
+        ],
+        "correct_index": 0,
+        "explanation": "Partners generally bear unlimited, joint liability for the firm's debts, meaning their personal assets can be used to settle business obligations if firm assets fall short.",
+        "topic": "Forms of Business Organisation",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A statutory corporation such as the Life Insurance Corporation (LIC) is established by:",
+        "options": [
+          "A special Act of Parliament or State Legislature",
+          "Registration under the Companies Act",
+          "A partnership deed",
+          "A memorandum of association alone"
+        ],
+        "correct_index": 0,
+        "explanation": "Statutory corporations are created through a special Act of the legislature, which defines their powers and functioning, unlike companies that are registered under the Companies Act.",
+        "topic": "Private, Public and Global Enterprises",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of the following is an example of a business service rather than a physical good?",
+        "options": [
+          "Banking",
+          "Furniture",
+          "Wheat",
+          "Cement"
+        ],
+        "correct_index": 0,
+        "explanation": "Banking is an intangible activity that facilitates business and commerce, whereas furniture, wheat and cement are tangible physical goods.",
+        "topic": "Business Services",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Business ethics primarily refers to:",
+        "options": [
+          "The application of moral principles of right and wrong to business conduct and decision-making",
+          "The legal minimum wage a firm must pay its employees",
+          "The accounting standards used for reporting profits",
+          "The advertising budget set aside by a company"
+        ],
+        "correct_index": 0,
+        "explanation": "Business ethics concerns applying standards of honesty, fairness and transparency to business behaviour, going beyond mere legal compliance.",
+        "topic": "Social Responsibilities of Business and Business Ethics",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Retained earnings (ploughed-back profits) are considered a source of business finance that is:",
+        "options": [
+          "Internal to the business",
+          "External and borrowed",
+          "Available only to sole proprietorships",
+          "A short-term liability like trade credit"
+        ],
+        "correct_index": 0,
+        "explanation": "Retained earnings are generated from within the business itself, making them an internal source of long-term finance, unlike borrowed external funds.",
+        "topic": "Sources of Business Finance",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A 'chain store' (multiple shop organisation) in internal trade is best described as:",
+        "options": [
+          "A number of retail outlets under common ownership, selling similar merchandise, located in different areas",
+          "A single large wholesale warehouse serving multiple independent retailers",
+          "A cooperative of independent retailers sharing only a common brand name",
+          "A door-to-door selling arrangement with no fixed outlet"
+        ],
+        "correct_index": 0,
+        "explanation": "Chain/multiple shops are several retail branches owned and centrally controlled by one organisation, offering standardised merchandise and pricing across locations.",
+        "topic": "Internal Trade",
+        "difficulty": "hard"
+      },
+      {
+        "text": "A 'Letter of Credit' used in international trade primarily serves to:",
+        "options": [
+          "Assure the exporter of payment, since the importer's bank guarantees payment on presentation of the specified documents",
+          "Insure the goods against loss or damage during transit",
+          "Grant the importer exemption from customs duty",
+          "Register the exporting firm's trademark abroad"
+        ],
+        "correct_index": 0,
+        "explanation": "A Letter of Credit is issued by the importer's bank, assuring the exporter of payment once the required shipping documents are presented, which reduces payment risk in cross-border trade.",
+        "topic": "International Business",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "245340f2-a76f-41d3-a718-e4c1999c2b53",
+    "subject_name": "Economics — Indian Economic Development",
+    "quiz_title": "Indian Economic Development — Concept Check",
+    "questions": [
+      {
+        "text": "At the time of India's independence, which sector employed the largest proportion of the workforce?",
+        "options": [
+          "Agriculture",
+          "Manufacturing industry",
+          "Information technology services",
+          "Banking and finance"
+        ],
+        "correct_index": 0,
+        "explanation": "Around 1947, agriculture was the predominant occupation, employing roughly 70-75% of the workforce, while industry and services remained relatively undeveloped.",
+        "topic": "Indian Economy on the Eve of Independence",
+        "difficulty": "easy"
+      },
+      {
+        "text": "India's industrial policy regime between 1950 and 1990, which required government permission before setting up or expanding industrial units, is commonly known as:",
+        "options": [
+          "The Licence (Permit) Raj",
+          "The Green Revolution policy",
+          "The laissez-faire policy",
+          "The Zamindari system"
+        ],
+        "correct_index": 0,
+        "explanation": "Under the Licence Raj, private firms needed government licenses to establish, expand or diversify production, reflecting the heavy regulation of industry during this period.",
+        "topic": "Indian Economy (1950–1990)",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'Disinvestment', as part of India's privatisation policy, refers to:",
+        "options": [
+          "The sale of a part of the government's equity/shareholding in public sector undertakings",
+          "The government's complete withdrawal of all subsidies to farmers",
+          "A complete ban on foreign direct investment",
+          "The nationalisation of private banks"
+        ],
+        "correct_index": 0,
+        "explanation": "Disinvestment means the government sells off a portion of its equity holding in public sector enterprises, often to improve efficiency and raise resources.",
+        "topic": "Liberalisation, Privatisation and Globalisation",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The 'poverty line' in India is typically defined on the basis of:",
+        "options": [
+          "A minimum level of income or consumption expenditure needed to meet basic needs",
+          "The average income of the richest 10% of the population",
+          "The number of millionaires in a state",
+          "The total GDP of the country"
+        ],
+        "correct_index": 0,
+        "explanation": "The poverty line is a benchmark expenditure/income level considered necessary to satisfy a minimum standard of living, covering food and non-food requirements.",
+        "topic": "Poverty",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Investment in education and health is referred to as investment in 'human capital' primarily because it:",
+        "options": [
+          "Improves the productive capacities and skills of people, much as physical capital raises output",
+          "Only benefits the government's tax revenue",
+          "Has no measurable impact on economic growth",
+          "Is accounted for in the same way as foreign direct investment"
+        ],
+        "correct_index": 0,
+        "explanation": "Education and health raise individuals' productivity and capabilities, functioning like capital that increases future output, which is why it is termed human capital formation.",
+        "topic": "Human Capital Formation in India",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of the following is a key focus area of rural development in India?",
+        "options": [
+          "Diversification of rural livelihoods, sustainable agriculture, and access to credit in rural areas",
+          "Expansion of stock exchanges in metropolitan cities",
+          "Reduction in the number of commercial banks nationwide",
+          "Promotion of heavy luxury-goods manufacturing"
+        ],
+        "correct_index": 0,
+        "explanation": "Rural development emphasises improving agricultural productivity, diversifying livelihoods, and ensuring access to credit, infrastructure and markets for the rural population.",
+        "topic": "Rural Development",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Workers in the 'informal sector' of the Indian economy are characterised mainly by:",
+        "options": [
+          "Lack of job security, social security benefits and regulation under labour laws",
+          "Guaranteed pension and provident fund benefits",
+          "Fixed working hours strictly set by statute",
+          "Mandatory annual bonuses under the Factories Act"
+        ],
+        "correct_index": 0,
+        "explanation": "Informal sector workers typically lack formal contracts, job security and statutory benefits such as provident fund or health insurance, unlike those in the organised/formal sector.",
+        "topic": "Employment: Growth, Informalisation and Other Issues",
+        "difficulty": "hard"
+      },
+      {
+        "text": "'Sustainable development' is best defined as development that:",
+        "options": [
+          "Meets the needs of the present generation without compromising the ability of future generations to meet their own needs",
+          "Maximises short-term industrial output regardless of resource depletion",
+          "Focuses exclusively on the GDP growth rate",
+          "Prohibits any use of natural resources whatsoever"
+        ],
+        "correct_index": 0,
+        "explanation": "Sustainable development, as popularised by the Brundtland Report, balances current economic needs with preserving resources and environment for future generations.",
+        "topic": "Environment and Sustainable Development",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "49187d26-1a17-4bc8-9450-14e2ed6eb593",
+    "subject_name": "Economics — Statistics for Economics",
+    "quiz_title": "Statistics for Economics — Practice Set",
+    "questions": [
+      {
+        "text": "In economics, statistics is primarily used as a tool to:",
+        "options": [
+          "Collect, organise, analyse and interpret numerical data to help understand economic phenomena",
+          "Predict the weather",
+          "Determine eligibility criteria for government jobs",
+          "Draft laws in parliament"
+        ],
+        "correct_index": 0,
+        "explanation": "Statistics provides methods to systematically collect, present and analyse quantitative data, supporting economic analysis and decision-making.",
+        "topic": "Introduction to Statistics",
+        "difficulty": "easy"
+      },
+      {
+        "text": "When data is collected directly by the investigator through personal interviews or surveys for a specific study, it is called:",
+        "options": [
+          "Primary data",
+          "Secondary data",
+          "Published data",
+          "Census data, by definition"
+        ],
+        "correct_index": 0,
+        "explanation": "Primary data is collected firsthand by the investigator for the specific purpose of the study, as opposed to secondary data, which is sourced from existing records compiled by someone else.",
+        "topic": "Collection of Data",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A 'frequency distribution' organises raw data by:",
+        "options": [
+          "Grouping values into classes and showing the number of observations in each class",
+          "Listing data purely in alphabetical order",
+          "Converting every value into a percentage of GDP",
+          "Removing all values below the median"
+        ],
+        "correct_index": 0,
+        "explanation": "A frequency distribution arranges data into class intervals and records how many observations (frequency) fall into each, making large datasets easier to interpret.",
+        "topic": "Organisation of Data",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of the following is a graphical method of presenting statistical data?",
+        "options": [
+          "Histogram",
+          "Mean",
+          "Standard deviation",
+          "Correlation coefficient"
+        ],
+        "correct_index": 0,
+        "explanation": "A histogram is a diagrammatic tool used to visually present a frequency distribution, unlike the mean, standard deviation or correlation coefficient, which are numerical summary measures.",
+        "topic": "Presentation of Data",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The median of a data set is defined as:",
+        "options": [
+          "The middle value when the data is arranged in ascending or descending order",
+          "The value that occurs most frequently in the data set",
+          "The sum of all values divided by the number of values",
+          "The difference between the highest and lowest values"
+        ],
+        "correct_index": 0,
+        "explanation": "The median is the positional middle value of an ordered dataset, dividing it into two equal halves, unlike the mean (average) or mode (most frequent value).",
+        "topic": "Measures of Central Tendency",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which measure of dispersion uses ALL the values in a data set and is the most commonly used in statistical analysis?",
+        "options": [
+          "Standard deviation",
+          "Range",
+          "Quartile deviation",
+          "Mode"
+        ],
+        "correct_index": 0,
+        "explanation": "Standard deviation is calculated using every observation's deviation from the mean, making it a comprehensive and widely-used measure of dispersion, unlike range, which uses only the two extreme values.",
+        "topic": "Measures of Dispersion",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A correlation coefficient of -0.9 between two variables indicates:",
+        "options": [
+          "A strong negative (inverse) linear relationship between the variables",
+          "A strong positive relationship between the variables",
+          "No relationship between the variables",
+          "That one variable definitely causes the other to change"
+        ],
+        "correct_index": 0,
+        "explanation": "A coefficient close to -1 indicates a strong inverse relationship — as one variable increases, the other tends to decrease — though correlation alone does not establish causation.",
+        "topic": "Correlation",
+        "difficulty": "hard"
+      },
+      {
+        "text": "A price index number such as the Consumer Price Index (CPI) is primarily used to measure:",
+        "options": [
+          "The relative change in the price level of a basket of goods and services over time, compared to a base period",
+          "The absolute quantity of goods produced in a year",
+          "The total population of a country",
+          "The exchange rate between two currencies"
+        ],
+        "correct_index": 0,
+        "explanation": "Index numbers like the CPI express the percentage change in prices of a representative basket of goods relative to a fixed base period, and are commonly used to track inflation.",
+        "topic": "Index Numbers",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "48a391c2-365e-40d1-9cde-04ac11c4d4d4",
+    "subject_name": "English — Grammar & Writing Skills",
+    "quiz_title": "Grammar & Writing Skills — Skill Builder",
+    "questions": [
+      {
+        "text": "Identify the type of sentence: \"Although it was raining, the match continued.\"",
+        "options": [
+          "Complex sentence",
+          "Simple sentence",
+          "Compound sentence",
+          "Interrogative sentence"
+        ],
+        "correct_index": 0,
+        "explanation": "The sentence contains one independent clause (\"the match continued\") and one dependent clause introduced by \"although,\" which is the structure of a complex sentence.",
+        "topic": "Advanced Grammar — Clauses and Sentence Types",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which of the following sentences contains a noun clause?",
+        "options": [
+          "I know that she will come tomorrow.",
+          "The man who lives next door is a doctor.",
+          "She sang while the band played.",
+          "He arrived late, but nobody noticed."
+        ],
+        "correct_index": 0,
+        "explanation": "\"That she will come tomorrow\" functions as the object of the verb \"know,\" which is the role a noun clause plays; the other sentences contain an adjective clause, an adverb clause, or two independent clauses joined by a conjunction.",
+        "topic": "Advanced Grammar — Clauses and Sentence Types",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The primary purpose of note-making while reading a passage is to:",
+        "options": [
+          "Record the main ideas and key points in a brief, organised form for later reference",
+          "Rewrite the entire passage word for word",
+          "Add imaginative details not found in the original text",
+          "Translate the passage into another language"
+        ],
+        "correct_index": 0,
+        "explanation": "Note-making condenses a text into its essential ideas using headings, sub-points and abbreviations, making it easier to revise and recall the information later.",
+        "topic": "Note-Making and Summarising",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A good summary of a passage should:",
+        "options": [
+          "Retain only the main ideas in the summariser's own words and omit minor details",
+          "Be longer than the original passage",
+          "Copy entire sentences verbatim from the original text",
+          "Include the summariser's personal opinions"
+        ],
+        "correct_index": 0,
+        "explanation": "Summarising involves condensing the original text into fewer words while preserving its core meaning in one's own words, without adding opinions or unnecessary detail.",
+        "topic": "Note-Making and Summarising",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A newspaper report, unlike a feature article, is primarily expected to:",
+        "options": [
+          "Present factual information about an event in a clear, objective and chronological manner",
+          "Express the writer's personal feelings in an informal tone",
+          "Use poetic and highly figurative language",
+          "Be addressed directly to a single named recipient"
+        ],
+        "correct_index": 0,
+        "explanation": "Reports are factual accounts of events, typically answering the key questions of who, what, when, where and why objectively, unlike the more subjective or narrative style of article writing.",
+        "topic": "Report and Article Writing",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which salutation would be most appropriate in a FORMAL letter addressed to the Editor of a newspaper?",
+        "options": [
+          "Sir/Madam,",
+          "Hi there,",
+          "Dear Buddy,",
+          "Hey Editor,"
+        ],
+        "correct_index": 0,
+        "explanation": "Formal letters use respectful, impersonal salutations such as \"Sir/Madam,\" whereas casual greetings are appropriate only for informal correspondence.",
+        "topic": "Formal and Informal Letter Writing",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In a formal letter of complaint, which element is essential but is typically absent from an informal letter?",
+        "options": [
+          "A clear, polite statement of the problem along with a specific request for redressal",
+          "Casual family news",
+          "Nicknames and inside jokes",
+          "Emoji and abbreviated text-speak"
+        ],
+        "correct_index": 0,
+        "explanation": "A formal complaint letter must state the issue precisely and request specific action or redressal in a polite, structured tone, unlike an informal letter, which may simply share personal news.",
+        "topic": "Formal and Informal Letter Writing",
+        "difficulty": "hard"
+      },
+      {
+        "text": "When answering comprehension questions based on a given passage, the most reliable strategy is to:",
+        "options": [
+          "Base answers strictly on the information given in the passage rather than on prior personal knowledge",
+          "Answer purely from memory without referring back to the passage",
+          "Guess the answer based on the title alone",
+          "Write the longest possible answer regardless of relevance"
+        ],
+        "correct_index": 0,
+        "explanation": "Comprehension answers should be derived from and supported by the given text, since the exercise tests understanding of that specific passage, not general knowledge.",
+        "topic": "Comprehension Passages",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "24cc190d-21c9-4281-8305-c79989b9338c",
+    "subject_name": "English — Hornbill (Main Reader)",
+    "quiz_title": "Hornbill — Chapter Review",
+    "questions": [
+      {
+        "text": "In 'The Portrait of a Lady' by Khushwant Singh, how does the author's relationship with his grandmother change after he goes abroad to study?",
+        "options": [
+          "She grows distant and largely stops communicating or praying aloud with him as she used to",
+          "She writes him long emotional letters every single day",
+          "She travels abroad to visit him in person",
+          "Their relationship becomes closer than it had ever been"
+        ],
+        "correct_index": 0,
+        "explanation": "After the narrator moves to the city and later abroad, his grandmother gradually withdraws and communicates with him far less than before, reflecting a growing emotional distance.",
+        "topic": "The Portrait of a Lady",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'We Are Not Afraid to Die... if We Can All Be Together,' what major hazard does the crew of the Wavewalker face in the Pacific Ocean?",
+        "options": [
+          "A huge wave capsizes the yacht during a violent storm",
+          "They run out of fuel near the coast",
+          "They are attacked by pirates",
+          "They lose radio contact in calm weather"
+        ],
+        "correct_index": 0,
+        "explanation": "The narrator recounts how a massive wave capsized the yacht during a storm in the Pacific, badly damaging it and forcing the crew to fight for survival and make repairs.",
+        "topic": "We are Not Afraid to Die",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What modern investigative technique is described in 'Discovering Tut: The Saga Continues' for studying Tutankhamun's mummy without damaging it?",
+        "options": [
+          "CT scanning",
+          "Carbon dating of pottery shards",
+          "X-ray crystallography of jewellery",
+          "DNA testing of the pyramid walls"
+        ],
+        "correct_index": 0,
+        "explanation": "The chapter describes how a CT scan was used on Tutankhamun's mummy to study his remains non-invasively and investigate theories about the cause of his death.",
+        "topic": "Discovering Tut: The Saga Continues",
+        "difficulty": "medium"
+      },
+      {
+        "text": "According to 'Landscape of the Soul,' how does traditional Chinese painting differ from traditional Western art in representing reality?",
+        "options": [
+          "Chinese art aims to capture the inner spirit or essence of a subject rather than its exact physical likeness",
+          "Chinese art focuses only on photographic accuracy",
+          "Western art never attempts any form of realism",
+          "Chinese art uses no brushwork techniques at all"
+        ],
+        "correct_index": 0,
+        "explanation": "The essay contrasts the Western pursuit of outer, literal likeness with the Chinese tradition's focus on conveying the inner essence of the subject, illustrated through anecdotes such as the painter and the butcher.",
+        "topic": "Landscape of the Soul",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which international event/agreement is discussed in 'The Ailing Planet' in relation to global cooperation on environmental protection?",
+        "options": [
+          "The Earth Summit held in Rio de Janeiro",
+          "The Treaty of Versailles",
+          "The Kyoto Protocol on trade tariffs",
+          "The Geneva Convention on armed conflict"
+        ],
+        "correct_index": 0,
+        "explanation": "The chapter discusses the 1992 Rio 'Earth Summit' as a key global effort bringing nations together to address environmental degradation and promote sustainable development.",
+        "topic": "The Ailing Planet: The Green Movement's Role",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In 'The Browning Version,' what gift does the student Taplow give to his unpopular teacher, Mr. Crocker-Harris?",
+        "options": [
+          "A second-hand copy of Robert Browning's verse translation of Agamemnon",
+          "A box of chocolates",
+          "A ticket to a cricket match",
+          "A pair of reading glasses"
+        ],
+        "correct_index": 0,
+        "explanation": "Taplow gifts his teacher a used copy of Browning's translation of Agamemnon, a gesture of genuine affection that deeply moves the otherwise stern and unpopular teacher.",
+        "topic": "The Browning Version",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Jayant Narlikar's 'The Adventure' explores an alternate version of history built around which scientific idea?",
+        "options": [
+          "Catastrophe theory combined with a parallel-universe interpretation of events",
+          "The effect of relativity on gravity alone",
+          "The chemical composition of stars",
+          "The process of photosynthesis in plants"
+        ],
+        "correct_index": 0,
+        "explanation": "The story uses catastrophe theory and the notion of parallel universes to imagine an alternate history in which a historical battle's outcome was different, framed as science fiction.",
+        "topic": "The Adventure",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In 'Silk Road,' what is the primary purpose of the narrator's journey toward Mount Kailash?",
+        "options": [
+          "A pilgrimage and trek along part of the ancient trade route connecting Nepal and Tibet",
+          "A business trip to trade silk",
+          "A scientific expedition to study glaciers",
+          "A diplomatic mission to Lhasa"
+        ],
+        "correct_index": 0,
+        "explanation": "The author recounts travelling as a pilgrim-trekker along part of the historic Silk Road toward Mount Kailash and Lake Mansarovar, describing the physical challenges and cultural experiences of the journey.",
+        "topic": "Silk Road",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "a776dd6a-1fdf-479f-8108-02b3da1b9d91",
+    "subject_name": "English — Snapshots (Supplementary)",
+    "quiz_title": "Snapshots — Story Recall Quiz",
+    "questions": [
+      {
+        "text": "In 'The Summer of the Beautiful White Horse,' why do Mourad and Aram return the stolen horse after riding it for weeks?",
+        "options": [
+          "Once its owner, John Byro, notices it, the boys feel compelled to return it out of their family's inherent honesty",
+          "The horse becomes too old to ride any further",
+          "The police track them down and force them to",
+          "They sell the horse for money instead"
+        ],
+        "correct_index": 0,
+        "explanation": "Despite being poor, the boys' family values honesty above all; once the horse's owner recognises it, the boys quietly return it, reflecting this inherited trait.",
+        "topic": "The Summer of the Beautiful White Horse",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'The Address' by Marga Minco, why is the narrator disappointed when she visits Mrs. Dorling's house after the war?",
+        "options": [
+          "She recognises her family's belongings but feels the warmth and meaning of home are gone",
+          "The house has been completely demolished",
+          "Mrs. Dorling refuses to open the door at all",
+          "She discovers the address given to her was entirely wrong"
+        ],
+        "correct_index": 0,
+        "explanation": "Although she recognises her mother's possessions in Mrs. Dorling's home, the narrator feels they have lost their original meaning and warmth, and she ultimately leaves without reclaiming them.",
+        "topic": "The Address",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'Ranga's Marriage,' what role does the narrator, Shyama, play in arranging Ranga's marriage to Ratna?",
+        "options": [
+          "He stages a clever palm-reading trick to make Ranga believe fate has chosen Ratna for him",
+          "He forces Ranga into the marriage against his will through threats",
+          "He arranges the marriage through a government official",
+          "He has no involvement at all in the matchmaking"
+        ],
+        "correct_index": 0,
+        "explanation": "Shyama uses a fabricated palmistry trick, pretending to read Ranga's future, to nudge the reluctant, English-educated Ranga toward accepting Ratna as his bride.",
+        "topic": "Ranga's Marriage",
+        "difficulty": "easy"
+      },
+      {
+        "text": "According to the extract 'Albert Einstein at School,' what is Einstein's attitude toward the rigid, rote-learning style of his German school?",
+        "options": [
+          "He is critical of it, feeling it suppresses independent and creative thinking",
+          "He fully supports and excels within the system",
+          "He has no opinion about the school system at all",
+          "He believes military-style discipline improves learning"
+        ],
+        "correct_index": 0,
+        "explanation": "The extract portrays Einstein's discomfort with the authoritarian, fact-cramming education system, foreshadowing his lifelong preference for independent, imaginative thought over rote discipline.",
+        "topic": "Albert Einstein at School",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In J.B. Priestley's 'Mother's Day,' what change does Mrs. Pearson undergo after magically swapping places with her daughter Doris?",
+        "options": [
+          "She becomes assertive and starts demanding respect and help from her family instead of being taken for granted",
+          "She becomes even more submissive than before",
+          "She decides to leave the family permanently",
+          "She loses her memory entirely"
+        ],
+        "correct_index": 0,
+        "explanation": "While inhabiting her daughter's persona through Mrs. Fitzgerald's charm, Mrs. Pearson experiences life without being overworked and underappreciated, and resolves to assert herself and insist her family share household responsibilities.",
+        "topic": "Mother's Day",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In 'The Ghat of the Only World,' what does the narrator primarily recall about his friend, the poet Agha Shahid Ali?",
+        "options": [
+          "Shahid's courage, humour and poetic spirit while facing terminal illness",
+          "Shahid's career as a professional athlete",
+          "Shahid's role as a political leader in Kashmir's government",
+          "Shahid's refusal to ever discuss poetry"
+        ],
+        "correct_index": 0,
+        "explanation": "The essay is a tribute recalling Agha Shahid Ali's warmth, wit and poetic sensibility during his final months battling illness, highlighting his remarkable composure and love of life.",
+        "topic": "The Ghat of the Only World",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In A.J. Cronin's 'Birth,' what critical complication does the young doctor face during the delivery?",
+        "options": [
+          "The newborn appears stillborn, and he must try to resuscitate it against the odds",
+          "The mother refuses to be treated by a male doctor",
+          "The hospital runs out of essential medicine",
+          "Twins are born unexpectedly"
+        ],
+        "correct_index": 0,
+        "explanation": "The story centres on the doctor's desperate, ultimately successful attempt to revive a baby who initially shows no signs of life at birth, testing his skill and resolve as a new physician.",
+        "topic": "Birth",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In Vikram Seth's poem 'The Tale of Melon City,' what absurd outcome results from the king's rule that whoever the fallen gate-arch strikes must be hanged?",
+        "options": [
+          "The arch eventually falls on the king himself, and the tale ends with a melon being 'crowned' as the new ruler",
+          "The city is completely destroyed by the falling arch",
+          "The architect is rewarded with great riches",
+          "No one is ever found guilty under the rule"
+        ],
+        "correct_index": 0,
+        "explanation": "The poem satirises arbitrary justice: after the arch falls on the king and the situation grows increasingly absurd, the story ends with a melon being 'crowned' king, mocking blind rule-following.",
+        "topic": "The Tale of Melon City",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "254260e2-6baf-4820-a077-6d59b3e254b9",
+    "subject_name": "Mathematics (If Opted)",
+    "quiz_title": "Mathematics — Problem Practice Set",
+    "questions": [
+      {
+        "text": "If A = {1, 2, 3} and B = {2, 3, 4}, what is A ∩ B (A intersection B)?",
+        "options": [
+          "{2, 3}",
+          "{1, 2, 3, 4}",
+          "{1, 4}",
+          "{ } (the empty set)"
+        ],
+        "correct_index": 0,
+        "explanation": "The intersection of two sets contains only the elements common to both; here 2 and 3 appear in both A and B.",
+        "topic": "Sets",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A relation f from set A to set B is called a function if:",
+        "options": [
+          "Every element of A is associated with exactly one element of B",
+          "Every element of B is associated with exactly one element of A",
+          "Some elements of A have no image in B",
+          "An element of A can map to multiple elements of B"
+        ],
+        "correct_index": 0,
+        "explanation": "By definition, a function assigns to each element of the domain A exactly one element of the codomain B — no element of A is left unmapped or mapped to more than one output.",
+        "topic": "Relations and Functions",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In an Arithmetic Progression (AP) with first term a = 3 and common difference d = 4, what is the 5th term?",
+        "options": [
+          "19",
+          "23",
+          "15",
+          "20"
+        ],
+        "correct_index": 0,
+        "explanation": "The nth term of an AP is given by a + (n-1)d; substituting a = 3, d = 4, n = 5 gives 3 + 4(4) = 19.",
+        "topic": "Sequences and Series",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What is the value of sin(30°) + cos(60°)?",
+        "options": [
+          "1",
+          "0",
+          "1/2",
+          "2"
+        ],
+        "correct_index": 0,
+        "explanation": "sin 30° = 1/2 and cos 60° = 1/2, so their sum equals 1.",
+        "topic": "Trigonometric Functions",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What are the roots of the quadratic equation x² + 4 = 0 (in terms of the imaginary unit i)?",
+        "options": [
+          "x = 2i and x = -2i",
+          "x = 2 and x = -2",
+          "x = 4i and x = -4i",
+          "x = i and x = -i"
+        ],
+        "correct_index": 0,
+        "explanation": "Since x² = -4, taking the square root gives x = ±√(-4) = ±2i, because i² = -1; the equation has no real roots.",
+        "topic": "Complex Numbers and Quadratic Equations",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In how many ways can 3 books be selected from a set of 5 different books, if the order of selection does not matter?",
+        "options": [
+          "10",
+          "60",
+          "15",
+          "20"
+        ],
+        "correct_index": 0,
+        "explanation": "Selecting 3 items out of 5 without regard to order uses the combination formula ⁵C₃ = 5!/(3!·2!) = 10.",
+        "topic": "Permutations and Combinations",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the coefficient of x² in the binomial expansion of (1 + x)⁴?",
+        "options": [
+          "6",
+          "4",
+          "8",
+          "12"
+        ],
+        "correct_index": 0,
+        "explanation": "By the binomial theorem, the general term's coefficient for xʳ is ⁴Cᵣ; for r = 2, this is ⁴C₂ = 6.",
+        "topic": "Binomial Theorem",
+        "difficulty": "hard"
+      },
+      {
+        "text": "What is the slope of the straight line passing through the points (2, 3) and (6, 11)?",
+        "options": [
+          "2",
+          "1/2",
+          "4",
+          "-2"
+        ],
+        "correct_index": 0,
+        "explanation": "Slope = (y₂ - y₁)/(x₂ - x₁) = (11 - 3)/(6 - 2) = 8/4 = 2.",
+        "topic": "Straight Lines",
+        "difficulty": "hard"
+      }
+    ]
+  }
+]

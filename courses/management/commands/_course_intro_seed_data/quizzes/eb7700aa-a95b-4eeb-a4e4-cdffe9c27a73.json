@@ -1,0 +1,641 @@
+[
+  {
+    "subject_id": "b104675f-ae67-42d3-bfd5-e40e8a06396d",
+    "subject_name": "Biology",
+    "quiz_title": "Biology — Practice Set",
+    "questions": [
+      {
+        "text": "Who is credited with establishing the binomial nomenclature system used to name species?",
+        "options": ["Carl Linnaeus", "Charles Darwin", "Gregor Mendel", "Robert Hooke"],
+        "correct_index": 0,
+        "explanation": "Linnaeus developed the two-term naming system (genus + species) that is still used in biological classification today.",
+        "topic": "The Living World",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which scientist proposed the Five Kingdom classification system in 1969?",
+        "options": ["Ernst Haeckel", "R.H. Whittaker", "Carl Woese", "Charles Darwin"],
+        "correct_index": 1,
+        "explanation": "Whittaker proposed five kingdoms — Monera, Protista, Fungi, Plantae and Animalia — based on cell structure, mode of nutrition and body organisation.",
+        "topic": "Biological Classification",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which group of plants is seedless but possesses vascular tissue for conduction?",
+        "options": ["Bryophytes", "Gymnosperms", "Pteridophytes", "Angiosperms"],
+        "correct_index": 2,
+        "explanation": "Pteridophytes (ferns and their relatives) have xylem and phloem for conduction but reproduce through spores rather than seeds.",
+        "topic": "Plant Kingdom",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which cell organelle is primarily responsible for synthesizing ATP through aerobic respiration?",
+        "options": ["Golgi apparatus", "Ribosome", "Lysosome", "Mitochondria"],
+        "correct_index": 3,
+        "explanation": "Mitochondria house the electron transport chain and oxidative phosphorylation machinery that generates most of a cell's ATP.",
+        "topic": "Cell: The Unit of Life",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In which part of the chloroplast do the light-dependent reactions of photosynthesis occur?",
+        "options": ["Stroma", "Thylakoid membrane", "Outer membrane", "Intermembrane space"],
+        "correct_index": 1,
+        "explanation": "Photosystems I and II, embedded in the thylakoid membrane, capture light energy and drive the formation of ATP and NADPH there.",
+        "topic": "Photosynthesis in Higher Plants",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which enzyme, secreted in saliva, begins the digestion of starch in the mouth?",
+        "options": ["Pepsin", "Trypsin", "Salivary amylase (ptyalin)", "Lipase"],
+        "correct_index": 2,
+        "explanation": "Salivary amylase hydrolyses starch into smaller polysaccharides and maltose even before food reaches the stomach.",
+        "topic": "Digestion and Absorption",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which pituitary hormone directly stimulates the thyroid gland to secrete thyroxine?",
+        "options": ["Adrenocorticotropic hormone (ACTH)", "Follicle-stimulating hormone (FSH)", "Growth hormone (GH)", "Thyroid-stimulating hormone (TSH)"],
+        "correct_index": 3,
+        "explanation": "TSH, released by the anterior pituitary, binds thyroid follicular cells and stimulates synthesis and release of thyroxine (T4) and T3.",
+        "topic": "Chemical Coordination and Integration",
+        "difficulty": "hard"
+      },
+      {
+        "text": "During the cardiac cycle, closure of the bicuspid (mitral) and tricuspid valves produces which heart sound?",
+        "options": ["\"Lub\" (first heart sound)", "\"Dub\" (second heart sound)", "Korotkoff sound", "Murmur"],
+        "correct_index": 0,
+        "explanation": "The first heart sound, \"lub\", is produced by closure of the atrioventricular (bicuspid and tricuspid) valves at the start of ventricular systole.",
+        "topic": "Body Fluids and Circulation",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "ce5dcdee-3741-4873-9b57-3dea072c0897",
+    "subject_name": "Chemistry",
+    "quiz_title": "Chemistry Quick Check",
+    "questions": [
+      {
+        "text": "How many moles of atoms are present in exactly 12 grams of carbon-12?",
+        "options": ["1 mole", "2 moles", "0.5 mole", "12 moles"],
+        "correct_index": 0,
+        "explanation": "One mole is defined as the amount of substance containing as many entities as there are atoms in exactly 12 g of carbon-12.",
+        "topic": "Some Basic Concepts of Chemistry",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which quantum number determines the shape of an atomic orbital?",
+        "options": ["Principal (n)", "Azimuthal (l)", "Magnetic (m)", "Spin (s)"],
+        "correct_index": 1,
+        "explanation": "The azimuthal quantum number l defines the subshell type (s, p, d, f) and therefore the shape of the orbital.",
+        "topic": "Structure of Atom",
+        "difficulty": "easy"
+      },
+      {
+        "text": "As you move left to right across a period, how does atomic radius generally change?",
+        "options": ["Increases", "Remains constant", "Decreases", "Increases then decreases sharply"],
+        "correct_index": 2,
+        "explanation": "Increasing nuclear charge across a period pulls electrons closer without adding a new shell, so atomic radius generally decreases.",
+        "topic": "Classification of Elements and Periodicity in Properties",
+        "difficulty": "easy"
+      },
+      {
+        "text": "According to VSEPR theory, what is the molecular shape of methane (CH4)?",
+        "options": ["Trigonal planar", "Linear", "Pyramidal", "Tetrahedral"],
+        "correct_index": 3,
+        "explanation": "Four bonding pairs around the central carbon with no lone pairs arrange themselves tetrahedrally to minimize repulsion, giving bond angles of about 109.5°.",
+        "topic": "Chemical Bonding and Molecular Structure",
+        "difficulty": "medium"
+      },
+      {
+        "text": "For an exothermic reaction at equilibrium, what effect does increasing temperature have on the equilibrium position?",
+        "options": ["It shifts toward the products", "It shifts toward the reactants", "No change occurs", "The reaction stops entirely"],
+        "correct_index": 1,
+        "explanation": "By Le Chatelier's principle, raising temperature favours the endothermic direction, which for an exothermic forward reaction means equilibrium shifts back toward the reactants.",
+        "topic": "Equilibrium",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the oxidation number of manganese in KMnO4?",
+        "options": ["+2", "+4", "+7", "+6"],
+        "correct_index": 2,
+        "explanation": "With K at +1 and each O at -2, balancing the neutral compound (+1 + Mn + 4(-2) = 0) gives Mn an oxidation number of +7.",
+        "topic": "Redox Reactions",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of the following is a state function in thermodynamics?",
+        "options": ["Heat", "Work", "Both heat and work", "Enthalpy"],
+        "correct_index": 3,
+        "explanation": "Enthalpy depends only on the initial and final states of a system, unlike heat and work, which depend on the path taken.",
+        "topic": "Thermodynamics",
+        "difficulty": "hard"
+      },
+      {
+        "text": "When HBr adds to propene (CH3-CH=CH2) under normal conditions, Markovnikov's rule predicts the bromine attaches to which carbon?",
+        "options": ["The more substituted (central) carbon", "The terminal carbon", "Both carbons equally", "Neither carbon — it adds to hydrogen only"],
+        "correct_index": 0,
+        "explanation": "Markovnikov's rule states the halogen bonds to the carbon with fewer hydrogens, since the more stable secondary carbocation forms as the reaction intermediate.",
+        "topic": "Hydrocarbons",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "75b74638-122c-4ab5-8dc1-b3360d4a8fdb",
+    "subject_name": "English ( Snapshots)",
+    "quiz_title": "Snapshots — Reading Recap Quiz",
+    "questions": [
+      {
+        "text": "In 'Ranga's Marriage', which trick does the narrator use to make Ranga realize his feelings for Ratna?",
+        "options": ["He arranges a false astrological prediction", "He forges a letter from Ratna", "He bribes Ranga's parents", "He stages a chance meeting at a fair"],
+        "correct_index": 0,
+        "explanation": "The narrator persuades an astrologer to 'predict' details that match Ratna, nudging Ranga toward recognizing his own feelings.",
+        "topic": "Ranga's Marriage",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In A.J. Cronin's 'Birth', what is the main challenge Dr. Andrew Manson faces during the delivery?",
+        "options": ["The mother refuses treatment", "The newborn appears stillborn and he must revive it", "He lacks the proper instruments", "The father interferes with the delivery"],
+        "correct_index": 1,
+        "explanation": "The baby is born apparently lifeless, and the story centres on Manson's desperate effort to resuscitate it.",
+        "topic": "Birth",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In J.B. Priestley's play 'Mother's Day', what change helps Mrs Pearson stand up to her family?",
+        "options": ["She wins a lottery", "She gets a new job", "She swaps personalities with Mrs Fitzgerald", "She moves out of the house"],
+        "correct_index": 2,
+        "explanation": "Mrs Fitzgerald's charm exchanges personalities with Mrs Pearson, letting her treat her family the way they had treated her.",
+        "topic": "Mother's Day",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What central moral dilemma do Aram and Mourad face in 'The Summer of the Beautiful White Horse'?",
+        "options": ["Choosing between two schools", "Deciding whether to sell a family heirloom", "Competing against each other in a horse race", "Keeping a 'borrowed' horse versus their family's reputation for honesty"],
+        "correct_index": 3,
+        "explanation": "Their family is famously honest despite its poverty, so secretly keeping and riding a horse they didn't buy creates tension between temptation and family honour.",
+        "topic": "The Summer of the Beautiful White Horse",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In Marga Minco's 'The Address', why does the narrator visit Mrs Dorling's house after the war?",
+        "options": ["To apologize for a past quarrel", "To reclaim her family's belongings left there for safekeeping", "To deliver a letter from her mother", "To attend a wedding"],
+        "correct_index": 1,
+        "explanation": "The narrator's family had left possessions with Mrs Dorling during the war, and she returns hoping to recover them.",
+        "topic": "The Address",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the central subject of Amitav Ghosh's memoir-essay 'The Ghat of the Only World'?",
+        "options": ["A journey along the Ganges", "A political history of Kashmir", "The final months and death of poet Agha Shahid Ali", "Ghosh's own childhood memories"],
+        "correct_index": 2,
+        "explanation": "The essay recounts Ghosh's friendship with Agha Shahid Ali and the poet's illness and final days before his death from a brain tumour.",
+        "topic": "The Ghat of the Only World",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In Vikram Seth's 'The Tale of Melon City', what ultimately happens after the king is killed by his own falling arch?",
+        "options": ["The people abolish the monarchy entirely", "The hangman becomes king through an election", "The queen takes over and restores order", "A melon is crowned king by chance, satirizing arbitrary rule"],
+        "correct_index": 3,
+        "explanation": "In the poem's absurdist climax, a melon that rolls into the throne is crowned ruler, mocking the randomness underlying the old king's rule and justice.",
+        "topic": "The Tale of Melon City",
+        "difficulty": "hard"
+      },
+      {
+        "text": "According to Patrick Pringle's account, what mainly troubled the young Einstein about his German schooling?",
+        "options": ["Its rigid, authoritarian method that discouraged independent thought", "His poor performance in mathematics", "A lack of science laboratories", "Bullying by classmates"],
+        "correct_index": 0,
+        "explanation": "The essay portrays Einstein as resentful of the mechanical, militaristic teaching style in German schools, which clashed with his independent, questioning nature.",
+        "topic": "Albert Einstein at School",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "7ff8e33b-bc49-4698-9b54-32247287475b",
+    "subject_name": "English (Grammar)",
+    "quiz_title": "English Grammar — Skill Builder",
+    "questions": [
+      {
+        "text": "Which type of sentence contains one independent clause and at least one dependent clause?",
+        "options": ["Complex sentence", "Simple sentence", "Compound sentence", "Compound-complex sentence"],
+        "correct_index": 0,
+        "explanation": "A complex sentence joins one independent clause with one or more dependent (subordinate) clauses, unlike a simple sentence, which has only one clause.",
+        "topic": "Advanced Grammer - Clauses and Sentence Types",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In the sentence 'Although it was raining, the match continued', which part is the dependent clause?",
+        "options": ["the match continued", "Although it was raining", "the match", "it was raining"],
+        "correct_index": 1,
+        "explanation": "Introduced by the subordinating conjunction 'although', this clause cannot stand alone as a complete sentence, which makes it dependent.",
+        "topic": "Advanced Grammer - Clauses and Sentence Types",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which closing phrase is most appropriate for a formal letter addressed to an unknown recipient as 'Dear Sir/Madam'?",
+        "options": ["Lots of love", "Cheers", "Yours faithfully", "Yours truly, Buddy"],
+        "correct_index": 2,
+        "explanation": "Formal convention pairs 'Dear Sir/Madam' (recipient's name unknown) with the closing 'Yours faithfully'.",
+        "topic": "Formal and Informal Letter Writing",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What is the primary purpose of using abbreviations and symbols while making notes from a passage?",
+        "options": ["To make the notes look impressive", "To replace the need for understanding the passage", "To lengthen the notes for better marks", "To condense information quickly while keeping it retrievable"],
+        "correct_index": 3,
+        "explanation": "Abbreviations and symbols let a note-maker capture key points rapidly without losing essential meaning, which aids quick review later.",
+        "topic": "Note- Making and Summarising",
+        "difficulty": "medium"
+      },
+      {
+        "text": "When answering an 'inference' question on a comprehension passage, a student should primarily:",
+        "options": ["Copy a sentence exactly as written", "Draw a logical conclusion from clues in the passage, not stated directly", "Use only outside knowledge, ignoring the passage", "Summarize the entire passage"],
+        "correct_index": 1,
+        "explanation": "Inference questions require reading between the lines, using textual evidence to reach a conclusion the author implies but does not state outright.",
+        "topic": "Comprehension Passages",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which feature distinguishes a newspaper report from a magazine article on the same event?",
+        "options": ["A report is always written in the first person", "A report includes the writer's personal opinions throughout", "A report emphasizes factual, objective, 'who-what-when-where' details", "A report has no headline"],
+        "correct_index": 2,
+        "explanation": "A report is a factual, objective account answering the key questions (who, what, when, where, why), whereas an article allows more personal voice and analysis.",
+        "topic": "Report and Article Writing",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In report writing, where should the most important information typically appear?",
+        "options": ["Scattered evenly throughout with no priority", "Only in the concluding paragraph", "In a footnote", "In the opening paragraph, following an 'inverted pyramid' structure"],
+        "correct_index": 3,
+        "explanation": "News and event reports conventionally front-load key facts (the inverted pyramid), so readers grasp the essentials even if they stop reading early.",
+        "topic": "Report and Article Writing",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which sentence is an example of a compound-complex sentence?",
+        "options": ["Although it was raining, she went for a run, and she got soaked.", "She went for a run and got soaked.", "She went for a run.", "Although it was raining, she went for a run."],
+        "correct_index": 0,
+        "explanation": "It contains two independent clauses ('she went for a run' and 'she got soaked') joined by 'and', plus a dependent clause ('Although it was raining') — the defining mix of a compound-complex sentence.",
+        "topic": "Advanced Grammer - Clauses and Sentence Types",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "c13fadd8-bacc-4f13-b816-3bf6585e8b04",
+    "subject_name": "English (Hornbill)",
+    "quiz_title": "Hornbill — Practice Set",
+    "questions": [
+      {
+        "text": "In Khushwant Singh's 'The Portrait of a Lady', what daily activity most defines the grandmother's later years in the city?",
+        "options": ["Feeding sparrows and telling beads in prayer", "Teaching children at a school", "Running a small shop", "Tending a large garden"],
+        "correct_index": 0,
+        "explanation": "In her final years, the grandmother's routine centres on prayer and feeding birds in the courtyard, symbolizing her peaceful spirituality.",
+        "topic": "The Portrait of a Lady",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In Nick Middleton's 'Silk Road', what is the primary destination of the author's journey?",
+        "options": ["The Great Wall of China", "Mount Kailash in western Tibet", "The Himalayan base camp of Everest", "The city of Lhasa"],
+        "correct_index": 1,
+        "explanation": "The travelogue follows the author's mule-caravan journey across western Tibet toward the sacred Mount Kailash.",
+        "topic": "Silk Road",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In Jayant Narlikar's 'The Adventure', Professor Gaitonde finds himself in a world shaped by the altered outcome of which historical battle?",
+        "options": ["The Battle of Panipat", "The Battle of Plassey", "The Battle of Talikota (Rakshasi-Tangadi)", "The Battle of Haldighati"],
+        "correct_index": 2,
+        "explanation": "In Gaitonde's alternate world, the Vijayanagar Empire wins the Battle of Talikota instead of losing it, changing the course of Indian history.",
+        "topic": "The Adventure",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What modern scientific method is central to the renewed investigation into Tutankhamun's death described in 'Discovering Tut: The Saga Continues'?",
+        "options": ["Carbon dating of the tomb's wooden artifacts", "Satellite imaging of the Valley of the Kings", "Chemical analysis of tomb paintings", "CT scanning and DNA analysis of the mummy"],
+        "correct_index": 3,
+        "explanation": "Researchers used CT scans and DNA testing on Tutankhamun's mummy to probe clues about his lineage, health and cause of death.",
+        "topic": "Discovering Tut: The Saga Continues",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'Landscape of the Soul', what contrast does Nathalie Trouveroy draw between traditional Western and Chinese approaches to art?",
+        "options": ["Western art uses only black ink; Chinese art uses only colour", "Western art pursues outer 'likeness'; Chinese art pursues inner 'spirit likeness'", "Western artists worked alone; Chinese artists always worked in groups", "Chinese art avoids landscapes entirely"],
+        "correct_index": 1,
+        "explanation": "The essay explains that Western art historically valued realistic resemblance, while Chinese aesthetics prized capturing the inner spirit or essence of the subject.",
+        "topic": "Landscape of the Soul",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'We're Not Afraid to Die if We Can All Be Together', what major crisis does the Wavewalker's crew face near Antarctica?",
+        "options": ["An encounter with pirates", "Running out of food supplies for months", "A massive rogue wave that nearly sinks their yacht", "A fire that destroys the ship's engine"],
+        "correct_index": 2,
+        "explanation": "The family's yacht is struck by an enormous wave in the Southern Ocean that floods the boat and injures crew members, testing their survival.",
+        "topic": "We are Not Afraid to Die",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In Terence Rattigan's 'The Browning Version', what gift does the student Taplow give to the retiring schoolmaster Crocker-Harris?",
+        "options": ["A handwritten letter of apology", "A gold pocket watch", "A framed photograph of the school", "A used copy of Robert Browning's translation of Agamemnon"],
+        "correct_index": 3,
+        "explanation": "Taplow's gift of Browning's translation of Agamemnon touches Crocker-Harris deeply, echoing his own youthful love of classics, now rekindled by a student's genuine gesture.",
+        "topic": "The Browning Version",
+        "difficulty": "hard"
+      },
+      {
+        "text": "According to Nani Palkhivala's 'The Ailing Planet', what does he identify as a root driver of the planet's ecological crisis, alongside pollution?",
+        "options": ["Rapid, unchecked population growth", "Excessive rainfall patterns", "Declining industrial output", "Advances in renewable energy"],
+        "correct_index": 0,
+        "explanation": "Palkhivala links the escalating environmental crisis to the explosive growth of human population placing unsustainable demands on the Earth's resources.",
+        "topic": "The Ailing Planet : The Green Movement's Role",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "1cea9eb4-9085-49e8-86ae-e972f07bd3ae",
+    "subject_name": "Hindi (Aroh I)",
+    "quiz_title": "Hindi (आरोह) — अभ्यास प्रश्नोत्तरी",
+    "questions": [
+      {
+        "text": "निम्नलिखित में से कौन-सा शब्द 'संधि' का उदाहरण है?",
+        "options": ["विद्यालय", "पुस्तक", "विद्यार्थी गण", "सुन्दर लड़का"],
+        "correct_index": 0,
+        "explanation": "'विद्यालय' विद्या + आलय के मेल से बना है, जो दीर्घ स्वर संधि का उदाहरण है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'राजा का पुत्र' के लिए उचित समास-युक्त शब्द क्या है?",
+        "options": ["महाराज", "राजपुत्र", "राजाधिकार", "राजकुमारी"],
+        "correct_index": 1,
+        "explanation": "'राजपुत्र' में 'का' कारक-चिह्न का लोप होकर तत्पुरुष समास बनता है, जिसका अर्थ है 'राजा का पुत्र'।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'नीर' शब्द का पर्यायवाची शब्द कौन-सा है?",
+        "options": ["अग्नि", "वायु", "जल", "पृथ्वी"],
+        "correct_index": 2,
+        "explanation": "'नीर' का अर्थ पानी होता है, इसलिए इसका पर्यायवाची शब्द 'जल' है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'आँखों में धूल झोंकना' मुहावरे का सही अर्थ क्या है?",
+        "options": ["बहुत खुश होना", "कठिन परिश्रम करना", "सच बोलना", "धोखा देना"],
+        "correct_index": 3,
+        "explanation": "इस मुहावरे का अर्थ है किसी को छल या धोखे से भ्रमित करना।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "श्रृंगार रस का स्थायी भाव क्या होता है?",
+        "options": ["शोक", "रति", "क्रोध", "भय"],
+        "correct_index": 1,
+        "explanation": "श्रृंगार रस का स्थायी भाव 'रति' (प्रेम) होता है, जो नायक-नायिका के प्रेम-भाव से उत्पन्न होता है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "कर्मवाच्य (Passive Voice) का उदाहरण कौन-सा वाक्य है?",
+        "options": ["राम पत्र लिखता है।", "राम पत्र लिखेगा।", "राम के द्वारा पत्र लिखा गया।", "राम ने पत्र लिखा।"],
+        "correct_index": 2,
+        "explanation": "कर्मवाच्य में क्रिया का रूप कर्म के अनुसार बदलता है और कर्ता के साथ 'के द्वारा' आता है, जैसे 'राम के द्वारा पत्र लिखा गया।'",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "'उपमा अलंकार' की पहचान किस वाक्य में होती है?",
+        "options": ["वह सूरज है।", "कलियाँ मुस्कुरा रही हैं।", "पवन चल रही है।", "उसका मुख चंद्रमा के समान सुंदर है।"],
+        "correct_index": 3,
+        "explanation": "उपमा अलंकार में दो भिन्न वस्तुओं के बीच समानता दिखाने के लिए 'समान', 'सा' जैसे शब्दों का प्रयोग होता है, जैसे इस वाक्य में 'चंद्रमा के समान'।",
+        "topic": "",
+        "difficulty": "hard"
+      },
+      {
+        "text": "'कर्ता कारक' की सही पहचान वाला उदाहरण कौन-सा है?",
+        "options": ["राम ने पत्र लिखा।", "राम को पत्र मिला।", "राम के लिए पत्र आया।", "राम से पत्र लिखा गया।"],
+        "correct_index": 0,
+        "explanation": "कर्ता कारक वाक्य में क्रिया करने वाले को दर्शाता है और भूतकाल की सकर्मक क्रिया के साथ प्रायः 'ने' चिह्न लगता है, जैसे 'राम ने पत्र लिखा।'",
+        "topic": "",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "67a0e60d-09e3-496e-9b30-de9f3e3d9ec7",
+    "subject_name": "Hindi (Vitan I)",
+    "quiz_title": "Hindi (वितान) — अभ्यास प्रश्नोत्तरी",
+    "questions": [
+      {
+        "text": "'सुन्दर' शब्द का विलोम (विपरीतार्थक) शब्द क्या है?",
+        "options": ["कुरूप", "सुगंधित", "सरल", "विशाल"],
+        "correct_index": 0,
+        "explanation": "'सुंदर' का विलोम शब्द 'कुरूप' है, जिसका अर्थ है बदसूरत या भद्दा।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'अध्यापक' शब्द का स्त्रीलिंग रूप क्या होगा?",
+        "options": ["अध्यापकी", "अध्यापिका", "अध्यापकनी", "अध्यापकाणी"],
+        "correct_index": 1,
+        "explanation": "हिंदी में पुल्लिंग शब्द 'अध्यापक' का स्त्रीलिंग रूप 'इका' प्रत्यय जोड़कर 'अध्यापिका' बनता है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "निम्नलिखित में से कौन-सा वाक्य भविष्यत् काल (Future Tense) में है?",
+        "options": ["वह विद्यालय जाता है।", "वह विद्यालय गया।", "वह कल विद्यालय जाएगा।", "वह विद्यालय जा रहा है।"],
+        "correct_index": 2,
+        "explanation": "'जाएगा' क्रिया-रूप भविष्य में होने वाली क्रिया को दर्शाता है, इसलिए यह वाक्य भविष्यत् काल में है।",
+        "topic": "",
+        "difficulty": "easy"
+      },
+      {
+        "text": "औपचारिक पत्र (Formal Letter) के आरंभ में सामान्यतः किसका प्रयोग किया जाता है?",
+        "options": ["प्रिय मित्र का संबोधन", "सीधे विषय का उल्लेख बिना संबोधन के", "केवल तिथि", "सेवा में, श्रीमान/प्रधानाचार्य जी का संबोधन"],
+        "correct_index": 3,
+        "explanation": "औपचारिक पत्र में प्राप्तकर्ता को सम्मानपूर्वक संबोधित करने हेतु 'सेवा में, श्रीमान...' जैसे औपचारिक संबोधन का प्रयोग किया जाता है।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "अपठित गद्यांश को पढ़कर प्रश्नों के उत्तर देते समय सबसे महत्वपूर्ण कौशल कौन-सा है?",
+        "options": ["अपनी कल्पना से नया उत्तर गढ़ना", "गद्यांश में दिए गए तथ्यों और संदर्भ के आधार पर उत्तर देना", "गद्यांश को नज़रअंदाज़ कर पूर्व ज्ञान से उत्तर देना", "सबसे लंबा उत्तर लिखना"],
+        "correct_index": 1,
+        "explanation": "अपठित गद्यांश के प्रश्नों का उत्तर सदैव दिए गए अंश में निहित तथ्यों और संदर्भ पर आधारित होना चाहिए, न कि बाहरी जानकारी पर।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "दोहा छंद के विषम चरणों (पहले व तीसरे) में सामान्यतः कितनी मात्राएँ होती हैं?",
+        "options": ["11 मात्राएँ", "16 मात्राएँ", "13 मात्राएँ", "21 मात्राएँ"],
+        "correct_index": 2,
+        "explanation": "दोहा एक अर्धसम मात्रिक छंद है जिसके विषम (पहले और तीसरे) चरण में 13 मात्राएँ और सम चरणों में 11 मात्राएँ होती हैं।",
+        "topic": "",
+        "difficulty": "medium"
+      },
+      {
+        "text": "निम्नलिखित में से कौन-सा शब्द वर्तनी की दृष्टि से शुद्ध है?",
+        "options": ["आशिर्वाद", "आर्शीवाद", "आशीर्वद", "आशीर्वाद"],
+        "correct_index": 3,
+        "explanation": "सही वर्तनी 'आशीर्वाद' है; शेष विकल्प वर्तनी की सामान्य त्रुटियों के उदाहरण हैं।",
+        "topic": "",
+        "difficulty": "hard"
+      },
+      {
+        "text": "समास के किस भेद में दोनों पद प्रधान होते हैं, जैसे 'माता-पिता'?",
+        "options": ["द्वंद्व समास", "तत्पुरुष समास", "बहुव्रीहि समास", "अव्ययीभाव समास"],
+        "correct_index": 0,
+        "explanation": "द्वंद्व समास में दोनों पद प्रधान होते हैं और इनके बीच सामान्यतः 'और' का भाव छिपा होता है, जैसे 'माता-पिता' अर्थात 'माता और पिता'।",
+        "topic": "",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "3f58f7c0-ffb2-4c71-a077-f2d9c1e80f7c",
+    "subject_name": "Mathematics",
+    "quiz_title": "Mathematics — Practice Set",
+    "questions": [
+      {
+        "text": "If A = {1, 2, 3} and B = {2, 3, 4}, what is A ∩ B?",
+        "options": ["{2, 3}", "{1, 2, 3, 4}", "{1, 4}", "{} (empty set)"],
+        "correct_index": 0,
+        "explanation": "The intersection contains only the elements common to both sets, which are 2 and 3.",
+        "topic": "Sets",
+        "difficulty": "easy"
+      },
+      {
+        "text": "If f(x) = 2x + 3, what is f(4)?",
+        "options": ["10", "11", "14", "8"],
+        "correct_index": 1,
+        "explanation": "Substituting x = 4 gives f(4) = 2(4) + 3 = 11.",
+        "topic": "Relations and Functions",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What is the slope of the line passing through the points (2, 3) and (4, 7)?",
+        "options": ["4", "1/2", "2", "-2"],
+        "correct_index": 2,
+        "explanation": "Slope = (y2 − y1)/(x2 − x1) = (7 − 3)/(4 − 2) = 4/2 = 2.",
+        "topic": "Straight Lines",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What is the value of i² (where i is the imaginary unit)?",
+        "options": ["1", "i", "-i", "-1"],
+        "correct_index": 3,
+        "explanation": "By definition, i is the square root of -1, so i² = -1.",
+        "topic": "Complex Numbers and Quadratic Equations",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In the expansion of (x + y)^5, what is the coefficient of the term x³y²?",
+        "options": ["5", "10", "20", "15"],
+        "correct_index": 1,
+        "explanation": "The general term is C(5,k)·x^(5−k)·y^k; for x³y² we need k = 2, giving C(5,2) = 10.",
+        "topic": "Binomial Theorem",
+        "difficulty": "medium"
+      },
+      {
+        "text": "What is the derivative of x³ with respect to x?",
+        "options": ["x^2", "3x", "3x^2", "x^3/3"],
+        "correct_index": 2,
+        "explanation": "Using the power rule, d/dx(xⁿ) = n·xⁿ⁻¹, so the derivative of x³ is 3x².",
+        "topic": "Limits and Derivatives",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In how many ways can 3 books be selected from a shelf of 7 distinct books, if order does not matter?",
+        "options": ["21", "210", "7", "35"],
+        "correct_index": 3,
+        "explanation": "Since order doesn't matter, this is a combination: C(7,3) = 7!/(3!·4!) = 35.",
+        "topic": "Permutations and Combinations",
+        "difficulty": "hard"
+      },
+      {
+        "text": "What is the eccentricity of a circle, considered as a special conic section?",
+        "options": ["0", "1", "Greater than 1", "Between 0 and 1 but not 0"],
+        "correct_index": 0,
+        "explanation": "A circle is the special case of an ellipse where the eccentricity equals 0, meaning the two foci coincide at the centre.",
+        "topic": "Conic Sections",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "87aecc3c-fa7d-4a7f-87ec-d83db7dc3de0",
+    "subject_name": "Physics",
+    "quiz_title": "Physics Concept Check",
+    "questions": [
+      {
+        "text": "Which of the following is the SI unit of force?",
+        "options": ["Newton", "Joule", "Watt", "Pascal"],
+        "correct_index": 0,
+        "explanation": "Force is measured in newtons (N), defined as the force needed to accelerate a 1 kg mass at 1 m/s².",
+        "topic": "Units and Measurements",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A body moving with constant velocity has what value of acceleration?",
+        "options": ["Constant but non-zero", "Zero", "Increasing", "Negative"],
+        "correct_index": 1,
+        "explanation": "Constant velocity means no change in speed or direction over time, so acceleration, the rate of change of velocity, is zero.",
+        "topic": "Motion in a Straight Line",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Newton's third law states that for every action, there is:",
+        "options": ["A proportional acceleration", "A net external force of zero", "An equal and opposite reaction", "An increase in momentum"],
+        "correct_index": 2,
+        "explanation": "Newton's third law states that every force (action) is accompanied by an equal and opposite force (reaction) exerted by the second body on the first.",
+        "topic": "Laws of Motion",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A body of mass 2 kg moving at 3 m/s has what kinetic energy?",
+        "options": ["6 J", "18 J", "3 J", "9 J"],
+        "correct_index": 3,
+        "explanation": "Kinetic energy = ½mv² = ½ × 2 × 3² = 9 joules.",
+        "topic": "Work, Energy and Power",
+        "difficulty": "medium"
+      },
+      {
+        "text": "According to Kepler's second law, a planet orbiting the Sun sweeps out equal areas in equal times. What physical quantity does this reflect the conservation of?",
+        "options": ["Linear momentum", "Angular momentum", "Kinetic energy", "Gravitational potential energy"],
+        "correct_index": 1,
+        "explanation": "Equal areas in equal times is a direct consequence of the conservation of angular momentum for a body moving under a central force like gravity.",
+        "topic": "Gravitation",
+        "difficulty": "medium"
+      },
+      {
+        "text": "On the Celsius scale, what is the boiling point of water at standard atmospheric pressure?",
+        "options": ["0°C", "212°C", "100°C", "373°C"],
+        "correct_index": 2,
+        "explanation": "At standard atmospheric pressure (1 atm), water boils at 100°C, equivalent to 373 K on the Kelvin scale.",
+        "topic": "Thermal Properties of Matter",
+        "difficulty": "medium"
+      },
+      {
+        "text": "For a simple pendulum, how does the time period change if the length of the pendulum is quadrupled, keeping g constant?",
+        "options": ["It quadruples", "It halves", "It remains unchanged", "It doubles"],
+        "correct_index": 3,
+        "explanation": "Since T ∝ √L, quadrupling the length increases the time period by a factor of √4 = 2.",
+        "topic": "Oscillations",
+        "difficulty": "hard"
+      },
+      {
+        "text": "According to Bernoulli's principle, as the speed of a fluid increases in a horizontal flow, what happens to its pressure?",
+        "options": ["It decreases", "It increases", "It remains constant", "It becomes zero"],
+        "correct_index": 0,
+        "explanation": "Bernoulli's principle states that for an ideal fluid in horizontal flow, an increase in speed is accompanied by a decrease in pressure, since total mechanical energy is conserved.",
+        "topic": "Mechanical Properties of Fluids",
+        "difficulty": "hard"
+      }
+    ]
+  }
+]

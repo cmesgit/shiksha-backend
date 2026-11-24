@@ -1,0 +1,854 @@
+[
+  {
+    "subject_id": "3cb1af38-fc94-4c70-9525-2b490c060315",
+    "subject_name": "Economics — Indian Economic Development (Optional)",
+    "quiz_title": "Indian Economic Development — Practice Set",
+    "questions": [
+      {
+        "text": "At the time of India's independence in 1947, which sector employed the largest share of the workforce?",
+        "options": ["Agriculture", "Manufacturing", "Services", "Mining"],
+        "correct_index": 0,
+        "explanation": "Agriculture engaged about 70-75% of the workforce at independence, as the colonial economy had deliberately kept industry underdeveloped.",
+        "topic": "Indian Economy on the Eve of Independence",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which planning body was primarily responsible for formulating India's Five Year Plans between 1951 and the 1990s?",
+        "options": ["Planning Commission", "Finance Commission", "Reserve Bank of India", "NITI Aayog"],
+        "correct_index": 0,
+        "explanation": "The Planning Commission, set up in 1950, formulated India's Five Year Plans until it was replaced by NITI Aayog in 2015.",
+        "topic": "Indian Economy (1950–1990)",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The New Economic Policy of 1991 was introduced mainly in response to which immediate crisis?",
+        "options": ["A severe balance of payments crisis", "A stock market crash", "A famine", "A banking nationalisation demand"],
+        "correct_index": 0,
+        "explanation": "India faced a severe balance of payments crisis in 1991 with foreign exchange reserves barely enough for two weeks of imports, prompting the LPG reforms.",
+        "topic": "Liberalisation, Privatisation and Globalisation",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The 'poverty line' in India has traditionally been estimated mainly on the basis of which criterion?",
+        "options": ["Minimum calorie intake converted to a monetary expenditure threshold", "Annual household income tax returns", "Ownership of consumer durables", "Literacy rate of the household"],
+        "correct_index": 0,
+        "explanation": "India's poverty line estimates have historically been based on a minimum calorie requirement translated into a monthly per capita expenditure figure.",
+        "topic": "Poverty",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which statement best distinguishes 'human capital' from 'human development' as used in economics?",
+        "options": ["Human capital treats people as a means to raise production, while human development treats raising human capability and well-being as the end in itself", "Human capital refers only to physical health while human development refers only to education", "Human capital is measured in rupees while human development has no measurable indicators", "Human capital applies only to rural areas while human development applies only to urban areas"],
+        "correct_index": 0,
+        "explanation": "Human capital views education and health as investments that increase productivity, whereas human development treats the expansion of people's choices and well-being as the goal itself, not merely a means.",
+        "topic": "Human Capital Formation in India",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which of the following was a key feature of the Green Revolution's impact on Indian agriculture?",
+        "options": ["Higher yields through high-yielding variety seeds, concentrated mainly in wheat and in irrigated regions like Punjab and Haryana", "Uniform benefit across all crops and all regions of India", "A shift away from chemical fertilisers toward purely organic methods", "Complete elimination of the need for irrigation"],
+        "correct_index": 0,
+        "explanation": "The Green Revolution raised yields substantially through HYV seeds, fertilisers and irrigation, but its benefits were concentrated in wheat-growing, irrigated states such as Punjab and Haryana.",
+        "topic": "Rural Development",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A worker in the informal sector is best described as one who",
+        "options": ["lacks job security, regular wages, and social security benefits from the employer", "is guaranteed a pension and provident fund by law", "works only in government offices", "always earns more than a formal sector worker"],
+        "correct_index": 0,
+        "explanation": "Informal sector workers typically lack the job security, fixed working hours, and social security benefits that formal sector employment provides.",
+        "topic": "Employment and Informalisation",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Why are health and education classified as 'social infrastructure' rather than 'economic infrastructure' in the chapter on Infrastructure?",
+        "options": ["Because they directly build the human capabilities of the workforce rather than directly supporting production and trade activities like power or transport", "Because they are funded only by private companies", "Because they do not contribute to economic growth at all", "Because they are provided exclusively in rural areas"],
+        "correct_index": 0,
+        "explanation": "Social infrastructure (health, education) builds human capability, while economic infrastructure (power, transport, communication) directly supports production and trade; both support growth but in different ways.",
+        "topic": "Infrastructure",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "a8f6f424-0f1f-489c-84d1-7ba44727e598",
+    "subject_name": "Economics — Statistics for Economics (Optional)",
+    "quiz_title": "Statistics for Economics — Quick Check",
+    "questions": [
+      {
+        "text": "In economics, statistics is best described as a tool used for",
+        "options": ["Collecting, organising and analysing numerical data to support economic reasoning and decision-making", "Predicting stock prices with complete certainty", "Replacing economic theory entirely", "Recording only qualitative opinions"],
+        "correct_index": 0,
+        "explanation": "Statistics in economics is a quantitative tool that helps collect, organise, analyse and interpret numerical data to support economic analysis.",
+        "topic": "Introduction to Statistics",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Data collected directly by an investigator through a fresh field survey for a specific purpose is called",
+        "options": ["Primary data", "Secondary data", "Index data", "Published data"],
+        "correct_index": 0,
+        "explanation": "Primary data is original data collected firsthand by the investigator for the specific purpose at hand, unlike secondary data which is already collected by someone else.",
+        "topic": "Collection of Data",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In a frequency distribution, the 'class interval' refers to",
+        "options": ["The range of values within a group into which data is classified", "The total number of observations in the dataset", "The average of the entire dataset", "The difference between the highest and lowest frequency"],
+        "correct_index": 0,
+        "explanation": "A class interval is the span of values (e.g., 10-20) used to group raw data into classes in a frequency distribution.",
+        "topic": "Organisation of Data",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which diagrammatic presentation is most suitable for showing the composition of a whole dataset divided into parts, such as household budget shares?",
+        "options": ["A pie diagram", "A frequency polygon", "An ogive", "A histogram"],
+        "correct_index": 0,
+        "explanation": "A pie diagram divides a circle into sectors proportional to each component's share, making it ideal for showing the composition of a whole.",
+        "topic": "Presentation of Data",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which measure of central tendency is most affected by extreme (outlier) values in a dataset?",
+        "options": ["Arithmetic mean", "Median", "Mode", "None of these, all are equally affected"],
+        "correct_index": 0,
+        "explanation": "The arithmetic mean uses every value in its calculation, so it is pulled strongly by extreme values, unlike the median or mode which are positional/frequency-based.",
+        "topic": "Measures of Central Tendency",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Two datasets have the same mean but Dataset A has a higher standard deviation than Dataset B. What does this indicate?",
+        "options": ["The values in Dataset A are more spread out from the mean than those in Dataset B", "Dataset A has a lower average than Dataset B", "Dataset A and Dataset B have identical variability", "Dataset A has fewer observations than Dataset B"],
+        "correct_index": 0,
+        "explanation": "Standard deviation measures the spread of values around the mean; a higher standard deviation means greater variability/dispersion of the data.",
+        "topic": "Measures of Dispersion",
+        "difficulty": "hard"
+      },
+      {
+        "text": "A correlation coefficient of -0.9 between two variables indicates",
+        "options": ["A strong inverse (negative) relationship, where one variable tends to decrease as the other increases", "A strong direct relationship between the variables", "No relationship between the variables", "That one variable causes the other"],
+        "correct_index": 0,
+        "explanation": "A coefficient close to -1 shows a strong negative correlation, meaning the variables move in opposite directions; correlation does not by itself imply causation.",
+        "topic": "Correlation",
+        "difficulty": "hard"
+      },
+      {
+        "text": "A consumer price index (CPI) is primarily used to measure changes in",
+        "options": ["The general price level of a fixed basket of goods and services consumed by a specific group over time", "The total population of a country", "The exchange rate between two currencies", "The number of factories in an economy"],
+        "correct_index": 0,
+        "explanation": "CPI tracks changes in the price of a fixed basket of consumer goods and services over time, commonly used to measure inflation faced by consumers.",
+        "topic": "Index Numbers",
+        "difficulty": "medium"
+      }
+    ]
+  },
+  {
+    "subject_id": "ca4b7550-6a02-468d-a5bd-12730ccd353e",
+    "subject_name": "English — Grammar & Writing Skills",
+    "quiz_title": "English Grammar & Writing Skills — Practice Set",
+    "questions": [
+      {
+        "text": "Identify the type of clause in: 'The book that you gave me is fascinating.'",
+        "options": ["Relative (adjective) clause", "Noun clause", "Adverb clause of time", "Main independent clause"],
+        "correct_index": 0,
+        "explanation": "'that you gave me' modifies the noun 'book', functioning as a relative/adjective clause.",
+        "topic": "Advanced Grammar — Clauses and Sentence Types",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which sentence is a compound sentence?",
+        "options": ["She finished her homework, and then she watched a movie.", "Because it rained, the match was postponed.", "The girl who won the prize is my cousin.", "Running quickly, he caught the bus."],
+        "correct_index": 0,
+        "explanation": "A compound sentence joins two independent clauses with a coordinating conjunction such as 'and'; the other options contain subordinate clauses or phrases.",
+        "topic": "Advanced Grammar — Clauses and Sentence Types",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The main purpose of note-making from a passage is to",
+        "options": ["Record the key ideas and structure of the passage in a condensed, organised form", "Copy the passage word for word", "Add personal opinions not present in the passage", "Translate the passage into another language"],
+        "correct_index": 0,
+        "explanation": "Note-making condenses a passage into its essential points and logical structure, usually using headings, sub-points and abbreviations.",
+        "topic": "Note-Making and Summarising",
+        "difficulty": "easy"
+      },
+      {
+        "text": "A good summary of a passage should",
+        "options": ["Convey the main ideas in the writer's own words, in roughly a third of the original length", "Be longer than the original passage to include all details", "Quote the original text directly throughout", "Include only the introduction of the passage"],
+        "correct_index": 0,
+        "explanation": "A summary restates the core ideas concisely in one's own words, typically reduced to about one-third of the original length, without copying verbatim.",
+        "topic": "Note-Making and Summarising",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A newspaper report, unlike a magazine article, is generally expected to",
+        "options": ["Present factual information about an event in an objective, concise manner with a clear headline", "Express the writer's personal opinions extensively", "Be written in the first person throughout", "Avoid including a date or place of the event"],
+        "correct_index": 0,
+        "explanation": "Reports are factual accounts of events, written objectively with a headline, byline, and place/date, unlike articles which may be more opinion-based.",
+        "topic": "Report and Article Writing",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In the standard format of a newspaper report, where is the most essential information (what, where, when) typically placed?",
+        "options": ["In the opening paragraph, following the 'inverted pyramid' structure", "Only in the concluding paragraph", "Scattered randomly throughout the report", "In a footnote at the end"],
+        "correct_index": 0,
+        "explanation": "News reports follow the inverted pyramid structure, placing the most essential facts at the very beginning so readers get key information first.",
+        "topic": "Report and Article Writing",
+        "difficulty": "hard"
+      },
+      {
+        "text": "A letter written to the editor of a newspaper about a civic problem should be in",
+        "options": ["Formal style, with a clear subject line and respectful tone", "Informal style, using casual slang", "Poetic style with rhyming verses", "A style identical to a personal diary entry"],
+        "correct_index": 0,
+        "explanation": "Letters to the editor are formal communications addressing public issues and should maintain a respectful, clear and formal tone.",
+        "topic": "Formal and Informal Letter Writing",
+        "difficulty": "easy"
+      },
+      {
+        "text": "When answering an inference-based question on an unseen comprehension passage, a student should primarily",
+        "options": ["Use clues and information given in the passage to draw a logical conclusion not directly stated", "Rely entirely on outside knowledge unrelated to the passage", "Copy the nearest sentence from the passage without analysis", "Skip the question since inference cannot be tested"],
+        "correct_index": 0,
+        "explanation": "Inference questions require reading between the lines — using evidence within the passage to logically arrive at conclusions the text implies but does not state directly.",
+        "topic": "Comprehension Passages",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "8ac1a293-cb15-42cf-a263-d04e4f0e6f3c",
+    "subject_name": "English — Hornbill (Main Reader)",
+    "quiz_title": "Hornbill Main Reader — Chapter Review",
+    "questions": [
+      {
+        "text": "In 'The Portrait of a Lady', how does the author's grandmother spend most of her time in the city, unlike in the village?",
+        "options": ["She becomes quieter and spends her days alone reading scriptures and spinning the charkha", "She actively participates in school sports with the children", "She takes up a government job", "She travels abroad frequently"],
+        "correct_index": 0,
+        "explanation": "In the city, the grandmother withdrew into solitude, spending her days reading religious texts and spinning the charkha, in contrast to her earlier active village life.",
+        "topic": "The Portrait of a Lady",
+        "difficulty": "easy"
+      },
+      {
+        "text": "What was the primary cause of the capsizing of the yacht Wavewalker during the voyage described in 'We Are Not Afraid to Die'?",
+        "options": ["A massive freak wave struck the boat during a storm in the Indian Ocean", "The boat ran aground on a coral reef", "A fire broke out in the engine room", "The crew mutinied against the captain"],
+        "correct_index": 0,
+        "explanation": "The Wavewalker was struck and capsized by an enormous wave during a severe storm south of the Indian Ocean, nearly sinking it.",
+        "topic": "We are Not Afraid to Die",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The chapter 'Discovering Tut: The Saga Continues' primarily describes modern researchers using which method to learn about Tutankhamun's life and death?",
+        "options": ["Forensic and DNA analysis, including CT scans of the mummy", "Interviews with the Pharaoh's living descendants", "Reading his personal diary", "Studying modern Egyptian political records"],
+        "correct_index": 0,
+        "explanation": "The chapter describes a team using CT scans, DNA testing and forensic analysis on Tutankhamun's mummy to uncover clues about his life, health and death.",
+        "topic": "Discovering Tut: The Saga Continues",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The chapter 'Landscape of the Soul' contrasts Chinese and European traditional painting mainly in terms of",
+        "options": ["Chinese art's pursuit of 'spirit resemblance' and inner essence versus the European emphasis on exact physical/formal likeness", "Chinese art's use of oil paints versus European use of watercolours", "Chinese art being created only by women versus European art by men", "Chinese art's complete absence of landscapes compared to Europe"],
+        "correct_index": 0,
+        "explanation": "The chapter contrasts the Chinese artistic ideal of capturing the 'spirit' or essence of a subject with the Western tradition's focus on precise formal/physical likeness, illustrated through anecdotes like the court painter and the 'bony' horse.",
+        "topic": "Landscape of the Soul",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In 'The Ailing Planet', the author describes the Earth using the medical metaphor of a patient suffering mainly from which underlying cause?",
+        "options": ["Humanity's reckless exploitation of natural resources and disregard for ecological balance", "A natural, unavoidable cooling of the sun", "An alien invasion disrupting the atmosphere", "A sudden shift in the Earth's magnetic poles"],
+        "correct_index": 0,
+        "explanation": "The essay frames environmental degradation as a disease caused by human greed and exploitation of nature, requiring the 'green movement' as a cure.",
+        "topic": "The Ailing Planet: The Green Movement's Role",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'The Browning Version', Taplow gives Crocker-Harris a gift of a book, which is significant mainly because it shows",
+        "options": ["A genuine moment of warmth and respect from a student toward a teacher widely seen as cold and unpopular", "Taplow's attempt to bribe the teacher for better grades", "Taplow's dislike for the subject of Greek", "A school tradition where every student gives teachers gifts"],
+        "correct_index": 0,
+        "explanation": "Taplow's gift of the Robert Browning translation of the Agamemnon is a rare, genuine gesture of affection toward Crocker-Harris, who is otherwise seen as an unpopular, strict teacher.",
+        "topic": "The Browning Version",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In Jayant Narlikar's 'The Adventure', Professor Gaitonde finds himself in an alternate history mainly because",
+        "options": ["He enters a different timeline where a key historical battle (the Battle of Panipat) had a different outcome", "He travels physically to another planet", "He wakes up in a different century through hibernation", "He meets his own future self"],
+        "correct_index": 0,
+        "explanation": "The story explores a 'catastrophe theory' of multiple universes, where Gaitonde finds himself in a timeline in which the Marathas won the Third Battle of Panipat, changing subsequent history.",
+        "topic": "The Adventure",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'Silk Road', the author's journey to Mansarovar is complicated mainly by which practical challenge mentioned in the account?",
+        "options": ["The physical difficulty of high-altitude travel and the need to adapt to the terrain and pace of the journey on the Tibetan plateau", "A lack of any maps or guides for the entire route", "Hostile wildlife attacking the group every night", "The complete absence of any local people along the route"],
+        "correct_index": 0,
+        "explanation": "The narrative describes the demanding high-altitude trek across the Tibetan plateau toward Mansarovar, with the author needing to adjust to the terrain, altitude and travel pace alongside local pilgrims and traders.",
+        "topic": "Silk Road",
+        "difficulty": "hard"
+      }
+    ]
+  },
+  {
+    "subject_id": "3de87dc0-3b16-4a98-a661-8bd595a7c29e",
+    "subject_name": "English — Snapshots (Supplementary)",
+    "quiz_title": "Snapshots Supplementary Reader — Mixed Quiz",
+    "questions": [
+      {
+        "text": "In 'The Summer of the Beautiful White Horse', why do Aram and Mourad eventually return the stolen horse?",
+        "options": ["Because their family's tradition of honesty makes them uneasy about keeping something that isn't theirs, and the owner begins noticing", "Because the horse becomes too expensive to feed", "Because the police arrest them", "Because the horse runs away on its own permanently"],
+        "correct_index": 0,
+        "explanation": "Despite being very poor but honest, the boys feel the pull of their family's values and practical concerns (the farmer noticing), leading them to return the horse.",
+        "topic": "The Summer of the Beautiful White Horse",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'The Address', why does the narrator ultimately decide not to claim the furniture and belongings left with Mrs. Dorling?",
+        "options": ["She realises that reclaiming them would not bring back the past or her mother, and the objects feel like a burden rather than a comfort", "The landlord of the house forbids her from entering", "Mrs. Dorling physically prevents her from taking anything", "The items had all already been destroyed by a fire"],
+        "correct_index": 0,
+        "explanation": "The narrator understands that the past cannot be recovered through objects, and chooses to leave the belongings behind rather than cling to a lost world.",
+        "topic": "The Address",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In 'Ranga's Marriage', the narrator Shastri arranges a plan mainly to",
+        "options": ["Convince Ranga, who favours Western ideas on marriage, to accept an arranged match with Ratna through a staged 'astrological' prediction", "Stop Ranga from marrying anyone at all", "Send Ranga abroad for further studies", "Help Ranga open a new shop in the village"],
+        "correct_index": 0,
+        "explanation": "Shastri cleverly stages a palm-reading/prediction scheme to nudge the modern-minded Ranga toward accepting the traditional match with Ratna, which he secretly wants.",
+        "topic": "Ranga's Marriage",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In 'Albert Einstein at School', young Einstein's conflict with his school is mainly shown to stem from",
+        "options": ["His discomfort with rigid rote learning and mechanical discipline, contrasted with his preference for independent, creative thinking", "His complete inability to understand any subject taught in school", "His refusal to ever attend classes", "A personal rivalry with a specific classmate"],
+        "correct_index": 0,
+        "explanation": "The chapter portrays Einstein as impatient with the authoritarian, rote-based schooling of his time, favouring self-directed learning and questioning over mechanical obedience.",
+        "topic": "Albert Einstein at School",
+        "difficulty": "easy"
+      },
+      {
+        "text": "In J.B. Priestley's 'Mother's Day', the central irony of the play lies in",
+        "options": ["Mrs. Pearson, after 'becoming' her daughter through magic, enforces the same demands on her family that they had long ignored when she made them herself", "The family genuinely celebrating Mother's Day with gifts throughout", "Mrs. Pearson refusing to ever change her behaviour", "The children leaving home permanently as a result of the quarrel"],
+        "correct_index": 0,
+        "explanation": "The irony is that once Mrs. Pearson (via Mrs. Fitzgerald's charm) speaks and acts with her daughter's assertiveness, her family suddenly listens and obeys — demands they dismissed when she made them in her usual voice.",
+        "topic": "Mother's Day",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In 'The Ghat of the Only World', Agha Shahid Ali's final days are portrayed primarily through his",
+        "options": ["Courage, humour and continued love for poetry and friendship even while facing terminal illness", "Complete withdrawal from friends and refusal to speak", "Anger and bitterness toward his illness", "Indifference to his own poetry in his last days"],
+        "correct_index": 0,
+        "explanation": "The memoir by Amitav Ghosh portrays Shahid facing his terminal illness with remarkable courage, wit, and an undiminished love of poetry and companionship.",
+        "topic": "The Ghat of the Only World",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In A.J. Cronin's 'Birth', the young doctor Andrew Manson initially believes the newborn child is",
+        "options": ["Stillborn, showing no signs of life after a difficult delivery", "Perfectly healthy and crying immediately", "Suffering from a visible physical deformity", "Twins rather than a single child"],
+        "correct_index": 0,
+        "explanation": "The baby appears lifeless right after birth, and Andrew Manson, despite his exhaustion, works desperately to revive it before it finally breathes.",
+        "topic": "Birth",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In Vikram Seth's 'The Tale of Melon City', the king's downfall is brought about mainly by",
+        "options": ["His own decree accepting that 'whatever the law decrees must be' being applied absurdly to crown a melon as the new king", "A foreign invasion of his kingdom", "His courtiers poisoning him", "A famine that destroyed his kingdom's crops"],
+        "correct_index": 0,
+        "explanation": "The king's rigid insistence that the law's letter be followed literally leads to the absurd outcome of a melon being crowned king after the gate garland falls on it instead of a person, a satire on blind rule-following.",
+        "topic": "The Tale of Melon City",
+        "difficulty": "medium"
+      }
+    ]
+  },
+  {
+    "subject_id": "8d224953-37e8-4145-999c-e3c9c34ee6d3",
+    "subject_name": "Geography — Fundamentals of Physical Geography",
+    "quiz_title": "Fundamentals of Physical Geography — Practice Set",
+    "questions": [
+      {
+        "text": "Physical geography, as a branch of the discipline, is primarily concerned with the study of",
+        "options": ["Natural phenomena of the physical environment such as landforms, climate and water bodies", "Only the political boundaries between countries", "Human population growth rates exclusively", "Historical events of ancient civilisations"],
+        "correct_index": 0,
+        "explanation": "Physical geography studies natural elements of the environment — landforms, climate, water bodies, soils and vegetation — as distinct from human geography's focus on human activities.",
+        "topic": "Geography as a Discipline",
+        "difficulty": "easy"
+      },
+      {
+        "text": "According to the widely accepted model for the origin of the solar system, the planets are believed to have formed from",
+        "options": ["A rotating disc of gas and dust around the young sun that gradually condensed", "Fragments ejected when the sun collided with another star", "Debris left over from a previous universe", "Material deliberately deposited by comets after the sun had cooled"],
+        "correct_index": 0,
+        "explanation": "The widely accepted model describes planets forming through condensation of gas and dust in a rotating disc (the solar nebula) surrounding the young sun.",
+        "topic": "The Origin and Evolution of the Earth",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The layer of the Earth located directly between the crust and the core is called the",
+        "options": ["Mantle", "Lithosphere", "Asthenosphere only", "Barysphere"],
+        "correct_index": 0,
+        "explanation": "The mantle lies between the Earth's outer crust and the central core, and makes up the largest portion of the Earth's volume.",
+        "topic": "Interior of the Earth",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Alfred Wegener's theory of Continental Drift proposed that all continents were once joined together in a single landmass called",
+        "options": ["Pangaea", "Gondwana only", "Laurasia only", "Eurasia"],
+        "correct_index": 0,
+        "explanation": "Wegener proposed that all present-day continents were once part of a single supercontinent, Pangaea, which later broke apart and drifted to their current positions.",
+        "topic": "Distribution of Oceans and Continents",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which of the following best distinguishes 'weathering' from 'erosion' as geomorphic processes?",
+        "options": ["Weathering breaks down rock in situ without large-scale transport, while erosion involves the removal and transport of weathered material by agents like water, wind or ice", "Weathering only happens underwater, while erosion only happens on land", "Erosion builds up new rock, while weathering destroys it", "Weathering and erosion are different names for the exact same process"],
+        "correct_index": 0,
+        "explanation": "Weathering disintegrates or decomposes rock largely in place, whereas erosion involves the active removal and transportation of the loosened material by agents such as rivers, wind, glaciers or waves.",
+        "topic": "Geomorphic Processes",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which gas forms the largest proportion of the Earth's atmosphere by volume?",
+        "options": ["Nitrogen", "Oxygen", "Carbon dioxide", "Argon"],
+        "correct_index": 0,
+        "explanation": "Nitrogen makes up about 78% of the atmosphere by volume, more than oxygen's roughly 21%.",
+        "topic": "Composition and Structure of Atmosphere",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Why do the Trade Winds follow a curved path rather than blowing in a straight line from the subtropical high-pressure belts toward the equator?",
+        "options": ["Because the Coriolis force, caused by Earth's rotation, deflects moving air to the right in the Northern Hemisphere and to the left in the Southern Hemisphere", "Because mountains physically block all straight-line wind movement near the equator", "Because trade winds only exist over oceans and never over land", "Because the sun's heat pushes winds in a perfectly straight line regardless of rotation"],
+        "correct_index": 0,
+        "explanation": "The Coriolis force, resulting from Earth's rotation, deflects winds from their straight-line path — to the right in the Northern Hemisphere and left in the Southern Hemisphere — curving the trade winds as they move toward the equator.",
+        "topic": "Atmospheric Circulation and Weather Systems",
+        "difficulty": "hard"
+      },
+      {
+        "text": "A region recognised as a 'biodiversity hotspot' is primarily characterised by",
+        "options": ["High species richness combined with a high degree of threat or habitat loss", "The complete absence of any human population", "Being located only within polar regions", "Having the lowest number of plant and animal species on Earth"],
+        "correct_index": 0,
+        "explanation": "Biodiversity hotspots are regions with exceptionally high levels of species richness and endemism that are simultaneously facing significant habitat loss or threat.",
+        "topic": "Biodiversity and Conservation",
+        "difficulty": "medium"
+      }
+    ]
+  },
+  {
+    "subject_id": "d0141b47-af11-4dcb-8a34-38c1fb9e597f",
+    "subject_name": "Geography — India: Physical Environment",
+    "quiz_title": "India: Physical Environment — Practice Set",
+    "questions": [
+      {
+        "text": "India's mainland extends between which approximate latitudes, giving it a largely tropical to subtropical character?",
+        "options": ["About 8°4'N to 37°6'N", "About 50°N to 80°N", "About 0° to 10°S", "About 40°S to 60°S"],
+        "correct_index": 0,
+        "explanation": "India's mainland lies roughly between 8°4'N and 37°6'N latitude, placing most of the country in the tropical and subtropical zones.",
+        "topic": "India — Location",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The Himalayas are classified as which type of mountains based on their formation?",
+        "options": ["Young fold mountains formed by the collision of tectonic plates", "Volcanic mountains formed from lava", "Block mountains formed by faulting", "Residual mountains formed purely by erosion of a plateau"],
+        "correct_index": 0,
+        "explanation": "The Himalayas are young fold mountains formed by the collision of the Indian Plate with the Eurasian Plate, and they continue to be geologically active.",
+        "topic": "Structure and Physiography",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Rivers like the Ganga and Brahmaputra, which originate from melting snow and glaciers and flow throughout the year, are classified as",
+        "options": ["Perennial (Himalayan) rivers", "Seasonal (Peninsular) rivers", "Underground rivers", "Tidal rivers only"],
+        "correct_index": 0,
+        "explanation": "Himalayan rivers such as the Ganga and Brahmaputra are perennial because they are fed by both rainfall and melting snow/glaciers, unlike the largely rain-fed Peninsular rivers.",
+        "topic": "Drainage System",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The reversal of wind direction between summer and winter, which drives India's rainfall pattern, is known as the",
+        "options": ["Monsoon", "Jet stream", "Loo", "Western disturbance"],
+        "correct_index": 0,
+        "explanation": "The monsoon is the seasonal reversal of winds — moisture-laden winds blow from sea to land in summer and dry winds blow from land to sea in winter — that governs most of India's rainfall.",
+        "topic": "Climate",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Which type of forest in India is characterised by trees shedding their leaves for about six to eight weeks in the dry season, and is the most widespread forest type in the country?",
+        "options": ["Tropical deciduous forest", "Tropical evergreen forest", "Tidal/mangrove forest", "Alpine forest"],
+        "correct_index": 0,
+        "explanation": "Tropical deciduous forests, found in regions with 70-200 cm rainfall, shed their leaves for part of the dry season and cover the largest area among India's forest types.",
+        "topic": "Natural Vegetation",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Alluvial soil, which covers large parts of the Northern Plains, is primarily formed through",
+        "options": ["Deposition of sediments carried and laid down by rivers over time", "In-situ weathering of volcanic lava", "Accumulation of decomposed organic matter in marshes only", "Wind-blown sand deposits in desert regions"],
+        "correct_index": 0,
+        "explanation": "Alluvial soil is formed from sediments deposited by rivers, making it highly fertile and dominant across the Northern Plains built up by the Indus-Ganga-Brahmaputra river systems.",
+        "topic": "Soils",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Why is the eastern coast of India, particularly Odisha and Andhra Pradesh, especially vulnerable to tropical cyclones compared to the western coast?",
+        "options": ["The Bay of Bengal generates more frequent and intense cyclones that make landfall on the eastern coast, partly due to warmer sea surface temperatures and typical storm tracks", "The western coast has no coastline at all", "Cyclones only form over land, never over the sea", "The eastern coast lies entirely below sea level"],
+        "correct_index": 0,
+        "explanation": "The Bay of Bengal is more cyclone-prone than the Arabian Sea due to warmer waters and typical storm tracks, making states like Odisha and Andhra Pradesh on the eastern coast more frequently hit by cyclones.",
+        "topic": "Natural Hazards and Disasters",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Which of the following physiographic divisions of India is known for its fertile plains formed by the Indus, Ganga and Brahmaputra river systems?",
+        "options": ["The Northern Plains", "The Peninsular Plateau", "The Himalayan Mountains", "The Islands"],
+        "correct_index": 0,
+        "explanation": "The Northern Plains are the vast, fertile alluvial plains formed by the depositional work of the Indus, Ganga and Brahmaputra river systems.",
+        "topic": "Structure and Physiography",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "1faf661a-612a-4a20-a6bf-e1f919461b2b",
+    "subject_name": "History",
+    "quiz_title": "History — Term Practice Set",
+    "questions": [
+      {
+        "text": "Early human ancestors are generally classified by historians and archaeologists primarily on the basis of their",
+        "options": ["Physical/skeletal features and the tools they used", "Religious beliefs recorded in writing", "National identity", "Choice of modern-day languages"],
+        "correct_index": 0,
+        "explanation": "Since early hominids left no written records, classification relies on fossil/skeletal evidence and the stone or other tools associated with different groups.",
+        "topic": "From the Beginning of Time",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The Indus Valley Civilisation city of Mohenjo-daro is especially well known among historians for its",
+        "options": ["Well-planned grid layout with an advanced drainage and sewage system", "Being built entirely underground", "Having no evidence of any urban planning", "Being discovered only in the 21st century"],
+        "correct_index": 0,
+        "explanation": "Mohenjo-daro is famous for its grid-pattern street layout and sophisticated covered drainage system, indicating advanced urban planning.",
+        "topic": "Early Cities",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The Roman Empire's ability to govern territory spanning Europe, Asia Minor and Africa was aided significantly by",
+        "options": ["An extensive network of roads, a common currency, and a structured administrative/legal system", "The complete absence of any army", "Allowing every province full political independence", "Using only oral tradition with no written law"],
+        "correct_index": 0,
+        "explanation": "Rome maintained its vast, multi-continental empire through infrastructure like roads, a unified currency, and a structured legal and administrative system connecting its provinces.",
+        "topic": "An Empire Across Three Continents",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The expansion of trade across the 'central Islamic lands' in the medieval period was significantly aided by",
+        "options": ["Its strategic geographic position linking trade routes between Europe, Africa and Asia", "Its complete geographic isolation from all trade routes", "A total ban on all forms of commerce", "The absence of any common administrative or legal framework"],
+        "correct_index": 0,
+        "explanation": "The central Islamic lands occupied a crucial crossroads position connecting Europe, Africa and Asia, making them central to medieval long-distance trade.",
+        "topic": "The Central Islamic Lands",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Under Genghis Khan, the Mongol military's effectiveness is most closely associated with which organisational feature?",
+        "options": ["A highly disciplined, merit-based structure organised around mobile cavalry units rather than hereditary tribal loyalty alone", "A complete reliance on naval warfare", "An entirely untrained, voluntary militia with no command structure", "A ban on using horses in battle"],
+        "correct_index": 0,
+        "explanation": "Genghis Khan restructured Mongol forces into disciplined units based on merit and loyalty to the khan rather than solely on tribal kinship, combined with highly mobile cavalry tactics, which was key to Mongol military success.",
+        "topic": "Nomadic Empires",
+        "difficulty": "hard"
+      },
+      {
+        "text": "In medieval European feudal society as described under 'The Three Orders', society was typically divided into",
+        "options": ["Those who prayed (clergy), those who fought (nobility), and those who worked (peasantry)", "Only kings and slaves", "Only merchants and artisans", "Only soldiers and farmers, with no role for the clergy"],
+        "correct_index": 0,
+        "explanation": "The classic 'three orders' model of medieval European society divided people into the clergy (who prayed), the nobility (who fought), and the peasantry (who worked the land).",
+        "topic": "The Three Orders",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The Renaissance in Europe is primarily characterised in this chapter as a period marked by",
+        "options": ["A renewed interest in classical Greek and Roman learning alongside new developments in art, science and humanist thought", "A complete rejection of all art and learning", "The sole dominance of religious painting with no secular themes", "A total halt in scientific inquiry"],
+        "correct_index": 0,
+        "explanation": "The Renaissance is characterised by a revival of interest in classical antiquity combined with new advances in art, science, and humanist philosophy that emphasised human potential and inquiry.",
+        "topic": "Changing Cultural Traditions",
+        "difficulty": "hard"
+      },
+      {
+        "text": "One of the most significant social consequences of the Industrial Revolution in Britain, as discussed in this chapter, was",
+        "options": ["Rapid urbanisation as workers migrated to factory towns, often under poor living and working conditions", "An immediate and complete improvement in working conditions for all labourers", "A total decline in overall production", "The complete disappearance of the working class"],
+        "correct_index": 0,
+        "explanation": "Industrialisation drew large numbers of workers into rapidly growing factory towns, often resulting in overcrowding and harsh working and living conditions, a major theme of this chapter.",
+        "topic": "The Industrial Revolution",
+        "difficulty": "medium"
+      }
+    ]
+  },
+  {
+    "subject_id": "39a53811-c70f-4d83-a23c-fed7545fc162",
+    "subject_name": "Political Science — Indian Constitution at Work",
+    "quiz_title": "Indian Constitution at Work — Practice Set",
+    "questions": [
+      {
+        "text": "The Indian Constitution was drafted primarily by which body?",
+        "options": ["The Constituent Assembly", "The British Parliament", "The Supreme Court", "The Election Commission"],
+        "correct_index": 0,
+        "explanation": "India's Constitution was framed by the Constituent Assembly, elected indirectly to represent the people of India, and adopted on 26 November 1949.",
+        "topic": "Constitution: Why and How?",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Which of the following is classified as a Fundamental Right under the Indian Constitution?",
+        "options": ["Right to Freedom of Speech and Expression", "Right to a Minimum Wage", "Right to Free Legal Aid for all citizens automatically", "Right to a Clean Environment, explicitly named as such in Part III"],
+        "correct_index": 0,
+        "explanation": "Freedom of speech and expression is explicitly guaranteed under Article 19 as a Fundamental Right in Part III of the Constitution.",
+        "topic": "Rights in the Indian Constitution",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The body constitutionally responsible for conducting free and fair elections to the Parliament and State Legislatures in India is the",
+        "options": ["Election Commission of India", "Union Public Service Commission", "Finance Commission", "National Human Rights Commission"],
+        "correct_index": 0,
+        "explanation": "The Election Commission of India, an independent constitutional body, is responsible for the superintendence, direction and control of elections in the country.",
+        "topic": "Election and Representation",
+        "difficulty": "medium"
+      },
+      {
+        "text": "In India's parliamentary system, the 'real' executive power is exercised by",
+        "options": ["The Council of Ministers headed by the Prime Minister, while the President acts mostly on their aid and advice", "The President alone, without consulting any minister", "The Chief Justice of India", "The Speaker of the Lok Sabha"],
+        "correct_index": 0,
+        "explanation": "India follows a parliamentary system where the President is the nominal/constitutional head, while real executive power rests with the Council of Ministers led by the Prime Minister.",
+        "topic": "Executive",
+        "difficulty": "medium"
+      },
+      {
+        "text": "A 'money bill' in the Indian Parliament is distinctive mainly because",
+        "options": ["It can only be introduced in the Lok Sabha, and the Rajya Sabha cannot reject or amend it, only recommend changes", "It must be introduced simultaneously in both Houses", "Only the Rajya Sabha has the power to introduce it", "It requires approval from state legislatures before being passed"],
+        "correct_index": 0,
+        "explanation": "Money bills can be introduced only in the Lok Sabha; the Rajya Sabha can only suggest recommendations within 14 days, and the Lok Sabha may accept or reject them, giving the lower house primacy on financial matters.",
+        "topic": "Legislature",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Judicial review, as exercised by the Indian judiciary, refers to the power to",
+        "options": ["Examine and strike down laws or executive actions found to violate the Constitution", "Draft new laws independently of the legislature", "Appoint members to the Council of Ministers", "Conduct elections to the Parliament"],
+        "correct_index": 0,
+        "explanation": "Judicial review is the power of the judiciary to examine the constitutionality of legislative enactments and executive orders, and to declare them void if they conflict with the Constitution.",
+        "topic": "Judiciary",
+        "difficulty": "hard"
+      },
+      {
+        "text": "India's federal system is often described as having a 'unitary bias' mainly because",
+        "options": ["The Union government holds significant powers over the states, including emergency provisions that can centralise authority", "The states have absolutely no powers of their own", "There is no division of subjects between the Union and the States", "The Constitution does not mention the word 'federal' anywhere, and states are fully independent nations"],
+        "correct_index": 0,
+        "explanation": "While India has federal features like division of powers, it leans toward a strong centre, with provisions such as emergency powers that let the Union government exercise greater control over states.",
+        "topic": "Federalism",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The 73rd Constitutional Amendment Act primarily strengthened local self-government by giving constitutional status to",
+        "options": ["Panchayati Raj institutions in rural areas", "Only municipal corporations in metro cities", "The Election Commission", "The Union Cabinet"],
+        "correct_index": 0,
+        "explanation": "The 73rd Amendment (1992) gave constitutional status to Panchayati Raj institutions, establishing a three-tier system of rural local self-government.",
+        "topic": "Local Governments",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "c0adc033-85db-479c-affb-5d4f9f18110f",
+    "subject_name": "Political Science — Political Theory",
+    "quiz_title": "Political Theory — Concept Check",
+    "questions": [
+      {
+        "text": "Political theory is best described as the study of",
+        "options": ["Ideas and concepts such as freedom, equality and justice that help us understand and evaluate political life", "Only the biographies of political leaders", "Exclusively the economic policies of a country", "Only the geography of political boundaries"],
+        "correct_index": 0,
+        "explanation": "Political theory examines concepts like freedom, equality, rights and justice, providing frameworks to understand, evaluate and organise political life.",
+        "topic": "Political Theory: An Introduction",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The concept of 'negative liberty' in political theory refers primarily to",
+        "options": ["The absence of external restraints or interference on an individual's actions", "The government actively providing every citizen a job", "Freedom that applies only to elected officials", "The complete removal of all laws"],
+        "correct_index": 0,
+        "explanation": "Negative liberty is understood as the absence of external constraints or interference, allowing individuals to act without restriction from others, especially the state.",
+        "topic": "Freedom",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'Affirmative action' policies, such as reservations in India, are primarily a way of promoting which conception of equality?",
+        "options": ["Equality of outcome/substantive equality, by compensating for historical and social disadvantages", "Equality of opportunity in a purely formal, identical-treatment sense", "Inequality as a deliberate goal", "Equality limited strictly to economic matters"],
+        "correct_index": 0,
+        "explanation": "Affirmative action aims at substantive equality by giving extra support to historically disadvantaged groups so they can genuinely compete, rather than simply treating everyone identically regardless of past disadvantage.",
+        "topic": "Equality",
+        "difficulty": "medium"
+      },
+      {
+        "text": "John Rawls' idea of the 'veil of ignorance,' as discussed in relation to social justice, is used to argue that",
+        "options": ["Fair principles of justice should be chosen without knowing one's own position (wealth, status) in society", "Justice should be decided only by the wealthiest members of society", "People should be kept permanently ignorant of the law", "Social justice has no connection to fairness at all"],
+        "correct_index": 0,
+        "explanation": "Rawls' veil of ignorance is a thought experiment where people design principles of justice without knowing their own place in society, encouraging genuinely fair and impartial principles.",
+        "topic": "Social Justice",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The claim that rights impose not just a duty on the state to not interfere (negative duty) but also a duty to actively provide certain conditions (positive duty) is most closely associated with which category of rights?",
+        "options": ["Economic and social rights, such as the right to education or health care", "Civil rights alone, such as freedom of speech", "Rights that exist only in authoritarian states", "Rights that apply only to corporations"],
+        "correct_index": 0,
+        "explanation": "Economic and social rights (e.g., right to education, healthcare) typically require the state to take positive action and provide resources, unlike purely civil/political rights which mainly require non-interference.",
+        "topic": "Rights",
+        "difficulty": "hard"
+      },
+      {
+        "text": "A key debate around citizenship discussed in this chapter concerns how a state should treat",
+        "options": ["Migrants and refugees seeking rights and recognition within a different political community", "Only its wealthiest citizens", "Citizens who have never left their hometown", "Foreign governments' internal policies"],
+        "correct_index": 0,
+        "explanation": "A central concern of citizenship theory is how states extend or restrict rights and belonging to migrants, refugees and other groups seeking inclusion in a political community.",
+        "topic": "Citizenship",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The chapter on Nationalism distinguishes between 'nation' and 'state' primarily by noting that",
+        "options": ["A nation is a community bound by shared identity/culture, while a state is a political/legal entity with defined territory, sovereignty and government", "A nation and a state are always identical and interchangeable terms", "Only a state can have a shared culture, never a nation", "A nation requires a standing army while a state does not"],
+        "correct_index": 0,
+        "explanation": "A nation refers to a community sharing a common identity, culture or history, while a state is a political entity defined by territory, sovereignty, population and government — the two do not always align perfectly.",
+        "topic": "Nationalism",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Indian secularism, as distinguished from the 'wall of separation' model, is often described as allowing the state to",
+        "options": ["Engage with religion through principled distance, intervening when needed to address issues like caste discrimination within a religion", "Establish one official state religion for all citizens", "Completely ban all religious practice", "Fund only one specific religious community"],
+        "correct_index": 0,
+        "explanation": "Indian secularism follows a model of 'principled distance' rather than a strict wall of separation, allowing the state to intervene in religious practices when necessary, such as to address internal discrimination.",
+        "topic": "Secularism",
+        "difficulty": "medium"
+      }
+    ]
+  },
+  {
+    "subject_id": "d0dde1e9-3cb7-4a09-aa64-098936575ca8",
+    "subject_name": "Sociology — Introducing Sociology (Optional)",
+    "quiz_title": "Introducing Sociology — Practice Set",
+    "questions": [
+      {
+        "text": "Sociology, as a discipline, is best defined as the systematic study of",
+        "options": ["Human society, social relationships and social institutions", "Only the physical structure of the Earth", "Exclusively ancient historical events", "Only individual psychology in isolation from society"],
+        "correct_index": 0,
+        "explanation": "Sociology is the systematic and scientific study of society, social relationships, institutions and group behaviour.",
+        "topic": "Society and Sociology",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The sociological concept of 'social institution' refers to",
+        "options": ["An established pattern of behaviour or relationships recognised as having a particular, often essential, purpose in society (e.g., family, marriage)", "A single physical building used by the government", "A privately owned business enterprise exclusively", "A temporary, informal gathering with no recognised norms"],
+        "correct_index": 0,
+        "explanation": "A social institution is a relatively stable set of norms and relationships that fulfil a recognised social need or purpose, such as family, education, or religion — not merely a building.",
+        "topic": "Society and Sociology",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Urbanisation, as discussed in this chapter, typically brings about social change mainly through",
+        "options": ["Shifts from close-knit, kinship-based rural ties toward more impersonal, diverse and occupation-based urban social relations", "A complete return to pre-industrial rural lifestyles", "The total elimination of social inequality", "A decrease in population density everywhere"],
+        "correct_index": 0,
+        "explanation": "Urbanisation is associated with a shift from tightly-knit kinship-based rural social organisation to more impersonal, heterogeneous and occupationally differentiated urban social life.",
+        "topic": "Social Change and Social Order in Rural and Urban Society",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Sociologists studying environment and society primarily examine",
+        "options": ["How social structures, culture and human activity shape and are shaped by the natural environment", "Only the chemical composition of soil", "Purely the migratory patterns of birds", "Only weather forecasting techniques"],
+        "correct_index": 0,
+        "explanation": "The sociology of environment and society looks at the two-way relationship between social organisation/culture and the natural environment, including how human activity affects ecology and vice versa.",
+        "topic": "Environment and Society",
+        "difficulty": "easy"
+      },
+      {
+        "text": "The concept of 'sustainable development' as discussed in the context of environment and society emphasises",
+        "options": ["Meeting present needs without compromising the ability of future generations to meet their own needs", "Maximising current resource extraction with no regard for the future", "Development exclusively measured by GDP growth", "Complete rejection of all industrial activity"],
+        "correct_index": 0,
+        "explanation": "Sustainable development, as commonly defined (Brundtland Commission), balances meeting the needs of the present generation while preserving resources and capacity for future generations.",
+        "topic": "Environment and Society",
+        "difficulty": "hard"
+      },
+      {
+        "text": "Karl Marx's theory of society places central importance on",
+        "options": ["Class conflict arising from unequal control over the means of production", "Social harmony arising purely from shared religious belief", "Individual psychology as the sole driver of history", "The complete absence of any economic factors in shaping society"],
+        "correct_index": 0,
+        "explanation": "Marx's analysis centres on class conflict driven by unequal ownership and control of the means of production, viewed as the key engine of historical and social change.",
+        "topic": "Introducing Western Sociologists",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Emile Durkheim's concept of 'anomie' refers to a social condition characterised by",
+        "options": ["A breakdown of social norms leading to a sense of normlessness or disconnection in individuals", "Perfect social order with no conflict whatsoever", "The complete absence of any division of labour", "A society with no religion of any kind"],
+        "correct_index": 0,
+        "explanation": "Durkheim used 'anomie' to describe a state where social norms are weakened, unclear or breaking down, leaving individuals without clear guidance, often associated with rapid social change.",
+        "topic": "Introducing Western Sociologists",
+        "difficulty": "hard"
+      },
+      {
+        "text": "G.S. Ghurye is widely regarded as a foundational figure in Indian sociology mainly because of his",
+        "options": ["Pioneering institutional role in establishing sociology as an academic discipline in India and his wide-ranging studies on caste and culture", "Role as a Supreme Court judge", "Work exclusively in the field of economics", "Leadership of a political party"],
+        "correct_index": 0,
+        "explanation": "G.S. Ghurye is considered one of the founders of Indian sociology, known for establishing the discipline academically in India and for his extensive studies on caste, kinship and Indian culture.",
+        "topic": "Indian Sociologists",
+        "difficulty": "easy"
+      }
+    ]
+  },
+  {
+    "subject_id": "ade2b2be-a17a-42b9-87a7-9d58e2a07a73",
+    "subject_name": "Sociology — Understanding Society (Optional)",
+    "quiz_title": "Understanding Society — Review Set",
+    "questions": [
+      {
+        "text": "'Social stratification' refers to",
+        "options": ["The hierarchical ranking of individuals or groups in society based on factors like wealth, caste or status", "A method of measuring rainfall patterns", "The physical layering of rock in geography", "A term used only in biology to describe cell structure"],
+        "correct_index": 0,
+        "explanation": "Social stratification describes how society is structured into a hierarchy of layers or ranks based on factors such as wealth, power, caste or status.",
+        "topic": "Social Structure, Stratification and Social Processes in Society",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'Social mobility' refers to",
+        "options": ["The movement of individuals or groups between different social positions or strata, either upward or downward", "The physical relocation of people from one city to another regardless of social position", "A fixed, unchanging social hierarchy with no movement possible", "Movement that can occur only within the same generation"],
+        "correct_index": 0,
+        "explanation": "Social mobility refers to the ability of individuals or groups to move between social positions/strata, which can be upward, downward, or across generations (intergenerational).",
+        "topic": "Social Structure, Stratification and Social Processes in Society",
+        "difficulty": "easy"
+      },
+      {
+        "text": "Over time, the institution of marriage in India has seen changes such as",
+        "options": ["A gradual shift in some communities from strictly arranged matches toward greater individual choice, alongside continuing traditional practices elsewhere", "The complete disappearance of marriage as a social institution", "No change whatsoever across any region or generation", "Marriage becoming compulsory by law for all adults at a fixed age"],
+        "correct_index": 0,
+        "explanation": "The chapter discusses how institutions like marriage show both continuity (persisting traditional practices) and change (increasing individual choice in some contexts), rather than a uniform or total transformation.",
+        "topic": "Social Institutions: Continuity and Change",
+        "difficulty": "easy"
+      },
+      {
+        "text": "'Social exclusion' differs from simple poverty mainly because it emphasises",
+        "options": ["The systematic denial of access to resources, rights, and participation faced by particular groups, beyond just a lack of income", "Only the lack of money, with no reference to social participation", "A condition that affects every member of society equally", "A purely temporary and individual circumstance unrelated to group identity"],
+        "correct_index": 0,
+        "explanation": "Social exclusion highlights how particular groups (e.g., based on caste, religion or gender) are systematically denied access to resources, rights and social participation — a broader process than income poverty alone.",
+        "topic": "Social Inequality and Exclusion",
+        "difficulty": "medium"
+      },
+      {
+        "text": "The practice of 'untouchability,' as analysed under social inequality and exclusion, is best understood as an example of",
+        "options": ["Exclusion based on ritual notions of purity and pollution historically tied to the caste system", "A purely modern phenomenon with no historical roots", "A form of exclusion based solely on income level", "A practice found only outside South Asia"],
+        "correct_index": 0,
+        "explanation": "Untouchability is rooted in historical notions of ritual purity and pollution within the caste hierarchy, leading to systematic social, economic and spatial exclusion of certain groups.",
+        "topic": "Social Inequality and Exclusion",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The chapter on cultural diversity discusses 'communalism' as primarily referring to",
+        "options": ["The politicisation of religious or community identity to the point of viewing other communities as hostile or threatening", "The peaceful coexistence of multiple cultural traditions with mutual respect", "A government policy mandating one official religion", "An economic system based on communal land ownership"],
+        "correct_index": 0,
+        "explanation": "Communalism refers to the politicisation of religious/community identity such that it generates hostility, antagonism, or rivalry toward other communities, often used to mobilise political support.",
+        "topic": "The Challenges of Cultural Diversity",
+        "difficulty": "hard"
+      },
+      {
+        "text": "The Green Revolution's impact on rural social structure, as discussed in this chapter, included",
+        "options": ["Widening economic disparities between large landowners who could afford new inputs and small/marginal farmers who could not", "Equal economic benefit to every farmer regardless of landholding size", "A complete end to agricultural labour of any kind", "The disappearance of landownership as a social category"],
+        "correct_index": 0,
+        "explanation": "The Green Revolution, requiring capital for inputs like HYV seeds and irrigation, tended to benefit larger landowners more than small and marginal farmers, often widening rural economic inequality.",
+        "topic": "Change and Development in Rural Society",
+        "difficulty": "medium"
+      },
+      {
+        "text": "Rural-to-urban migration for work, discussed as a feature of change in rural society, is most closely linked to",
+        "options": ["The search for better livelihood opportunities amid limited employment and land availability in villages", "A government law requiring all villagers to relocate", "The complete absence of agriculture in rural India", "A decline in urban population"],
+        "correct_index": 0,
+        "explanation": "Migration from villages to cities is commonly driven by the search for better livelihood opportunities, given limited land and non-farm employment in many rural areas.",
+        "topic": "Change and Development in Rural Society",
+        "difficulty": "medium"
+      }
+    ]
+  }
+]
