@@ -143,8 +143,21 @@ class BunnyStorage(Storage):
         return True
 
     def url(self, name):
-        host = settings.BUNNY_STORAGE_CDN_HOST.rstrip("/")
-        return f"https://{host}/{name}"
+        # Routed through bunny_signing so there is ONE place that decides
+        # whether a stored file is public. Today this returns the same bare
+        # URL it always did — signing only engages once
+        # BUNNY_STORAGE_TOKEN_KEY is set AND the path is on
+        # BUNNY_PRIVATE_PREFIXES, and neither holds in any environment yet.
+        #
+        # Setting the key is NOT sufficient to make private files private:
+        # a signed URL is only a gate once Bunny refuses unsigned ones. See
+        # docs/security/private-media-exposure.md.
+        from config.bunny_signing import bunny_storage_url
+
+        url, _expires, _signed = bunny_storage_url(
+            name, host=settings.BUNNY_STORAGE_CDN_HOST
+        )
+        return url
 
     def size(self, name):
         status, length = self._probe(name)
