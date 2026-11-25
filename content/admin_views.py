@@ -22,10 +22,12 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
+from . import demo_video_bunny
 from .admin_serializers import (
     AnnouncementAdminSerializer, BlogPostAdminSerializer,
     ContentImageAdminSerializer, ContentTagSerializer,
-    CurrentAffairAdminSerializer, FAQItemAdminSerializer,
+    CurrentAffairAdminSerializer, DemoVideoAdminSerializer,
+    FAQItemAdminSerializer,
     HomeContentBlockAdminSerializer, HomeFloaterAdminSerializer,
     HomeListItemAdminSerializer, HomeSectionOrderAdminSerializer,
     ShowcaseCategoryAdminSerializer,
@@ -34,7 +36,7 @@ from .admin_serializers import (
 from .models import (
     Announcement, BlogPost, BlogRevision, ContentImage, ContentRevision,
     ContentTag,
-    CurrentAffair, FAQItem, HomeContentBlock, HomeFloater, HomeListItem,
+    CurrentAffair, DemoVideo, FAQItem, HomeContentBlock, HomeFloater, HomeListItem,
     HomeSectionOrder, Locale, PublishStatus, ShowcaseCategory,
     ShowcaseCourse,
 )
@@ -670,3 +672,65 @@ class CurrentAffairAdminViewSet(RecordsRevisions, viewsets.ModelViewSet):
         obj.save()
         self._record_status_action(obj, before)
         return Response(self.get_serializer(obj).data)
+
+
+# ── Landing-page demo videos ──────────────────────────────────────
+
+class DemoVideoAdminViewSet(viewsets.ModelViewSet):
+    """The floating "watch a demo" clips on the public homepage.
+
+    The same job Django admin's DemoVideoAdmin does, for the React admin.
+    Uploads never pass through Django — see ``demo_video_bunny`` for why:
+    ``upload-slot`` mints an empty Bunny video and a signed TUS ticket, the
+    browser sends the bytes straight to Bunny, then a create/PATCH with the new
+    ``bunny_video_id`` attaches it and asks Bunny how encoding went.
+
+    Hiding a clip is a status change (``archived``/``draft``); DELETE removes the
+    row only and leaves the file in Bunny, matching the Django admin.
+    """
+    queryset = DemoVideo.objects.all().order_by("order", "id")
+    serializer_class = DemoVideoAdminSerializer
+    permission_classes = [IsContentEditor]
+    pagination_class = None
+    lookup_field = "key"
+    lookup_value_regex = "[-a-zA-Z0-9_]+"
+
+    def perform_create(self, serializer):
+        video = serializer.save()
+        if video.bunny_video_id:
+            demo_video_bunny.sync_demo_video(video)
+
+    def perform_update(self, serializer):
+        old_id = serializer.instance.bunny_video_id
+        video = serializer.save()
+        if video.bunny_video_id != old_id:
+            # Clear the old clip's runtime/thumbnail/status, then re-read Bunny.
+            demo_video_bunny.attach(video, video.bunny_video_id)
+        if video.bunny_video_id:
+            demo_video_bunny.sync_demo_video(video)
+
+    @action(detail=False, methods=["post"], url_path="upload-slot")
+    def upload_slot(self, request):
+        """Mint an empty Bunny video and sign a TUS ticket for the browser."""
+        title = str(request.data.get("filename") or "").strip()[:120]
+        size = request.data.get("size")
+        try:
+            size = int(size) if size is not None else None
+        except (TypeError, ValueError):
+            size = None
+        try:
+            ticket = demo_video_bunny.create_upload_slot(title, size)
+        except demo_video_bunny.BunnyUnavailable as e:
+            return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(ticket)
+
+    @action(detail=True, methods=["post"], url_path="sync")
+    def sync(self, request, key=None):
+        """Re-read Bunny's state for one row. Polled while a clip encodes."""
+        video = self.get_object()
+        reachable = True
+        if video.bunny_video_id:
+            _, data = demo_video_bunny.sync_demo_video(video)
+            reachable = data is not None
+            video.refresh_from_db()
+        return Response({**self.get_serializer(video).data, "reachable": reachable})

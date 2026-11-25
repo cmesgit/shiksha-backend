@@ -454,27 +454,9 @@ class DemoVideoAdmin(admin.ModelAdmin):
 
     @admin.display(description="On the site")
     def on_the_site(self, obj):
-        """Why a row is or is not live, in words.
-
-        "Published" plus a guid is not enough, and an editor who cannot see the
-        reason will assume the site is broken — which is exactly what happened
-        before this column existed.
-        """
-        if obj.status != PublishStatus.PUBLISHED:
-            return "No — not published"
-        if not obj.bunny_video_id:
-            return "No — no video uploaded"
-        if obj.bunny_status is None:
-            # Reached from two places now — this column, and the upload panel
-            # while a fresh clip encodes. "Run sync_demo_videos" was the only
-            # answer before the panel existed and is now wrong half the time,
-            # so say what is true in both: nobody has asked Bunny yet.
-            return "No — not checked with Bunny yet"
-        if obj.bunny_status != obj.BUNNY_FINISHED:
-            return f"No — Bunny still at status {obj.bunny_status}"
-        if not obj.embed_url():
-            return "No — BUNNY_LIBRARY_ID unset"
-        return "Yes"
+        """Why a row is or is not live, in words — see
+        `demo_video_bunny.on_the_site_reason`, shared with the React admin."""
+        return demo_video_bunny.on_the_site_reason(obj)
 
     @admin.display(description="Runtime")
     def runtime(self, obj):

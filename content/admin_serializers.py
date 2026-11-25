@@ -25,7 +25,7 @@ from rest_framework import serializers
 from .blocks import validate_blocks, validate_theme
 from .models import (
     Announcement, BlogPost, ContentImage, ContentTag, CurrentAffair,
-    FAQItem, HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
+    DemoVideo, FAQItem, HomeContentBlock, HomeFloater, HomeListItem, HomeSectionOrder,
     ShowcaseCategory, ShowcaseCourse,
 )
 
@@ -472,3 +472,48 @@ class HomeSectionOrderAdminSerializer(FullCleanMixin, serializers.ModelSerialize
         model = HomeSectionOrder
         fields = ["id", "section", "order", "is_visible", "created_at", "updated_at"]
         read_only_fields = ["section", "created_at", "updated_at"]
+
+
+class DemoVideoAdminSerializer(serializers.ModelSerializer):
+    """The landing-page demo clips, as the React admin sees them.
+
+    Writable: key, title, blurb, order, status, bunny_video_id. Everything
+    derived from Bunny (runtime, thumbnail, encoding status) is read-only —
+    ``sync_demo_video`` owns it, and an editable field the next sync silently
+    overwrites is worse than none. Changing ``bunny_video_id`` is handled by the
+    viewset through ``demo_video_bunny.attach`` so the old clip's derived values
+    are cleared rather than left describing a different video.
+    """
+
+    status_label = serializers.SerializerMethodField()
+    embed_url = serializers.SerializerMethodField()
+    on_the_site = serializers.SerializerMethodField()
+    is_live = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DemoVideo
+        fields = [
+            "id", "key", "title", "blurb", "order", "status",
+            "bunny_video_id", "bunny_status", "status_label",
+            "duration_seconds", "thumbnail_url", "embed_url",
+            "on_the_site", "is_live", "updated_at",
+        ]
+        read_only_fields = [
+            "id", "bunny_status", "duration_seconds", "thumbnail_url",
+            "updated_at",
+        ]
+
+    def get_status_label(self, obj):
+        from . import demo_video_bunny
+        return demo_video_bunny.status_label(obj.bunny_status)
+
+    def get_embed_url(self, obj):
+        return obj.embed_url()
+
+    def get_on_the_site(self, obj):
+        from . import demo_video_bunny
+        return demo_video_bunny.on_the_site_reason(obj)
+
+    def get_is_live(self, obj):
+        from . import demo_video_bunny
+        return demo_video_bunny.on_the_site_reason(obj) == "Yes"

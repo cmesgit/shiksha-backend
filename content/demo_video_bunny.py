@@ -74,6 +74,28 @@ def status_label(status):
     return STATUS_LABELS.get(status, f"Unknown ({status})")
 
 
+def on_the_site_reason(video):
+    """Why a row is or is not live, in words ("Yes" when it is).
+
+    One definition for the Django admin column and the React admin page: an
+    editor who cannot see the reason assumes the site is broken, and two
+    surfaces giving different answers would be worse than one giving none.
+    """
+    from .models import PublishStatus  # local: models imports this package
+
+    if video.status != PublishStatus.PUBLISHED:
+        return "No — not published"
+    if not video.bunny_video_id:
+        return "No — no video uploaded"
+    if video.bunny_status is None:
+        return "No — not checked with Bunny yet"
+    if video.bunny_status != video.BUNNY_FINISHED:
+        return f"No — Bunny still at status {video.bunny_status}"
+    if not video.embed_url():
+        return "No — BUNNY_LIBRARY_ID unset"
+    return "Yes"
+
+
 def create_upload_slot(title="", size_bytes=None):
     """Create an empty Bunny video and return a TUS ticket for it.
 
