@@ -85,6 +85,7 @@ impl Rig {
             DeviceIdentity { device_id: "dev-1".into(), key_thumbprint: "thumb".into() },
         );
         co.approve_share(InputOrigin::Physical, "room-1", "hb-1").unwrap();
+        co.set_emergency_stop_ready(true);
         co.capture_published(Capture {
             track_sid: "TR_1".into(),
             display_id: "disp".into(),
@@ -1048,6 +1049,41 @@ fn a_display_change_ends_control_and_withdraws_the_share_approval() {
     let out = r.co.on_transport(TransportEvent::DisplayChanged);
     assert_eq!(stopped(&out), Some("capture_changed"));
     assert!(!r.co.may_join("room-1", "hb-1"), "sharing needs a fresh local approval");
+}
+
+#[test]
+fn no_grant_activates_without_a_registered_physical_stop() {
+    // "Failure to register an effective emergency control blocks activation."
+    let mut r = Rig::shared();
+    r.co.set_emergency_stop_ready(false);
+    assert_eq!(r.activate_with(&ALL_CAPS), Err(Refusal::NoEmergencyStop));
+    assert!(!r.co.is_controlled());
+    // The positive twin: the same activation succeeds once Stop is registered.
+    r.co.set_emergency_stop_ready(true);
+    assert_eq!(r.activate_with(&ALL_CAPS), Ok(()));
+}
+
+#[test]
+fn a_fresh_companion_has_no_physical_stop_until_told() {
+    let c = Companion::new(
+        FakeInputAdapter::new(),
+        SharedClock(Arc::new(FakeClock::new())),
+        CountingEntropy::default(),
+        StopLatch::new(),
+        DeviceIdentity { device_id: "d".into(), key_thumbprint: "t".into() },
+    );
+    assert!(!c.emergency_stop_ready(), "closed by default");
+}
+
+#[test]
+fn losing_the_physical_stop_mid_grant_ends_it_and_blocks_the_next_one() {
+    let mut r = Rig::open_all();
+    r.send(key("ShiftLeft", true));
+    let out = r.co.on_transport(TransportEvent::EmergencyStopLost);
+    assert_eq!(stopped(&out), Some("emergency_stop_lost"));
+    assert!(r.co.adapter().releases().contains(&&Release::Key("ShiftLeft".into())));
+    assert!(!r.co.is_controlled());
+    assert_eq!(r.activate_with(&ALL_CAPS), Err(Refusal::NoEmergencyStop), "stays blocked");
 }
 
 #[test]

@@ -98,6 +98,7 @@ fn rig(open: bool) -> Rig {
         DeviceIdentity { device_id: "dev".into(), key_thumbprint: "tp".into() },
     );
     co.approve_share(InputOrigin::Physical, "room", "hb").unwrap();
+    co.set_emergency_stop_ready(true);
     co.capture_published(Capture {
         track_sid: "TR".into(),
         display_id: "d".into(),

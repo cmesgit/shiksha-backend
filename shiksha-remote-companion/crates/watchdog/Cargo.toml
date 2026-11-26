@@ -1,0 +1,16 @@
+[package]
+name = "shiksha-companion-watchdog"
+description = "Same-user helper that releases held keys/buttons if the companion dies. No network, no authority to open any gate: it can only release."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "shiksha-companion-watchdog"
+path = "src/main.rs"
+
+[dependencies]
+# Deliberately only this. No tokio, no HTTP, no serde: the smaller this binary, the
+# less there is to trust and the less there is to compromise.
+shiksha-companion-platform-windows = { path = "../platform-windows" }

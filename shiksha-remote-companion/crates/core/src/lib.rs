@@ -11,6 +11,7 @@
 pub mod adapter;
 pub mod clock;
 pub mod companion;
+pub mod consent;
 pub mod credentials;
 pub mod dpop;
 pub mod drivers;

@@ -42,6 +42,7 @@ fn open() -> (D, Clk) {
         DeviceIdentity { device_id: "dev-1".into(), key_thumbprint: "thumb".into() },
     );
     co.approve_share(InputOrigin::Physical, "room-1", "hb-1").unwrap();
+    co.set_emergency_stop_ready(true);
     co.capture_published(Capture {
         track_sid: "TR_1".into(),
         display_id: "disp".into(),

@@ -99,7 +99,7 @@ interactions.
 `evidence/companion-core.md` before trusting any of it** — the short version:
 
 - `core` (std-only authorisation: gate, latch, leases, sequencing, executor,
-  fake adapter) passes `cargo check --all-targets` and its 151 tests **compile
+  fake adapter) passes `cargo check --all-targets` and its 183 tests **compile
   and link but have never been executed**.
 - `transport` (JSON decode vs the shared fixtures, Ed25519 JWT, entropy) and
   `app` are **written but have never been compiled**.
@@ -123,6 +123,13 @@ interactions.
   evaluated (key coverage, `INPUT` = 40 bytes, and a proof that the pixel-centre
   absolute-coordinate formula is exact for every pixel under two rounding models;
   the "obvious" formula is not). **Capture (WGC) is not started.**
+- **RC-014 part 1** (evidence Part 7): the consent dialog as a tested state
+  machine (`core::consent`: deny-by-default, dwell, physical-only approval,
+  deny-on-timeout), no activation without a registered physical Stop, the
+  Ctrl+Alt+Shift+F12 hotkey, and a process-kill cleanup helper with a pipe-death
+  signal. **No native window is written.** **T09 has not been run, so held-input
+  release is NOT certified.** The dwell length is a placeholder that needs a
+  safeguarding owner's decision.
 - Not built: the share/control flows and LiveKit composition. They need RC-013
   (capture/input adapter) and RC-014 (native consent UI). `--pair` confirms on the
   console, which is a dev stand-in only. The Windows adapter and native UI are RC-013/014.

@@ -456,6 +456,125 @@ Some antivirus products flag any such hook.
 `windows` and LiveKit crates; then RC-014 (the native consent dialog, which must
 use `provenance::click_is_physical`, and the emergency hotkey).
 
+## Part 7 — RC-014 part 1: consent behaviour, emergency Stop, process-kill cleanup
+
+**What is NOT written, up front:** the native windows. There is no Win32 consent
+dialog, no pairing/share prompt and no visible "Controlled by … / Stop" status
+window (`consent.rs` renderer, `status_ui.rs`). What exists is every *rule* those
+windows must obey, as pure state machines that are type-checked and tested, plus
+the hotkey and the cleanup helper. A renderer that draws `ConsentView` and
+forwards events is mechanical but unverifiable on this machine; it should be
+written where it can be looked at and tried with a keyboard and a screen reader.
+
+### core::consent — the dialog as a state machine (29 tests, compiled, not run)
+
+Every T22 / T13 requirement is a property of this type, not of a UI toolkit:
+
+- opens with **Deny focused and Allow disabled**; the Allow label counts down
+  ("Allow (in 3s)") and never shows 0 while disabled;
+- **Enter and Space cannot approve before the dwell**: Allow is not focusable until
+  it ends, so a stray key can only ever *deny*;
+- **approval needs a physical hand and the dwell.** An injected click or key on Allow
+  changes nothing and is *counted* (`refused_approvals`, an audit signal that
+  something tried to approve for the owner), and a real click afterwards still
+  works — the dialog is not poisoned;
+- **Deny, Escape and Close deny from any origin** (the safe direction), so injected
+  input cannot keep a dialog open;
+- **no auto-approve.** The only timer that ends a pending dialog is the 30 s
+  deadline, and it **denies**; a click arriving after it cannot approve;
+- it **refuses to open** while a grant can inject, with an unknown recording policy,
+  for a public broadcast, with no capabilities, or with no verified name;
+- the copy names who, what, where, the capabilities granted (and *only* those) and
+  the real power: "They can use the mouse and keyboard in any application you can
+  open, including your files and terminals." It never says "remote assistance".
+
+`PhysicalCorrelator` decides whether a dialog event was the owner's hand: physical
+only if a **non-injected** hook event was seen within 500 ms before it. A wrong
+"injected" costs one extra click; a wrong "physical" would let remote input approve,
+so when unsure it says injected. A test drives a 6-second flood of injected clicks,
+Tabs and Enters through correlator + dialog together and asserts it never approves.
+
+🔴 **The dwell is a placeholder.** The pack requires "a minimum dwell" (T22) and never
+gives a number. `CONSENT_DWELL_MS = 3000` is an engineering guess. **It is a decision
+for the safeguarding owner**, and the browser `ControlRequestDialog` should use the
+same value. I could not check what value the browser dialog uses (that repo is not
+here).
+
+🔴 **None of this makes consent free.** Every invariant holds perfectly while a
+pressured owner clicks Allow. These are properties of the dialog; the scripted
+peer-pressure walkthrough judged by a safeguarding owner (T22) is the control that
+matters, and it has not happened.
+
+### core: no activation without a working Stop
+
+`Companion::activate` refuses with `NoEmergencyStop` unless the app has reported a
+registered physical Stop (`set_emergency_stop_ready(true)`), which defaults to
+**false**. `TransportEvent::EmergencyStopLost` ends the grant, releases remote-owned
+keys and keeps activation blocked. 3 tests; every existing activation rig now
+declares a working Stop, so those tests also prove the positive path.
+
+### platform-windows::emergency — Ctrl+Alt+Shift+F12
+
+`RegisterHotKey` on a dedicated message-loop thread (`WM_HOTKEY` goes to the thread
+that registered). On fire it calls `StopLatch::stop()` **directly** — one atomic add,
+no server round trip, no lock on the companion — so it works offline and while the
+rest of the app is busy. `MOD_NOREPEAT` set. Registration failure
+(`AlreadyRegistered`) means no Stop, so no activation. The shown text
+(`Ctrl+Alt+Shift+F12`) is pinned by a test to the chord; the core independently
+refuses to inject that chord, so the controller cannot play with the owner's Stop.
+The chord is not yet configurable (the spec asks for configurable-during-setup if
+unavailable); a different chord would also need the core's `prohibited_chord`
+changed, since they are one decision.
+
+### platform-windows::watchdog + crates/watchdog — process-kill cleanup
+
+Windows does **not** release keys a dead process injected; `Drop` cannot run on a
+kill. So: a tiny same-user helper (`shiksha-companion-watchdog`: std plus the
+platform crate; no network, no ability to open a gate, only able to *release*) reads
+hold notices from a pipe whose only write end is the companion's. When the companion
+dies the OS closes it, the helper reads end-of-file and releases what it was told is
+held. The pipe closing *is* the death notice: no signal, no polling.
+
+Two rules make it safe rather than merely present:
+
+1. **Announce before pressing.** `GuardedAdapter` sends `H` first, then injects. A
+   crash between the two leaves a spare key-up (harmless); the reverse order leaves a
+   stuck key nobody knows about.
+2. **No watchdog, no holds.** If the helper cannot be told, a key-down or button-down
+   is refused (`watchdog_lost`, which ends the grant). Releases still go through.
+   This is "ship no indefinite holds" taken to its fail-closed end.
+
+The protocol only encodes allowlisted key names and three button names, so nothing a
+caller supplies can smuggle a second command into the stream (tested with an embedded
+newline). The helper reads with a bounded buffer, ignores unparseable lines (never
+releases on a guess, never stops on one), and retries a release once.
+
+### Not demonstrated — read before certifying anything
+
+- **T09 has not been run.** Nobody has killed a companion holding Shift or dragging
+  and watched the release. By the task's own rule — "If reliable cleanup cannot be
+  proved, do not certify held-input release" — **held-input release is NOT certified.**
+- Killing the **helper too** (T09 asks for each independently) leaves keys stuck; no
+  user-mode design survives both dying. The companion notices at the next hold and
+  refuses it, which bounds the exposure to what was already held.
+- The helper cannot know whether the *owner* is physically holding a key, so it
+  releases regardless. A clean end goes through the companion, which does check.
+- **No test has run.** 183 core and 73 platform-windows tests are compiled and linked
+  only; 49 compile-time assertions in platform-windows were evaluated by rustc.
+- `PipeHoldSink::spawn` has never launched a process, and `helper_alive` has never met
+  a dead one.
+- Nothing in `app` yet spawns the helper, registers the hotkey, sets
+  `emergency_stop_ready`, polls `take_fired`/`take_activity`, or runs a dialog. The
+  composition is the next step, and it is where these pieces first meet each other.
+
+### Next
+
+The native renderer for `ConsentView` / the pairing and share prompts / the status
+window with a visible Stop button (native accessible controls; keyboard-only and
+screen-reader tests are separate and are required); then wire hotkey + helper +
+monitor into `app`; then **run T09 and T13 on a real machine** — the two the task
+names, neither of which is evidence yet.
+
 ## Known weaknesses
 
 - **Unrun tests were desk-checked, not executed.** Reading them against the code

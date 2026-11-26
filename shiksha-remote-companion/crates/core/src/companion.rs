@@ -90,6 +90,9 @@ pub enum Refusal {
     NoHostApproval,
     NoCapture,
     GrantInProgress,
+    /// No effective physical Stop is registered. "Failure to register an effective
+    /// emergency control blocks activation" (companion-architecture.md).
+    NoEmergencyStop,
     Ticket(TicketError),
     AlreadyApproved,
 }
@@ -184,6 +187,10 @@ pub enum TransportEvent {
     /// reports only input the OS marks as *not* injected, so remote input cannot
     /// trigger it, and it carries no key values.
     PhysicalActivity,
+    /// The physical Stop chord is no longer registered (another program took it,
+    /// or the OS dropped it). Control without a working Stop is not offered, so the
+    /// grant ends and activation stays blocked until it is registered again.
+    EmergencyStopLost,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -207,6 +214,7 @@ pub enum StopReason {
     ProtocolViolation,
     AccountChanged,
     LocalActivity,
+    EmergencyStopLost,
 }
 
 impl StopReason {
@@ -231,6 +239,7 @@ impl StopReason {
             StopReason::ProtocolViolation => "protocol_violation",
             StopReason::AccountChanged => "account_changed",
             StopReason::LocalActivity => "local_activity",
+            StopReason::EmergencyStopLost => "emergency_stop_lost",
         }
     }
 }
@@ -327,6 +336,7 @@ pub struct Companion<A: InputAdapter, C: MonotonicClock, E: Entropy> {
     host: Option<HostState>,
     active: Option<Active>,
     session_locked: bool,
+    emergency_stop_ready: bool,
 }
 
 fn has(caps: &[String], c: &str) -> bool {
@@ -350,7 +360,20 @@ impl<A: InputAdapter, C: MonotonicClock, E: Entropy> Companion<A, C, E> {
             host: None,
             active: None,
             session_locked: false,
+            // Closed by default: nothing activates until a real physical Stop has
+            // been registered and reported.
+            emergency_stop_ready: false,
         }
+    }
+
+    /// Report whether the physical Stop chord is registered and effective. Must be
+    /// true before any grant activates.
+    pub fn set_emergency_stop_ready(&mut self, ready: bool) {
+        self.emergency_stop_ready = ready;
+    }
+
+    pub fn emergency_stop_ready(&self) -> bool {
+        self.emergency_stop_ready
     }
 
     /// Handle for the UI/hotkey/watchdog threads. `stop()` on it is lock-free.
@@ -438,6 +461,9 @@ impl<A: InputAdapter, C: MonotonicClock, E: Entropy> Companion<A, C, E> {
         }
         if self.active.is_some() {
             return Err(Refusal::GrantInProgress);
+        }
+        if !self.emergency_stop_ready {
+            return Err(Refusal::NoEmergencyStop);
         }
         let host = self.host.as_ref().ok_or(Refusal::NoHostApproval)?;
         let capture = host.capture.as_ref().ok_or(Refusal::NoCapture)?;
@@ -657,6 +683,10 @@ impl<A: InputAdapter, C: MonotonicClock, E: Entropy> Companion<A, C, E> {
             | TransportEvent::Resumed => self.end(StopReason::Disconnected),
             TransportEvent::ServerInactive => self.end(StopReason::ServerInactive),
             TransportEvent::PhysicalActivity => self.end(StopReason::LocalActivity),
+            TransportEvent::EmergencyStopLost => {
+                self.emergency_stop_ready = false;
+                self.end(StopReason::EmergencyStopLost)
+            }
             TransportEvent::SessionLocked => {
                 self.session_locked = true;
                 self.end(StopReason::SessionLocked)
