@@ -521,6 +521,10 @@ impl<A: InputAdapter, C: MonotonicClock, E: Entropy> Companion<A, C, E> {
         let mut out = Vec::new();
         if !a.ready {
             a.ready = true;
+            // The controller only starts after `ready`, so its 1 s heartbeat window
+            // starts now, not at activation. Otherwise a slow first lease (up to the
+            // 1 s reply cap) would eat the window and end a healthy grant.
+            a.heartbeat_deadline = now.plus_ms(HEARTBEAT_TIMEOUT_MS);
             out.push(Self::status_to(
                 a,
                 Status::Ready {

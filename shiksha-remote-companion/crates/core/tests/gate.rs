@@ -445,6 +445,20 @@ fn a_grant_that_never_gets_its_first_lease_is_abandoned() {
     assert!(!r.co.is_controlled());
 }
 
+#[test]
+fn a_slow_first_lease_does_not_eat_the_controllers_first_heartbeat_window() {
+    // Regression: the heartbeat deadline used to be set at activation. The first
+    // lease may legitimately take up to 1 s, after which the controller (which
+    // only starts on `ready`) had almost no time left.
+    let mut r = Rig::shared();
+    r.activate_with(&ALL_CAPS).unwrap();
+    r.renew_after(900); // ready at t=900
+    r.clock.0.advance(500); // controller sends its first heartbeat at t=1400
+    let out = r.send(Body::Heartbeat { keys: vec![], buttons: vec![], last_ack: 0 });
+    assert!(stopped(&out).is_none(), "first heartbeat inside its own 1 s window");
+    assert!(r.co.is_controlled());
+}
+
 // ── T08: revocation is bounded by the lease ───────────────────────────────
 
 #[test]

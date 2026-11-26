@@ -44,7 +44,7 @@ them is unknown.
 
 | crate | lines (src+tests) | state |
 |---|---|---|
-| `core` | ~3,500 | checked; 31 unit + 50 integration tests **compiled, not run** |
+| `core` | ~3,500 | checked; 31 unit + 51 integration tests **compiled, not run** |
 | `transport` | ~600 | **unverified**: `codec`, `jwt`, `entropy`, and a fixture test (5 tests) |
 | `app` | ~80 | **unverified**: composition root, idle only |
 
@@ -99,6 +99,22 @@ reordered lossy move, heartbeat release).
 **Not covered:** T09 (process kill while holding a key — needs the
 watchdog/helper, RC-013/014), T11, T12, T15 (needs real geometry), T22, T23,
 T24 (server/browser side or safeguarding review).
+
+## Second-pass review (same day, still no execution)
+
+Every integration test and the unit tests in `wire`, `lease`, `ticket`, `clock`
+and `companion` were traced by hand against the code. Result: all traced as
+passing except where noted, and **one real bug in the code**: the heartbeat
+deadline was set at activation, so a slow first lease (legal up to 1 s) left the
+controller almost no time for its first heartbeat and a healthy grant would end
+as `heartbeat_timeout`. Fixed (deadline now restarts when the first lease opens
+the gate) with regression test
+`a_slow_first_lease_does_not_eat_the_controllers_first_heartbeat_window`.
+
+Hand-tracing is weaker than running: it checks the model in my head, and the
+bug above survived the first pass. Still unverified: `transport` and `app`
+entirely (including that the fixture vectors map to the reasons the decoder
+returns).
 
 ## Known weaknesses
 

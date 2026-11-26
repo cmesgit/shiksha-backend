@@ -99,7 +99,7 @@ interactions.
 `evidence/companion-core.md` before trusting any of it** — the short version:
 
 - `core` (std-only authorisation: gate, latch, leases, sequencing, executor,
-  fake adapter) passes `cargo check --all-targets` and its 81 tests **compile
+  fake adapter) passes `cargo check --all-targets` and its 82 tests **compile
   and link but have never been executed**.
 - `transport` (JSON decode vs the shared fixtures, Ed25519 JWT, entropy) and
   `app` are **written but have never been compiled**.
