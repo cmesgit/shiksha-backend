@@ -1,0 +1,13 @@
+[package]
+name = "shiksha-companion-platform-windows"
+description = "Windows implementations of core traits. Today: DPAPI-backed SecretStore. Later: capture/input adapter (RC-013), native consent UI (RC-014)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Only core. The three Win32 calls are declared by hand (crypt32, kernel32) so this
+# crate has no build scripts, no windows-sys version to track, and can be
+# type-checked on a machine that blocks build scripts.
+shiksha-companion-core = { path = "../core" }

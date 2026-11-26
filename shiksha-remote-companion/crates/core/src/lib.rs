@@ -14,5 +14,6 @@ pub mod companion;
 pub mod credentials;
 pub mod dpop;
 pub mod lease;
+pub mod secrets;
 pub mod ticket;
 pub mod wire;

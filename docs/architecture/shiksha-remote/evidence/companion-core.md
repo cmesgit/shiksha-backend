@@ -44,7 +44,7 @@ them is unknown.
 
 | crate | lines (src+tests) | state |
 |---|---|---|
-| `core` | ~3,500 | checked; 61 unit + 55 integration tests **compiled, not run** |
+| `core` | ~3,500 | checked; 65 unit + 55 integration tests **compiled, not run** |
 | `transport` | ~2,400 | **unverified**: `codec`, `jwt`, `entropy`, `session`, `keys`, `http`, `device_api`; 35 tests (5 fixture, 12 session, 18 device API) |
 | `livekit` | ~250 | **unverified**: SDK glue, no tests (needs a room) |
 | `app` | ~80 | **unverified**: composition root, idle only |
@@ -231,11 +231,8 @@ Policy that follows, encoded in `credentials.rs` and `classify_refresh`:
 
 ### Open — and the first is release-gating
 
-- 🔴 **No OS-protected `SecretStore` exists** (DPAPI/TPM). Only `MemoryStore`.
-  Without it the device key and refresh token have nowhere safe to live. A
-  plain-file store was deliberately not written: it would make a stolen access
-  token usable by any same-user process, which is the thing binding to a key is
-  meant to prevent.
+- ~~No OS-protected `SecretStore` exists~~ — a DPAPI one now exists (Part 4). It
+  is the floor, not the ceiling: see its limits there.
 - The pairing *flow* (poll loop with the 5 s interval, the local "does this
   account match?" confirmation, then `finalize`) is a set of API calls, not a
   driver; the native UI that asks the owner is RC-014.
@@ -246,6 +243,50 @@ Policy that follows, encoded in `credentials.rs` and `classify_refresh`:
   from memory of the API and is the single most consequential unverified line in
   the HTTP layer: a mistake there turns a timeout into a retry, which can revoke
   a device.
+
+## Part 4 — DPAPI secret store (written; type-checked, never executed)
+
+`SecretStore` moved into `core::secrets` (std-only) so `transport` and the new
+`crates/platform-windows` can share it without depending on each other.
+`DpapiStore` keeps each secret as a DPAPI blob in
+`%LOCALAPPDATA%ShikshaRemotesecrets<name>.dpapi`.
+
+**Checked:** `cargo check -p shiksha-companion-platform-windows --all-targets` and
+`cargo test --no-run` both pass, and the test executable *links* against
+`crypt32`, so the three hand-declared Win32 signatures (`CryptProtectData`,
+`CryptUnprotectData`, `LocalFree`) at least resolve. The crate has no
+dependencies beyond core and no build scripts, which is why it can be checked
+here. **Not run:** every test, including the 7 that exercise real DPAPI.
+
+Behaviour the callers rely on:
+
+- `get` is `Ok(None)` **only** when the file does not exist. A present file that
+  will not decrypt (corrupt, another user, another machine, swapped name) is
+  `Err`, because `None` would make `load_or_create` mint a fresh device key and
+  orphan the pairing.
+- `put` writes a temp file in the same directory, `sync_all`s it, then renames
+  over the target: a crash leaves the old value or the new one. This is what the
+  refresh policy needs ("persist before use"). `std` has no directory sync on
+  Windows, so the rename's own durability is the OS's.
+- Each blob carries a per-name entropy, so a file copied to another name will not
+  decrypt. Names are `[a-z0-9-]{1,64}` and become file names with no escaping.
+- No fallback location: a missing `%LOCALAPPDATA%` is an error, never the working
+  directory or a temp folder.
+- DPAPI output is copied then zeroed before `LocalFree`.
+
+**What this does and does not protect.** DPAPI binds the data to the signed-in
+Windows user, so the files are useless to other users, to an offline reader of
+the disk, and to a profile copied to another machine. 🔴 It does **not** stop other
+code running as the *same* user, which can call `CryptUnprotectData` on the same
+files; the per-name entropy is a constant, not a secret. The stronger design is a
+**non-exportable key in the TPM** (CNG, Platform Crypto Provider) so the private
+key never enters process memory. That is not done and would change `P256Key`
+into a handle that signs rather than bytes that sign. Treat DPAPI as the minimum
+that satisfies "OS-protected storage", and decide deliberately whether the TPM
+design is required before the pilot.
+
+Unverified: whether `CryptProtectData` accepts a zero-length input (the
+`empty_and_large_values_round_trip` test will say; nothing we store is empty).
 
 ## Known weaknesses
 

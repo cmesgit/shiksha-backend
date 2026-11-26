@@ -1,15 +1,9 @@
 //! The device key: P-256 for DPoP, SHA-256, and where the key lives.
 //!
-//! 🔴 **Persistence is not finished, and that is release-gating.** The
-//! architecture requires the key in *OS-protected storage* (DPAPI/TPM on
-//! Windows). This module defines [`SecretStore`] and a [`MemoryStore`] for tests
-//! and development; **no OS-protected implementation exists yet.** Do not add a
-//! plain-file store to fill the gap: a device key readable by any process of the
-//! same user defeats the point of binding tokens to it (a stolen access token is
-//! meant to be useless without the key).
-
-use std::collections::BTreeMap;
-use std::sync::Mutex;
+//! Persistence goes through `core::secrets::SecretStore`. The Windows
+//! implementation (DPAPI) is `shiksha-companion-platform-windows`; `MemoryStore`
+//! is for tests. Never add a plain-file store: a device key readable from a file
+//! defeats the point of binding tokens to it.
 
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
@@ -92,24 +86,10 @@ impl std::fmt::Debug for P256Key {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct StoreError(pub &'static str);
-
-/// Protected storage for small secrets (device key, refresh token, the
-/// refresh-in-flight marker). An implementation must encrypt at rest under the
-/// OS user's credentials. [`MemoryStore`] does not and is for tests only.
-pub trait SecretStore {
-    fn get(&self, name: &str) -> Result<Option<Vec<u8>>, StoreError>;
-    fn put(&self, name: &str, value: &[u8]) -> Result<(), StoreError>;
-    fn delete(&self, name: &str) -> Result<(), StoreError>;
-}
-
-pub const KEY_NAME: &str = "device-key-v1";
-pub const REFRESH_NAME: &str = "refresh-token-v1";
-pub const DEVICE_ID_NAME: &str = "device-id-v1";
-/// Written *before* a refresh request is sent and deleted once its outcome is
-/// known, so a crash mid-refresh is recognisable at the next start.
-pub const REFRESH_INFLIGHT_NAME: &str = "refresh-inflight-v1";
+pub use shiksha_companion_core::secrets::{
+    MemoryStore, SecretStore, StoreError, DEVICE_ID_NAME, KEY_NAME, REFRESH_INFLIGHT_NAME,
+    REFRESH_NAME,
+};
 
 /// Load the device key, creating and saving one on first run. A stored value
 /// that is not a valid key is an error, never silently replaced: replacing it
@@ -129,23 +109,4 @@ pub fn load_or_create(store: &dyn SecretStore) -> Result<P256Key, LoadError> {
 pub enum LoadError {
     Store(StoreError),
     Key(KeyError),
-}
-
-#[derive(Default)]
-pub struct MemoryStore {
-    inner: Mutex<BTreeMap<String, Vec<u8>>>,
-}
-
-impl SecretStore for MemoryStore {
-    fn get(&self, name: &str) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(self.inner.lock().map_err(|_| StoreError("poisoned"))?.get(name).cloned())
-    }
-    fn put(&self, name: &str, value: &[u8]) -> Result<(), StoreError> {
-        self.inner.lock().map_err(|_| StoreError("poisoned"))?.insert(name.to_string(), value.to_vec());
-        Ok(())
-    }
-    fn delete(&self, name: &str) -> Result<(), StoreError> {
-        self.inner.lock().map_err(|_| StoreError("poisoned"))?.remove(name);
-        Ok(())
-    }
 }

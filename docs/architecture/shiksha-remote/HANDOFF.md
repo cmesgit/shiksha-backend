@@ -99,7 +99,7 @@ interactions.
 `evidence/companion-core.md` before trusting any of it** — the short version:
 
 - `core` (std-only authorisation: gate, latch, leases, sequencing, executor,
-  fake adapter) passes `cargo check --all-targets` and its 116 tests **compile
+  fake adapter) passes `cargo check --all-targets` and its 120 tests **compile
   and link but have never been executed**.
 - `transport` (JSON decode vs the shared fixtures, Ed25519 JWT, entropy) and
   `app` are **written but have never been compiled**.
@@ -111,7 +111,9 @@ interactions.
 - The DPoP client, credential refresh state machine and typed device API are
   written (evidence file Part 3): pure parts in `core` are checked, the HTTP/key
   parts in `transport` are not.
-- 🔴 **No OS-protected key/secret store exists** (DPAPI/TPM) — release-gating.
+- A DPAPI-backed secret store exists (`crates/platform-windows`, evidence Part 4;
+  type-checked, never run). 🔴 DPAPI does not stop other code running as the same
+  user; a TPM-held non-exportable key would — decide before the pilot.
 - Not done: pairing/heartbeat/lease *drivers*, and composing it all in `app`. The Windows adapter and native UI are RC-013/014.
 
 Still open in RC-003: **multi-monitor and fractional DPI**. Needs no code —

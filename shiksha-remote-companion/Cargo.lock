@@ -2440,6 +2440,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shiksha-companion-platform-windows"
+version = "0.1.0"
+dependencies = [
+ "shiksha-companion-core",
+]
+
+[[package]]
 name = "shiksha-companion-transport"
 version = "0.1.0"
 dependencies = [
