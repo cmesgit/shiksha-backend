@@ -654,6 +654,56 @@ Compose in `app` (monitor → consent window → activate; hotkey + status windo
 for the life of a grant); **run T13 and T09 on a real machine**; keyboard-only and
 screen-reader passes; the safeguarding walkthrough (T22) and its dwell decision.
 
+## Part 9 — RC-014 part 3: the grant lifecycle (`platform-windows/src/grant.rs`)
+
+The pieces around a grant (Stop chord, input monitor, consent window, status window)
+now have one owner that builds them in the only safe order, so the app cannot get it
+wrong. It decides nothing; the rules stay in `core`.
+
+**Order, enforced by types:**
+
+1. `GrantKit::new` registers the Stop chord. If that fails there is no kit, so there is
+   no way to ask for consent. The app sets `emergency_stop_ready(false)` and core
+   refuses every activation.
+2. `GrantKit::ask` starts the input monitor *before* the dialog opens, shows the dialog,
+   and on Allow opens the status window **before returning**. A caller therefore cannot
+   hold an `Approved` without the indicator, chord and monitor existing. The prompt's
+   `stop_shortcut` is overwritten with the real chord, so the dialog cannot promise a
+   key that is not registered.
+3. The caller activates, calls `GrantGuard::arm()`, then polls `GrantGuard::poll()` and
+   feeds each event to `apply()` (Stop → `sync_after_latch_stop`, activity →
+   `TransportEvent::PhysicalActivity`). Stops are reported before activity, because
+   pressing Stop is itself physical input and the record should say the owner stopped it.
+4. Dropping the guard removes the indicator, then the monitor.
+
+**`arm()` exists for a reason:** the owner's own click on Allow, and anything they do while
+the activation request is in flight, happen before any input *can* be injected. Without
+draining that, a freshly approved grant would end itself on its first poll.
+
+**Also changed:** `PhysicalMonitor::start_with(state)` so the monitor writes into the
+state the input adapter reads held modifiers from (the adapter is built before any grant
+exists; a monitor that made its own state would leave it reading nothing).
+
+**`app`:** registers the chord at startup, reports `emergency_stop_ready`, and the
+watchdog thread runs cleanup if the chord fires with no guard polling. It still does not
+call `ask` — nothing in the app asks for control yet.
+
+**Checked:** `platform-windows` type-checks with tests (4 new, compiled, **not run**).
+`app` was edited but **cannot be built here** (reqwest build scripts are blocked), so that
+edit is unchecked.
+
+**Not done / still true:**
+- Nothing calls `ask`. The server→companion "someone requests control" path and the share
+  flow (host binding, LiveKit join, capture) are not composed. The real input adapter also
+  needs a `DisplayDescriptor`, which needs capture (WGC) — not written.
+- Outbound messages from the watchdog's cleanup (`Vec<Outbound>`) are dropped, as `tick()`'s
+  already were: the controller and server learn of a local stop only through the lease/
+  heartbeat lapsing, not an explicit `stopped` notice. Sending them needs the room.
+- Nobody detects the Stop chord being lost after registration (another program cannot
+  steal a registered hotkey, but the thread could die). `EmergencyStopLost` is never raised.
+- Nothing has run: no window drawn, no hook installed. T09/T13 still uncertified.
+
+
 ## Known weaknesses
 
 - **Unrun tests were desk-checked, not executed.** Reading them against the code

@@ -6,6 +6,7 @@
 pub mod display;
 pub mod dpapi;
 pub mod emergency;
+pub mod grant;
 pub mod input;
 pub mod keymap;
 pub mod provenance;

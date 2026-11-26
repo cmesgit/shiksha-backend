@@ -128,7 +128,8 @@ interactions.
   deny-on-timeout), no activation without a registered physical Stop, the
   Ctrl+Alt+Shift+F12 hotkey, and a process-kill cleanup helper with a pipe-death
   signal. **Part 8: native consent/status windows written (plain Win32 controls,
-  x64) — type-checked, never drawn.** **T09 has not been run, so held-input
+  x64) — type-checked, never drawn.** **Part 9: `grant.rs` owns the chord → monitor →
+  consent → status-window order; `app` registers the chord but nothing calls `ask` yet.** **T09 has not been run, so held-input
   release is NOT certified.** The dwell length is a placeholder that needs a
   safeguarding owner's decision.
 - Not built: the share/control flows and LiveKit composition. They need RC-013

@@ -35,6 +35,8 @@ use shiksha_companion_core::secrets::{
     SecretStore, DEVICE_ID_NAME, REFRESH_INFLIGHT_NAME, REFRESH_NAME,
 };
 use shiksha_companion_platform_windows::dpapi::DpapiStore;
+use shiksha_companion_platform_windows::grant::GrantKit;
+use shiksha_companion_platform_windows::provenance::PhysicalState;
 use shiksha_companion_transport::device_api::{ApiConfig, DeviceApi, Proofs};
 use shiksha_companion_transport::entropy::OsEntropy;
 use shiksha_companion_transport::http::ReqwestHttp;
@@ -190,23 +192,44 @@ fn run() -> Result<(), String> {
     println!("device key thumbprint: {}", thumbprint(&Sha256Hasher, &x, &y));
 
     let latch = StopLatch::new();
-    let companion = Companion::new(
+    // Held-modifier state, shared by the input monitor and (later) the adapter.
+    let physical = Arc::new(PhysicalState::new());
+    // The physical Stop chord. Without it there is no emergency Stop, so the
+    // companion is told so and nothing may ever activate (core enforces it).
+    let kit = match GrantKit::new(latch.clone(), physical.clone()) {
+        Ok(k) => {
+            println!("Emergency Stop: {}", k.stop_shortcut());
+            Some(k)
+        }
+        Err(e) => {
+            eprintln!("Emergency Stop chord unavailable ({e:?}): remote control will not be offered.");
+            None
+        }
+    };
+    let mut companion = Companion::new(
         RefusingAdapter,
         clock,
         OsEntropy,
         latch,
         DeviceIdentity { device_id: String::new(), key_thumbprint: String::new() },
     );
+    companion.set_emergency_stop_ready(kit.is_some());
     let driver = Arc::new(Mutex::new(Driver::new(companion)));
 
-    // Watchdog: independent of every network thread.
+    // Watchdog: independent of every network thread. It also notices the Stop
+    // chord when no grant guard is polling (the latch is already closed; this
+    // only runs the cleanup, and is idempotent with the guard's own poll).
     {
         let driver = driver.clone();
         thread::Builder::new()
             .name("watchdog".into())
             .spawn(move || loop {
                 thread::sleep(WATCHDOG_PERIOD);
-                let _ = lock_driver(&driver).tick();
+                let mut d = lock_driver(&driver);
+                let _ = d.tick();
+                if kit.as_ref().map_or(false, |k| k.take_chord_idle()) {
+                    let _ = d.companion_mut().sync_after_latch_stop();
+                }
             })
             .map_err(|e| e.to_string())?;
     }

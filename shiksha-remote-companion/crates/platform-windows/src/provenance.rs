@@ -300,7 +300,13 @@ mod hook {
 
     impl PhysicalMonitor {
         pub fn start() -> Result<Self, MonitorError> {
-            let state = Arc::new(PhysicalState::new());
+            Self::start_with(Arc::new(PhysicalState::new()))
+        }
+
+        /// Start feeding an existing state. The input adapter reads held modifiers
+        /// from a state that is built before any grant exists, so each monitor must
+        /// write into that same one. Stopping the monitor resets it.
+        pub fn start_with(state: Arc<PhysicalState>) -> Result<Self, MonitorError> {
             {
                 let mut slot = STATE.write().map_err(|_| MonitorError::HookFailed)?;
                 if slot.is_some() {
