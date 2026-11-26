@@ -1371,6 +1371,31 @@ class TeacherAttemptDetailContextGateTest(TestCase):
         # The key is still shown for the skipped one, so the teacher can mark it.
         self.assertEqual(skipped["correct"], "3")
 
+    def test_time_taken_seconds_is_submitted_minus_started(self):
+        # started_at is auto_now_add, so it was pinned to ~now() at creation;
+        # back-date it with .update() (an auto_now_add field refuses a value
+        # passed to .create()) to get a real, non-trivial duration to assert.
+        started = self.attempt.submitted_at - timezone.timedelta(minutes=6, seconds=30)
+        QuizAttempt.objects.filter(pk=self.attempt.pk).update(started_at=started)
+
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = c.get(f"/api/teacher/attempts/{self.attempt.id}/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["time_taken_seconds"], 390)
+
+    def test_time_taken_seconds_is_null_without_a_submitted_at(self):
+        pending = QuizAttempt.objects.create(
+            quiz=self.quiz, student=self.classmate,
+            learner_profile=self.classmate_profile, attempt_number=2, score=0,
+            status=QuizAttempt.STATUS_PENDING,
+        )
+        c = APIClient()
+        c.force_authenticate(user=self.teacher, token={"context": "teacher"})
+        r = c.get(f"/api/teacher/attempts/{pending.id}/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIsNone(r.data["time_taken_seconds"])
+
 
 class TeacherQuizCardStatsTest(TestCase):
     """Quiz-card aggregates must count SUBMITTED attempts only, and must rate
