@@ -165,6 +165,10 @@ fn join_and(items: &[String]) -> String {
 
 pub struct ConsentDialog {
     prompt: ControlPrompt,
+    /// `Some` for a pairing/share confirmation: fixed title and lines instead of the
+    /// control prompt's. Every rule below (dwell, physical-only approval, deny on
+    /// timeout, no default Allow) applies identically.
+    custom: Option<(String, Vec<String>)>,
     opened: Mono,
     focus: Focus,
     outcome: Outcome,
@@ -191,7 +195,50 @@ impl ConsentDialog {
         if prompt.controller_name.trim().is_empty() {
             return Err(OpenRefusal::NoName);
         }
-        Ok(Self { prompt, opened: now, focus: Focus::Deny, outcome: Outcome::Pending, refused_approvals: 0 })
+        Ok(Self {
+            prompt,
+            custom: None,
+            opened: now,
+            focus: Focus::Deny,
+            outcome: Outcome::Pending,
+            refused_approvals: 0,
+        })
+    }
+
+    /// A pairing or share-approval confirmation. Same state machine, different
+    /// words: "Pairing confirmation names the account, not merely 'Device
+    /// connected'" (frontend-ux-specification.md). `decision()` for these carries no
+    /// capabilities; the caller acts on `outcome()`.
+    pub fn open_confirmation(
+        now: Mono,
+        title: String,
+        lines: Vec<String>,
+        grant_active: bool,
+    ) -> Result<Self, OpenRefusal> {
+        if grant_active {
+            return Err(OpenRefusal::GrantActive);
+        }
+        if title.trim().is_empty() || lines.is_empty() {
+            return Err(OpenRefusal::NoName);
+        }
+        Ok(Self {
+            prompt: ControlPrompt {
+                controller_name: String::new(),
+                controller_context: String::new(),
+                meeting_title: String::new(),
+                device_name: String::new(),
+                display_label: String::new(),
+                capabilities: Vec::new(),
+                stop_shortcut: String::new(),
+                recording: RecordingStatus::Unknown,
+                public_broadcast: false,
+            },
+            custom: Some((title, lines)),
+            opened: now,
+            focus: Focus::Deny,
+            outcome: Outcome::Pending,
+            refused_approvals: 0,
+        })
     }
 
     fn dwell_left_ms(&self, now: Mono) -> u64 {
@@ -211,6 +258,9 @@ impl ConsentDialog {
     }
 
     pub fn view(&self, now: Mono) -> ConsentView {
+        if let Some((title, lines)) = &self.custom {
+            return self.view_with(now, title.clone(), lines.clone());
+        }
         let p = &self.prompt;
         let who = if p.controller_context.trim().is_empty() {
             p.controller_name.clone()
@@ -235,7 +285,10 @@ impl ConsentDialog {
             });
         }
         lines.push(format!("You can stop it at any time with {} or the Stop button.", p.stop_shortcut));
+        self.view_with(now, format!("Allow {} to control this computer?", p.controller_name), lines)
+    }
 
+    fn view_with(&self, now: Mono, title: String, lines: Vec<String>) -> ConsentView {
         let left = self.dwell_left_ms(now);
         let allow_label = if self.outcome != Outcome::Pending || left == 0 {
             "Allow".to_string()
@@ -244,7 +297,7 @@ impl ConsentDialog {
             format!("Allow (in {}s)", left.div_ceil(1000))
         };
         ConsentView {
-            title: format!("Allow {} to control this computer?", p.controller_name),
+            title,
             lines,
             allow_enabled: self.allow_enabled(now),
             allow_label,
@@ -363,6 +416,18 @@ impl PhysicalCorrelator {
         if physical_activity_seen {
             self.last_physical = Some(now);
         }
+    }
+
+    /// Like [`Self::origin`], but a physical verdict **spends** the observation, so
+    /// one real keypress or click can vouch for exactly one approval attempt and
+    /// not for a burst of injected ones that follow it inside the window. Use this
+    /// for Allow; plain `origin` is fine for anything that only denies.
+    pub fn consume(&mut self, now: Mono) -> InputOrigin {
+        let o = self.origin(now);
+        if o == InputOrigin::Physical {
+            self.last_physical = None;
+        }
+        o
     }
 
     pub fn origin(&self, now: Mono) -> InputOrigin {
@@ -666,6 +731,67 @@ mod tests {
         assert_eq!(c.origin(Mono(1_000)), PHYS);
         assert_eq!(c.origin(Mono(1_000 + PHYSICAL_CORRELATION_MS)), PHYS);
         assert_eq!(c.origin(Mono(1_000 + PHYSICAL_CORRELATION_MS + 1)), INJ);
+    }
+
+    #[test]
+    fn one_physical_event_vouches_for_one_approval_attempt_not_a_burst() {
+        let mut c = PhysicalCorrelator::new();
+        c.observe(Mono(1_000), true);
+        assert_eq!(c.consume(Mono(1_010)), PHYS, "the real click");
+        assert_eq!(c.consume(Mono(1_020)), INJ, "an injected one right behind it is not covered");
+        assert_eq!(c.consume(Mono(1_030)), INJ);
+        // A new real event vouches again.
+        c.observe(Mono(1_040), true);
+        assert_eq!(c.consume(Mono(1_050)), PHYS);
+    }
+
+    #[test]
+    fn plain_origin_does_not_spend_the_observation() {
+        let mut c = PhysicalCorrelator::new();
+        c.observe(Mono(0), true);
+        assert_eq!(c.origin(Mono(10)), PHYS);
+        assert_eq!(c.origin(Mono(20)), PHYS);
+    }
+
+    // ── pairing / share confirmations use the same rules ──
+
+    fn pairing(t: u64) -> ConsentDialog {
+        ConsentDialog::open_confirmation(Mono(t), "Pair this computer?".into(), pairing_copy("Asha Rao", "blue otter"), false)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_pairing_confirmation_shows_its_own_words_and_names_the_account() {
+        let v = pairing(0).view(Mono(0));
+        assert_eq!(v.title, "Pair this computer?");
+        assert!(v.lines.join("\n").contains("Asha Rao"));
+        assert!(!v.lines.join("\n").contains("files and terminals"), "it is not a control prompt");
+    }
+
+    #[test]
+    fn a_pairing_confirmation_obeys_every_consent_rule() {
+        let mut d = pairing(0);
+        let v = d.view(Mono(0));
+        assert_eq!((v.focus, v.allow_enabled), (Focus::Deny, false));
+        d.on_click(Mono(100), Control::Allow, PHYS);
+        assert_eq!(d.outcome(), Outcome::Pending, "dwell");
+        d.on_click(Mono(5_000), Control::Allow, INJ);
+        assert_eq!(d.outcome(), Outcome::Pending, "injected");
+        d.on_click(Mono(5_100), Control::Allow, PHYS);
+        assert_eq!(d.outcome(), Outcome::Allowed, "the physical twin");
+        let mut e = pairing(0);
+        e.tick(Mono(APPROVAL_DEADLINE_MS));
+        assert_eq!(e.outcome(), Outcome::Denied(DenyReason::Expired), "deadline denies");
+    }
+
+    #[test]
+    fn a_confirmation_will_not_open_under_a_live_grant_or_empty() {
+        assert_eq!(
+            ConsentDialog::open_confirmation(Mono(0), "t".into(), vec!["l".into()], true).err(),
+            Some(OpenRefusal::GrantActive)
+        );
+        assert!(ConsentDialog::open_confirmation(Mono(0), "".into(), vec!["l".into()], false).is_err());
+        assert!(ConsentDialog::open_confirmation(Mono(0), "t".into(), vec![], false).is_err());
     }
 
     #[test]

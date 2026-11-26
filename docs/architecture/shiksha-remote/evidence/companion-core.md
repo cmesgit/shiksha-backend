@@ -458,9 +458,9 @@ use `provenance::click_is_physical`, and the emergency hotkey).
 
 ## Part 7 — RC-014 part 1: consent behaviour, emergency Stop, process-kill cleanup
 
-**What is NOT written, up front:** the native windows. There is no Win32 consent
-dialog, no pairing/share prompt and no visible "Controlled by … / Stop" status
-window (`consent.rs` renderer, `status_ui.rs`). What exists is every *rule* those
+**Superseded by Part 8:** the native windows now exist (type-checked, never drawn).
+As first written, this part said: there is no Win32 consent dialog, no pairing/share
+prompt and no visible "Controlled by … / Stop" status window. What exists is every *rule* those
 windows must obey, as pure state machines that are type-checked and tested, plus
 the hotkey and the cleanup helper. A renderer that draws `ConsentView` and
 forwards events is mechanical but unverifiable on this machine; it should be
@@ -574,6 +574,85 @@ window with a visible Stop button (native accessible controls; keyboard-only and
 screen-reader tests are separate and are required); then wire hotkey + helper +
 monitor into `app`; then **run T09 and T13 on a real machine** — the two the task
 names, neither of which is evidence yet.
+
+## Part 8 — RC-014 part 2: the native windows
+
+`crates/platform-windows/src/window.rs`: the consent dialog and the always-visible
+status window, in plain Win32 controls, x64 only. **Type-checked and linked; nothing
+here has ever drawn a window.** The first real run will find layout, font, focus and
+z-order problems.
+
+### Why it is thin
+
+Every consent rule is in `core::consent::ConsentDialog` (34 tests). The window draws
+its `ConsentView` and forwards events; it adds no rule of its own. Plain `STATIC` and
+`BUTTON` controls were chosen because they are exposed to screen readers (UI
+Automation) with no extra code, give native Tab/Space/Enter/Escape through
+`IsDialogMessageW`, honour high-contrast and system fonts, and cannot be restyled into
+something misleading. A **disabled button is not tabbable**, which is exactly the
+dialog model (Allow unreachable until the dwell ends). **Deny is the default push
+button**, so Enter denies; initial focus is Deny; Allow is created disabled.
+
+### How provenance reaches the dialog (T13)
+
+A click or key arrives as a window message with no "was this injected?" mark. The
+low-level hook does see that mark and runs first. Before **every** event — including
+timer ticks, or an observation taken by one path would be invisible to the other —
+the window drains `PhysicalState::take_activity()` into a `PhysicalCorrelator`. An
+Allow is judged with the new `consume()`: physical only if non-injected hardware input
+was seen in the last 500 ms, and **that observation is spent**, so one real click
+vouches for one approval attempt, not for a burst of injected ones behind it. (Core,
+tested.) The caller must keep a `PhysicalMonitor` running while a consent window is
+open; without it nothing is ever physical and Allow cannot succeed — the safe failure.
+
+🔴 **Residual weakness.** An injected click placed within 500 ms *after* a real input
+event, and before any other, would be taken as physical. The one-shot token stops a
+burst, not a single well-timed event. Closing it fully needs the click's own
+provenance (a per-window raw-input check). Not done.
+
+### Pairing and share prompts
+
+`ConsentDialog::open_confirmation` gives the same state machine different words, so a
+pairing confirmation ("Pair this computer with the Shiksha account of Asha Rao? Check
+that your browser shows the same phrase…") obeys every rule: dwell, physical-only,
+deny on timeout, no default Allow. `pairing_copy` names the *account*, not "Device
+connected". Tested in core.
+
+### The status window
+
+A tool window (no taskbar entry), always on top, **non-activating** (it never steals
+focus from what the owner is working in; the hotkey is the keyboard route to Stop),
+with a **Stop** button. Pressing it closes the stop latch lock-free from any origin
+(stopping is the safe direction), then raises a flag (`take_stop_pressed`) so the app
+runs cleanup. 🔴 It has **no close button and ignores Alt+F4**: a status indicator
+that can be dismissed is one that can be hidden. Only `close()` removes it.
+
+### Checked / not checked
+
+- Checked: compiles and links; struct sizes (`Rect` 16, `MSG` 48, `WNDCLASSEXW` 80)
+  asserted at compile time — **mutation-confirmed** (dropping a `WNDCLASSEXW` field
+  fails the build). The pure helpers (`map_command`, `wide`, `scale`, `join_lines`,
+  layout) have 9 tests, compiled, not run.
+- 🔴 **Not catchable by the compiler, and demonstrated so:** I changed `map_command`
+  to let `IDOK` approve; it compiled cleanly. Only the 9 unit tests — which have not
+  run — would catch it. That is the gap "type-checked" leaves, and why every claim here
+  says *not run*.
+- **Screen-reader and keyboard-only behaviour is untested.** Native controls make it
+  *likely* to work; the pack says native UI needs its own tests and web accessibility
+  does not certify it.
+- `SetForegroundWindow` may be refused by Windows' foreground lock; the window is
+  topmost regardless but may not take keyboard focus until clicked.
+- Layout and fonts use the system DPI at open time and the default GUI font (small on
+  high-DPI screens). Per-monitor DPI changes while open are not handled.
+- 32-bit Windows is unsupported (`GetWindowLongPtrW` is not an export there).
+- `app` does not yet open any of these windows or wire the hotkey, helper, monitor and
+  Stop flag together. That composition is where the pieces first meet.
+
+### Still open in RC-014
+
+Compose in `app` (monitor → consent window → activate; hotkey + status window + helper
+for the life of a grant); **run T13 and T09 on a real machine**; keyboard-only and
+screen-reader passes; the safeguarding walkthrough (T22) and its dwell decision.
 
 ## Known weaknesses
 

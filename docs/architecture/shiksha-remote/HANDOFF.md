@@ -99,7 +99,7 @@ interactions.
 `evidence/companion-core.md` before trusting any of it** — the short version:
 
 - `core` (std-only authorisation: gate, latch, leases, sequencing, executor,
-  fake adapter) passes `cargo check --all-targets` and its 183 tests **compile
+  fake adapter) passes `cargo check --all-targets` and its 188 tests **compile
   and link but have never been executed**.
 - `transport` (JSON decode vs the shared fixtures, Ed25519 JWT, entropy) and
   `app` are **written but have never been compiled**.
@@ -127,7 +127,8 @@ interactions.
   machine (`core::consent`: deny-by-default, dwell, physical-only approval,
   deny-on-timeout), no activation without a registered physical Stop, the
   Ctrl+Alt+Shift+F12 hotkey, and a process-kill cleanup helper with a pipe-death
-  signal. **No native window is written.** **T09 has not been run, so held-input
+  signal. **Part 8: native consent/status windows written (plain Win32 controls,
+  x64) — type-checked, never drawn.** **T09 has not been run, so held-input
   release is NOT certified.** The dwell length is a placeholder that needs a
   safeguarding owner's decision.
 - Not built: the share/control flows and LiveKit composition. They need RC-013

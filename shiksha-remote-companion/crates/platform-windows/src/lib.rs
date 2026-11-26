@@ -10,3 +10,4 @@ pub mod input;
 pub mod keymap;
 pub mod provenance;
 pub mod watchdog;
+pub mod window;
