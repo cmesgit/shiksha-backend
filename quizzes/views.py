@@ -1966,7 +1966,16 @@ class QuizDetailDraftView(APIView):
             pk=pk,
         )
 
-        if quiz.created_by != request.user:
+        # The creator always has access; teaches_subject is the fallback that
+        # matches TeacherQuizAttemptsView and TeacherQuizAnalyticsView on this
+        # same quiz resource. A bare created_by check 403'd for every
+        # teacher, including the quiz's own subject teacher, on any
+        # academy-seeded quiz, where created_by is NULL. Read access here
+        # grants nothing extra: the builder's save path still gates on
+        # created_by independently.
+        if quiz.created_by != request.user and not teaches_subject(
+            request.user, quiz.subject
+        ):
             raise PermissionDenied("Not authorized for this quiz.")
 
         # Reuse the same serializer — teacher gets choices with is_correct
