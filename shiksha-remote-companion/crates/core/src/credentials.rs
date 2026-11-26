@@ -341,6 +341,14 @@ impl Credentials {
         }
     }
 
+    /// Pairing just succeeded but the new refresh token could not be saved. The
+    /// access token stays usable until it expires, but nothing can refresh it:
+    /// the server holds a credential we have lost.
+    pub fn mark_store_failed(&mut self) {
+        self.refresh.clear();
+        self.phase = Phase::Broken(NeedsPairing::StoreFailed);
+    }
+
     fn broken(&mut self, why: NeedsPairing) -> Vec<Effect> {
         self.refresh.clear();
         self.staged_refresh = None;
@@ -556,6 +564,16 @@ mod tests {
         let a = c.begin_refresh(Mono(200_000)).expect("the dead process's request is surely finished");
         let fx = c.on_refresh(&a, RefreshOutcome::Ambiguous, Mono(205_000));
         assert_eq!(fx, vec![Effect::ForgetRefresh], "and only the one retry");
+    }
+
+    #[test]
+    fn a_failed_save_right_after_pairing_keeps_the_session_alive_but_cannot_refresh() {
+        let mut c = paired(0);
+        c.mark_store_failed();
+        assert_eq!(c.needs_pairing(), Some(&NeedsPairing::StoreFailed));
+        assert_eq!(c.access(Mono(1_000)), Some("acc0"));
+        assert!(!c.needs_refresh(Mono(250_000)));
+        assert!(c.begin_refresh(Mono(250_000)).is_none());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "shiksha-companion"
-description = "Composition root: wires core + transport. No OS input adapter yet (RC-013)."
+description = "Composition root: wires core + transport + platform-windows. Pairing and device heartbeat/refresh work; sharing and control need RC-013/014."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,4 @@ publish.workspace = true
 [dependencies]
 shiksha-companion-core = { path = "../core" }
 shiksha-companion-transport = { path = "../transport" }
+shiksha-companion-platform-windows = { path = "../platform-windows" }

@@ -13,6 +13,7 @@ pub mod clock;
 pub mod companion;
 pub mod credentials;
 pub mod dpop;
+pub mod drivers;
 pub mod lease;
 pub mod secrets;
 pub mod ticket;

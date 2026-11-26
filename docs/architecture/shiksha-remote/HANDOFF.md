@@ -99,7 +99,7 @@ interactions.
 `evidence/companion-core.md` before trusting any of it** — the short version:
 
 - `core` (std-only authorisation: gate, latch, leases, sequencing, executor,
-  fake adapter) passes `cargo check --all-targets` and its 120 tests **compile
+  fake adapter) passes `cargo check --all-targets` and its 149 tests **compile
   and link but have never been executed**.
 - `transport` (JSON decode vs the shared fixtures, Ed25519 JWT, entropy) and
   `app` are **written but have never been compiled**.
@@ -114,7 +114,12 @@ interactions.
 - A DPAPI-backed secret store exists (`crates/platform-windows`, evidence Part 4;
   type-checked, never run). 🔴 DPAPI does not stop other code running as the same
   user; a TPM-held non-exportable key would — decide before the pilot.
-- Not done: pairing/heartbeat/lease *drivers*, and composing it all in `app`. The Windows adapter and native UI are RC-013/014.
+- Driver decision logic is in `core::drivers` (checked); the blocking workers
+  (`transport::runtime`) and a CLI shell (`app`: `--pair`, refresh + heartbeat)
+  are written but never compiled (evidence Part 5).
+- Not built: the share/control flows and LiveKit composition. They need RC-013
+  (capture/input adapter) and RC-014 (native consent UI). `--pair` confirms on the
+  console, which is a dev stand-in only. The Windows adapter and native UI are RC-013/014.
 
 Still open in RC-003: **multi-monitor and fractional DPI**. Needs no code —
 only a second display placed to the **LEFT** of primary so the virtual-desktop

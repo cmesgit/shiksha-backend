@@ -44,7 +44,7 @@ them is unknown.
 
 | crate | lines (src+tests) | state |
 |---|---|---|
-| `core` | ~3,500 | checked; 65 unit + 55 integration tests **compiled, not run** |
+| `core` | ~3,500 | checked; 94 unit + 55 integration tests **compiled, not run** |
 | `transport` | ~2,400 | **unverified**: `codec`, `jwt`, `entropy`, `session`, `keys`, `http`, `device_api`; 35 tests (5 fixture, 12 session, 18 device API) |
 | `livekit` | ~250 | **unverified**: SDK glue, no tests (needs a room) |
 | `app` | ~80 | **unverified**: composition root, idle only |
@@ -287,6 +287,59 @@ design is required before the pilot.
 
 Unverified: whether `CryptProtectData` accepts a zero-length input (the
 `empty_and_large_values_round_trip` test will say; nothing we store is empty).
+
+## Part 5 — drivers and composition (decision logic checked; I/O not)
+
+The loops are split so the *decisions* are type-checked and the *I/O* is thin.
+
+| where | what | checkable here |
+|---|---|---|
+| `core::drivers` | `PairingFlow`, `HeartbeatSchedule`, `LeaseDriver`, `classify_lease_error`, `activation_plan` | yes (28 tests compiled) |
+| `transport::runtime` | `pair()`, `DeviceWorker` (refresh + heartbeat), `LeaseWorker`, `activate_grant()` | no |
+| `app` | CLI: `--pair`, or restore credentials and run the worker + watchdog | no |
+
+Rules that live in core, each with tests:
+
+- **Pairing polls no faster than 5 s** (the server's own floor, also a floor on
+  the interval it reports), one in flight, doubling backoff capped at 30 s.
+  The 5-minute challenge is measured from when the create request was *sent*,
+  and is checked in **every** live phase — including while waiting for the owner,
+  which the first draft missed (it could wait forever).
+- **Only a physical answer counts** for the "does this account match?" question;
+  an injected one is refused, changes nothing, and the question is asked again.
+- **Finalize is never retried once it may have redeemed the secret** (redemption
+  is atomic and one-time): a lost reply ends in "pair again". Only a provably-
+  not-sent failure retries, without asking the owner again.
+- New credentials are persisted before they are handed over; a failed save marks
+  them `StoreFailed` but keeps the session alive.
+- **Lease loop:** once a second, one at a time, scheduled from the request's
+  *start*. A 401 for a dead token → refresh; `device_revoked`, 404, 409, 410 →
+  authority gone, end the grant; everything else (429, 5xx, clock-skew 401s) →
+  do nothing and let the 3 s deadline be the safety net. Unknown 409s count as
+  gone (closing is the safe direction); unknown anything else does not.
+- **Activation failure plan:** terminate with `protocol_error` exactly when the
+  server may believe the grant is active but we will not act on it (ambiguous
+  send, or a reply that fails signature/validation). `NotSent` may reuse the
+  same physical consent; a definitive refusal may not.
+
+Threading (in `runtime.rs`): the device worker may block ~20 s on HTTP; the
+lease worker has its own client with a 1.5 s timeout so a stuck refresh or
+heartbeat can never delay a lease. No lock is held across HTTP. A poisoned
+driver lock closes the gate. `SystemClock` is now `Copy` and must be created once
+and copied: `Mono` values from two clocks are not comparable.
+
+Defects the type-check and desk review caught this pass (so: expect more):
+`on_finalize` read the request time from the wrong field; `activate_grant` dropped
+the `ready`/challenge status; a refused non-physical answer left `pair()` waiting
+forever; a failed save discarded a live session.
+
+**Not built — the app is a pairing + heartbeat shell.** There is no share flow
+(`approve_share` → token → join → publish → `ready`), no live grant flow driving
+`activate_grant`, and no LiveKit composition: those need the capture/input
+adapter (RC-013) and the native consent UI (RC-014). `--pair` confirms on the
+**console**, which reports itself as physical and cannot prove it; it is a
+development stand-in and must be replaced, not shipped. The lease worker's
+`grant_id` is never set by anything yet.
 
 ## Known weaknesses
 

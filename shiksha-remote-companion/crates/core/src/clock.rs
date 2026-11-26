@@ -27,6 +27,12 @@ pub trait MonotonicClock {
 }
 
 /// Real clock: `Instant`, which does not go backwards on Windows or Unix.
+///
+/// `Copy` on purpose: every reading is relative to this clock's own start, so
+/// readings from two separately-created clocks are **not comparable**. Components
+/// that share a `Mono` value (the credentials, for one) must share one clock, so
+/// create it once and copy it.
+#[derive(Clone, Copy)]
 pub struct SystemClock {
     start: Instant,
 }

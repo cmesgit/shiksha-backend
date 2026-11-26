@@ -250,3 +250,16 @@ where
         let _ = tx.try_send(fx);
     }
 }
+
+/// Lets the transport runtime's worker threads hand packets to [`run`].
+///
+/// A newtype because `EffectSink` (transport) and `Sender` (tokio) are both
+/// foreign to this crate. `try_send`: a wedged publisher drops status rather than
+/// blocking a worker; the gate was already closed before any `stopped` existed.
+pub struct ChannelSink(pub tokio::sync::mpsc::Sender<Effects>);
+
+impl shiksha_companion_transport::runtime::EffectSink for ChannelSink {
+    fn emit(&self, fx: Effects) {
+        let _ = self.0.try_send(fx);
+    }
+}
