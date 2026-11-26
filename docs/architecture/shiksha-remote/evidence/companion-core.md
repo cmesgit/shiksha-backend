@@ -44,8 +44,9 @@ them is unknown.
 
 | crate | lines (src+tests) | state |
 |---|---|---|
-| `core` | ~3,500 | checked; 31 unit + 51 integration tests **compiled, not run** |
-| `transport` | ~600 | **unverified**: `codec`, `jwt`, `entropy`, and a fixture test (5 tests) |
+| `core` | ~3,500 | checked; 31 unit + 52 integration tests **compiled, not run** |
+| `transport` | ~1,100 | **unverified**: `codec`, `jwt`, `entropy`, `session`; 17 tests (5 fixture, 12 session) |
+| `livekit` | ~250 | **unverified**: SDK glue, no tests (needs a room) |
 | `app` | ~80 | **unverified**: composition root, idle only |
 
 ### `core` (std-only, no I/O)
@@ -115,6 +116,53 @@ Hand-tracing is weaker than running: it checks the model in my head, and the
 bug above survived the first pass. Still unverified: `transport` and `app`
 entirely (including that the fixture vectors map to the reasons the decoder
 returns).
+
+## Part 2 — LiveKit join and status wiring (written, never compiled)
+
+Layered so the SDK-specific surface is as small as possible:
+
+| where | what | checkable here |
+|---|---|---|
+| `core::Companion::on_malformed` | decoder-refused packets count toward the same 16-run limit, **only** when from the bound controller; strangers and server-origin get no reply and no effect | yes (compiled; 1 new test) |
+| `transport::session` | `Driver`: neutral `NetEvent` in → core → addressed `Packet`s + server notices out; topic filter; `lower()` drops an empty destination and counts it | no |
+| `crates/livekit` | `join(JoinPermit,…)`, `to_net_event`, `publish` (one identity), `run` loop, `watchdog_step` | no |
+
+Decisions:
+
+- **Join takes a `JoinPermit`** (consumed). After connecting it checks the room
+  name equals the approved room and the local identity equals
+  `rcdev_<host_binding_id>`, and leaves if not — the token's own claims are the
+  server's check, these are ours.
+- **Media isolation is enforced here, client-side.** `auto_subscribe = false`,
+  and `to_net_event` handles no track/publication event, so no sink exists.
+  The token grants `can_subscribe: true` (ADR-02 Option C), so this is the only
+  place that isolation lives; do not add track handling without revisiting T23.
+- **Publishing is one identity per packet**, refused when empty in both `lower`
+  and `publish`.
+- **Status is best-effort and bounded**: the watchdog uses `try_send`, so a wedged
+  publisher drops status instead of blocking the thread that enforces deadlines.
+  The gate is always closed *before* a `stopped` is produced.
+- **A poisoned driver lock closes the gate** and continues.
+- TLS: `rustls-tls-native-roots` selected explicitly (HANDOFF §5).
+
+SDK facts used, read from docs.rs on 26 Nov 2026 (version **0.12.0** pages;
+Cargo resolved **0.12.1**, so a signature may have moved): `Room::connect(url,
+token, RoomOptions) -> RoomResult<(Room, UnboundedReceiver<RoomEvent>)>`;
+`RoomOptions` is `#[non_exhaustive]` with public `auto_subscribe`,
+`adaptive_stream`, `dynacast`; `RoomEvent::DataReceived { payload:
+Arc<Vec<u8>>, topic: Option<String>, kind, participant: Option<RemoteParticipant>
+}`; `DataPacket { payload, topic, reliable, destination_identities }`;
+`LocalParticipant::publish_data(&self, DataPacket) -> RoomResult<()>`;
+`ParticipantIdentity(pub String)`, `ParticipantSid` readable via `as_str()`;
+`Room::name() -> String`. **Not verified:** the default values of
+`RoomOptions` (irrelevant to the three fields we set explicitly), and anything
+about how `RoomEvent::Disconnected`/`Reconnected` interleave with `DataReceived`
+under load.
+
+Still open in RC-012 after this part: the DPoP API client, key storage,
+credential refresh and the token fetch that feeds `join`; and **composition** —
+`app` does not yet build a `Driver`, spawn the `run` task or the watchdog.
+Screen publish is RC-013.
 
 ## Known weaknesses
 

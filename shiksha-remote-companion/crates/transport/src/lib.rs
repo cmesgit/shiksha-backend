@@ -10,3 +10,4 @@
 pub mod codec;
 pub mod entropy;
 pub mod jwt;
+pub mod session;

@@ -747,6 +747,27 @@ impl<A: InputAdapter, C: MonotonicClock, E: Entropy> Companion<A, C, E> {
         self.on_reliable(e, now, valid_until, &err)
     }
 
+    /// A packet the decoder refused. Counts toward the same consecutive-malformed
+    /// limit as one that decoded but failed validation, so a controller cannot
+    /// dodge the limit by sending garbage the decoder rejects first. Packets
+    /// from anyone other than the bound controller are ignored entirely: a
+    /// stranger must not be able to disturb, or even answer, the grant.
+    pub fn on_malformed(&mut self, sender: Option<&Sender>, reason: &'static str) -> Vec<Outbound> {
+        let Some(a) = self.active.as_mut() else {
+            return Vec::new();
+        };
+        let from_controller = matches!(sender,
+            Some(s) if s.identity == a.claims.controller_identity && s.sid == a.controller_sid);
+        if !from_controller {
+            return Vec::new();
+        }
+        a.malformed_run += 1;
+        if a.malformed_run >= MAX_CONSECUTIVE_MALFORMED {
+            return self.end(StopReason::ProtocolViolation);
+        }
+        vec![Self::status_to(a, Status::Error { code: reason })]
+    }
+
     fn on_motion(
         &mut self,
         e: &Envelope,

@@ -911,6 +911,39 @@ fn a_run_of_malformed_packets_ends_the_grant_but_one_does_not() {
 }
 
 #[test]
+fn undecodable_packets_count_toward_the_same_limit_but_only_from_the_controller() {
+    let ctrl = Sender { identity: "ctrl".into(), sid: "PA_ctrl".into() };
+    let stranger = Sender { identity: "stranger".into(), sid: "PA_x".into() };
+
+    // One bad packet from the controller: an error status, grant intact.
+    let mut r = Rig::open_all();
+    let out = r.co.on_malformed(Some(&ctrl), "bad_json");
+    assert!(out.iter().any(|o| matches!(
+        o,
+        Outbound::Status { status: Status::Error { code: "bad_json" }, to_identity, .. }
+            if to_identity == "ctrl"
+    )));
+    assert!(r.co.is_controlled());
+
+    // Any number from a stranger or from the server: no output, no effect.
+    for _ in 0..100 {
+        assert!(r.co.on_malformed(Some(&stranger), "bad_json").is_empty());
+        assert!(r.co.on_malformed(None, "bad_json").is_empty());
+    }
+    assert!(r.co.is_controlled(), "a stranger cannot tear down someone else's grant");
+
+    // A run from the controller ends it.
+    let mut ended = false;
+    for _ in 0..20 {
+        if stopped(&r.co.on_malformed(Some(&ctrl), "bad_json")) == Some("protocol_violation") {
+            ended = true;
+            break;
+        }
+    }
+    assert!(ended);
+}
+
+#[test]
 fn queue_overflow_ends_the_grant() {
     let mut r = Rig::open_all();
     // Queue without pumping, using many distinct challenges' worth of time? The

@@ -99,15 +99,17 @@ interactions.
 `evidence/companion-core.md` before trusting any of it** — the short version:
 
 - `core` (std-only authorisation: gate, latch, leases, sequencing, executor,
-  fake adapter) passes `cargo check --all-targets` and its 82 tests **compile
+  fake adapter) passes `cargo check --all-targets` and its 83 tests **compile
   and link but have never been executed**.
 - `transport` (JSON decode vs the shared fixtures, Ed25519 JWT, entropy) and
   `app` are **written but have never been compiled**.
 - Cause: this Windows machine runs Application Control that blocks unsigned
   executables (os error 4551), which stops test binaries *and* build scripts, so
   only dependency-free crates can be checked. Not worked around.
-- Not done: DPoP client, key storage, credential refresh, LiveKit join and
-  data/status wiring. The Windows adapter and native UI are RC-013/014.
+- LiveKit join and status wiring is **written but never compiled**
+  (`crates/livekit`, `transport::session`; see evidence file Part 2).
+- Not done: DPoP client, key storage, credential refresh, the token fetch that
+  feeds `join`, and composing it all in `app`. The Windows adapter and native UI are RC-013/014.
 
 Still open in RC-003: **multi-monitor and fractional DPI**. Needs no code —
 only a second display placed to the **LEFT** of primary so the virtual-desktop

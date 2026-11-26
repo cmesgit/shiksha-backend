@@ -1,0 +1,19 @@
+[package]
+name = "shiksha-companion-livekit"
+description = "Thin LiveKit SDK glue: permit-gated join, event mapping, directed status publish. NOT YET COMPILED."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+shiksha-companion-core = { path = "../core" }
+shiksha-companion-transport = { path = "../transport" }
+
+# Verified against docs.rs/livekit/0.12.0 on 26 Nov 2026. `native` is the default
+# feature but carries NO TLS: without a TLS feature this compiles, links and then
+# fails at connect time with "TLS support not compiled in" (HANDOFF section 5).
+# rustls-tls-native-roots reads the OS trust store, which TLS-inspecting school
+# proxies rely on.
+livekit = { version = "0.12", features = ["rustls-tls-native-roots"] }
+tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }
