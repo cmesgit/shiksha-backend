@@ -89,8 +89,13 @@ def build_progress_stats(course, student_user, subjects_qs, learner=None):
     from livestream.models import LiveSessionAttendance
     from sessions_app.models import PrivateSession, GroupSessionAttendance
 
+    # Scoped by subject, not `session__course` — the two agree when
+    # `subjects_qs` is a whole course's subjects (every LiveSession's
+    # subject belongs to its own course), but only the subject scope is
+    # correct when a caller passes a single-subject queryset to get one
+    # subject's attendance rather than the whole course's.
     live_seconds = LiveSessionAttendance.objects.filter(
-        session__course=course, user=student_user,
+        session__subject_id__in=subject_ids, user=student_user,
     ).aggregate(total=Sum("total_seconds"))["total"] or 0
 
     # PrivateSession has no FK to course/subject — `subject` is a plain
