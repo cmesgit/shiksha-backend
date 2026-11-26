@@ -699,6 +699,11 @@ class ToggleLikeView(APIView):
 
     def post(self, request, document_id):
         doc = get_object_or_404(Document, pk=document_id, is_removed=False)
+        if doc.owner_id == request.user.id:
+            return Response(
+                {"detail": "You can't like your own upload."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         existing = DocumentLike.objects.filter(user=request.user, document=doc).first()
         if existing:
             existing.delete()
@@ -807,6 +812,11 @@ class FollowAuthorView(APIView):
 
     def post(self, request, author_key):
         user = get_object_or_404(User, username=author_key)
+        if user.id == request.user.id:
+            return Response(
+                {"detail": "You can't follow yourself."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         following = _toggle_follow(request.user, Follow.TARGET_AUTHOR, user.username)
         return Response({"following": following})
 
