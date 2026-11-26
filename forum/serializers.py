@@ -252,6 +252,17 @@ class CreateThreadSerializer(serializers.Serializer):
     )
 
 
+class UpdateThreadSerializer(serializers.Serializer):
+    """Edits title/body/tags on an existing thread. Kind and space are not
+    editable here — changing either is a bigger decision than a typo fix."""
+    title = serializers.CharField(max_length=300)
+    body = serializers.CharField(required=False, default="", allow_blank=True)
+    tags = serializers.ListField(
+        child=serializers.CharField(max_length=50),
+        required=False, default=list,
+    )
+
+
 # =====================================================
 # Reply — answers + comments (frontend nests comments by reply_to_comment_id)
 # =====================================================

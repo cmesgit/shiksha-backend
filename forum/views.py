@@ -38,6 +38,7 @@ from .serializers import (
     TagSerializer,
     ForumPostSerializer,
     CreateThreadSerializer,
+    UpdateThreadSerializer,
     CommentSerializer,
     ReplySerializer,
     CreateCommentSerializer,
@@ -410,6 +411,34 @@ class ThreadDetailView(APIView):
             "comments": ReplySerializer(comments, many=True, context=ctx).data,
         })
 
+    def put(self, request, thread_id):
+        if not request.user.is_authenticated:
+            return Response({"detail": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        post = get_object_or_404(ForumPost, pk=thread_id)
+        if post.author != request.user and not request.user.is_staff:
+            return Response(
+                {"detail": "You can only edit your own threads."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = UpdateThreadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        post.title = serializer.validated_data["title"]
+        post.content = serializer.validated_data.get("body", "")
+        post.save(update_fields=["title", "content", "updated_at"])
+
+        post.tags.clear()
+        for name in serializer.validated_data.get("tags", []):
+            clean = name.lower().strip()
+            if clean:
+                tag, _ = Tag.objects.get_or_create(name=clean)
+                post.tags.add(tag)
+
+        post = _annotated_threads(request.user).get(pk=post.pk)
+        return Response(ForumPostSerializer(post, context={"request": request}).data)
+
 
 class DeleteThreadView(APIView):
     permission_classes = [IsAuthenticated]
@@ -594,6 +623,11 @@ class ToggleCommentUpvoteView(APIView):
         if banned is not None:
             return banned
         reply = get_object_or_404(Reply, pk=comment_id)
+        if reply.author_id == request.user.id:
+            return Response(
+                {"detail": "You can't upvote your own answer."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         upvote, created = ReplyUpvote.objects.get_or_create(
             user=request.user, reply=reply
         )
