@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/transport", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+
+# The prebuilt WebRTC is /MT, so the companion links the CRT statically (see
+# .cargo/config.toml and HANDOFF section 5).

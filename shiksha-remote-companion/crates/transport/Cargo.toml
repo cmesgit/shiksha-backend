@@ -1,0 +1,24 @@
+[package]
+name = "shiksha-companion-transport"
+description = "JSON decoding, JWT/Ed25519 verification and OS entropy for the companion core. NOT YET COMPILED - see HANDOFF RC-012 section."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+shiksha-companion-core = { path = "../core" }
+serde = "1"
+serde_json = "1"
+ed25519-dalek = "2"
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.2"
+
+# No serde derive on purpose: wire decoding is hand-written against
+# contracts/fixtures.json so that duplicate keys, unknown fields and non-integer
+# sequence numbers are refused by code a reviewer can read in one sitting.
+
+# TODO(RC-012 follow-up): `livekit` 0.12 with features ["rustls-tls-native-roots"]
+# (HANDOFF §5: TLS is off by default and fails only at connect time) and the
+# SDK-event -> core::TransportEvent / Inbound mapping.

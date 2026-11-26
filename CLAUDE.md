@@ -1,5 +1,18 @@
 # shiksha-backend — session context
 
+## Shiksha Remote ("Astra") — read this first if you are on `docs/shiksha-remote-plan-on-dev`
+
+Teacher/peer remote desktop control. Code and the 57-doc spec pack live on
+`docs/shiksha-remote-plan-on-dev` (and a lagging `-on-main`), **not** on
+`main`/`dev`; no PR, no review gate — trust `git log` over this paragraph.
+Start with `docs/architecture/shiksha-remote/HANDOFF.md` (§3 status, §5 next)
+and `ONBOARDING.md`. As of 26 Nov 2026: RC-001–011 done; **RC-012 part 1**
+(`shiksha-remote-companion/`, Rust) is written — `core` type-checks, but **no
+test has been executed** and `transport`/`app` have never been compiled,
+because that Windows machine blocks unsigned executables. Next: run
+`cargo test --workspace` somewhere that can, mutation-check, then LiveKit/DPoP
+wiring. Details: `evidence/companion-core.md`.
+
 ## Known pre-existing test failures (not regressions — do not "fix" blindly)
 
 Running `python manage.py test` (settings: `config.settings_test`, sqlite +

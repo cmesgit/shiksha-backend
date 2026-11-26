@@ -17,7 +17,7 @@ inside an existing live session. Four parts:
 |---|---|---|
 | Django control plane — identity, consent, grants, leases | `shiksha-backend` | **done** |
 | Browser UI — setup, consent dialog, status bar | `shared/` → 3 web apps | **done** |
-| **Native companion — the app that captures and injects** | does not exist | **NOT STARTED** |
+| **Native companion — the app that captures and injects** | `shiksha-remote-companion/` | **core written (RC-012 part 1); tests not yet run** |
 | Browser input engine — controller sends mouse/keys | not started | not started |
 
 The companion is the thing that actually does the controlling. **Nothing
@@ -93,6 +93,22 @@ Design consequence: 260 ms is fine for pointing, clicking and filling forms.
 It is **not** fine for dragging or freehand drawing. Prefer click-to-place
 interactions.
 
+### RC-012 part 1 — 26 Nov 2026, second machine
+
+`shiksha-remote-companion/` now holds three crates. **Read
+`evidence/companion-core.md` before trusting any of it** — the short version:
+
+- `core` (std-only authorisation: gate, latch, leases, sequencing, executor,
+  fake adapter) passes `cargo check --all-targets` and its 81 tests **compile
+  and link but have never been executed**.
+- `transport` (JSON decode vs the shared fixtures, Ed25519 JWT, entropy) and
+  `app` are **written but have never been compiled**.
+- Cause: this Windows machine runs Application Control that blocks unsigned
+  executables (os error 4551), which stops test binaries *and* build scripts, so
+  only dependency-free crates can be checked. Not worked around.
+- Not done: DPoP client, key storage, credential refresh, LiveKit join and
+  data/status wiring. The Windows adapter and native UI are RC-013/014.
+
 Still open in RC-003: **multi-monitor and fractional DPI**. Needs no code —
 only a second display placed to the **LEFT** of primary so the virtual-desktop
 origin goes negative.
@@ -156,7 +172,13 @@ capability, and there is no auto-approving countdown or trust-forever option.
 
 ---
 
-## 5. Do this next: RC-012
+## 5. Do this next: finish RC-012
+
+**Part 1 is in** (see §3 and `evidence/companion-core.md`). First action on a
+machine that can execute binaries: `cd shiksha-remote-companion && cargo test
+--workspace`, fix `transport` compile errors, then mutation-check the core
+(suggested breaks are listed in the evidence file). Then the LiveKit join and
+DPoP/pairing client. Everything below still applies to that remaining work.
 
 `tasks/phase-3/RC-012.md` — *Implement native authenticated core and
 transport*. Then RC-013 (capture/input adapter), RC-014 (native consent and

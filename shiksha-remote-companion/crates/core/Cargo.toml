@@ -1,0 +1,12 @@
+[package]
+name = "shiksha-companion-core"
+description = "Grant/lease gate, sequencing and input executor. std-only on purpose: no network, no OS, no crypto, no build scripts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Deliberately empty. Signature verification, JSON and randomness are injected
+# by the transport crate through traits, so every authorisation decision in this
+# crate is testable with a fake clock and a fake OS adapter.
