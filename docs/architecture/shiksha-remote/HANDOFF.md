@@ -99,7 +99,7 @@ interactions.
 `evidence/companion-core.md` before trusting any of it** — the short version:
 
 - `core` (std-only authorisation: gate, latch, leases, sequencing, executor,
-  fake adapter) passes `cargo check --all-targets` and its 83 tests **compile
+  fake adapter) passes `cargo check --all-targets` and its 116 tests **compile
   and link but have never been executed**.
 - `transport` (JSON decode vs the shared fixtures, Ed25519 JWT, entropy) and
   `app` are **written but have never been compiled**.
@@ -108,8 +108,11 @@ interactions.
   only dependency-free crates can be checked. Not worked around.
 - LiveKit join and status wiring is **written but never compiled**
   (`crates/livekit`, `transport::session`; see evidence file Part 2).
-- Not done: DPoP client, key storage, credential refresh, the token fetch that
-  feeds `join`, and composing it all in `app`. The Windows adapter and native UI are RC-013/014.
+- The DPoP client, credential refresh state machine and typed device API are
+  written (evidence file Part 3): pure parts in `core` are checked, the HTTP/key
+  parts in `transport` are not.
+- 🔴 **No OS-protected key/secret store exists** (DPAPI/TPM) — release-gating.
+- Not done: pairing/heartbeat/lease *drivers*, and composing it all in `app`. The Windows adapter and native UI are RC-013/014.
 
 Still open in RC-003: **multi-monitor and fractional DPI**. Needs no code —
 only a second display placed to the **LEFT** of primary so the virtual-desktop

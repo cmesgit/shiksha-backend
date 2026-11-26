@@ -117,6 +117,19 @@ impl Rig {
         )
     }
 
+    fn activate_with_start(&mut self, caps: &[&str], request_start: Mono) -> Result<(), Refusal> {
+        self.co.activate(
+            InputOrigin::Physical,
+            &header(ACTIVATION_TYP),
+            &self.keys,
+            claims(caps),
+            "hash".into(),
+            ALL_CAPS.iter().map(|s| s.to_string()).collect(),
+            1_000,
+            request_start,
+        )
+    }
+
     /// Activated and holding its first lease: the gate is open.
     fn open(caps: &[&str]) -> Rig {
         let mut r = Rig::shared();
@@ -457,6 +470,43 @@ fn a_slow_first_lease_does_not_eat_the_controllers_first_heartbeat_window() {
     let out = r.send(Body::Heartbeat { keys: vec![], buttons: vec![], last_ack: 0 });
     assert!(stopped(&out).is_none(), "first heartbeat inside its own 1 s window");
     assert!(r.co.is_controlled());
+}
+
+#[test]
+fn the_first_lease_from_the_activate_reply_is_timed_from_the_activate_request() {
+    // api-contracts.md: activate carries `lease_nonce` and returns the first
+    // lease. Its deadline runs from when the *activate request* was sent.
+    let mut r = Rig::shared();
+    let nonce = r.co.fresh_nonce();
+    let sent = r.clock.now(); // t=0
+    r.clock.0.advance(400); // the activate round trip
+    r.activate_with_start(&ALL_CAPS, sent).unwrap();
+    assert!(r.co.adopt_activation_lease(nonce.clone(), sent));
+    let reply = r.lease_reply(&nonce);
+    let out = r.co.on_lease(&header(LEASE_TYPE), &r.keys, &reply).expect("accepted");
+    assert!(!out.is_empty(), "ready + first challenge are announced");
+
+    // Deadline = 0 + 3000, not 400 + 3000.
+    let early = r.run(2_599); // to t=2999
+    assert!(stopped(&early).is_none());
+    r.clock.0.advance(2);
+    assert_eq!(stopped(&r.co.tick()), Some("stale_lease"));
+}
+
+#[test]
+fn a_lease_reply_with_a_different_nonce_than_the_activate_request_is_refused() {
+    let mut r = Rig::shared();
+    let nonce = r.co.fresh_nonce();
+    r.activate_with_start(&ALL_CAPS, r.clock.now()).unwrap();
+    assert!(r.co.adopt_activation_lease(nonce, r.clock.now()));
+    let reply = r.lease_reply("not-the-nonce-we-sent");
+    assert!(r.co.on_lease(&header(LEASE_TYPE), &r.keys, &reply).is_err());
+}
+
+#[test]
+fn adopting_a_lease_with_no_active_grant_does_nothing() {
+    let mut r = Rig::shared();
+    assert!(!r.co.adopt_activation_lease("n".into(), r.clock.now()));
 }
 
 // ── T08: revocation is bounded by the lease ───────────────────────────────

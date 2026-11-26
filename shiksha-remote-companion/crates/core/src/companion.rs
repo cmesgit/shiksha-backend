@@ -492,6 +492,27 @@ impl<A: InputAdapter, C: MonotonicClock, E: Entropy> Companion<A, C, E> {
 
     // ── Lease ────────────────────────────────────────────────────────────
 
+    /// A fresh random nonce, drawn **before** an `activate`/`resume` request is
+    /// sent so it can ride in `lease_nonce` (api-contracts.md §Control grants).
+    pub fn fresh_nonce(&mut self) -> String {
+        b64url(&self.entropy.bytes16())
+    }
+
+    /// Adopt the activation request as the outstanding lease request, so the
+    /// first lease arriving in its reply is accepted against `lease_nonce` and
+    /// timed from `request_start`. Call after [`Self::activate`], then feed the
+    /// reply's `lease_jwt` to [`Self::on_lease`].
+    pub fn adopt_activation_lease(&mut self, lease_nonce: String, request_start: Mono) -> bool {
+        let generation = self.latch.generation();
+        match self.active.as_mut() {
+            Some(a) if a.armed_generation == generation => {
+                a.lease.adopt(lease_nonce, request_start, generation);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Start a renewal. The app POSTs the returned nonce, epoch and version and
     /// feeds the signed reply to [`Self::on_lease`]. Call about once a second.
     pub fn begin_lease(&mut self) -> Option<LeaseRequest> {

@@ -14,6 +14,12 @@ ed25519-dalek = "2"
 sha2 = "0.10"
 base64 = "0.22"
 getrandom = "0.2"
+p256 = { version = "0.13", features = ["ecdsa"] }
+httpdate = "1"
+# TLS via the OS trust store (schools run TLS-inspecting proxies whose root is
+# installed system-wide). Redirects are disabled in code: following one would
+# carry an Authorization header and a DPoP proof to a host we did not choose.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
 
 # No serde derive on purpose: wire decoding is hand-written against
 # contracts/fixtures.json so that duplicate keys, unknown fields and non-integer

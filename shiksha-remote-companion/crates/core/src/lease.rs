@@ -84,6 +84,14 @@ impl LeaseTracker {
         LeaseRequest { nonce, epoch: self.epoch.clone(), expected_version: self.version }
     }
 
+    /// Treat a request already sent (`activate`/`resume`, which carry a
+    /// `lease_nonce` and return the first lease in their reply) as the
+    /// outstanding renewal. `started` is when that request was **sent**, so the
+    /// deadline is measured from it exactly as for any renewal.
+    pub fn adopt(&mut self, nonce: String, started: Mono, generation: u64) {
+        self.outstanding = Some(Outstanding { nonce, started, generation });
+    }
+
     /// Apply a server reply that the transport has already signature-checked.
     /// `now` is the monotonic time the reply was *received*; `latch_generation`
     /// is the stop latch's current generation.

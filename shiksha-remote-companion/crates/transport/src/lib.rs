@@ -8,6 +8,9 @@
 //! core crate has been through `cargo check`. See HANDOFF, RC-012 section.
 
 pub mod codec;
+pub mod device_api;
 pub mod entropy;
+pub mod http;
 pub mod jwt;
+pub mod keys;
 pub mod session;

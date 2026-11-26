@@ -44,8 +44,8 @@ them is unknown.
 
 | crate | lines (src+tests) | state |
 |---|---|---|
-| `core` | ~3,500 | checked; 31 unit + 52 integration tests **compiled, not run** |
-| `transport` | ~1,100 | **unverified**: `codec`, `jwt`, `entropy`, `session`; 17 tests (5 fixture, 12 session) |
+| `core` | ~3,500 | checked; 61 unit + 55 integration tests **compiled, not run** |
+| `transport` | ~2,400 | **unverified**: `codec`, `jwt`, `entropy`, `session`, `keys`, `http`, `device_api`; 35 tests (5 fixture, 12 session, 18 device API) |
 | `livekit` | ~250 | **unverified**: SDK glue, no tests (needs a room) |
 | `app` | ~80 | **unverified**: composition root, idle only |
 
@@ -163,6 +163,89 @@ Still open in RC-012 after this part: the DPoP API client, key storage,
 credential refresh and the token fetch that feeds `join`; and **composition** —
 `app` does not yet build a `Driver`, spawn the `run` task or the watchdog.
 Screen publish is RC-013.
+
+## Part 3 — DPoP client, credentials and device API (written; core half checked)
+
+| where | what | checkable here |
+|---|---|---|
+| `core::dpop` | proof assembly: canonical JWK, thumbprint input, `ath` only on resource routes, `htu` rules, clock offset; hashing and signing injected | yes (compiled; 11 tests) |
+| `core::credentials` | refresh state machine (below) | yes (compiled; 19 tests) |
+| `core::Companion::{fresh_nonce, adopt_activation_lease}` | first lease from the `activate` reply, timed from the request's start | yes (3 tests) |
+| `transport::keys` | `P256Key` (`p256`), `Sha256Hasher`, `SecretStore` + `MemoryStore`, `load_or_create` | no |
+| `transport::http` | `Http` trait; `ReqwestHttp` (rustls, OS roots, **no redirects**) | no |
+| `transport::device_api` | pairing, refresh, heartbeat, share, ready, activate, lease, terminate; `classify_refresh` | no (18 tests) |
+
+### What the server does that the contract does not say (read from `devices.py`)
+
+1. **Refresh tokens are single-use and reuse revokes the device**, with no grace
+   window (`rotate_credentials`).
+2. **Rotation bumps `credential_version`, which invalidates every outstanding
+   access token.** A refresh during an active grant makes the next lease 401
+   until the new token is in use. Lease deadlines (3 s) bound the damage but the
+   lease loop must tolerate one 401 and wait out the refresh.
+3. **The proof is verified before any credential logic**, so 401
+   `device_proof_invalid` is a definitive "nothing rotated" — safe to retry after
+   correcting the clock.
+
+Policy that follows, encoded in `credentials.rs` and `classify_refresh`:
+
+- never two refreshes in flight (the loser is treated as reuse);
+- an **ambiguous** outcome (timeout after send, 5xx, an unreadable 200) waits 60 s
+  and retries **exactly once**. If rotation happened the device was unrecoverable
+  anyway; if not, the retry saves the pairing. A second ambiguity ends in "pair
+  again";
+- the rotated refresh token is handed back as `Effect::PersistRefresh` and the
+  state machine will not start another refresh until the save is confirmed; a
+  failed save is a hard failure (the server's copy has moved on, ours is lost);
+- only four 401 codes are treated as "dead" (`credential_invalid`,
+  `credential_expired`, `device_revoked`, `device_unknown`). Any other failure is
+  ambiguous rather than fatal, so a transient fault cannot erase a good
+  credential and force a re-pair;
+- access-token expiry runs from when the refresh was **sent**;
+- a crash mid-refresh is recognised at next start by a marker written before the
+  request (`REFRESH_INFLIGHT_NAME`), and goes through the same one-retry path.
+
+### Contract vs implementation (the implementation is what the client follows)
+
+| item | contract | server code |
+|---|---|---|
+| `device-token/` body | `{refresh_token}` | **also requires `device_id`** |
+| device routes | all non-heartbeat mutations need `Idempotency-Key` | none of the device routes use it; `lease/` must not |
+| DPoP server nonce | architecture text mentions one | not implemented |
+| `activate` reply | `{grant, activation_jwt, lease_jwt}` | the lease is bound to the request's `lease_nonce`, which the core now adopts |
+
+### Decisions
+
+- **Hashing/signing are injected into core.** What stays in core is everything a
+  reviewer can get wrong around the crypto: the signed bytes, the canonical
+  thumbprint input, which claims appear on which route. `sign_es256` must return
+  64-byte `r||s`, not DER.
+- **Never follow redirects.** A hop would re-send `Authorization` and a proof to a
+  host we did not choose.
+- **HTTP errors split "not sent" from "may have been".** Only connect/DNS/TLS
+  failures are `NotSent`; a timeout is deliberately not.
+- **Clock skew:** the server's time is learned from every reply's `Date` header
+  and applied to `iat` only, never to a monotonic deadline.
+- **TLS:** `reqwest` 0.12.28 resolved with `ring` (no `aws-lc-sys`, so no
+  CMake/NASM) and `rustls-native-certs`, so the OS trust store is honoured.
+
+### Open — and the first is release-gating
+
+- 🔴 **No OS-protected `SecretStore` exists** (DPAPI/TPM). Only `MemoryStore`.
+  Without it the device key and refresh token have nowhere safe to live. A
+  plain-file store was deliberately not written: it would make a stolen access
+  token usable by any same-user process, which is the thing binding to a key is
+  meant to prevent.
+- The pairing *flow* (poll loop with the 5 s interval, the local "does this
+  account match?" confirmation, then `finalize`) is a set of API calls, not a
+  driver; the native UI that asks the owner is RC-014.
+- Heartbeat scheduling, the host-binding lifecycle driver and the grant/lease
+  driver that calls `lease` every second and survives a refresh 401 are not
+  written, nor is the composition in `app`.
+- `reqwest`'s `is_connect()` classification (what counts as not-sent) was written
+  from memory of the API and is the single most consequential unverified line in
+  the HTTP layer: a mistake there turns a timeout into a retry, which can revoke
+  a device.
 
 ## Known weaknesses
 
