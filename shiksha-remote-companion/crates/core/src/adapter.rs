@@ -136,3 +136,13 @@ impl InputAdapter for FakeInputAdapter {
         self.locally_held.iter().any(|k| k == code)
     }
 }
+
+/// See the `test-support` feature in Cargo.toml. Absent from every production build.
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    use super::{Action, ValidatedEvent};
+
+    pub fn validated(action: Action) -> ValidatedEvent {
+        ValidatedEvent::new(action)
+    }
+}

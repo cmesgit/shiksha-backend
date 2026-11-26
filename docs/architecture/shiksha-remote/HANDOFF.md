@@ -99,7 +99,7 @@ interactions.
 `evidence/companion-core.md` before trusting any of it** — the short version:
 
 - `core` (std-only authorisation: gate, latch, leases, sequencing, executor,
-  fake adapter) passes `cargo check --all-targets` and its 149 tests **compile
+  fake adapter) passes `cargo check --all-targets` and its 151 tests **compile
   and link but have never been executed**.
 - `transport` (JSON decode vs the shared fixtures, Ed25519 JWT, entropy) and
   `app` are **written but have never been compiled**.
@@ -117,6 +117,12 @@ interactions.
 - Driver decision logic is in `core::drivers` (checked); the blocking workers
   (`transport::runtime`) and a CLI shell (`app`: `--pair`, refresh + heartbeat)
   are written but never compiled (evidence Part 5).
+- **RC-013 part 1** (evidence Part 6): `crates/platform-windows` now has the
+  `SendInput` adapter, key map, display geometry and a physical-input monitor,
+  all **type-checked**, with 44 compile-time assertions that rustc actually
+  evaluated (key coverage, `INPUT` = 40 bytes, and a proof that the pixel-centre
+  absolute-coordinate formula is exact for every pixel under two rounding models;
+  the "obvious" formula is not). **Capture (WGC) is not started.**
 - Not built: the share/control flows and LiveKit composition. They need RC-013
   (capture/input adapter) and RC-014 (native consent UI). `--pair` confirms on the
   console, which is a dev stand-in only. The Windows adapter and native UI are RC-013/014.

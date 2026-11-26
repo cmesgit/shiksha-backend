@@ -10,3 +10,11 @@ publish.workspace = true
 # Deliberately empty. Signature verification, JSON and randomness are injected
 # by the transport crate through traits, so every authorisation decision in this
 # crate is testable with a fake clock and a fake OS adapter.
+
+[features]
+# Lets a platform crate's *unit tests* build a `ValidatedEvent` directly. Off by
+# default and enabled only through a dev-dependency, so no production build has a
+# way to fabricate one: "ValidatedEvent is constructible only by core
+# authorization/validation code". Prefer driving the real gate (see the platform
+# crate's integration tests); use this only for pure unit tests of an adapter.
+test-support = []

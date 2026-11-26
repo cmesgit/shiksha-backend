@@ -1051,6 +1051,32 @@ fn a_display_change_ends_control_and_withdraws_the_share_approval() {
 }
 
 #[test]
+fn physical_use_of_the_keyboard_or_mouse_pauses_remote_input_and_releases_its_holds() {
+    // "Local input priority": the owner touching their machine wins.
+    let mut r = Rig::open_all();
+    r.send(key("ShiftLeft", true));
+    r.send(click(true));
+    let out = r.co.on_transport(TransportEvent::PhysicalActivity);
+    assert_eq!(stopped(&out), Some("local_activity"));
+    let rel = r.co.adapter().releases();
+    assert!(rel.contains(&&Release::Key("ShiftLeft".into())));
+    assert!(rel.contains(&&Release::Button(Button::Left)));
+    assert!(!r.co.is_controlled());
+    // Nothing the controller sends afterwards does anything, and it does not
+    // resume by itself: coming back is a new activation with new consent.
+    let before = r.calls().len();
+    r.send(key("KeyA", true));
+    assert_eq!(r.calls().len(), before);
+}
+
+#[test]
+fn physical_activity_with_no_grant_does_nothing() {
+    let mut r = Rig::shared();
+    assert!(r.co.on_transport(TransportEvent::PhysicalActivity).is_empty());
+    assert!(r.co.may_join("room-1", "hb-1"), "it does not withdraw the share approval");
+}
+
+#[test]
 fn the_controller_or_companion_leaving_ends_control_but_a_bystander_does_not() {
     let mut r = Rig::open_all();
     assert!(r.co.on_transport(TransportEvent::ParticipantLeft { identity: "bystander".into() }).is_empty());

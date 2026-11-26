@@ -341,6 +341,121 @@ adapter (RC-013) and the native consent UI (RC-014). `--pair` confirms on the
 development stand-in and must be replaced, not shipped. The lease worker's
 `grant_id` is never set by anything yet.
 
+## Part 6 — RC-013 part 1: Windows input, display geometry, physical-input monitor
+
+**Capture (`capture.rs`, WGC) is NOT started.** It needs the `windows` crate and
+the LiveKit `NativeVideoSource`, both behind build scripts this machine blocks, so
+it could not be type-checked here and was not guessed at. Everything below is the
+rest of RC-013, and it is **type-checked** (and partly *executed at compile time*).
+
+New in `crates/platform-windows`, hand-declared Win32 FFI, no dependencies beyond
+core:
+
+| module | what |
+|---|---|
+| `keymap` | DOM `code` → set-1 scan code (+ extended flag), all 101 allowlisted keys |
+| `display` | `(u,v)` → physical pixel → `SendInput` absolute; monitor enumeration, DPI, rotation; descriptor JSON + range validation; topology fingerprint; per-monitor-v2 enforcement |
+| `input` | `WindowsInput`: the `InputAdapter` over `SendInput`, behind an `InputSink` trait |
+| `provenance` | low-level keyboard/mouse hook that tells owner input from injected input |
+
+And in core: `TransportEvent::PhysicalActivity` → `StopReason::LocalActivity`
+("local input priority": the owner touching the machine ends the grant and
+releases remote-owned keys).
+
+### What was verified by rustc itself (`const _: () = assert!`, 44 of them)
+
+These run **inside the compiler**, so they hold on a machine that cannot execute a
+single test binary. Each was mutation-checked: I broke the code and confirmed the
+build failed with the right message.
+
+- every one of the 101 allowlisted keys has a scan code; no two share one or a DOM
+  code; the map holds nothing the protocol does not allow; `Numpad8` and `ArrowUp`
+  differ only by the `E0` prefix. *(Mutations: duplicate scan code → build fails;
+  allowlisted key swapped for `PrintScreen` → build fails.)*
+- `INPUT` is 40 bytes on x64 (28 on x86), `MOUSEINPUT` 32, `KEYBDINPUT` 24 — the
+  exact trap RC-003 paid for (a 56-byte `INPUT` makes `SendInput` return 0 with
+  error 87). `DEVMODEW` is 220 bytes with `dmDisplayOrientation` at offset 84 and
+  `dmPelsWidth` at 172; `MONITORINFOEXW` 104; the hook structs 24/32.
+  *(Mutation: drop one `DEVMODEW` field → both size and offset asserts fail.)*
+- the contract's pixel mapping `x = left + round(u·(width−1))` at the places an
+  off-by-one shows first: `u=1` is the last pixel, a display to the LEFT of
+  primary (`u=1` → `-1`), out-of-range clamped. *(Mutation: `size` instead of
+  `size−1` → fails.)*
+- wheel arithmetic: one step = 120, ±10 steps = ±1200, clamped.
+
+### A finding: the "obvious" absolute-coordinate formula is wrong
+
+`SendInput` wants 0..65535 across the virtual desktop; Windows maps that back to a
+pixel by an unstated rounding rule. RC-003's 81-point probe used a corner-exact
+formula and measured 0 px, but a grid that includes the corners does not stress
+the rounding. Under either of two plausible rules —
+
+- **A** `floor(abs·size / 65536)`
+- **B** `round(abs·(size−1) / 65535)`
+
+— the naive `abs = round(p·65535/(size−1))` is **off by a pixel** for widths of
+1080 and up (mutation-confirmed: the build fails at 1080, 1366, 1920, 2560, 3840,
+5760 and 7680; it passes below 800). Aiming at the **pixel centre**,
+`abs = floor((2p+1)·32768/size)`, is exact for **every pixel** under both rules,
+and rustc proves it for ten screen widths including 3840 and 7680 (two or three
+displays side by side).
+
+🔴 Limit of that proof: it shows the arithmetic is right against the two models,
+**not that Windows uses either**. Which rule Windows really applies, and how it
+behaves on a negative-origin virtual desktop with mixed DPI, is only answerable on
+a real multi-monitor machine. So the adapter also reads the cursor back after each
+absolute move and returns `pointer_error` if it is more than 2 px off (the
+acceptance budget), rather than trusting the arithmetic.
+
+### Behaviour of the adapter
+
+- Pointer position and the button/wheel it belongs to go in **one** `SendInput`
+  call, so nothing can land between "move here" and "click".
+- Keys are scan codes with `wVk = 0`; no virtual-key integer from the network.
+- Text is `KEYEVENTF_UNICODE` UTF-16 (an emoji is two pairs); LF and TAB become the
+  Enter and Tab keys.
+- Every event carries a tag in `dwExtraInfo` (the OS already marks injected input).
+- `SendInput` access-denied (secure desktop, lock screen, UAC prompt) →
+  `input_blocked` → the core ends the grant.
+
+### The monitor is built not to be a key logger
+
+A low-level hook is what key loggers are made of, so: injected events are ignored
+outright; **no key value, character or position is stored** — the only per-key
+state is a bitmask of whether each of the **eight modifier keys** is physically
+held (needed so ending a session does not release a Shift the owner is pressing),
+and every other key is just "activity happened"; mouse movement needs 8 px to
+count; and the hook exists **only while a grant can inject** (`PhysicalMonitor::start`
+at activation, drop at its end), never at idle. It is restartable per grant. The
+hook procedure only touches atomics (a slow one is silently removed by Windows).
+Some antivirus products flag any such hook.
+
+### Not verified, and where the risk is
+
+- **No test has been executed** — 54 platform-windows tests (47 unit, 7 through the
+  real gate) and 151 core tests are compiled and linked only.
+- The `SendInput`/`GetCursorPos`/hook/monitor calls have never run against a real
+  OS. Mixed-DPI, negative origins, rotation and hot-plug are all unobserved.
+- **UIPI is not detected.** Injecting into a higher-integrity window (an elevated
+  app, a UAC prompt) is silently dropped by Windows while `SendInput` reports
+  success. That needs a foreground-integrity check before it can be a clear
+  failure message; today it would just appear not to work.
+- **Wheel sign is an assumption** (DOM down = Windows negative) about a browser
+  engine (RC-015) that does not exist yet.
+- `ensure_per_monitor_v2` verifies rather than assumes, but nothing wires it into
+  `app` yet.
+- Nothing yet turns `PhysicalState::take_activity` into
+  `TransportEvent::PhysicalActivity`: the app must poll it from the watchdog.
+- `display_id` is the Windows device name; hot-plug can rename it, which is
+  intended (a changed fingerprint ends the grant).
+
+### Next
+
+`capture.rs` (WGC → I420 → `NativeVideoSource`, `CreateFreeThreaded`, `new_black`,
+`is_screencast: true`, simulcast decision) on a machine that can build the
+`windows` and LiveKit crates; then RC-014 (the native consent dialog, which must
+use `provenance::click_is_physical`, and the emergency hotkey).
+
 ## Known weaknesses
 
 - **Unrun tests were desk-checked, not executed.** Reading them against the code

@@ -179,6 +179,11 @@ pub enum TransportEvent {
     /// A server notice that the grant is no longer active. Not authority to
     /// open anything, only to close.
     ServerInactive,
+    /// The owner physically used the keyboard or mouse. "Local input priority":
+    /// remote injection pauses and remote-owned states are released. The adapter
+    /// reports only input the OS marks as *not* injected, so remote input cannot
+    /// trigger it, and it carries no key values.
+    PhysicalActivity,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -201,6 +206,7 @@ pub enum StopReason {
     AdapterFailure,
     ProtocolViolation,
     AccountChanged,
+    LocalActivity,
 }
 
 impl StopReason {
@@ -224,6 +230,7 @@ impl StopReason {
             StopReason::AdapterFailure => "adapter_failure",
             StopReason::ProtocolViolation => "protocol_violation",
             StopReason::AccountChanged => "account_changed",
+            StopReason::LocalActivity => "local_activity",
         }
     }
 }
@@ -649,6 +656,7 @@ impl<A: InputAdapter, C: MonotonicClock, E: Entropy> Companion<A, C, E> {
             | TransportEvent::Reconnected
             | TransportEvent::Resumed => self.end(StopReason::Disconnected),
             TransportEvent::ServerInactive => self.end(StopReason::ServerInactive),
+            TransportEvent::PhysicalActivity => self.end(StopReason::LocalActivity),
             TransportEvent::SessionLocked => {
                 self.session_locked = true;
                 self.end(StopReason::SessionLocked)

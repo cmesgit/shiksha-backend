@@ -11,3 +11,7 @@ publish.workspace = true
 # crate has no build scripts, no windows-sys version to track, and can be
 # type-checked on a machine that blocks build scripts.
 shiksha-companion-core = { path = "../core" }
+
+[dev-dependencies]
+# Unit tests only. Never a normal dependency.
+shiksha-companion-core = { path = "../core", features = ["test-support"] }
