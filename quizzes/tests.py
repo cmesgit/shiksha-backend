@@ -2936,6 +2936,60 @@ class QuizDraftChapterRoundTripTest(TestCase):
         )
 
 
+class QuizDetailDraftAuthorizationTest(TestCase):
+    """`created_by != request.user` used to gate this view, which 403'd for
+    every teacher — including the quiz's own subject teacher — on any
+    academy-seeded quiz, where created_by is NULL. The mobile app's quiz
+    Details/Preview screens read this endpoint and hit that wall for real.
+    Now gated the same way as its sibling views on this quiz resource
+    (TeacherQuizAttemptsView, TeacherQuizAnalyticsView): teaches_subject."""
+
+    @classmethod
+    def setUpTestData(cls):
+        Role.objects.get_or_create(name="TEACHER")
+        cls.course = Course.objects.create(title="Class 10")
+        cls.subject = Subject.objects.create(course=cls.course, name="Maths")
+
+        cls.assigned_teacher = User.objects.create_user(
+            username="qd_assigned", email="qd_assigned@test.com", password="x",
+            is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.assigned_teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+        TeachingAssignment.objects.create(
+            teacher=cls.assigned_teacher, subject=cls.subject, batch=None,
+        )
+
+        cls.unrelated_teacher = User.objects.create_user(
+            username="qd_unrelated", email="qd_unrelated@test.com", password="x",
+            is_verified=True,
+        )
+        UserRole.objects.create(
+            user=cls.unrelated_teacher, role=Role.objects.get(name="TEACHER"),
+            is_active=True, is_primary=True,
+        )
+
+        cls.seeded_quiz = Quiz.objects.create(
+            subject=cls.subject, created_by=None, title="Seeded, no creator",
+        )
+
+    def _draft(self, user):
+        c = APIClient()
+        c.force_authenticate(user=user, token={"context": "teacher"})
+        return c.get(f"/api/quizzes/{self.seeded_quiz.id}/draft/")
+
+    def test_a_subject_teacher_can_read_a_null_creator_quiz(self):
+        r = self._draft(self.assigned_teacher)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.data["title"], "Seeded, no creator")
+
+    def test_an_unrelated_teacher_is_still_refused(self):
+        r = self._draft(self.unrelated_teacher)
+        self.assertEqual(r.status_code, 403, r.content)
+
+
 class QuizStudentEndpointBatchIsolationTest(TestCase):
     """StartQuizView/QuizDetailView/SubmitQuizView used to resolve a quiz by
     UUID with only is_published + subscription checks — no batch check, even
