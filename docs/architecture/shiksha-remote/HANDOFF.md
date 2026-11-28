@@ -99,8 +99,12 @@ interactions.
 `evidence/companion-core.md` before trusting any of it** — the short version:
 
 - `core` (std-only authorisation: gate, latch, leases, sequencing, executor,
-  fake adapter) passes `cargo check --all-targets` and its 188 tests **compile
-  and link but have never been executed**.
+  fake adapter) passes `cargo check --all-targets` and its 188 tests **were
+  executed for the first time on 2026-11-28: 188 passed, 0 failed** (128 unit + 60
+  gate). That is the first real run of anything here. `platform-windows` tests are still
+  blocked by Application Control (os error 4551) and `cargo test --workspace` fails on
+  build scripts (getrandom, serde_core), so the Windows adapter, windows, hook and
+  helper — and T09/T13 — remain unrun.
 - `transport` (JSON decode vs the shared fixtures, Ed25519 JWT, entropy) and
   `app` are **written but have never been compiled**.
 - Cause: this Windows machine runs Application Control that blocks unsigned
