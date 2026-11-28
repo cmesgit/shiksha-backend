@@ -252,6 +252,7 @@ mod native {
     const WM_CLOSE: u32 = 0x0010;
     const WM_COMMAND: u32 = 0x0111;
     const WM_TIMER: u32 = 0x0113;
+    const WM_ACTIVATE: u32 = 0x0006;
     const WM_SETFONT: u32 = 0x0030;
     const WM_APP: u32 = 0x8000;
     const WM_APP_TEXT: u32 = WM_APP + 1;
@@ -375,6 +376,7 @@ mod native {
         physical: Arc<PhysicalState>,
         clock: Box<dyn MonotonicClock>,
         allow: isize,
+        deny: isize,
         last_enabled: bool,
     }
 
@@ -384,7 +386,9 @@ mod native {
         /// be invisible to the other.
         fn sample(&mut self) -> shiksha_companion_core::clock::Mono {
             let now = self.clock.now();
-            let seen = self.physical.take_activity();
+            // Only a real key or button vouches for an approval. Plain movement does
+            // not, or a touchpad twitch could let an injected Space through.
+            let seen = self.physical.take_deliberate();
             if seen {
                 trace(&format!("physical activity observed at {now:?}"));
             }
@@ -458,6 +462,15 @@ mod native {
                         st.on_command(cmd);
                     }
                 }
+                // Re-activation (e.g. Alt+Tab back) drops focus from the buttons. Put it
+                // on Deny, never Allow, so a stray Space or Enter can only deny. A click
+                // activation (2) is left alone: the clicked button takes focus itself.
+                WM_ACTIVATE => {
+                    if (w & 0xFFFF) == 1 && st.deny != 0 {
+                        SetFocus(st.deny);
+                        trace("activated: focus -> Deny");
+                    }
+                }
                 WM_TIMER => {
                     st.on_tick();
                     let v = st.view();
@@ -511,6 +524,7 @@ mod native {
             physical,
             clock: Box::new(clock),
             allow: 0,
+            deny: 0,
             last_enabled: false,
         });
         let raw = Box::into_raw(state);
@@ -565,6 +579,7 @@ mod native {
                 font,
             );
             (*raw).allow = allow;
+            (*raw).deny = deny;
             (*raw).paint();
 
             ShowWindow(h, SW_SHOW);

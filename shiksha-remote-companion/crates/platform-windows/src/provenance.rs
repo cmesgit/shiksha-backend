@@ -92,6 +92,10 @@ pub struct PhysicalState {
     mods: AtomicU32,
     /// Set by any physical activity; cleared by [`Self::take_activity`].
     activity: AtomicBool,
+    /// Set only by a physical key or button/wheel event, never by movement. This,
+    /// not `activity`, is what may vouch for an approval: a mouse wiggle or touchpad
+    /// jitter is not a deliberate act and must not let an injected keypress through.
+    deliberate: AtomicBool,
     last_x: AtomicI32,
     last_y: AtomicI32,
     have_pos: AtomicBool,
@@ -117,6 +121,7 @@ impl PhysicalState {
         }
         // Any physical key, modifier or not, is activity. Nothing else is kept.
         self.activity.store(true, Ordering::SeqCst);
+        self.deliberate.store(true, Ordering::SeqCst);
     }
 
     /// A mouse button or wheel event.
@@ -125,6 +130,7 @@ impl PhysicalState {
             return;
         }
         self.activity.store(true, Ordering::SeqCst);
+        self.deliberate.store(true, Ordering::SeqCst);
     }
 
     /// A mouse move. Counts only beyond the deadzone from the last *physical*
@@ -151,6 +157,13 @@ impl PhysicalState {
         self.activity.swap(false, Ordering::SeqCst)
     }
 
+    /// Has the owner pressed a key or a mouse button since the last call? Clears it.
+    /// Movement does not count. Use this, not [`Self::take_activity`], to decide
+    /// whether an approval was a deliberate human act.
+    pub fn take_deliberate(&self) -> bool {
+        self.deliberate.swap(false, Ordering::SeqCst)
+    }
+
     /// Is this DOM key a modifier the owner is physically holding right now?
     /// Non-modifier keys always answer `false`: their state is never recorded.
     pub fn modifier_held(&self, dom_code: &str) -> bool {
@@ -164,6 +177,7 @@ impl PhysicalState {
     pub fn reset(&self) {
         self.mods.store(0, Ordering::SeqCst);
         self.activity.store(false, Ordering::SeqCst);
+        self.deliberate.store(false, Ordering::SeqCst);
         self.have_pos.store(false, Ordering::SeqCst);
     }
 }
@@ -392,6 +406,36 @@ mod tests {
 
     const SHIFT_L: u32 = 0x2A;
     const KEY_A: u32 = 0x1E;
+
+    #[test]
+    fn movement_is_activity_but_never_deliberate() {
+        let s = PhysicalState::new();
+        s.on_mouse_move(0, 0, 0); // baseline
+        s.on_mouse_move(500, 500, 0);
+        assert!(s.take_activity(), "a real move still ends a grant");
+        assert!(!s.take_deliberate(), "but it must not vouch for an approval");
+    }
+
+    #[test]
+    fn a_real_key_or_button_is_deliberate_and_taken_once() {
+        let s = PhysicalState::new();
+        s.on_key(KEY_A, 0);
+        assert!(s.take_deliberate());
+        assert!(!s.take_deliberate(), "taking it clears it");
+        s.on_mouse_other(0);
+        assert!(s.take_deliberate());
+    }
+
+    #[test]
+    fn injected_input_is_never_deliberate() {
+        let s = PhysicalState::new();
+        s.on_key(KEY_A, LLKHF_INJECTED);
+        s.on_mouse_other(LLMHF_INJECTED);
+        s.on_mouse_move(0, 0, LLMHF_INJECTED);
+        s.on_mouse_move(900, 900, LLMHF_INJECTED);
+        assert!(!s.take_deliberate());
+        assert!(!s.take_activity());
+    }
 
     #[test]
     fn injected_events_are_ignored_entirely() {
