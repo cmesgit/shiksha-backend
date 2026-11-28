@@ -122,7 +122,7 @@ interactions.
   - **T13 (injected approval), mouse: 18/18 injected SendInput clicks judged Injected and refused (3 runs, hands off). PASS for that vector.**
   - 🔴 **T13 caveat: one earlier run, with a keyboard attacker (injected Space), was judged Physical and APPROVED the dialog.** No trace was on, so the cause is unproven. Likely real input from the tester within 500 ms (a later run showed the tester's touch registering), but that is a guess. It did not recur in ~8 further runs. Do not call T13 certified until this is explained; the 500 ms correlation window is the known weakness and a keyboard attacker was the vector.
   - Harness pitfalls found: launching with a hidden window style hides the dialog (use a normal launch); keyboard-based injection often does not reach the dialog (focus), so those runs prove nothing and now report INCONCLUSIVE.
-  - **T09 (kill while holding Shift): NOT run.** Held-input release is still uncertified.
+  - **T09 (hard kill while holding Left Shift): 5/5 PASS (+1 earlier).** Shift confirmed down via GetAsyncKeyState while held; after TerminateProcess it was up within 3-24 ms, stayed up, and the helper exited. **Scope:** keyboard Shift only, TerminateProcess (same as `taskkill /F`). NOT tested: held mouse button, other keys, the `t09-chord` path (needs a person to press the chord), killing the helper itself, power loss/BSOD, crash in the middle of the hold announcement. Held-input release is demonstrated for the one case above, not certified in general.
   - Not exercised: keyboard-only and screen-reader use, high DPI, elevated windows, multi-monitor.
   - `SHIKSHA_UI_TRACE=1` turns on stderr tracing in the consent window.
 - History: earlier on this machine Application Control blocked unsigned executables
