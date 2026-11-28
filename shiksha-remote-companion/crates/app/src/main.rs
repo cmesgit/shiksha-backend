@@ -35,6 +35,7 @@ use shiksha_companion_core::secrets::{
     SecretStore, DEVICE_ID_NAME, REFRESH_INFLIGHT_NAME, REFRESH_NAME,
 };
 use shiksha_companion_platform_windows::dpapi::DpapiStore;
+#[cfg(windows)]
 use shiksha_companion_platform_windows::grant::GrantKit;
 use shiksha_companion_platform_windows::provenance::PhysicalState;
 use shiksha_companion_transport::device_api::{ApiConfig, DeviceApi, Proofs};
@@ -196,6 +197,9 @@ fn run() -> Result<(), String> {
     let physical = Arc::new(PhysicalState::new());
     // The physical Stop chord. Without it there is no emergency Stop, so the
     // companion is told so and nothing may ever activate (core enforces it).
+    // The chord is Win32-only (RegisterHotKey); off Windows there is no
+    // implementation to call, so the companion always runs with it absent.
+    #[cfg(windows)]
     let kit = match GrantKit::new(latch.clone(), physical.clone()) {
         Ok(k) => {
             println!("Emergency Stop: {}", k.stop_shortcut());
@@ -205,6 +209,12 @@ fn run() -> Result<(), String> {
             eprintln!("Emergency Stop chord unavailable ({e:?}): remote control will not be offered.");
             None
         }
+    };
+    #[cfg(not(windows))]
+    let kit: Option<()> = {
+        let _ = &physical; // only the Windows chord above consumes it
+        eprintln!("Emergency Stop chord unavailable (not running on Windows): remote control will not be offered.");
+        None
     };
     let mut companion = Companion::new(
         RefusingAdapter,
@@ -227,6 +237,10 @@ fn run() -> Result<(), String> {
                 thread::sleep(WATCHDOG_PERIOD);
                 let mut d = lock_driver(&driver);
                 let _ = d.tick();
+                // Keeps `kit` referenced when the Windows-only check below is
+                // compiled out, so the closure still needs to capture it.
+                let _ = &kit;
+                #[cfg(windows)]
                 if kit.as_ref().map_or(false, |k| k.take_chord_idle()) {
                     let _ = d.companion_mut().sync_after_latch_stop();
                 }

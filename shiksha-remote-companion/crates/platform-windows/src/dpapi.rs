@@ -35,6 +35,9 @@ use std::path::{Path, PathBuf};
 use shiksha_companion_core::secrets::{valid_name, SecretStore, StoreError};
 
 /// Prefix of the optional entropy handed to DPAPI. The secret's name is appended.
+/// Used by the real (Windows) path and exercised directly by tests on every
+/// platform; the `cfg(not(windows))` stub below never touches it.
+#[cfg(any(windows, test))]
 const ENTROPY_PREFIX: &[u8] = b"shiksha-remote-companion/v1/";
 const EXTENSION: &str = "dpapi";
 
@@ -85,6 +88,7 @@ mod sys {
 }
 
 /// Entropy bytes binding a blob to a secret name.
+#[cfg(any(windows, test))]
 fn entropy_for(name: &str) -> Vec<u8> {
     let mut e = Vec::with_capacity(ENTROPY_PREFIX.len() + name.len());
     e.extend_from_slice(ENTROPY_PREFIX);
@@ -93,6 +97,7 @@ fn entropy_for(name: &str) -> Vec<u8> {
 }
 
 /// Overwrite with zeros in a way the optimiser may not remove.
+#[cfg(any(windows, test))]
 fn wipe(buf: &mut [u8]) {
     for b in buf.iter_mut() {
         // SAFETY: `b` is a valid, aligned, exclusive reference to a u8.

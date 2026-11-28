@@ -7,7 +7,6 @@
 
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
-use p256::elliptic_curve::sec1::ToEncodedPoint;
 use sha2::{Digest, Sha256};
 use shiksha_companion_core::dpop::{Hasher, ProofSigner, SignError};
 

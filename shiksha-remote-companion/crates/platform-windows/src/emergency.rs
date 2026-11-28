@@ -22,9 +22,14 @@
 //! `WM_HOTKEY` to the thread that registered, so registering from elsewhere would
 //! silently never fire. It reports back whether registration succeeded.
 
+// Only `mod win` below (via its `use super::*;`) consumes these; off Windows
+// that module doesn't exist, so the imports would otherwise be unused.
+#[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
 use std::sync::Arc;
 
+#[cfg(windows)]
 use shiksha_companion_core::companion::StopLatch;
 
 pub const MOD_ALT: u32 = 0x0001;
