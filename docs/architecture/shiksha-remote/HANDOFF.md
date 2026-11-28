@@ -100,18 +100,26 @@ interactions.
 
 - `core` (std-only authorisation: gate, latch, leases, sequencing, executor,
   fake adapter) passes `cargo check --all-targets` and its 188 tests **were
-  executed for the first time on 2026-11-28: 188 passed, 0 failed** (128 unit + 60
-  gate). That is the first real run of anything here. `platform-windows` tests are still
-  blocked by Application Control (os error 4551) and `cargo test --workspace` fails on
-  build scripts (getrandom, serde_core), so the Windows adapter, windows, hook and
-  helper — and T09/T13 — remain unrun.
-- `transport` (JSON decode vs the shared fixtures, Ed25519 JWT, entropy) and
-  `app` are **written but have never been compiled**.
-- Cause: this Windows machine runs Application Control that blocks unsigned
-  executables (os error 4551), which stops test binaries *and* build scripts, so
-  only dependency-free crates can be checked. Not worked around.
-- LiveKit join and status wiring is **written but never compiled**
-  (`crates/livekit`, `transport::session`; see evidence file Part 2).
+  executed on the Windows machine 2026-11-28 (after 51c91aab): see the table.**
+  `cargo test --workspace` now builds and runs here, exit 0 (the earlier Application
+  Control block (os error 4551) did not recur; cause not investigated).
+
+  | crate | passed | failed |
+  |---|---|---|
+  | core | 188 (128 unit + 60 gate) | 0 |
+  | transport | 35 (18 + 5 + 12) | 0 |
+  | platform-windows | 86 (79 unit + 7 through-the-gate) | 0 |
+
+  Matches the Linux run for core and transport. platform-windows is 86 here vs 79 on
+  Linux: the 7 extra are the cfg(windows) tests (DPAPI etc). **Still unproven:** every
+  test is logic or fake-sink. No real SendInput, hook, hotkey or window has run; T09/T13
+  are not done. `app` and `livekit` build as part of the workspace but have no tests.
+- History: earlier on this machine Application Control blocked unsigned executables
+  (os error 4551), stopping test binaries and build scripts. Not worked around; it later
+  cleared by itself. If it returns, that is the cause, not the code.
+- LiveKit join and status wiring (`crates/livekit`, `transport::session`; evidence Part 2)
+  now compiles; `transport::session` is tested (12), the livekit crate has no tests and
+  has never joined a room.
 - The DPoP client, credential refresh state machine and typed device API are
   written (evidence file Part 3): pure parts in `core` are checked, the HTTP/key
   parts in `transport` are not.
