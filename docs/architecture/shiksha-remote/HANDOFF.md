@@ -114,6 +114,9 @@ interactions.
   Linux: the 7 extra are the cfg(windows) tests (DPAPI etc). **Still unproven:** every
   test is logic or fake-sink. No real SendInput, hook, hotkey or window has run; T09/T13
   are not done. `app` and `livekit` build as part of the workspace but have no tests.
+  **Manual harness:** `crates/platform-windows/examples/manual.rs` (modes `status`,
+  `consent-injected` = T13, `consent-physical`, `consent-keyboard`, `t09`, `t09-chord`).
+  Written and compiled; **not yet run by a person.** Record results here when run.
 - History: earlier on this machine Application Control blocked unsigned executables
   (os error 4551), stopping test binaries and build scripts. Not worked around; it later
   cleared by itself. If it returns, that is the cause, not the code.
