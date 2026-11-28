@@ -93,7 +93,7 @@ mod native {
         Monitor(MonitorError),
         Window(WindowError),
         /// The owner said no, or the dialog timed out. Nothing was activated.
-        Declined(Outcome),
+        Declined { outcome: Outcome, refused_approvals: u32 },
         /// Allowed, but the indicator could not be shown, so nothing may activate.
         NoIndicator(WindowError),
     }
@@ -153,7 +153,7 @@ mod native {
 
             let decision = match (res.outcome, res.decision) {
                 (Outcome::Allowed, Some(d)) => d,
-                (o, _) => return Err(AskError::Declined(o)),
+                (o, _) => return Err(AskError::Declined { outcome: o, refused_approvals: res.refused_approvals }),
             };
 
             // The indicator comes before any authority exists.

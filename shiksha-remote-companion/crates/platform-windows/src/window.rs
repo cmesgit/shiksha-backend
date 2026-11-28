@@ -362,12 +362,20 @@ mod native {
 
     // ── consent window ────────────────────────────────────────────────────
 
+    /// Opt-in diagnostics: set SHIKSHA_UI_TRACE=1. Off by default, writes to stderr only.
+    fn trace(msg: &str) {
+        if std::env::var_os("SHIKSHA_UI_TRACE").is_some() {
+            eprintln!("[ui] {msg}");
+        }
+    }
+
     struct ConsentState {
         dialog: ConsentDialog,
         correlator: PhysicalCorrelator,
         physical: Arc<PhysicalState>,
         clock: Box<dyn MonotonicClock>,
         allow: isize,
+        last_enabled: bool,
     }
 
     impl ConsentState {
@@ -377,16 +385,21 @@ mod native {
         fn sample(&mut self) -> shiksha_companion_core::clock::Mono {
             let now = self.clock.now();
             let seen = self.physical.take_activity();
+            if seen {
+                trace(&format!("physical activity observed at {now:?}"));
+            }
             self.correlator.observe(now, seen);
             now
         }
 
         fn on_command(&mut self, cmd: Command) {
             let now = self.sample();
+            trace(&format!("command {cmd:?} at {now:?}"));
             match cmd {
                 // Approval spends the physical token; nothing else does.
                 Command::Allow => {
                     let origin = self.correlator.consume(now);
+                    trace(&format!("allow clicked; origin judged {origin:?}"));
                     self.dialog.on_click(now, Control::Allow, origin);
                 }
                 Command::Deny => self.dialog.on_click(now, Control::Deny, self.correlator.origin(now)),
@@ -440,11 +453,19 @@ mod native {
             let st = &mut *ptr;
             match msg {
                 WM_COMMAND => {
+                    trace(&format!("WM_COMMAND id={} notify={}", command_id(w), notify_code(w)));
                     if let Some(cmd) = map_command(command_id(w), notify_code(w)) {
                         st.on_command(cmd);
                     }
                 }
-                WM_TIMER => st.on_tick(),
+                WM_TIMER => {
+                    st.on_tick();
+                    let v = st.view();
+                    if v.allow_enabled != st.last_enabled {
+                        st.last_enabled = v.allow_enabled;
+                        trace(&format!("allow_enabled -> {}", v.allow_enabled));
+                    }
+                }
                 WM_CLOSE => st.on_close(),
                 WM_DESTROY => {
                     PostQuitMessage(0);
@@ -490,6 +511,7 @@ mod native {
             physical,
             clock: Box::new(clock),
             allow: 0,
+            last_enabled: false,
         });
         let raw = Box::into_raw(state);
 

@@ -116,7 +116,15 @@ interactions.
   are not done. `app` and `livekit` build as part of the workspace but have no tests.
   **Manual harness:** `crates/platform-windows/examples/manual.rs` (modes `status`,
   `consent-injected` = T13, `consent-physical`, `consent-keyboard`, `t09`, `t09-chord`).
-  Written and compiled; **not yet run by a person.** Record results here when run.
+  **Hardware results so far (2026-11-28, Windows 11 Home, one machine, one person):**
+  - Stop chord closes the latch: PASS. Status-window Stop button closes the latch: PASS.
+  - Consent, real mouse click on Allow: approved first try, judged Physical, capabilities exact: PASS.
+  - **T13 (injected approval), mouse: 18/18 injected SendInput clicks judged Injected and refused (3 runs, hands off). PASS for that vector.**
+  - 🔴 **T13 caveat: one earlier run, with a keyboard attacker (injected Space), was judged Physical and APPROVED the dialog.** No trace was on, so the cause is unproven. Likely real input from the tester within 500 ms (a later run showed the tester's touch registering), but that is a guess. It did not recur in ~8 further runs. Do not call T13 certified until this is explained; the 500 ms correlation window is the known weakness and a keyboard attacker was the vector.
+  - Harness pitfalls found: launching with a hidden window style hides the dialog (use a normal launch); keyboard-based injection often does not reach the dialog (focus), so those runs prove nothing and now report INCONCLUSIVE.
+  - **T09 (kill while holding Shift): NOT run.** Held-input release is still uncertified.
+  - Not exercised: keyboard-only and screen-reader use, high DPI, elevated windows, multi-monitor.
+  - `SHIKSHA_UI_TRACE=1` turns on stderr tracing in the consent window.
 - History: earlier on this machine Application Control blocked unsigned executables
   (os error 4551), stopping test binaries and build scripts. Not worked around; it later
   cleared by itself. If it returns, that is the cause, not the code.
